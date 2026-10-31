@@ -1,0 +1,13 @@
+{
+  "name": "icl",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ICL（in context life）：单例适配器 + 可插拔插件，只和 DSH 会话沟通",
+  "type": "module",
+  "workspaces": ["packages/core", "packages/plugins/*"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test packages/core/test",
+    "check": "node --check packages/core/src/index.mjs"
+  }
+}
