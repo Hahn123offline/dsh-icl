@@ -1,29 +1,29 @@
 {
-  "dbPath": "C:\\Users\\ai_admin\\AppData\\Local\\Temp\\icl-replay-WGrFtk\\state\\memory.db",
+  "dbPath": "C:\\Users\\ai_admin\\AppData\\Local\\Temp\\icl-replay-evXNVm\\state\\memory.db",
   "k": 4,
   "total": {
     "n": 20,
-    "c": 6,
-    "r": 16
+    "c": 7,
+    "r": 15
   },
   "levels": [
     {
       "level": "detail",
       "n": 5,
-      "coverage": 1,
+      "coverage": 2,
       "recalled": 4
     },
     {
       "level": "event",
       "n": 5,
-      "coverage": 3,
+      "coverage": 4,
       "recalled": 5
     },
     {
       "level": "person",
       "n": 5,
-      "coverage": 1,
-      "recalled": 2
+      "coverage": 0,
+      "recalled": 1
     },
     {
       "level": "overall",
@@ -70,7 +70,7 @@
       "evidence": [
         36
       ],
-      "coverage": false,
+      "coverage": true,
       "recalled": true
     },
     {
@@ -100,7 +100,7 @@
       "evidence": [
         36
       ],
-      "coverage": false,
+      "coverage": true,
       "recalled": true
     },
     {
@@ -172,8 +172,8 @@
       "evidence": [
         3
       ],
-      "coverage": true,
-      "recalled": true
+      "coverage": false,
+      "recalled": false
     },
     {
       "level": "person",

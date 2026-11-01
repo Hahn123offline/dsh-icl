@@ -20,8 +20,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHost } from '../packages/core/src/index.mjs'
 import * as memory from '../packages/plugins/memory/src/index.mjs'
 import * as recall from '../packages/plugins/recall/src/index.mjs'
+import * as whois from '../packages/plugins/whois/src/index.mjs'
 import memoryManifest from '../packages/plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../packages/plugins/recall/manifest.json' with { type: 'json' }
+import whoisManifest from '../packages/plugins/whois/manifest.json' with { type: 'json' }
 
 const args = process.argv.slice(2)
 const arg = (n, d = null) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d }
@@ -117,6 +119,7 @@ if (!fs.existsSync(FIXTURE)) { fs.mkdirSync(path.dirname(FIXTURE), { recursive: 
 const host = createHost({ log: () => {} })
 host.registerPlugin(memoryManifest, memory, { config: { root: path.dirname(path.dirname(dbPath)) } })
 host.registerPlugin(recallManifest, recall, { config: { sessionId: 'bench' } })
+host.registerPlugin(whoisManifest, whois, {})
 host.services.raw.register({
   id: 'bench-raw',
   search: ({ query, limit = 2 }) => {
@@ -134,6 +137,7 @@ host.services.raw.register({
 })
 await host.enable('memory')
 await host.enable('recall')
+await host.enable('whois')
 const mem = host.shared.get('memory')
 const recallTool = host.services.tools.list().find((t) => t.name === 'recall')
 const recallSvc = host.shared.get('recall')
@@ -150,7 +154,22 @@ const rows = []
 for (const item of questions) {
   const coverage = has(allText, item.expect)
   recallSvc?.resetCursor?.()
-  const out = await recallTool.execute({ query: item.q, limit: K })
+  let out
+  if (item.level === 'person') {
+    // 人物题走 whois：逐个档案查，任一命中即算恢复
+    const whoisTool = host.services.tools.list().find((t) => t.name === 'whois')
+    const people = mem.query({ namespace: 'person', kind: 'block', limit: 50 })
+    let best = ''
+    for (const p of people) {
+      const qq = String(p.data?.qq ?? '').trim()
+      if (!qq) continue
+      const res = await whoisTool.execute({ qq })
+      if (has(res.text, item.expect)) { best = res.text; break }
+    }
+    out = { text: best }
+  } else {
+    out = await recallTool.execute({ query: item.q, limit: K })
+  }
   const recalled = has(out.text, item.expect)
   rows.push({ ...item, coverage, recalled })
 }

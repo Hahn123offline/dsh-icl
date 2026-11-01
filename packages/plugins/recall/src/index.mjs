@@ -124,9 +124,9 @@ export function apply(ctx) {
 
     recall: {
       name: 'recall',
-      summary: 'Bring back what you remember: today\'s notes plus consolidated long-term blocks, most relevant first.',
+      summary: 'Bring back what you remember about events and things that happened - not for looking up people.',
       when: ['someone asks about the past', 'you need context that is no longer in the window'],
-      avoid: ['when whois would answer it (a person\'s identity)'],
+      avoid: ['looking up who a person is - that is whois, not recall', 'when the answer is a person\'s identity, accounts or closeness'],
       description: 'kind narrows to event / person / slang; query filters by meaning; tag narrows to a label. Pass the returned cursor to continue without being shown the same blocks again; the budget is about 10k tokens.',
       parameters: {
         type: 'object',
