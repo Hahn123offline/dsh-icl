@@ -184,6 +184,39 @@ export function apply(ctx) {
       return { id: Number(info.lastInsertRowid), updated: false }
     },
 
+
+    /**
+     * 原文层检索：只做字面命中，不走语义。
+     * 用途：块没覆盖到细节时，回到当时的原话里找一句作为出处。
+     */
+    archiveSearch({ query = '', limit = 2, exclude = [] } = {}) {
+      let terms = literalTerms(query)
+      // 没有精确串时退回按二元组找：问"哪个路径"这类问题仍然能定位到原话
+      if (!terms.length) {
+        const q = String(query ?? '').replace(/\s+/g, '')
+        const grams = new Set()
+        for (let i = 0; i < q.length - 1; i++) grams.add(q.slice(i, i + 2))
+        terms = [...grams].filter((g) => !/[?？。，、]/.test(g)).slice(0, 12)
+      }
+      if (!terms.length) return []
+      const skip = new Set(exclude.map((x) => String(x ?? '').trim()))
+      // 只查"可被回忆"的命名空间；备忘（note）、纠正（resolve）这些不是记忆。
+      const rows = db.prepare(`
+        SELECT i.* FROM mem_items i JOIN mem_ns n ON n.id = i.namespace
+        WHERE n.recallable = 1 ORDER BY i.created_at DESC LIMIT 2000
+      `).all().map(rowToItem)
+      const scored = []
+      for (const item of rows) {
+        if (item.kind !== 'note') continue
+        if (skip.has(String(item.text ?? '').trim())) continue
+        let hit = 0
+        for (const term of terms) if (String(item.text).toLowerCase().includes(term)) hit += 1
+        if (hit) scored.push({ item, hit })
+      }
+      scored.sort((a, b) => b.hit - a.hit || Number(b.item.createdAt) - Number(a.item.createdAt))
+      return scored.slice(0, Math.max(1, Number(limit) || 2)).map((s) => s.item)
+    },
+
     /** 原始列表（不做排序/评分）。 */
     query({ namespace, kind = null, since = null, until = null, limit = 50 } = {}) {
       const ns = String(namespace ?? '')
