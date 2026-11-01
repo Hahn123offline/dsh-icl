@@ -314,3 +314,44 @@ node tools/dream-eval.mjs --real --json
   "facts": [], "aliases": [], "sources": []
 }
 ```
+
+---
+
+## 十四、整理轮（已实现）—— 2026-11-01
+
+### 顺序：放在最后（events → people → slang → cleanup）
+
+理由：
+
+1. 整理治的是**结果**不是输入——它要看到今天新写出的块，才能把新旧重复一起合并
+2. 失败不连带丢失——新记忆已落库，整理失败只是"不够干净"，不会弄丢一天
+3. 纠正（resolve）针对的是**最终状态**，换句话说它要能改掉刚写的错块
+
+代价：同一次运行内，重复块会存在几秒钟（没人会在这几秒里 recall）。
+
+### 范围：event / person / slang 都管，但动作不同
+
+| 命名空间 | 整理动作 |
+|---|---|
+| `event` | 合并同一件事/同一个人的重复块；矛盾且分不清 → `uncertain: true` |
+| `person` | **不合并**（一人一块）；只按纠正改写档案正文 |
+| `slang` | 合并同义/近义词条 |
+
+### 纠正（resolve）
+
+- 主会话 `remember({kind:'resolve', text})` 写进 `resolve` 命名空间
+- 它 **recallable: false**：不会被 recall 检索到，只给整理轮看
+- 整理轮必须处理它：按纠正改写对应块，然后把 note 标 `consumed`
+- **跨天的未消化纠正也会处理**（纠正可能晚到）——这一点需要你确认
+
+### 安全：合并是软删除
+
+- 被合并的块不物理删除，标 `superseded: true` + `supersededBy`
+- `recall` / `memory.search` 过滤掉 `superseded`，但数据还在（可追溯、可回滚）
+- 合并结果保留 `mergedFrom`（合并了哪些 key）
+
+### 当前参数
+
+- 每轮每个命名空间最多看 60 块；输出预算 1500 tokens
+- 幂等：`run:<day>:cleanup`
+- 实测（DeepSeek + bge-m3）：cleanup ok+0（无重复时不动），覆盖 100%、recall@3 100%、重复 0.01

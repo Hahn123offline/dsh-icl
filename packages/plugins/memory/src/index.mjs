@@ -188,6 +188,11 @@ export function apply(ctx) {
       if (!nsIds.length) return []
       const placeholders = nsIds.map(() => '?').join(',')
       let rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`).all(...nsIds)
+      // 被整理轮合并掉的块不再被回忆（软删：行还在，可追溯）。
+      rows = rows.filter((row) => {
+        if (!row.data) return true
+        try { return JSON.parse(row.data)?.superseded !== true } catch { return true }
+      })
       if (!rows.length) return []
       // 标签只做"缩小范围"，不参与打分——否则调用方可以靠堆标签把相关度刷上去。
       const wantedTags = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()).filter(Boolean) : null

@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'slang']
+const DEFAULT_JOBS = ['events', 'people', 'slang', 'cleanup']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -304,7 +304,127 @@ export function apply(ctx) {
     return { job: 'slang', ok: true, blocks: written.length }
   }
 
-  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang }
+  /* ── cleanup：合并、去重、处理纠正（放在最后）────────────── */
+
+  /**
+   * 整理轮：不产生新记忆，只把已有的块弄干净。
+   *
+   * 为什么放在所有 job 之后：
+   *   · 它治的是"结果"，不是"输入"；先跑它只会在新块写出来前白忙一场
+   *   · 万一整理失败，当天的新记忆已经落库，不会连带丢失
+   * 范围：event / person / slang 都管。人物记错了也要改写，只不过改写请求要带着纠正去写。
+   */
+  /** 跨命名空间按 key 找块（key 前缀不一定等于命名空间）。 */
+  function findBlockByKey(key) {
+    const wanted = String(key ?? '')
+    if (!wanted) return null
+    for (const ns of ['event', 'person', 'slang']) {
+      const hit = memory.query({ namespace: ns, kind: 'block', limit: 500 }).find((b) => b.key === wanted)
+      if (hit) return hit
+    }
+    return null
+  }
+
+  async function jobCleanup({ now, force = false }) {
+    const day = dayKey(now)
+    if (!force && alreadyRan(day, 'cleanup')) return { job: 'cleanup', skipped: 'already-ran' }
+
+    const pendingResolves = memory.query({ namespace: 'resolve', kind: 'note', limit: 100 })
+      .filter((n) => n.data?.consumed !== true)
+
+    const blocks = []
+    for (const ns of ['event', 'person', 'slang']) {
+      for (const b of memory.query({ namespace: ns, kind: 'block', limit: 60 })) {
+        if (b.data?.superseded === true) continue
+        blocks.push({ ns, key: b.key, id: b.id, text: b.text, body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
+      }
+    }
+    if (blocks.length < 2 && !pendingResolves.length) return { job: 'cleanup', skipped: 'nothing-to-do' }
+
+    const payload = [
+      '现有记忆块（key | 类型 | 摘要 | 正文）：',
+      ...blocks.map((b) => `- ${b.key} | ${b.ns} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
+      pendingResolves.length
+        ? '\n主会话今天纠正的事（必须处理）：\n' + pendingResolves.map((n) => `- ${n.key}: ${n.text}`).join('\n')
+        : '',
+    ].filter(Boolean).join('\n')
+
+    let plan = null
+    try {
+      plan = parseBlocks(await ask({
+        instruction: [
+          '你在整理已有的记忆块。不新增事实，只合并/去重/改写。',
+          '输出一个 JSON 对象：',
+          '{"merges": [{"keep": "key", "drop": ["key"], "text": "合并后的一行摘要", "body": "合并后的正文", "uncertain": false}],',
+          ' "rewrites": [{"key": "key", "text": "改写后的摘要", "body": "改写后的正文"}],',
+          ' "consumed": ["resolve note key"]}',
+          '',
+          '规则：',
+          '· 只合并真正说的是同一件事/同一个人的块；没把握就不合并。',
+          '· 两个块互相矛盾且分不清对错：合并为一块并把 uncertain 设为 true，正文里写明"不确定"。',
+          '· 主会话的纠正优先：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
+          '· 合并后的 text 一行、body 一小段；删掉的 key 不要再出现在别的操作里。',
+          '没什么可整理就输出 {} 。只输出 JSON。',
+        ].join('\n'),
+        payload,
+        maxTokens: 1500,
+      }))
+    } catch (error) {
+      return { job: 'cleanup', ok: false, error: String(error?.message ?? error) }
+    }
+
+    // parseBlocks 对象也会装成数组，先取出那个对象再读字段。
+    const root = Array.isArray(plan) ? (plan[0] ?? {}) : (plan ?? {})
+    const merged = Array.isArray(root?.merges) ? root.merges : []
+    const rewrites = Array.isArray(root?.rewrites) ? root.rewrites : []
+    const consumed = Array.isArray(root?.consumed) ? root.consumed.map(String) : []
+    let mergedCount = 0
+    let rewriteCount = 0
+
+    for (const op of merged) {
+      const keepKey = String(op?.keep ?? '').trim()
+      if (!keepKey) continue
+      const drop = (Array.isArray(op?.drop) ? op.drop : []).map(String).filter((k) => k && k !== keepKey)
+      const text = String(op?.text ?? '').trim()
+      if (!text) continue
+      const existing = findBlockByKey(keepKey)
+      if (!existing) continue
+      const ns = existing.namespace
+      const data = {
+        ...(existing.data ?? {}),
+        body: String(op?.body ?? existing.data?.body ?? '').slice(0, 4000),
+        uncertain: op?.uncertain === true,
+        mergedFrom: [...new Set([...(existing.data?.mergedFrom ?? []), ...drop])],
+      }
+      memory.put({ namespace: ns, kind: 'block', key: keepKey, text: text.slice(0, 400), data, now })
+      for (const dropKey of drop) {
+        const target = findBlockByKey(dropKey)
+        if (!target) continue
+        memory.patch(target.id, { data: { ...(target.data ?? {}), superseded: true, supersededBy: keepKey } })
+      }
+      mergedCount += 1
+    }
+
+    for (const op of rewrites) {
+      const key = String(op?.key ?? '').trim()
+      if (!key) continue
+      const existing = findBlockByKey(key)
+      if (!existing) continue
+      if (op?.text) memory.patch(existing.id, { text: String(op.text).slice(0, 400) })
+      if (op?.body) memory.patch(existing.id, { data: { ...(existing.data ?? {}), body: String(op.body).slice(0, 4000) } })
+      rewriteCount += 1
+    }
+
+    for (const noteKey of consumed) {
+      const note = pendingResolves.find((n) => n.key === noteKey)
+      if (note) memory.patch(note.id, { data: { ...(note.data ?? {}), consumed: true, consumedAt: now } })
+    }
+
+    recordRun(day, 'cleanup', { merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length }, now)
+    return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length }
+  }
+
+  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, cleanup: jobCleanup }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。

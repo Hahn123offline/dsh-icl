@@ -35,6 +35,9 @@ const CATEGORIES = Object.freeze({
   event: { label: '事件', halfLifeDays: 30 },
   person: { label: '人物', halfLifeDays: 180 },
   slang: { label: '梗', halfLifeDays: 90 },
+  // 主会话对记忆的纠正（"这件事我记错了"）：它是反馈队列，
+  // 不是回忆（不参与 recall 检索），由整理轮消化。
+  resolve: { label: '纠正', halfLifeDays: 1, recallable: false },
 })
 
 export function apply(ctx) {
@@ -44,7 +47,7 @@ export function apply(ctx) {
 
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
-    memory.registerNamespace({ id, label: meta.label, recallable: true, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
+    memory.registerNamespace({ id, label: meta.label, recallable: meta.recallable !== false, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
   }
   // 游标自己的命名空间（不参与回忆）
   memory.registerNamespace({ id: 'recall-cursor', label: '回忆游标', recallable: false, owner: 'recall' })
