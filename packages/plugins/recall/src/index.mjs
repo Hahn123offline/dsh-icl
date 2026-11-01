@@ -150,7 +150,10 @@ export function apply(ctx) {
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
 
         // 今天的 note 永远优先展示（带 [今天] 标签）
+        // 已经被梦境消化的 note 不再以"今天"的身份出现：
+        // 它们已经变成块了，否则既重复又会把块挤出去。
         const today = namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', since: dayStart(now), limit: 100 })
+          .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: Number.MAX_SAFE_INTEGER, namespace: ns })))
 
         const stored = cursor && typeof cursor === 'string' ? safeParseCursor(cursor) : loadCursor()
@@ -237,6 +240,6 @@ export function apply(ctx) {
   }
 
   for (const tool of Object.values(tools)) ctx.tools.register(tool)
-  ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor() })
+  ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }

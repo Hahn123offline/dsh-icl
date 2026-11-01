@@ -88,6 +88,15 @@ export function apply(ctx) {
       .run(id, f32.length, new Uint8Array(f32.buffer))
   }
 
+  function bigramOverlap(text, needle) {
+    const a = bigrams(text)
+    const b = bigrams(needle)
+    if (!b.size) return 0
+    let inter = 0
+    for (const g of b) if (a.has(g)) inter++
+    return inter / b.size
+  }
+
   function bigrams(text) {
     const set = new Set()
     const s = String(text ?? '').toLowerCase().replace(/\s+/g, '')
@@ -190,7 +199,11 @@ export function apply(ctx) {
         let sim = 0
         if (qvec) {
           const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
-          if (hit) sim = cosine(qvec, new Float32Array(new Uint8Array(hit.vec).buffer))
+          const cos = hit ? cosine(qvec, new Float32Array(new Uint8Array(hit.vec).buffer)) : 0
+          // 混合：向量语义 + 字面命中。只靠向量时，"他怕什么"会输给
+          // 其他看起来也很相似的块；字面命中能把真正写着那件事的块拉上来。
+          const lex = needle ? bigramOverlap(item.text, needle) : 0
+          sim = 0.7 * cos + 0.3 * lex
         } else if (needle) {
           // 没有嵌入时的退化：字面命中之外，用二元组重叠度估一个相似度，
           // 否则「他怕什么」永远找不到「怕水」。

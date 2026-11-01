@@ -78,10 +78,11 @@ function realModel() {
   const base = String(process.env.ICL_LLM_BASE ?? '').replace(/\/+$/, '')
   const model = String(process.env.ICL_LLM_MODEL ?? '')
   if (!base || !model) throw new Error('--real 需要 ICL_LLM_BASE 与 ICL_LLM_MODEL')
+  const apiKey = String(process.env.DEEPSEEK_API_KEY ?? '')
   return async ({ messages, maxTokens }) => {
     const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify({ model, messages, max_tokens: maxTokens ?? 1200, stream: false }),
     })
     if (!res.ok) throw new Error(`模型返回 ${res.status}`)
@@ -153,7 +154,9 @@ async function main() {
   const hits = []
   let recallAt3 = null
   if (embedded) {
+    const recallSvc = host.shared.get('recall')
     for (const probe of DAY.probes) {
+      recallSvc?.resetCursor?.() // 探针之间互不影响（真实场景是不同回合）
       const out = await recallTool.execute({ query: probe.query, limit: 3 })
       hits.push({ ...probe, hit: String(out.text ?? '').includes(probe.expect) })
     }
@@ -177,7 +180,7 @@ async function main() {
   if (AS_JSON) { console.log(JSON.stringify(report, null, 2)); return report }
 
   console.log(`\n=== 做梦评测（${report.mode}）===`)
-  console.log('任务结果：', report.jobs.map((j) => `${j.job}:${j.skipped ?? (j.ok ? 'ok' : 'fail')}`).join('  '))
+  console.log('任务结果：', report.jobs.map((j) => `${j.job}:${j.skipped ?? (j.ok ? `ok+${j.blocks ?? 0}` : `fail(${j.error ?? '?'})`)}`).join('  '))
   console.log('块数量：', `事件 ${blocks.length} / 人物 ${people.length} / 梗 ${slang.length}`)
   console.log('平均字符数：', report.avgChars)
   console.log('重复度（块之间）：', report.duplicateRate, '（越低越好，>0.5 说明切块重复）')

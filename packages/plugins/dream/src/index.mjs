@@ -160,38 +160,69 @@ export function apply(ctx) {
     for (const [qq, list] of byQq) {
       const key = `person:${qq}`
       const existing = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).find((r) => r.key === key)
-      const old = existing ? `${existing.text}\n${existing.data?.narrative ?? ''}` : ''
+      // 人物档案要有"全局认识"：把过去提到过这个人的事件块也带上，
+      // 否则每天只能拿到一句话，写出来的档案永远认不出是谁。
+      const relatedEvents = memory.query({ namespace: 'event', kind: 'block', limit: 500 })
+        .filter((b) => Array.isArray(b.data?.people) && b.data.people.map(String).includes(qq))
+        .slice(-20)
+      const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
+        .filter((n) => String(n.data?.qq ?? '') === qq && n.data?.consolidated === true)
+        .slice(-20)
+
+      const context = [
+        `内部编号（不要写进档案）：${qq}`,
+        existing ? `现有档案：\n${existing.text}\n${existing.data?.narrative ?? ''}` : '现有档案：无',
+        relatedEvents.length ? `以前提到过 TA 的事：\n${relatedEvents.map((b) => `· ${b.text}`).join('\n')}` : '',
+        pastNotes.length ? `以前记下的：\n${pastNotes.map((n) => `· ${n.text}`).join('\n')}` : '',
+        `今天记下的：\n${list.map((n) => `· ${n.text}`).join('\n')}`,
+      ].filter(Boolean).join('\n\n')
+
       let out = null
       try {
         out = await ask({
           instruction: [
-            '你在重写一份人物档案（整块重写，不是追加）。',
-            '输出一个对象：{"summary": "一行概括", "narrative": "第一人称，写你对这个人的认识与变化", "facts": [{"text": "事实", "since": "YYYY-MM-DD"}]}',
-            '主动记下的内容优先于旧档案里的推测；不确定的就不要写。只输出 JSON 对象。',
+            '你在写一份人物档案（整块重写）。读者是你自己，下次看到它要能认出这是谁。',
+            '',
+            'profile 的写法（严格）：',
+            '第一句：称呼 + 你们的关系（如："室友、琐友、老板")；',
+            '第二句起：一两件具体的事（TA 说过什么、做过什么）；',
+            '最后：TA 现在的状态或你对 TA 的直觉。',
+            '',
+            '绝对不要：',
+            '· QQ 号、数字编号；',
+            '· "还不了解""没写到""材料不够""还没成型""只露过几次面"这类元叙述；',
+            '· 空泛的评价（"很好的人"）；',
+            '· 材料里没有的细节。',
+            '',
+            '材料少就写得短：只写一句也可以，但那一句必须能认人。',
+            '',
+            '输出一个 JSON 对象：{"profile": "...", "facts": [{"text": "...", "since": "YYYY-MM-DD"}], "aliases": []}。只输出 JSON。',
           ].join('\n'),
-          payload: [`QQ：${qq}`, old ? `旧档案：\n${old}` : '旧档案：无', `今天记下的：\n${list.map((n) => `· ${n.text}`).join('\n')}`].join('\n\n'),
+          payload: context,
         })
       } catch (error) {
         return { job: 'people', ok: false, qq, error: String(error?.message ?? error) }
       }
       const parsed = parseBlocks(out)[0]
-      const summary = String(parsed?.summary ?? '').trim()
-      if (!summary) continue
+      const profile = String(parsed?.profile ?? parsed?.summary ?? '').trim()
+      if (!profile) continue
       const created = memory.put({
         namespace: 'person',
         kind: 'block',
         key,
-        text: summary.slice(0, 200),
+        text: profile.slice(0, 400),
         data: {
           qq,
+          profile,
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
+          aliases: Array.isArray(parsed?.aliases) ? parsed.aliases.map(String).slice(0, 10) : ((existing?.data?.aliases) ?? []),
           sources: list.map((n) => n.key).filter(Boolean),
           rewrittenAt: now,
         },
         now,
       })
-      if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${parsed?.narrative ?? ''}`)
+      if (typeof memory.index === 'function') void memory.index(created.id, profile)
       written.push(created.id)
     }
     markNotes(notes, now)

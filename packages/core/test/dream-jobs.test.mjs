@@ -87,7 +87,7 @@ test('失败不吞原文：模型报错时 note 仍可重跑', async () => {
 
 test('人物 job：按 QQ 分组、整块重写、保留旧档案做输入', async () => {
   const { tools, memory, dream, chat } = await setup({
-    script: [['人物档案', JSON.stringify({ summary: '怕水但想去海边', narrative: '他说怕水，可一直惦记着海。', facts: [{ text: '怕水', since: '2026-11-01' }] })]],
+    script: [['人物档案', JSON.stringify({ profile: '我认识的他：怕水，但一直叻记着海。', narrative: '他说怕水，可一直惦记着海。', facts: [{ text: '怕水', since: '2026-11-01' }] })]],
   })
   await tools.remember.execute({ text: '他怕水', kind: 'person', qq: '42' })
   await tools.remember.execute({ text: '他想去看海', kind: 'person', qq: '42' })
@@ -95,7 +95,7 @@ test('人物 job：按 QQ 分组、整块重写、保留旧档案做输入', asy
   assert.equal(out.results[0].people, 1)
   const block = memory.query({ namespace: 'person', kind: 'block' })[0]
   assert.equal(block.key, 'person:42')
-  assert.match(block.data.narrative, /怕水/)
+  assert.match(block.data.profile, /怕水/)
   assert.ok(block.data.facts.length >= 1)
   // 第二次做梦时旧档案要出现在输入里
   const system = String(chat.calls.at(-1)?.[0]?.content ?? '')

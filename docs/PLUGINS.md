@@ -162,3 +162,48 @@
 4. dream 的总结是否需要硬字数上限？
 5. world 的 detail 是否要支持"按来源展开"？
 6. model-manager 是否需要多供应商优先级/降级？
+
+---
+
+## 十、模型接线与质量基线（2026-11-01）
+
+### 接线
+
+`config/icl.local.json`（不入库）：
+
+| 供应商 | 类型 | 形状 | 来源 |
+|---|---|---|---|
+| `deepseek` | chat | `{tools:false}` | `https://api.deepseek.com/v1` + `DEEPSEEK_API_KEY`（**用户环境变量**） |
+| `llama-swap-chat` | chat | `{tools:false}` | 本机 8088，关思考链，作为兜底 |
+| `bge-m3` | embedding | `{dim:1024}` | 本机 8088 |
+
+缺凭据的供应商会**被跳过并告警**，不会半接。
+`node tools/wire-check.mjs` 会打印供应商 / 插槽 / 人格字数，并真调一次 chat 与 embedding。
+
+### 真实基线（DeepSeek + bge-m3）
+
+```
+任务：events ok+3  people ok+1  slang ok+2
+平均字符：55
+块间重复：0.01
+事实覆盖：100%
+探针 recall@3：100%
+```
+
+一个人物块的实际输出：
+
+> 他是我认识的人，怕水，却总说想去看海。今天他说舍友叫曾嘉睿。
+
+### 这轮为了质量改的三件事
+
+1. 人物档案改成 **profile（2–4 句、可认人）**，禁止 QQ 号与元叙述
+2. 梦境的 people job 会把**以前提到过这个人的事件块**一起带入，不只看当天笔记
+3. 召回评分改成 **向量 0.7 + 字面 0.3**；已消化的 note 不再以「今天」身份出现
+
+### 评测用法
+
+```
+ICL_LLM_BASE=https://api.deepseek.com/v1 ICL_LLM_MODEL=deepseek-chat \
+ICL_EMBED_BASE=http://127.0.0.1:8088/v1 ICL_EMBED_MODEL=embed-bge-m3 \
+node tools/dream-eval.mjs --real
+```
