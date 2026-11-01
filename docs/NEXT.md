@@ -37,12 +37,14 @@
 
 验收：`recall({tag:'看海', origin:'group:1057812765'})` 能工作。
 
-## 3.5 适配器：把工具面/预设真正交给 DSH（未做）
+## 3.5 适配器：把工具面/预设真正交给 DSH（已完成主体，待真实 DSH 联调）
 
 - `surface.list()` 已经能回答"该给哪些工具"，但**没有代码把它注入 DSH**
 - 需要 DSH 插件侧：读 `surface` + `presets.active()`，转成 `ctx.tools.register`，
   并在 `surface.onChange` 时增量更新
 - 预设切换要能在会话内生效（我们自己的 preset，不是 DSH 的）
+- 已实现：`attachDshAdapter(host, dsh)`，用假 DSH 测过注入/切换/卸载
+- 待办：真实 DSH 联调（它的 tools.register 与 systemPrompt.section 契约）
 
 ## 4. slang 命名空间要改
 
