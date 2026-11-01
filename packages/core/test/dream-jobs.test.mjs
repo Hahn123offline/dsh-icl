@@ -96,6 +96,8 @@ test('人物 job：按 QQ 分组、整块重写、保留旧档案做输入', asy
   const block = memory.query({ namespace: 'person', kind: 'block' })[0]
   assert.equal(block.key, 'person:42')
   assert.match(block.data.profile, /怕水/)
+  assert.ok(Array.isArray(block.data.ids) && block.data.ids.some((x) => x.kind === 'qq' && x.value === '42'), 'QQ 号要存在结构化字段里')
+  assert.ok(typeof block.data.familiarity === 'string', '熟悉度要有字段')
   assert.ok(block.data.facts.length >= 1)
   // 第二次做梦时旧档案要出现在输入里
   const system = String(chat.calls.at(-1)?.[0]?.content ?? '')

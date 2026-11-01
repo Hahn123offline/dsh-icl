@@ -157,6 +157,7 @@ export function apply(ctx) {
       byQq.set(qq, [...(byQq.get(qq) ?? []), note])
     }
     const written = []
+    const skippedPeople = []
     for (const [qq, list] of byQq) {
       const key = `person:${qq}`
       const existing = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).find((r) => r.key === key)
@@ -183,20 +184,26 @@ export function apply(ctx) {
           instruction: [
             '你在写一份人物档案（整块重写）。读者是你自己，下次看到它要能认出这是谁。',
             '',
-            'profile 的写法（严格）：',
-            '第一句：称呼 + 你们的关系（如："室友、琐友、老板")；',
-            '第二句起：一两件具体的事（TA 说过什么、做过什么）；',
-            '最后：TA 现在的状态或你对 TA 的直觉。',
+                        'profile 是一小段叙事，必须同时包含三部分：',
+            '  ① 关系来源（怎么认识的、现在是什么关系）；',
+            '  ② 一个具体事件（TA 说过或做过的一件事）；',
+            '  ③ 一个当下的判断（你现在怎么看 TA）。',
+            '材料不足以写成这三部分就**不要硬写**：输出 {"profile": ""}，等下次材料多了再写。',
             '',
             '绝对不要：',
-            '· QQ 号、数字编号；',
+            '· 任何账号、数字编号写进 profile（它们放在结构化字段 ids 里）；',
             '· "还不了解""没写到""材料不够""还没成型""只露过几次面"这类元叙述；',
             '· 空泛的评价（"很好的人"）；',
             '· 材料里没有的细节。',
             '',
             '材料少就写得短：只写一句也可以，但那一句必须能认人。',
             '',
-            '输出一个 JSON 对象：{"profile": "...", "facts": [{"text": "...", "since": "YYYY-MM-DD"}], "aliases": []}。只输出 JSON。',
+            '输出一个 JSON 对象：{"profile": "...", "facts": [{"text": "...", "since": "YYYY-MM-DD"}], "aliases": [], "ids": [{"kind": "qq|mc|steam|其它", "value": "账号"}], "familiarity": "stranger|acquaintance|friend|close"}。只输出 JSON。',
+            '',
+            '注意：',
+            '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
+            '· "和 TA 不熟"属于 familiarity，不是元叙述；',
+            '· 材料里没有的账号不要猜。',
           ].join('\n'),
           payload: context,
         })
@@ -204,8 +211,9 @@ export function apply(ctx) {
         return { job: 'people', ok: false, qq, error: String(error?.message ?? error) }
       }
       const parsed = parseBlocks(out)[0]
-      const profile = String(parsed?.profile ?? parsed?.summary ?? '').trim()
-      if (!profile) continue
+      const profile = String(parsed?.profile ?? '').trim()
+      // 材料不够就不写块（也不标已消化），留到下次。
+      if (!profile) { skippedPeople.push(qq); continue }
       const created = memory.put({
         namespace: 'person',
         kind: 'block',
@@ -213,6 +221,14 @@ export function apply(ctx) {
         text: profile.slice(0, 400),
         data: {
           qq,
+          ids: (() => {
+            const ids = Array.isArray(parsed?.ids)
+              ? parsed.ids.map((x) => ({ kind: String(x?.kind ?? ''), value: String(x?.value ?? '') })).filter((x) => x.kind && x.value).slice(0, 10)
+              : ((existing?.data?.ids) ?? [])
+            if (!ids.some((x) => x.kind === 'qq' && x.value === qq)) ids.unshift({ kind: 'qq', value: qq })
+            return ids
+          })(),
+          familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
           profile,
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
@@ -225,9 +241,10 @@ export function apply(ctx) {
       if (typeof memory.index === 'function') void memory.index(created.id, profile)
       written.push(created.id)
     }
-    markNotes(notes, now)
-    recordRun(day, 'people', { blocks: written.length, people: byQq.size }, now)
-    return { job: 'people', ok: true, blocks: written.length, people: byQq.size }
+    const writtenNotes = notes.filter((n) => !skippedPeople.includes(String(n.data?.qq ?? '')))
+    markNotes(writtenNotes, now)
+    recordRun(day, 'people', { blocks: written.length, people: byQq.size, skipped: skippedPeople.length }, now)
+    return { job: 'people', ok: true, blocks: written.length, people: byQq.size, skipped: skippedPeople.length }
   }
 
   /* ── slang：新增/更新梗块 ───────────────────────────────────── */
