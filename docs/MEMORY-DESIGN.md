@@ -243,3 +243,49 @@ dream.run()
 实现状态：`memory` 已改成命名空间注册 + 权重/衰减；
 `light-memory` 已删除，并入新的 `recall` 控制器（remember / recall / forget）；
 `dream` 现在从 `event` 命名空间读当天的 note，写 `kind=block`（多 job 切块仍在下一轮）。
+
+---
+
+## 十二、做梦流水线与质量评测（2026-11-01）
+
+### 三个 job（独立、幂等、可重跑）
+
+| job | 读 | 写 | 失败时 |
+|---|---|---|---|
+| `events` | 今天 `event` 命名空间的 note | 若干 `event` 块（按话题） | note 不标已消化，下次重跑 |
+| `people` | 今天 `person` note 按 QQ 分组 | 逐人整块重写 `person:<qq>` | 同上 |
+| `slang` | 今天 `slang` note | `slang:<term>` 新增/更新 | 同上 |
+
+幂等标记：`dream-run` 命名空间里的 `run:<day>:<job>`。
+已消化标记：note 的 `data.consolidated`。
+
+### 块格式（已实现）
+
+- 事件：`text` = 一行摘要；`data = { body, day, people[], tags[], sources[] }`
+- 人物：`key = person:<qq>`；`data = { qq, narrative, facts[], sources[], rewrittenAt }`
+- 梗：`key = slang:<term>`；`data = { term, meaning, usage, examples[], sources[] }`
+
+### 质量评测：`tools/dream-eval.mjs`
+
+```
+node tools/dream-eval.mjs           # 假模型（不需网络）
+node tools/dream-eval.mjs --real    # 真模型（ICL_LLM_BASE / ICL_LLM_MODEL）
+node tools/dream-eval.mjs --real --json
+```
+
+它量四件事：
+
+1. **结构**：块数量、平均字符数、块与块之间的近似重复率（二元组 Jaccard）
+2. **覆盖**：预设的「应该记住的事实」有多少进了块
+3. **找回**：探针查询 → `recall` 前 3 条里有没有期望的块（recall@3，**需要嵌入服务**；
+   没接嵌入时会如实跳过，不拿字面匹配冒充语义能力）
+4. **样例**：打印前几块供人看
+
+阈值：覆盖 < 60%、重复率 > 0.5（或有嵌入时 recall@3 < 60%）→ 退出码非 0。
+
+### 为什么要这么量
+
+- 只看「能不能跑」是不够的：一天一块也能跑，但检索全是泛内容
+- 重复率能直接抓「同一件事写了三遍」
+- 探针能抓「切得太碎，对不上话题」
+- 固定一天的 fixture 能做回归：换模型/改提示词后重跑就知道好坏

@@ -88,6 +88,13 @@ export function apply(ctx) {
       .run(id, f32.length, new Uint8Array(f32.buffer))
   }
 
+  function bigrams(text) {
+    const set = new Set()
+    const s = String(text ?? '').toLowerCase().replace(/\s+/g, '')
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2))
+    return set
+  }
+
   function cosine(a, b) {
     let dot = 0, na = 0, nb = 0
     const n = Math.min(a.length, b.length)
@@ -185,7 +192,13 @@ export function apply(ctx) {
           const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
           if (hit) sim = cosine(qvec, new Float32Array(new Uint8Array(hit.vec).buffer))
         } else if (needle) {
-          sim = item.text.toLowerCase().includes(needle) ? 1 : 0
+          // 没有嵌入时的退化：字面命中之外，用二元组重叠度估一个相似度，
+          // 否则「他怕什么」永远找不到「怕水」。
+          const a = bigrams(item.text)
+          const b = bigrams(needle)
+          let inter = 0
+          for (const g of b) if (a.has(g)) inter++
+          sim = b.size ? inter / b.size : 0
         } else {
           sim = 1 // 无查询 = 按"新鲜度/权重"排
         }
@@ -208,6 +221,16 @@ export function apply(ctx) {
       const stmt = db.prepare('UPDATE mem_items SET weight = MIN(?, weight + ?), recall_count = recall_count + 1, last_recalled_at = ? WHERE id = ?')
       for (const id of list) n += Number(stmt.run(Number(maxWeight), Number(amount) || 0, Number(now), id).changes ?? 0)
       return { boosted: n }
+    },
+
+    /** 局部更新：只改 text 或 data，动不到权重与计时（沉淀标记、人物档案就用它）。 */
+    patch(id, { text = null, data = null } = {}) {
+      const row = db.prepare('SELECT * FROM mem_items WHERE id = ?').get(Number(id))
+      if (!row) return { updated: false }
+      const nextText = text == null ? row.text : String(text)
+      const nextData = data == null ? row.data : JSON.stringify(data)
+      db.prepare('UPDATE mem_items SET text = ?, data = ?, updated_at = ? WHERE id = ?').run(nextText, nextData, ctx.now(), Number(id))
+      return { updated: true }
     },
 
     remove({ namespace, key = null, id = null } = {}) {

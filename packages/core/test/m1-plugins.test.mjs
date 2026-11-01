@@ -114,13 +114,13 @@ test('梦境：节律触发 → 读当天笔记 → 写进长期命名空间', a
   // 把 chat 供应商换成假的，避免真的打网络
   host.services.slots.registerProvider({
     id: 'fake-chat-2', kind: 'chat', shape: { tools: false },
-    call: async () => '他今天说想去看海，我记下了。',
+    call: async () => JSON.stringify([{ summary: '他今天说想去看海，我记下了。', body: '他今天说想去看海。' }]),
   })
-  host.services.slots.bind('dream-chat', { provider: 'fake-chat-2', call: async () => '他今天说想去看海，我记下了。' })
+  host.services.slots.bind('dream-chat', { provider: 'fake-chat-2', call: async () => JSON.stringify([{ summary: '他今天说想去看海，我记下了。', body: '他今天说想去看海。' }]) })
 
-  const out = await host.shared.get('dream').run({ now: Date.now() })
+  const out = await host.shared.get('dream').run({ now: Date.now(), jobs: ['events'] })
   assert.equal(out.ok, true)
-  assert.equal(out.notes, 1)
+  assert.equal(out.results[0].blocks, 1)
   const memoryApi = host.shared.get('memory')
   const dreams = memoryApi.query({ namespace: 'event', kind: 'block' })
   assert.equal(dreams.length, 1)
@@ -134,8 +134,8 @@ test('梦境：没有笔记就跳过，不产出空记忆', async () => {
   await host.enable('recall')
   await host.enable('rhythm')
   await host.enable('dream')
-  const out = await host.shared.get('dream').run({ now: Date.now() })
-  assert.equal(out.skipped, 'no-notes')
+  const out = await host.shared.get('dream').run({ now: Date.now(), jobs: ['events'] })
+  assert.equal(out.results[0].skipped, 'no-notes')
 })
 
 test('依赖顺序：recall 没先启用 memory 就拒绝启用', async () => {
