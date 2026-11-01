@@ -70,6 +70,69 @@ export function createRawSourceRegistry() {
   }
 }
 
+
+/* ───────────────────────────── context ───────────────────────────── */
+
+/**
+ * 上下文契约：让插件能"看到本轮历史"，并在装配前贡献/改写上下文。
+ *
+ * 三件事，别的都不做：
+ *   1. history   —— 从适配器提供的来源读本轮历史
+ *   2. onAssemble —— 注册一个装配前策略（压缩、摘要、守卫都在这里）
+ *   3. onCompact  —— 适配器支持替换历史时，注册压缩实现（旧实现可直接接）
+ */
+export function createContextService() {
+  let historySource = null
+  const assemblers = new Map()
+  const compactors = new Map()
+  return {
+    provideHistory(fn) {
+      if (typeof fn !== 'function') throw new Error('history source \u9700\u8981\u4e00\u4e2a\u51fd\u6570')
+      historySource = fn
+      return () => { if (historySource === fn) historySource = null }
+    },
+    async history({ sessionId = null, limit = 50 } = {}) {
+      if (!historySource) return []
+      return (await historySource({ sessionId, limit })) ?? []
+    },
+    /** \u6ce8\u518c\u88c5\u914d\u524d\u7b56\u7565\uff1bapply \u8fd4\u56de\u8981\u6ce8\u5165\u7684\u6587\u5b57\u6216 null\u3002 */
+    onAssemble({ name, order = 50, apply } = {}) {
+      const key = String(name ?? '')
+      if (!key || typeof apply !== 'function') throw new Error('onAssemble \u9700\u8981 name \u4e0e apply')
+      assemblers.set(key, { name: key, order: Number(order) || 50, apply })
+      return () => { assemblers.delete(key) }
+    },
+    async assemble({ sessionId = null, message = '', history = null, maxChars = 1200 } = {}) {
+      const h = history ?? await this.history({ sessionId })
+      const ordered = [...assemblers.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+      const pieces = []
+      for (const a of ordered) {
+        try {
+          const value = await a.apply({ sessionId, message, history: h })
+          const body = value == null ? '' : String(value).trim()
+          if (body) pieces.push(body)
+        } catch { /* \u5355\u4e2a\u7b56\u7565\u574f\u4e86\u4e0d\u5f71\u54cd\u5176\u4ed6 */ }
+      }
+      let text = pieces.join('\n')
+      if (text.length > maxChars) text = text.slice(0, Math.max(20, maxChars - 1)).trimEnd() + '\u2026'
+      return text
+    },
+    /** \u6ce8\u518c\u538b\u7f29\u5b9e\u73b0\uff08\u7531\u9002\u914d\u5668\u63d0\u4f9b\u66ff\u6362\u5386\u53f2\u7684\u80fd\u529b\uff09\u3002 */
+    onCompact({ id, compact } = {}) {
+      const key = String(id ?? '')
+      if (!key || typeof compact !== 'function') throw new Error('onCompact \u9700\u8981 id \u4e0e compact')
+      compactors.set(key, { id: key, compact })
+      return () => { compactors.delete(key) }
+    },
+    compactors() { return [...compactors.keys()] },
+    async compact(input = {}) {
+      const first = [...compactors.values()][0]
+      if (!first) return { ok: false, error: 'no-compactor' }
+      return first.compact(input)
+    },
+  }
+}
+
 export function createToolRegistry({ onChange = () => {} } = {}) {
   const tools = new Map()
   let version = 0

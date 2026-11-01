@@ -5,7 +5,7 @@
 // 提示词段、focus 租约。没有第二套状态需要同步。
 
 import { validateManifest } from './contracts.mjs'
-import { createRawSourceRegistry, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
+import { createContextService, createRawSourceRegistry, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
@@ -14,6 +14,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   const focus = createFocusService({ now })
   const delivery = createDeliveryService({ now })
   const raw = createRawSourceRegistry()
+  const context = createContextService()
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
 
@@ -84,6 +85,14 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
           search: (req) => raw.search(req),
           ids: () => raw.ids(),
         },
+        context: {
+          history: (req) => context.history(req),
+          onAssemble: (def) => { const off = context.onAssemble(def); record.dispose.push(off); return off },
+          onCompact: (def) => { const off = context.onCompact(def); record.dispose.push(off); return off },
+          assemble: (req) => context.assemble(req),
+          compact: (req) => context.compact(req),
+          provideHistory: (fn) => { const off = context.provideHistory(fn); record.dispose.push(off); return off },
+        },
         provide(name, api) {
           const key = String(name)
           if (shared.has(key)) throw new Error(`能力重复：${key}`)
@@ -114,7 +123,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model, raw },
+    services: { tools, prompt, focus, delivery, slots, model, raw, context },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {
