@@ -11,7 +11,8 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   // 默认开启，但必须可以一行关掉。
   const enabled = ctx.config.enabled !== false
-  const minScore = Number(ctx.config.minScore ?? 0.55)
+  // 0.50 是小样本标定出来的；0.55 在我们的混合评分上会漏掉一半该命中的。
+  const minScore = Number(ctx.config.minScore ?? 0.5)
   const maxItems = Math.max(1, Number(ctx.config.maxItems ?? 2))
   const maxChars = Math.max(40, Number(ctx.config.maxChars ?? 200))
 

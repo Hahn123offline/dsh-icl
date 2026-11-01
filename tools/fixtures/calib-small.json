@@ -1,0 +1,20 @@
+{
+  "memories": [
+    { "namespace": "event", "kind": "block", "key": "evt:sea", "text": "他周末要去看海，但他说自己怕水", "tags": ["看海"] },
+    { "namespace": "event", "kind": "block", "key": "evt:work", "text": "他今天情绪一般，说工作很烦，我提醒自己别去拱火", "tags": ["工作"] },
+    { "namespace": "person", "kind": "block", "key": "person:42", "text": "曾嘉睿是他的舍友，说话不用铺垫，偶尔半夜发消息", "tags": [] },
+    { "namespace": "slang", "kind": "block", "key": "slang:nanbeng", "text": "难绷：绷不住了，忍不住想笑或破防", "tags": [] }
+  ],
+  "messages": [
+    { "text": "他周末到底去不去看海", "expect": "看海" },
+    { "text": "那个怕水的人叫什么来着", "expect": "怕水" },
+    { "text": "他最近工作还烦吗", "expect": "工作" },
+    { "text": "他舍友是谁", "expect": "舍友" },
+    { "text": "难绷是什么意思", "expect": "难绷" },
+    { "text": "帮我算一下 17 乘以 23", "expect": null },
+    { "text": "今天几号", "expect": null },
+    { "text": "推荐一部科幻电影", "expect": null },
+    { "text": "这个 Python 报错怎么修", "expect": null },
+    { "text": "晚上吃什么好", "expect": null }
+  ]
+}
