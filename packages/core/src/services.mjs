@@ -133,6 +133,51 @@ export function createContextService() {
   }
 }
 
+
+/* ───────────────────────────── tool surface ───────────────────────────── */
+
+/**
+ * 工具面：把"已启用插件声明的工具"整理成可注入的集合。
+ * 它不注册工具（那是 tools 的事），只回答"现在应该给模型看哪些"。
+ */
+export function createToolSurface({ tools, plugins }) {
+  const listeners = new Set()
+  const notify = () => { for (const fn of listeners) { try { fn() } catch { /* ignore */ } } }
+  return {
+    /** 工具 → 所属插件。 */
+    owners() {
+      const map = new Map()
+      for (const p of plugins()) {
+        for (const slug of p.manifest?.tools ?? []) map.set(slug, p.id)
+      }
+      return map
+    },
+    /** @returns {{name,description,parameters,plugin}[]} */
+    list({ preset = null } = {}) {
+      const owners = this.owners()
+      const enabled = new Set(plugins().filter((p) => p.enabled).map((p) => p.id))
+      const presets = new Map(plugins().map((p) => [p.id, p.manifest?.preset ?? null]))
+      return tools.list()
+        .filter((def) => {
+          const owner = owners.get(def.name)
+          if (!owner || !enabled.has(owner)) return false
+          if (!preset) return true
+          return presets.get(owner) === preset
+        })
+        .map((def) => ({ ...def, plugin: owners.get(def.name) }))
+    },
+    names(options = {}) { return this.list(options).map((t) => t.name) },
+    /** 哪些插件贡献了工具（用于面板/调试）。 */
+    summary() {
+      return plugins()
+        .filter((p) => p.enabled && (p.manifest?.tools ?? []).length)
+        .map((p) => ({ plugin: p.id, preset: p.manifest?.preset ?? null, tools: p.manifest.tools }))
+    },
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    notify,
+  }
+}
+
 export function createToolRegistry({ onChange = () => {} } = {}) {
   const tools = new Map()
   let version = 0

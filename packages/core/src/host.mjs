@@ -5,7 +5,7 @@
 // 提示词段、focus 租约。没有第二套状态需要同步。
 
 import { validateManifest } from './contracts.mjs'
-import { createContextService, createRawSourceRegistry, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
+import { createContextService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
@@ -15,6 +15,10 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   const delivery = createDeliveryService({ now })
   const raw = createRawSourceRegistry()
   const context = createContextService()
+  const surface = createToolSurface({
+    tools,
+    plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: Boolean(r.enabled) })),
+  })
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
 
@@ -123,7 +127,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model, raw, context },
+    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {
@@ -149,6 +153,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
       }
       record.dispose = []
       record.enabled = true
+      surface.notify()
       const ctx = makeContext(record.manifest, record)
       // 清单里声明的插槽由宿主代为注册：插件只写"需要什么形状"，
       // 不自己去 declare，也就不可能写死模型名。
@@ -157,6 +162,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
           for (const dispose of record.dispose.reverse()) { try { dispose() } catch { /* 忽略 */ } }
           record.dispose = []
           record.enabled = false
+    surface.notify()
           throw error
         }
       }
@@ -182,6 +188,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
       for (const dispose of record.dispose.reverse()) { try { dispose() } catch { /* 单个失败不阻塞其余 */ } }
       record.dispose = []
       record.enabled = false
+      surface.notify()
       log({ msg: 'plugin.disabled', id: record.manifest.id })
       return { enabled: false }
     },
