@@ -115,14 +115,16 @@ export function apply(ctx) {
     const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500 }))
     if (!notes.length) return { job: 'events', skipped: 'no-notes' }
 
-    const payload = notes.map((n, i) => `${i + 1}. ${n.text}`).join('\n')
+    // 每行带稳定 id：摘要必须能指回原句。
+    const payload = notes.map((n) => `[${n.id}] ${n.text}`).join('\n')
     let blocks = []
     try {
       const raw = await ask({
         instruction: [
           '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
           '按话题切：同一件事、同一个人、同一段对话放一块；不要按时间顺序切碎。',
-          '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文，保留细节", "people": ["QQ号"], "tags": ["短标签"]}',
+          '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
+          'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
           '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
         ].join('\n'),
         payload,
@@ -136,13 +138,18 @@ export function apply(ctx) {
       const summary = String(block?.summary ?? '').trim()
       if (!summary) continue
       const key = `evt:${day}:${hash(summary)}`
+      const evidence = validEvidence(block?.evidence, notes)
       const created = memory.put({
         namespace: 'event',
         kind: 'block',
         key,
         text: summary.slice(0, 200),
+        // 没有出处的块不拒写，但降级；证据存下来以后能追。
+        ...(evidence.length ? {} : {}),
         data: {
           body: String(block?.body ?? '').slice(0, 4000),
+          evidence,
+          provisional: evidence.length === 0,
           day,
           people: (block?.people ?? []).map(String),
           tags: normalizeTags(block?.tags),
@@ -165,7 +172,8 @@ export function apply(ctx) {
     const { start, end } = dayRange(now)
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'people')) return { job: 'people', skipped: 'already-ran' }
-    const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', since: start, until: end, limit: 500 }))
+    // 人物档案跨天：只要还没被消化，不管哪天的笔记都带上。
+    const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500 }))
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
 
     const byQq = new Map()
@@ -174,6 +182,15 @@ export function apply(ctx) {
       if (!qq) continue
       byQq.set(qq, [...(byQq.get(qq) ?? []), note])
     }
+    // 没有新笔记时：薄档案放了 ≥ 2 天才重写一次，
+    // 否则每天硬写会越写越飘。
+    const provisionalStale = memory.query({ namespace: 'person', kind: 'block', limit: 200 })
+      .filter((b) => b.data?.provisional === true && (now - Number(b.data?.rewrittenAt ?? b.createdAt ?? 0)) >= 2 * 24 * 3600_000)
+    for (const block of provisionalStale) {
+      const qq = String(block.data?.qq ?? '').trim()
+      if (qq && !byQq.has(qq)) byQq.set(qq, [])
+    }
+    if (!notes.length && !provisionalStale.length) return { job: 'people', skipped: 'no-notes' }
     const written = []
     const skippedPeople = []
     for (const [qq, list] of byQq) {
@@ -185,15 +202,15 @@ export function apply(ctx) {
         .filter((b) => Array.isArray(b.data?.people) && b.data.people.map(String).includes(qq))
         .slice(-20)
       const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
-        .filter((n) => String(n.data?.qq ?? '') === qq && n.data?.consolidated === true)
+        .filter((n) => String(n.data?.qq ?? '') === qq && !list.some((x) => x.id === n.id))
         .slice(-20)
 
       const context = [
         `内部编号（不要写进档案）：${qq}`,
         existing ? `现有档案：\n${existing.text}\n${existing.data?.narrative ?? ''}` : '现有档案：无',
         relatedEvents.length ? `以前提到过 TA 的事：\n${relatedEvents.map((b) => `· ${b.text}`).join('\n')}` : '',
-        pastNotes.length ? `以前记下的：\n${pastNotes.map((n) => `· ${n.text}`).join('\n')}` : '',
-        `今天记下的：\n${list.map((n) => `· ${n.text}`).join('\n')}`,
+        pastNotes.length ? `以前记下的：\n${pastNotes.map((n) => `[${n.id}] ${n.text}`).join('\n')}` : '',
+        `今天记下的：\n${list.map((n) => `[${n.id}] ${n.text}`).join('\n')}`,
       ].filter(Boolean).join('\n\n')
 
       let out = null
@@ -223,7 +240,8 @@ export function apply(ctx) {
             '注意：',
             '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
             '· "和 TA 不熟"属于 familiarity，不是元叙述；',
-            '· 材料里没有的账号不要猜。',
+            '· 材料里没有的账号不要猜；不要推断性别，用名字或 TA。',
+            '· 输出里要带 evidence：你用到的笔记编号数组。',
           ].join('\n'),
           payload: context,
         })
@@ -255,6 +273,7 @@ export function apply(ctx) {
           })(),
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
           provisional: thin,
+          evidence: validEvidence(parsed?.evidence, [...list, ...pastNotes]),
           profile,
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
@@ -324,6 +343,16 @@ export function apply(ctx) {
    *   · 万一整理失败，当天的新记忆已经落库，不会连带丢失
    * 范围：event / person / slang 都管。人物记错了也要改写，只不过改写请求要带着纠正去写。
    */
+  /** 校验模型给的 evidence：只保留真实存在的笔记 id。 */
+  function validEvidence(list, notes) {
+    const allow = new Set(notes.map((n) => Number(n.id)))
+    return (Array.isArray(list) ? list : [])
+      .map((x) => Number(x))
+      .filter((x) => allow.has(x))
+      .slice(0, 20)
+      .map((id) => ({ type: 'note', id }))
+  }
+
   /** 跨命名空间按 key 找块（key 前缀不一定等于命名空间）。 */
   function findBlockByKey(key) {
     const wanted = String(key ?? '')

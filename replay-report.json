@@ -6,9 +6,9 @@
       "messages": 43,
       "extracted": 6,
       "jobs": {
-        "events": 3,
+        "events": 1,
         "people": 0,
-        "slang": "no-notes",
+        "slang": 0,
         "cleanup": 0,
         "index": 6
       },
@@ -17,52 +17,52 @@
     {
       "day": "2026-10-23",
       "messages": 85,
-      "extracted": 8,
+      "extracted": 10,
       "jobs": {
-        "events": 0,
+        "events": 4,
         "people": 0,
         "slang": 3,
         "cleanup": 0,
-        "index": 11
+        "index": 13
       },
       "ok": true
     },
     {
       "day": "2026-10-24",
       "messages": 16,
-      "extracted": 2,
+      "extracted": 1,
       "jobs": {
-        "events": 1,
+        "events": "no-notes",
         "people": 0,
         "slang": "no-notes",
-        "cleanup": 0,
-        "index": 2
+        "cleanup": 9,
+        "index": 1
       },
       "ok": true
     },
     {
       "day": "2026-10-25",
       "messages": 15,
-      "extracted": 0,
+      "extracted": 4,
       "jobs": {
         "events": "no-notes",
-        "people": "no-notes",
+        "people": 0,
         "slang": "no-notes",
         "cleanup": 0,
-        "index": "nothing-missing"
+        "index": 4
       },
       "ok": true
     },
     {
       "day": "2026-10-26",
       "messages": 11,
-      "extracted": 5,
+      "extracted": 0,
       "jobs": {
-        "events": 0,
-        "people": 0,
+        "events": "no-notes",
+        "people": "no-notes",
         "slang": "no-notes",
         "cleanup": 1,
-        "index": 5
+        "index": "nothing-missing"
       },
       "ok": true
     },
@@ -73,20 +73,20 @@
   ],
   "logs": [
     "源：qq  消息：170  天数：5  范围：2026-10-22 → 2026-10-23 → 2026-10-24 → 2026-10-25 → 2026-10-26",
-    "2026-10-22 消息  43 → 抽取  6 | {\"events\":3,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":6}",
-    "2026-10-23 消息  85 → 抽取  8 | {\"events\":0,\"people\":0,\"slang\":3,\"cleanup\":0,\"index\":11}",
-    "2026-10-24 消息  16 → 抽取  2 | {\"events\":1,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":2}",
-    "2026-10-25 消息  15 → 抽取  0 | {\"events\":\"no-notes\",\"people\":\"no-notes\",\"slang\":\"no-notes\",\"cleanup\":0,\"index\":\"nothing-missing\"}",
-    "2026-10-26 消息  11 → 抽取  5 | {\"events\":0,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":1,\"index\":5}",
-    "\n库：items 49  vectors 31",
-    " ✓ 周子涵在新 workspace 里让我留下的测试文件叫什么名字？ → 期望含「小千千千千问-搬家测试.txt」",
-    " ✓ 周子涵给我换新 workspace 后，哪个目录是锁着不能写的？ → 期望含「state」",
-    " ✓ B站那套工具目前被什么拦住，需要周子涵在控制台放行？ → 期望含「桥接白名单」",
-    " ✓ 周子涵答应录完老记忆后，我提出要做什么？ → 期望含「抽查」",
-    " ✓ 周子涵管我叫的昵称中，除了「大肥鱼」和「鱼鱼」，还有一个是什么？ → 期望含「肥鱼本鱼」",
-    " ✓ 周子涵下周要考的两门课是什么？ → 期望含「离散数学和计算机组成原理」",
-    " ✓ 曾嘉睿今晚吃什么当宵夜？ → 期望含「鸡蛋灌饼」",
-    " ✓ 郑皓元还有一个名字叫什么？ → 期望含「乐乐」",
+    "2026-10-22 消息  43 → 抽取  6 | {\"events\":1,\"people\":0,\"slang\":0,\"cleanup\":0,\"index\":6}",
+    "2026-10-23 消息  85 → 抽取 10 | {\"events\":4,\"people\":0,\"slang\":3,\"cleanup\":0,\"index\":13}",
+    "2026-10-24 消息  16 → 抽取  1 | {\"events\":\"no-notes\",\"people\":0,\"slang\":\"no-notes\",\"cleanup\":9,\"index\":1}",
+    "2026-10-25 消息  15 → 抽取  4 | {\"events\":\"no-notes\",\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":4}",
+    "2026-10-26 消息  11 → 抽取  0 | {\"events\":\"no-notes\",\"people\":\"no-notes\",\"slang\":\"no-notes\",\"cleanup\":1,\"index\":\"nothing-missing\"}",
+    "\n库：items 49  vectors 32",
+    " ✓ 那天晚上查寝时，谁买了鸡蛋灌饼回来正好赶上？ → 期望含「曾嘉睿」",
+    " ✓ 查寝那晚谁还在外面吃宵夜没回来？ → 期望含「郑皓元」",
+    " ✓ 谁说了一句「真绷不住了」？ → 期望含「曾嘉睿」",
+    " ✓ 谁给我调了群聊权限，让我能翻b站、读文件、写工作区、联网查资料？ → 期望含「周子涵」",
+    " ✓ 群里被禁用的是什么工具？ → 期望含「PowerShell」",
+    " ✓ 周子涵说给我做的记忆功能，录的长记忆包含什么？ → 期望含「图片」",
+    " ✓ 周子涵的另一个名字（离线版）叫什么？ → 期望含「Hahn123」",
+    " ✓ 谁劝我别听周子涵的、不要给周子涵写，还说别被PUA？ → 期望含「郑皓元」",
     "\n召回命中：8/8"
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "id": "note",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["memo", "memos"],
+  "slots": [],
+  "focus": {},
+  "requires": { "plugins": ["memory"] }
+}
