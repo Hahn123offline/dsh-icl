@@ -158,6 +158,13 @@ export function apply(ctx) {
         now,
       })
       if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${block?.body ?? ''}`)
+      if (!evidence.length) {
+        raiseQuestion({
+          text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
+          about: { namespace: 'event', key },
+          raisedBy: 'events',
+        })
+      }
       written.push(created.id)
     }
     // 没写出任何块就不标已消化：原文继续可被回忆、明天继续参与整理。
@@ -241,6 +248,7 @@ export function apply(ctx) {
             '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
             '· "和 TA 不熟"属于 familiarity，不是元叙述；',
             '· 材料里没有的账号不要猜；不要推断性别，用名字或 TA。',
+            '· 不要把不同 QQ 的人当成同一个人；昵称/别名必须有明确原话（如「叫我XX」），不能由单个字猜。',
             '· 输出里要带 evidence：你用到的笔记编号数组。',
           ].join('\n'),
           payload: context,
@@ -257,6 +265,7 @@ export function apply(ctx) {
       }
       if (!profile) { skippedPeople.push(qq); continue }
       const thin = list.length < 3 || profile.length < 60
+      const evidence = validEvidence(parsed?.evidence, [...list, ...pastNotes])
       const created = memory.put({
         namespace: 'person',
         kind: 'block',
@@ -272,8 +281,8 @@ export function apply(ctx) {
             return ids
           })(),
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
-          provisional: thin,
-          evidence: validEvidence(parsed?.evidence, [...list, ...pastNotes]),
+          provisional: thin || evidence.length === 0,
+          evidence,
           profile,
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
@@ -284,6 +293,13 @@ export function apply(ctx) {
         now,
       })
       if (typeof memory.index === 'function') void memory.index(created.id, profile)
+      if (!evidence.length) {
+        raiseQuestion({
+          text: `关于「${profile.slice(0, 20)}」的档案没有出处，有机会核实一下。`,
+          about: { namespace: 'person', key },
+          raisedBy: 'people',
+        })
+      }
       written.push(created.id)
     }
     const writtenNotes = notes.filter((n) => !skippedPeople.includes(String(n.data?.qq ?? '')))
@@ -343,6 +359,26 @@ export function apply(ctx) {
    *   · 万一整理失败，当天的新记忆已经落库，不会连带丢失
    * 范围：event / person / slang 都管。人物记错了也要改写，只不过改写请求要带着纠正去写。
    */
+  /**
+   * 提一个疑问到 note。防"为了填待办而填待办"：
+   *   · 只在真的碰到矛盾/无证据/歧义时提
+   *   · 按怎么写去重（已有未结的同样问题就不重复）
+   *   · 每轮上限 5 条
+   */
+  const askedThisRun = new Set()
+  function raiseQuestion({ text, about = null, evidence = [], raisedBy = 'dream' } = {}) {
+    const noteSvc = ctx.services.get('note')
+    if (!noteSvc?.add) return null
+    const body = String(text ?? '').trim()
+    if (!body) return null
+    if (askedThisRun.size >= 5) return null
+    if (askedThisRun.has(body)) return null
+    const open = noteSvc.open?.() ?? []
+    if (open.some((n) => String(n.text).trim() === body)) return null
+    askedThisRun.add(body)
+    return noteSvc.add({ text: body, about, raisedBy, kind: 'question' })
+  }
+
   /** 校验模型给的 evidence：只保留真实存在的笔记 id。 */
   function validEvidence(list, notes) {
     const allow = new Set(notes.map((n) => Number(n.id)))
@@ -438,6 +474,14 @@ export function apply(ctx) {
         mergedFrom: [...new Set([...(existing.data?.mergedFrom ?? []), ...drop])],
       }
       memory.put({ namespace: ns, kind: 'block', key: keepKey, text: text.slice(0, 400), data, now })
+      if (data.uncertain) {
+        raiseQuestion({
+          text: `这件事记不准：${text.slice(0, 60)}。找合适的时机问一下。`,
+          about: { namespace: ns, key: keepKey },
+          evidence: data.evidence ?? [],
+          raisedBy: 'cleanup',
+        })
+      }
       for (const dropKey of drop) {
         const target = findBlockByKey(dropKey)
         if (!target) continue

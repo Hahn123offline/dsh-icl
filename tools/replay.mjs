@@ -17,10 +17,12 @@ import * as memory from '../packages/plugins/memory/src/index.mjs'
 import * as recall from '../packages/plugins/recall/src/index.mjs'
 import * as rhythm from '../packages/plugins/rhythm/src/index.mjs'
 import * as dream from '../packages/plugins/dream/src/index.mjs'
+import * as note from '../packages/plugins/note/src/index.mjs'
 import memoryManifest from '../packages/plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../packages/plugins/recall/manifest.json' with { type: 'json' }
 import rhythmManifest from '../packages/plugins/rhythm/manifest.json' with { type: 'json' }
 import dreamManifest from '../packages/plugins/dream/manifest.json' with { type: 'json' }
+import noteManifest from '../packages/plugins/note/manifest.json' with { type: 'json' }
 
 const args = process.argv.slice(2)
 const arg = (name, fallback = null) => {
@@ -168,10 +170,12 @@ host.registerPlugin(memoryManifest, memory, { config: { root } })
 host.registerPlugin(recallManifest, recall, { config: { sessionId: 'replay' } })
 host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '23:59', stateFile: path.join(root, 'rhythm.json') } })
 host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'replay', personaFile: path.join(import.meta.dirname, '..', 'prompts', 'dream.md') } })
+host.registerPlugin(noteManifest, note, {})
 await host.enable('memory')
 await host.enable('recall')
 await host.enable('rhythm')
 await host.enable('dream')
+await host.enable('note')
 
 let chat
 if (REAL) {
@@ -270,7 +274,7 @@ for (const day of [...days.keys()].sort()) {
   }
   if (skippedPeople) log(`${day} 跳过无 QQ 的人物条目 ${skippedPeople} 条`)
   const out = await host.shared.get('dream').run({ now: dayEnd(day) })
-  const jobs = Object.fromEntries(out.results.map((r) => [r.job, r.skipped ?? (r.ok ? (r.blocks ?? r.indexed ?? r.merged ?? 0) : 'fail')]))
+  const jobs = Object.fromEntries(out.results.map((r) => [r.job, r.skipped ? r.skipped : (r.ok ? (r.blocks ?? r.merged ?? r.indexed ?? 0) : 'fail')]))
   report.push({ day, messages: list.length, extracted: wrote, jobs, ok: out.ok })
   log(`${day} 消息 ${String(list.length).padStart(3)} → 抽取 ${String(wrote).padStart(2)} | ${JSON.stringify(jobs)}`)
 }
