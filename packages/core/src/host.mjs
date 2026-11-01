@@ -43,6 +43,11 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
           record.dispose.push(dispose)
           return dispose
         },
+        onTurn(provider) {
+          const dispose = prompt.onTurn(provider)
+          record.dispose.push(dispose)
+          return dispose
+        },
       },
       focus: {
         enter(options) {

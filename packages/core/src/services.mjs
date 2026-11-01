@@ -93,6 +93,7 @@ export function createToolRegistry({ onChange = () => {} } = {}) {
 
 export function createPromptService() {
   const sections = new Map()
+  const turnProviders = []
   return {
     /**
      * 注册一个注入段。text 可以是字符串或函数（每次装配求值）。
@@ -107,6 +108,35 @@ export function createPromptService() {
       return () => { sections.delete(key) }
     },
     names() { return [...sections.keys()] },
+
+    /**
+     * 每轮临时上下文：用户消息进来时让插件贡献一小段，
+     * 由核心统一装配、统一限长、统一注入——插件不得自己往对话里塞东西。
+     */
+    onTurn(provider) {
+      if (typeof provider !== 'function') throw new Error('onTurn 需要一个函数')
+      turnProviders.push(provider)
+      return () => {
+        const i = turnProviders.indexOf(provider)
+        if (i >= 0) turnProviders.splice(i, 1)
+      }
+    },
+
+    /** 装配本轮上下文（带总预算）。 */
+    async turnText({ sessionId = null, message = '', now = Date.now(), maxChars = 800 } = {}) {
+      const pieces = []
+      for (const provider of turnProviders) {
+        try {
+          const value = await provider({ sessionId, message, now })
+          if (value == null) continue
+          const body = String(value).trim()
+          if (body) pieces.push(body)
+        } catch { /* 单个提供者坏了不影响对话 */ }
+      }
+      let text = pieces.join('\n')
+      if (text.length > maxChars) text = text.slice(0, Math.max(20, maxChars - 1)).trimEnd() + '…'
+      return text
+    },
     /** 装配：按 order 排序，跳过 when()===false 的段。 */
     assemble(ctx = {}) {
       const ordered = [...sections.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
