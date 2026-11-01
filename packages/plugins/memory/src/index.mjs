@@ -6,6 +6,9 @@
 //   · 权重/遗忘在这里算（因为它是存储层的事实），但**怎么用**由调用方决定
 //   · 嵌入可选：插槽接上就向量化，没接上就退化成关键词，不报错
 import fs from 'node:fs'
+
+// 精确串通道开关（评测 A/B 用）
+const LITERAL_ON = process.env.ICL_NO_LITERAL !== '1'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
