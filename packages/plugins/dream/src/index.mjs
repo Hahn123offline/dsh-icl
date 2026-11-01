@@ -111,7 +111,8 @@ export function apply(ctx) {
     const { start, end } = dayRange(now)
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'events')) return { job: 'events', skipped: 'already-ran' }
-    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', since: start, until: end, limit: 500 }))
+    // 事件笔记也要跨天：太短没写成块的片段，明天要跟新材料一起重试。
+    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500 }))
     if (!notes.length) return { job: 'events', skipped: 'no-notes' }
 
     const payload = notes.map((n, i) => `${i + 1}. ${n.text}`).join('\n')
@@ -152,9 +153,10 @@ export function apply(ctx) {
       if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${block?.body ?? ''}`)
       written.push(created.id)
     }
-    markNotes(notes, now)
-    recordRun(day, 'events', { blocks: written.length, notes: notes.length }, now)
-    return { job: 'events', ok: true, blocks: written.length, notes: notes.length }
+    // 没写出任何块就不标已消化：原文继续可被回忆、明天继续参与整理。
+    if (written.length) markNotes(notes, now)
+    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: written.length ? 0 : notes.length }, now)
+    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: written.length ? 0 : notes.length }
   }
 
   /* ── people：逐人整块重写 ─────────────────────────────────────── */

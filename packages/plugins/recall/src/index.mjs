@@ -140,12 +140,12 @@ export function apply(ctx) {
         const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
         const seen = new Set()
         const candidates = []
-        const todayStart = dayStart(now)
         for (const ns of namespaces) {
           const hits = await memory.search({ namespace: ns, query, limit: 50, now, tags: tag ? [tag] : null })
+          // 未消化的 note 不管哪天都要能被回忆；
+          // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
           for (const hit of hits) {
-            // 昨天及更早的随手记不再被回忆；只有沉淀后的块可以跳天。
-            if (hit.item.kind === 'note' && Number(hit.item.createdAt) < todayStart) continue
+            if (hit.item.kind === 'note' && hit.item.data?.consolidated === true) continue
             candidates.push({ ...hit, namespace: ns })
           }
         }
@@ -154,7 +154,8 @@ export function apply(ctx) {
         // 今天的 note 永远优先展示（带 [今天] 标签）
         // 已经被梦境消化的 note 不再以"今天"的身份出现：
         // 它们已经变成块了，否则既重复又会把块挤出去。
-        const today = tag ? [] : namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', since: dayStart(now), limit: 100 })
+        // 未消化的 note（任何日期）优先展示，标签用"未整理"
+        const pendingNotes = tag ? [] : namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200 })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: Number.MAX_SAFE_INTEGER, namespace: ns })))
 
@@ -177,7 +178,7 @@ export function apply(ctx) {
           additions.push({ id: entry.item.id, tokens: t })
         }
 
-        for (const entry of today) take(entry, '今天')
+        for (const entry of pendingNotes) take(entry, '未整理')
         for (const entry of candidates.slice(0, 100)) take(entry, label(entry.namespace, entry.item.createdAt, now))
 
         const nextCursor = rollCursor(stored, additions)
@@ -186,7 +187,7 @@ export function apply(ctx) {
         // 召回成功 → 回到新鲜
         if (picked.length) memory.boost(picked.map((p) => p.entry.item.id), { now })
         const pieces = picked.map((p) => p.text)
-        const anyKnown = today.length + candidates.length > 0
+        const anyKnown = pendingNotes.length + candidates.length > 0
         return {
           text: pieces.length
             ? pieces.join('\n')
@@ -220,7 +221,15 @@ export function apply(ctx) {
   }
 
   function renderEntry(entry, tag) {
+    const nowOf = () => ctx.now()
     const item = entry.item
+    if (tag === '未整理') {
+      // 今天的就叫「今天」；跨天的片段才标「未整理 · 日期」。
+      if (Number(item.createdAt) >= dayStart(nowOf(entry))) return `[今天] ${item.text}`
+      const d = new Date(Number(item.createdAt))
+      const day = `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+      return `[未整理 · ${day}] ${item.text}`
+    }
     if (tag === '今天') return `[今天] ${item.text}`
     if (item.kind === 'block') return `[${tag}] ${item.text}`
     return `[${tag} · 随手记] ${item.text}`

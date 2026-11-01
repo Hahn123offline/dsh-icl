@@ -92,13 +92,18 @@ test('召回成功会让记忆回到新鲜：权重上升、计时重置', async
   assert.ok(after.lastRecalledAt != null, '应记录召回时间')
 })
 
-test('昨天及更早的 note 不会被 recall 带回（只有块可以）', async () => {
+test('未消化的旧片段要能被回忆；已消化的旧 note 不再出现', async () => {
   const { tools, memory } = await setup()
-  // 手工塞一条"昨天的随手记"
   const yesterday = Date.now() - 30 * 3600_000
-  memory.put({ namespace: 'event', kind: 'note', key: 'old:1', text: '昨天随手记的内容', now: yesterday })
+  memory.put({ namespace: 'event', kind: 'note', key: 'old:1', text: '昨天没整理完的片段', now: yesterday })
+  memory.put({ namespace: 'event', kind: 'note', key: 'old:2', text: '昨天已经整理过的片段', now: yesterday })
+  const row = memory.query({ namespace: 'event', kind: 'note' }).find((r) => r.key === 'old:2')
+  memory.patch(row.id, { data: { ...(row.data ?? {}), consolidated: true } })
+
   const out = await tools.recall.execute({})
-  assert.doesNotMatch(out.text, /昨天随手记的内容/)
+  assert.match(out.text, /昨天没整理完的片段/, '未消化的要能找回')
+  assert.match(out.text, /未整理/, '要标成未整理')
+  assert.doesNotMatch(out.text, /昨天已经整理过的片段/, '已消化的不再以 note 身份出现')
 })
 
 test('forget 只删自己那一条', async () => {
