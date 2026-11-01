@@ -62,7 +62,7 @@ test('两个插件的段按 order 排：时间在前，人格在后', async () =
 
 test('apply 中途抛错：已经注册的东西要收回去，不留半套', async () => {
   const { host, session } = setup()
-  const broken = { apply(ctx) { ctx.tools.register({ name: 'half_tool', description: 'x', parameters: {} }); throw new Error('boom') } }
+  const broken = { apply(ctx) { ctx.tools.register({ name: 'half_tool', description: 'x', parameters: {}, execute: async () => ({ text: 'x' }) }); throw new Error('boom') } }
   host.registerPlugin({ id: 'broken', version: '0.1.0', entry: './x.mjs', tools: ['half_tool'] }, broken)
   await assert.rejects(() => host.enable('broken'), /boom/)
   assert.deepEqual(session.toolNames(), [], '失败的插件不能留下工具')

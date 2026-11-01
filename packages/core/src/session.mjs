@@ -30,9 +30,13 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
     /** 系统提示词（DSH: ctx.systemPrompt.section 的 text 函数）。 */
     systemPrompt(ctx = {}) {
       const core = `你正在通过 ICL 运行。当前会话：${sessionId}。`
+      const index = host.services.tools.index()
       const pluginText = host.services.prompt.assemble({ sessionId, ...ctx })
-      return pluginText ? `${core}\n\n${pluginText}` : core
+      return [core, index ? `现在开着的工具：\n${index}` : '', pluginText].filter(Boolean).join('\n\n')
     },
+
+    /** 工具面的最终形态（DSH: ctx.tools.register 的入参）。 */
+    toolDefinitions() { return host.services.tools.list() },
 
     /** 投递一轮：drain → push → ack/nack。返回这一轮的结果，便于测试。 */
     async drainOnce() {

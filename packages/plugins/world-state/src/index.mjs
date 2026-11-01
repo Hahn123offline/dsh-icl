@@ -129,11 +129,10 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'world_status',
-    description: [
-      'Read the world state bus. No arguments: one brief line per source (the global glance).',
-      'owner: list that source\'s items. owner + item: expand one item\'s full detail.',
-      'Sources are assembled at runtime and may disappear when they have nothing to report.',
-    ].join(' '),
+    summary: 'Read the world state bus: one line per source, or expand one source or item.',
+    when: ['you want to know what is going on around you', 'before acting somewhere'],
+    avoid: ['when nothing changed since you last looked'],
+    description: 'No arguments: the global glance. owner: list that source\'s items. owner + item: expand one item\'s full detail. Sources are assembled at runtime and may disappear when they have nothing to report.',
     parameters: {
       type: 'object',
       additionalProperties: false,

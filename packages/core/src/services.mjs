@@ -7,6 +7,37 @@ import { resolvePierce } from './contracts.mjs'
 
 /* ───────────────────────────── 工具面 ───────────────────────────── */
 
+/**
+ * 把插件交上来的工具定义拼成最终描述。
+ *
+ * 为什么要拼：描述是直接进 DSH 提示词的，不能让每个插件各写各的；
+ * 结构化字段只是"拼装所需的最小辅助"，详细说明仍然可以是一段人写的长文字。
+ * 预算守卫：不能又长回旧项目那种每个工具几千字。
+ */
+export const TOOL_TEXT_LIMITS = Object.freeze({ perTool: 900, index: 1200 })
+
+export function composeToolDescription(definition, { maxChars = TOOL_TEXT_LIMITS.perTool } = {}) {
+  // summary 是一句话用途，description 是可选的详细补充；
+  // 两者都有时先用途、再细节，不能把用途丢了。
+  const head = [definition?.summary, definition?.description]
+    .map((x) => (x == null ? '' : String(x).trim()))
+    .filter(Boolean)
+    .join(' ')
+  const bullets = []
+  for (const [label, items] of [['Use when', definition?.when], ['Avoid when', definition?.avoid], ['Safety', definition?.safety]]) {
+    const list = (Array.isArray(items) ? items : items ? [items] : []).map((x) => String(x).trim()).filter(Boolean)
+    if (list.length) bullets.push(`${label}: ${list.join('; ')}.`)
+  }
+  let text = [head, ...bullets].filter(Boolean).join(' ')
+  if (text.length <= maxChars) return text
+
+  // 超预算：先砍结尾的要求行，再截正文；不会把它变成空字符串。
+  while (bullets.length && (head + ' ' + bullets.join(' ')).length > maxChars) bullets.pop()
+  text = [head, ...bullets].filter(Boolean).join(' ')
+  if (text.length > maxChars) text = text.slice(0, Math.max(40, maxChars - 1)).trimEnd() + '…'
+  return text
+}
+
 export function createToolRegistry({ onChange = () => {} } = {}) {
   const tools = new Map()
   let version = 0
@@ -16,7 +47,15 @@ export function createToolRegistry({ onChange = () => {} } = {}) {
       const name = String(definition?.name ?? '')
       if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`工具名不合法：${name || '(空)'}`)
       if (tools.has(name)) throw new Error(`工具已存在：${name}`)
-      tools.set(name, definition)
+      if (typeof definition.execute !== 'function') throw new Error(`${name} 缺少 execute`)
+      const summary = String(definition.summary ?? definition.description ?? '').trim().split(/(?<=[.!?])\s/)[0] ?? ''
+      const composed = {
+        ...definition,
+        name,
+        summary: summary.slice(0, 160),
+        description: composeToolDescription(definition),
+      }
+      tools.set(name, composed)
       version += 1
       onChange({ type: 'registered', name })
       return () => {
@@ -29,6 +68,24 @@ export function createToolRegistry({ onChange = () => {} } = {}) {
     names() { return [...tools.keys()] },
     has(name) { return tools.has(String(name)) },
     version() { return version },
+    /** 给模型看的工具索引：只有启用中的工具，一行一个。 */
+    index({ maxChars = TOOL_TEXT_LIMITS.index } = {}) {
+      const rows = [...tools.values()]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((t) => `- ${t.name}: ${t.summary}`)
+      let text = rows.join('\n')
+      if (text.length > maxChars) {
+        const lines = []
+        let used = 0
+        for (const row of rows) {
+          if (used + row.length + 1 > maxChars) break
+          lines.push(row)
+          used += row.length + 1
+        }
+        text = lines.join('\n') + `\n…（还有 ${rows.length - lines.length} 个工具）`
+      }
+      return text
+    },
   }
 }
 

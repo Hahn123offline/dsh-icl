@@ -207,3 +207,30 @@ ICL_LLM_BASE=https://api.deepseek.com/v1 ICL_LLM_MODEL=deepseek-chat \
 ICL_EMBED_BASE=http://127.0.0.1:8088/v1 ICL_EMBED_MODEL=embed-bge-m3 \
 node tools/dream-eval.mjs --real
 ```
+
+---
+
+## 十四、工具约束的集中装配（2026-11-01）
+
+插件不再各写一段描述，而是交结构化字段：
+
+```js
+ctx.tools.register({
+  name: 'whois',
+  summary: 'Look up a person you already have a file on.',   // 一句话用途（进索引）
+  description: '...可选的详细补充，人写的长文字也行...',
+  when: ['...'], avoid: ['...'], safety: ['...'],
+  parameters, execute,
+})
+```
+
+核心负责：
+
+1. **拼装**：`summary` + `description` + `Use when:` / `Avoid when:` / `Safety:` → 最终 `description`
+2. **预算**：单条 ≤ 900 字符（`TOOL_TEXT_LIMITS.perTool`）；超了先砍要求行、再截正文
+3. **索引**：每次装配生成"现在开着的工具"（`- name: summary`），≤ 1200 字符，
+   随插件启停自动变化；超长时截断并写"还有 N 个工具"
+4. 最终描述进 DSH 的工具面（就是模型看到的提示词），**人格卡不再出现工具细则**
+
+当前实测（recall/whois/world-state/remember 四个工具）：
+描述合计 1491 字，索引 447 字。
