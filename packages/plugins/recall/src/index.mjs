@@ -113,7 +113,10 @@ export function apply(ctx) {
         const ns = CATEGORIES[kind] ? kind : 'event'
         const safeKey = key ?? `note:${ctx.now()}:${Math.random().toString(36).slice(2, 7)}`
         const data = { day: dayKey(ctx.now()), session, ...(qq ? { qq: String(qq) } : {}) }
-        memory.put({ namespace: ns, kind: 'note', key: safeKey, text, data, weight: 1.5, now: ctx.now() })
+        const created = memory.put({ namespace: ns, kind: 'note', key: safeKey, text, data, weight: 1.5, now: ctx.now() })
+        // 碎片也要向量化：它可能就是主会话主动塞进来的真实信息，
+        // 不能因为"没成块"就只能靠字面搜到。
+        if (typeof memory.index === 'function') void memory.index(created.id, String(text))
         return { text: '记下了。' }
       },
     },
