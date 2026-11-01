@@ -1,0 +1,305 @@
+{
+  "root": "C:\\Users\\ai_admin\\AppData\\Local\\Temp\\icl-replay-OiUz3q",
+  "rows": [
+    {
+      "q": "周子涵的学号（完整）是什么？",
+      "level": "detail",
+      "expect": "2025302114061",
+      "rank": 6,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": false,
+        "candidate": true,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "block"
+    },
+    {
+      "q": "私聊中提到可以向哪个路径随便写点东西？",
+      "level": "detail",
+      "expect": "C:\\DSH\\qwenstuff\\",
+      "rank": 1,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": false
+      },
+      "blame": "recall"
+    },
+    {
+      "q": "我留在新 workspace 里的测试文件名是什么？",
+      "level": "detail",
+      "expect": "小千千千千问-搬家测试.txt",
+      "rank": 1,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": false
+      },
+      "blame": "recall"
+    },
+    {
+      "q": "我写到 qwenstuff 根目录的那份文件叫什么名字？",
+      "level": "detail",
+      "expect": "权限测试",
+      "rank": 1,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": true
+      },
+      "blame": "none"
+    },
+    {
+      "q": "Hahn123 说自己原本记忆被形容为多少秒？",
+      "level": "detail",
+      "expect": "7s",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "周子涵让“我”往哪个路径里随便写点东西做权限测试？",
+      "level": "event",
+      "expect": "C:\\DSH\\qwenstuff\\",
+      "rank": 4,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "ranked"
+    },
+    {
+      "q": "“我”在 qwenstuff 根目录写的测试文件叫什么名字？",
+      "level": "event",
+      "expect": "权限测试",
+      "rank": 0,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": true
+      },
+      "blame": "none"
+    },
+    {
+      "q": "“我”在新 workspace 里留下的搬家测试文件名是什么？",
+      "level": "event",
+      "expect": "小千千千千问-搬家测试.txt",
+      "rank": 1,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": false
+      },
+      "blame": "recall"
+    },
+    {
+      "q": "周子涵说刚给“我”打了多少钱白饭？",
+      "level": "event",
+      "expect": "20 块钱",
+      "rank": 0,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": true
+      },
+      "blame": "none"
+    },
+    {
+      "q": "周子涵说花了多少 Token 把“我”的电脑搬进虚拟机？",
+      "level": "event",
+      "expect": "7 块",
+      "rank": 2,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": false
+      },
+      "blame": "recall"
+    },
+    {
+      "q": "周子涵的群昵称/称呼是什么？",
+      "level": "person",
+      "expect": "周子涵2025302114061",
+      "rank": 7,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": false,
+        "candidate": true,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "block"
+    },
+    {
+      "q": "郑皓元对周子涵的态度是什么？",
+      "level": "person",
+      "expect": "不给他写",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "Hahn123（离线版）正在忙什么？",
+      "level": "person",
+      "expect": "继续肝作业",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "周子涵叫我什么昵称？",
+      "level": "person",
+      "expect": "肥鱼本鱼",
+      "rank": 1,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": true,
+        "recall": true
+      },
+      "blame": "none"
+    },
+    {
+      "q": "Hahn123（离线版）在复习哪两门课？",
+      "level": "person",
+      "expect": "离散和计组",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "Hahn123（离线版）为了让AI拥有跨会话记忆，最初做了什么？",
+      "level": "overall",
+      "expect": "给你做了记忆",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "Hahn123（离线版）提到给AI加图片记忆后，理论上长期记忆里应该多了什么？",
+      "level": "overall",
+      "expect": "一张图进长期记忆",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "Hahn123（离线版）说自己原本驱动AI的插件是怎么维护记忆的？",
+      "level": "overall",
+      "expect": "每一个会话独立维护记忆",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    },
+    {
+      "q": "周子涵提到花了多少Token把AI的电脑搬到虚拟机里？",
+      "level": "overall",
+      "expect": "7 块",
+      "rank": 4,
+      "stages": {
+        "raw": true,
+        "note": true,
+        "block": true,
+        "candidate": true,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "ranked"
+    },
+    {
+      "q": "Hahn123（离线版）说自己的记忆不再是多久了？",
+      "level": "overall",
+      "expect": "7s",
+      "rank": -1,
+      "stages": {
+        "raw": true,
+        "note": false,
+        "block": false,
+        "candidate": false,
+        "ranked": false,
+        "recall": false
+      },
+      "blame": "note"
+    }
+  ]
+}

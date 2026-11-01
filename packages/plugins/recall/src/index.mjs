@@ -162,7 +162,7 @@ export function apply(ctx) {
         // 未消化的 note（任何日期）优先展示，标签用"未整理"
         const pendingNotes = tag ? [] : namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200 })
           .filter((item) => item.data?.consolidated !== true)
-          .map((item) => ({ item, score: Number.MAX_SAFE_INTEGER, namespace: ns })))
+          .map((item) => ({ item, score: 1.15, namespace: ns })))
 
         const stored = cursor && typeof cursor === 'string' ? safeParseCursor(cursor) : loadCursor()
         const inWindow = new Set((stored.items ?? []).map((it) => it.id))
@@ -183,7 +183,8 @@ export function apply(ctx) {
           additions.push({ id: entry.item.id, tokens: t })
         }
 
-        for (const entry of pendingNotes) take(entry, '未整理')
+        const noteQuota = Math.max(1, Math.floor(limit / 2))
+        for (const entry of pendingNotes.slice(0, noteQuota)) take(entry, '未整理')
         for (const entry of candidates.slice(0, 100)) take(entry, label(entry.namespace, entry.item.createdAt, now))
 
         const nextCursor = rollCursor(stored, additions)
