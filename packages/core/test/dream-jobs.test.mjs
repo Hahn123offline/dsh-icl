@@ -46,8 +46,8 @@ async function setup({ script = [] } = {}) {
 test('事件 job：按话题切块、写进 event、note 被标为已消化', async () => {
   const { tools, memory, dream } = await setup({
     script: [['事件块', JSON.stringify([
-      { summary: '看了盲人导航视频', body: '下午他给我看了一个讲盲人导航的视频。', people: ['1'], tags: ['视频'] },
-      { summary: '他工作很烦', body: '他说工作很烦，我没拱火。', people: ['1'], tags: ['情绪'] },
+      { summary: '看了盲人导航视频', body: '下午他给我看了一个讲盲人导航的视频。', people: ['1'], tags: ['视频'], evidence: [1] },
+      { summary: '他工作很烦', body: '他说工作很烦，我没拱火。', people: ['1'], tags: ['情绪'], evidence: [2] },
     ])]],
   })
   await tools.remember.execute({ text: '看了盲人导航视频', kind: 'event' })

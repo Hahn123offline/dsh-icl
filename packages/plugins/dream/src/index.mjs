@@ -167,10 +167,16 @@ export function apply(ctx) {
       }
       written.push(created.id)
     }
-    // 没写出任何块就不标已消化：原文继续可被回忆、明天继续参与整理。
-    if (written.length) markNotes(notes, now)
-    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: written.length ? 0 : notes.length }, now)
-    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: written.length ? 0 : notes.length }
+    // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
+    const cited = new Set()
+    for (const id of written) {
+      const block = memory.query({ namespace: 'event', kind: 'block', limit: 200 }).find((b) => Number(b.id) === Number(id))
+      for (const e of block?.data?.evidence ?? []) cited.add(Number(e.id))
+    }
+    const covered = notes.filter((n) => cited.has(Number(n.id)))
+    if (covered.length) markNotes(covered, now)
+    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: notes.length - covered.length }, now)
+    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: notes.length - covered.length }
   }
 
   /* ── people：逐人整块重写 ─────────────────────────────────────── */
@@ -309,8 +315,17 @@ export function apply(ctx) {
       }
       written.push(created.id)
     }
-    const writtenNotes = notes.filter((n) => !skippedPeople.includes(String(n.data?.qq ?? '')))
-    markNotes(writtenNotes, now)
+    // 只标被档案引用到的 note（claims/evidence 里出现过的）。
+    const citedPeople = new Set()
+    for (const qq of new Set(notes.map((n) => String(n.data?.qq ?? '')).filter(Boolean))) {
+      if (skippedPeople.includes(qq)) continue
+      const block = memory.query({ namespace: 'person', kind: 'block', limit: 200 }).find((b) => b.data?.qq === qq)
+      if (!block) continue
+      for (const e of block.data?.evidence ?? []) citedPeople.add(Number(e.id))
+      for (const c of block.data?.claims ?? []) for (const e of c.evidence ?? []) citedPeople.add(Number(e.id))
+    }
+    const writtenNotes = notes.filter((n) => citedPeople.has(Number(n.id)))
+    if (writtenNotes.length) markNotes(writtenNotes, now)
     recordRun(day, 'people', { blocks: written.length, people: byQq.size, skipped: skippedPeople.length }, now)
     return { job: 'people', ok: true, blocks: written.length, people: byQq.size, skipped: skippedPeople.length }
   }
