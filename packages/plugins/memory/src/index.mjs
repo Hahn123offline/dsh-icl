@@ -178,7 +178,7 @@ export function apply(ctx) {
      * 检索（带评分）：相似度 × 权重 × 时间衰减。
      * @returns {Promise<Array<{item:object, score:number}>>}
      */
-    async search({ namespace = null, namespaces = null, query = '', limit = 8, includeArchive = false, now = ctx.now(), minScore = null } = {}) {
+    async search({ namespace = null, namespaces = null, query = '', limit = 8, includeArchive = false, now = ctx.now(), minScore = null, tags = null, tagMode = 'any' } = {}) {
       const list = namespaces ?? (namespace == null ? null : [namespace])
       let nsRows = list
         ? list.map((id) => api.namespaceInfo(id)).filter(Boolean)
@@ -187,8 +187,19 @@ export function apply(ctx) {
       const nsIds = nsRows.map((row) => row.id)
       if (!nsIds.length) return []
       const placeholders = nsIds.map(() => '?').join(',')
-      const rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`).all(...nsIds)
+      let rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`).all(...nsIds)
       if (!rows.length) return []
+      // 标签只做"缩小范围"，不参与打分——否则调用方可以靠堆标签把相关度刷上去。
+      const wantedTags = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()).filter(Boolean) : null
+      if (wantedTags && wantedTags.length) {
+        rows = rows.filter((row) => {
+          let data = null
+          try { data = row.data ? JSON.parse(row.data) : null } catch { data = null }
+          const have = new Set((data?.tags ?? []).map((x) => String(x).toLowerCase()))
+          return tagMode === 'all' ? wantedTags.every((x) => have.has(x)) : wantedTags.some((x) => have.has(x))
+        })
+        if (!rows.length) return []
+      }
 
       const halfLife = new Map(nsRows.map((row) => [row.id, Number(row.halfLifeDays) || 30]))
       const qvec = await embed(query)
@@ -244,6 +255,48 @@ export function apply(ctx) {
       const nextData = data == null ? row.data : JSON.stringify(data)
       db.prepare('UPDATE mem_items SET text = ?, data = ?, updated_at = ? WHERE id = ?').run(nextText, nextData, ctx.now(), Number(id))
       return { updated: true }
+    },
+
+    /** 标签频次（看看有没有爆炸）。 */
+    tags({ namespace = null, limit = 100 } = {}) {
+      const rows = namespace
+        ? db.prepare('SELECT data FROM mem_items WHERE namespace = ?').all(String(namespace))
+        : db.prepare('SELECT data FROM mem_items').all()
+      const counts = new Map()
+      for (const row of rows) {
+        let data = null
+        try { data = row.data ? JSON.parse(row.data) : null } catch { data = null }
+        for (const tag of data?.tags ?? []) {
+          const key = String(tag).toLowerCase()
+          counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+      }
+      return [...counts.entries()].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count).slice(0, Math.max(1, Number(limit) || 100))
+    },
+
+    /**
+     * 身份解析：先精确匹配账号，再按名字在档案正文里找候选。
+     * 它不做"语义回忆"，只回答"这个人是谁"。
+     */
+    findPerson({ qq = null, idKind = null, value = null, name = null, limit = 5 } = {}) {
+      const blocks = db.prepare("SELECT * FROM mem_items WHERE namespace = 'person' AND kind = 'block'").all().map(rowToItem)
+      const wanted = []
+      if (qq != null) wanted.push({ kind: 'qq', value: String(qq) })
+      if (idKind != null && value != null) wanted.push({ kind: String(idKind), value: String(value) })
+      if (wanted.length) {
+        const exact = blocks.filter((b) => {
+          const ids = b.data?.ids ?? []
+          if (ids.some((id) => wanted.some((w) => String(id.kind) === w.kind && String(id.value) === w.value))) return true
+          if (wanted.some((w) => w.kind === 'qq' && b.key === `person:${w.value}`)) return true
+          if (wanted.some((w) => w.kind === 'qq' && String(b.data?.qq ?? '') === w.value)) return true
+          return false
+        })
+        if (exact.length) return { exact: true, people: exact.slice(0, Math.max(1, Number(limit) || 5)) }
+      }
+      const needle = String(name ?? '').trim().toLowerCase()
+      if (!needle) return { exact: false, people: [] }
+      const hits = blocks.filter((b) => `${b.text}\n${b.data?.profile ?? ''}`.toLowerCase().includes(needle))
+      return { exact: false, people: hits.slice(0, Math.max(1, Number(limit) || 5)) }
     },
 
     remove({ namespace, key = null, id = null } = {}) {

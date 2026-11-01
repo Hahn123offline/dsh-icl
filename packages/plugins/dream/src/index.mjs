@@ -48,6 +48,22 @@ export function parseBlocks(raw) {
   } catch { return [] }
 }
 
+/**
+ * 标签规范：小写、去重、限长、最多 5 个。
+ * 标签只是"缩小范围"的工具，不能变成第二套语义索引。
+ */
+export function normalizeTags(tags, { max = 5, maxLen = 10 } = {}) {
+  const out = []
+  for (const raw of Array.isArray(tags) ? tags : []) {
+    const tag = String(raw ?? '').trim().toLowerCase().replace(/[\s,\u3001]+/g, '')
+    if (!tag || tag.length > maxLen) continue
+    if (out.includes(tag)) continue
+    out.push(tag)
+    if (out.length >= max) break
+  }
+  return out
+}
+
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const rhythm = ctx.services.require('rhythm')
@@ -128,7 +144,7 @@ export function apply(ctx) {
           body: String(block?.body ?? '').slice(0, 4000),
           day,
           people: (block?.people ?? []).map(String),
-          tags: (block?.tags ?? []).map(String),
+          tags: normalizeTags(block?.tags),
           sources: notes.map((n) => n.key).filter(Boolean),
         },
         now,

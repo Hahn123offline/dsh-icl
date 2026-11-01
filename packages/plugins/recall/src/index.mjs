@@ -131,16 +131,17 @@ export function apply(ctx) {
           query: { type: 'string', description: 'What you are trying to remember.' },
           limit: { type: 'number', description: 'How many items (default 6).' },
           cursor: { type: 'string', description: 'Opaque cursor from the previous recall.' },
+          tag: { type: 'string', description: 'Only blocks carrying this tag (e.g. \'看海\'). Tags narrow the search; they do not replace it.' },
         },
       },
-      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null } = {}) {
+      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null } = {}) {
         const now = ctx.now()
         const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
         const seen = new Set()
         const candidates = []
         const todayStart = dayStart(now)
         for (const ns of namespaces) {
-          const hits = await memory.search({ namespace: ns, query, limit: 50, now })
+          const hits = await memory.search({ namespace: ns, query, limit: 50, now, tags: tag ? [tag] : null })
           for (const hit of hits) {
             // 昨天及更早的随手记不再被回忆；只有沉淀后的块可以跳天。
             if (hit.item.kind === 'note' && Number(hit.item.createdAt) < todayStart) continue
@@ -152,7 +153,7 @@ export function apply(ctx) {
         // 今天的 note 永远优先展示（带 [今天] 标签）
         // 已经被梦境消化的 note 不再以"今天"的身份出现：
         // 它们已经变成块了，否则既重复又会把块挤出去。
-        const today = namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', since: dayStart(now), limit: 100 })
+        const today = tag ? [] : namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', since: dayStart(now), limit: 100 })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: Number.MAX_SAFE_INTEGER, namespace: ns })))
 
