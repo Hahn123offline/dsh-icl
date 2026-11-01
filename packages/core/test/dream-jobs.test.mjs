@@ -104,6 +104,30 @@ test('人物 job：按 QQ 分组、整块重写、保留旧档案做输入', asy
   assert.match(system, /人物档案/)
 })
 
+test('人物：材料少也要写薄档案，标为 provisional', async () => {
+  const { tools, memory, dream } = await setup({
+    script: [['人物档案', JSON.stringify({ profile: '小林，我的同事，平时爱抽烟。', facts: [] })]],
+  })
+  await tools.remember.execute({ text: '小林是我同事', kind: 'person', qq: '77' })
+  const out = await dream.run({ now: Date.now(), jobs: ['people'] })
+  assert.equal(out.results[0].blocks, 1, '一条笔记也要建档')
+  const block = memory.query({ namespace: 'person', kind: 'block' })[0]
+  assert.equal(block.data.provisional, true)
+  assert.match(block.data.profile, /小林/)
+})
+
+test('人物：模型给空时用笔记原文拼一份档案，不把人丢掉', async () => {
+  const { tools, memory, dream } = await setup({
+    script: [['人物档案', JSON.stringify({ profile: '' })]],
+  })
+  await tools.remember.execute({ text: '他叫陈九，修车的', kind: 'person', qq: '88' })
+  const out = await dream.run({ now: Date.now(), jobs: ['people'] })
+  assert.equal(out.results[0].blocks, 1)
+  const block = memory.query({ namespace: 'person', kind: 'block' })[0]
+  assert.match(block.data.profile, /陈九/)
+  assert.equal(block.data.provisional, true)
+})
+
 test('梗 job：term 做 key，重复出现时更新而不是新增', async () => {
   const { tools, memory, dream } = await setup({
     script: [['新梗', JSON.stringify([{ term: '难绷', meaning: '绷不住了', usage: '看到离谱的事', examples: ['难绷'] }])]],

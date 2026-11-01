@@ -206,7 +206,9 @@ export function apply(ctx) {
             '  ① 关系来源（怎么认识的、现在是什么关系）；',
             '  ② 一个具体事件（TA 说过或做过的一件事）；',
             '  ③ 一个当下的判断（你现在怎么看 TA）。',
-            '材料不足以写成这三部分就**不要硬写**：输出 {"profile": ""}，等下次材料多了再写。',
+            '材料少也要写：有几条写几条，但必须能认人。',
+            '至少要写清：这个人是谁（称呼/和你的关系）+ 你知道的一件具体的事。',
+            '目标是"一个陌生人读完大致能认识 TA"；不清楚的就不写，但不要因为少就不写。',
             '',
             '绝对不要：',
             '· 任何账号、数字编号写进 profile（它们放在结构化字段 ids 里）；',
@@ -229,9 +231,14 @@ export function apply(ctx) {
         return { job: 'people', ok: false, qq, error: String(error?.message ?? error) }
       }
       const parsed = parseBlocks(out)[0]
-      const profile = String(parsed?.profile ?? '').trim()
-      // 材料不够就不写块（也不标已消化），留到下次。
+      let profile = String(parsed?.profile ?? '').trim()
+      // 模型硬是不写时，用笔记原文拼一份薄档案——
+      // 宁可少，不可空；下一次有新材料再整块重写。
+      if (!profile) {
+        profile = `目前知道的：${list.map((n) => n.text.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 3).join('；')}。`
+      }
       if (!profile) { skippedPeople.push(qq); continue }
+      const thin = list.length < 3 || profile.length < 60
       const created = memory.put({
         namespace: 'person',
         kind: 'block',
@@ -247,6 +254,7 @@ export function apply(ctx) {
             return ids
           })(),
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
+          provisional: thin,
           profile,
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
