@@ -97,6 +97,29 @@ export function apply(ctx) {
     return inter / b.size
   }
 
+
+  /**
+   * 从查询里抽"精确串"：路径、文件名、数字、英文词。
+   * 这些不该和普通短语抢语义分——它们命中就是命中。
+   */
+  function literalTerms(text) {
+    const s = String(text ?? '')
+    const out = new Set()
+    for (const m of s.matchAll(/[A-Za-z]:\\[^\s，。；、）)]+/g)) out.add(m[0])
+    for (const m of s.matchAll(/[\w\u4e00-\u9fa5-]+\.(?:txt|md|json|mjs|js|py|log|db|png|jpg)/gi)) out.add(m[0])
+    for (const m of s.matchAll(/\d+(?:\.\d+)?\s*(?:元|块|次|天|秒|分钟|小时|%|GB|MB)/g)) out.add(m[0])
+    for (const m of s.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)) out.add(m[0])
+    return [...out].map((x) => x.toLowerCase()).filter(Boolean)
+  }
+
+  function literalHits(itemText, terms) {
+    if (!terms.length) return 0
+    const hay = String(itemText ?? '').toLowerCase()
+    let hit = 0
+    for (const term of terms) if (hay.includes(term)) hit += 1
+    return hit
+  }
+
   function bigrams(text) {
     const set = new Set()
     const s = String(text ?? '').toLowerCase().replace(/\s+/g, '')
@@ -220,6 +243,10 @@ export function apply(ctx) {
           // 其他看起来也很相似的块；字面命中能把真正写着那件事的块拉上来。
           const lex = needle ? bigramOverlap(item.text, needle) : 0
           sim = 0.7 * cos + 0.3 * lex
+          // 精确串命中：路径/文件名/数字，加一个强权重（不靠语义猜）
+          const terms = needle ? literalTerms(query) : []
+          const exact = literalHits(item.text, terms)
+          if (exact) sim = Math.min(1, sim + 0.5 * (exact / terms.length))
         } else if (needle) {
           // 没有嵌入时的退化：字面命中之外，用二元组重叠度估一个相似度，
           // 否则「他怕什么」永远找不到「怕水」。

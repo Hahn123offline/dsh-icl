@@ -3,8 +3,8 @@
   "k": 4,
   "total": {
     "n": 20,
-    "c": 12,
-    "r": 10
+    "c": 13,
+    "r": 8
   },
   "levels": [
     {
@@ -17,26 +17,26 @@
       "level": "event",
       "n": 5,
       "coverage": 4,
-      "recalled": 4
+      "recalled": 3
     },
     {
       "level": "person",
       "n": 5,
-      "coverage": 4,
-      "recalled": 4
+      "coverage": 2,
+      "recalled": 2
     },
     {
       "level": "overall",
       "n": 5,
-      "coverage": 0,
-      "recalled": 0
+      "coverage": 3,
+      "recalled": 1
     }
   ],
   "rows": [
     {
       "level": "detail",
-      "q": "往哪个目录里随便写点啥来测试写权限？",
-      "expect": "C:\\DSH\\qwenstuff",
+      "q": "往哪个目录里写权限测试文件？",
+      "expect": "C:\\DSH\\qwenstuff\\",
       "evidence": [
         35
       ],
@@ -45,7 +45,7 @@
     },
     {
       "level": "detail",
-      "q": "在 qwenstuff 根目录写的测试文件叫什么名字？",
+      "q": "在 qwenstuff 根目录里写的测试文件叫什么名字？",
       "expect": "权限测试",
       "evidence": [
         36
@@ -55,7 +55,7 @@
     },
     {
       "level": "detail",
-      "q": "新 workspace 里留下的搬家测试文件名是什么？",
+      "q": "在新 workspace 里留下的搬家测试文件文件名是什么？",
       "expect": "小千千千千问-搬家测试.txt",
       "evidence": [
         42
@@ -65,8 +65,8 @@
     },
     {
       "level": "detail",
-      "q": "周子涵说给打了多少钱白饭？",
-      "expect": "20",
+      "q": "周子涵说给“我”打了多少钱白饭？",
+      "expect": "20 块钱",
       "evidence": [
         61
       ],
@@ -75,7 +75,7 @@
     },
     {
       "level": "detail",
-      "q": "Hahn123 提到离线版用户的记忆不再是几秒？",
+      "q": "Hahn123 说现在的记忆不再是几秒？",
       "expect": "7s",
       "evidence": [
         112
@@ -85,7 +85,7 @@
     },
     {
       "level": "event",
-      "q": "曾嘉睿去尝试了什么神秘的食物？",
+      "q": "曾嘉睿那天尝试了什么神秘的食物？",
       "expect": "鸡蛋灌饼",
       "evidence": [
         10
@@ -95,7 +95,7 @@
     },
     {
       "level": "event",
-      "q": "郑皓元当时还在外面做什么？",
+      "q": "查寝开始时，郑皓元当时还在外面做什么？",
       "expect": "吃宵夜",
       "evidence": [
         21
@@ -105,7 +105,7 @@
     },
     {
       "level": "event",
-      "q": "周子涵说的二维码实际上是什么码？",
+      "q": "周子涵说二维码其实是什么？",
       "expect": "查寝码",
       "evidence": [
         45
@@ -115,17 +115,17 @@
     },
     {
       "level": "event",
-      "q": "周子涵给“我”打了多少钱白饭？",
-      "expect": "20 块钱",
+      "q": "Hahn123给系统加了图片记忆后，提到应该有一张什么进入了长期记忆？",
+      "expect": "图",
       "evidence": [
-        61
+        124
       ],
       "coverage": true,
-      "recalled": true
+      "recalled": false
     },
     {
       "level": "event",
-      "q": "周子涵说花了点 Token 把“我”的电脑搬到了哪里？",
+      "q": "周子涵提到花了Token把电脑搬到了哪里？",
       "expect": "虚拟机",
       "evidence": [
         84
@@ -135,117 +135,122 @@
     },
     {
       "level": "person",
-      "q": "周子涵2025302114061是谁？",
-      "expect": "周子涵",
+      "q": "郑皓元是谁？TA在聊天里对我（小千千千千问）是什么态度？",
+      "expect": "别被他PUA",
       "evidence": [
-        1
+        72,
+        74
       ],
-      "coverage": true,
-      "recalled": true
+      "coverage": false,
+      "recalled": false
     },
     {
       "level": "person",
-      "q": "曾嘉睿在尝试吃什么？",
+      "q": "曾嘉睿在聊天里提到自己在外面吃什么？",
       "expect": "鸡蛋灌饼",
       "evidence": [
-        10
+        10,
+        22
       ],
       "coverage": true,
       "recalled": true
     },
     {
       "level": "person",
-      "q": "郑皓元对吃宵夜说了什么？",
-      "expect": "还在外面吃宵夜",
-      "evidence": [
-        21
-      ],
-      "coverage": true,
-      "recalled": true
-    },
-    {
-      "level": "person",
-      "q": "Hahn123（离线版）在赶什么？",
-      "expect": "作业",
-      "evidence": [
-        127,
-        132
-      ],
-      "coverage": true,
-      "recalled": true
-    },
-    {
-      "level": "person",
-      "q": "Hahn123（离线版）说要复习哪两门课？",
-      "expect": "离散和计组",
-      "evidence": [
-        139
-      ],
-      "coverage": false,
-      "recalled": false
-    },
-    {
-      "level": "overall",
-      "q": "跨几天来看，Hahn123对“我”的记忆功能做了哪些整体升级？",
-      "expect": "记忆功能、长期记忆、思维系统",
-      "evidence": [
-        109,
-        113,
-        120,
-        124,
-        148
-      ],
-      "coverage": false,
-      "recalled": false
-    },
-    {
-      "level": "overall",
-      "q": "在文件写入权限方面，经过几轮调整后，整体结论是什么？",
-      "expect": "qwenstuff、workspace、家目录都能写，state仍锁着",
-      "evidence": [
-        38,
-        40,
-        41,
-        43
-      ],
-      "coverage": false,
-      "recalled": false
-    },
-    {
-      "level": "overall",
-      "q": "B站工具的使用权限跨对话整体上处于什么状态？",
-      "expect": "被桥接拦在外面、白名单",
-      "evidence": [
-        8,
-        24,
-        25
-      ],
-      "coverage": false,
-      "recalled": false
-    },
-    {
-      "level": "overall",
-      "q": "Hahn123（离线版）在这几天里整体上在忙什么事情？",
-      "expect": "写作业、复习、计组",
+      "q": "Hahn123（离线版）给自己定的形象/身份是什么？TA在忙什么？",
+      "expect": "赶作业",
       "evidence": [
         121,
         127,
         129,
-        130,
-        139,
-        150
+        132
+      ],
+      "coverage": false,
+      "recalled": false
+    },
+    {
+      "level": "person",
+      "q": "周子涵2025302114061和我的关系/给我起的称呼是什么？",
+      "expect": "肥鱼",
+      "evidence": [
+        3,
+        94
+      ],
+      "coverage": true,
+      "recalled": true
+    },
+    {
+      "level": "person",
+      "q": "周子涵2025302114061说二维码其实是干什么用的？",
+      "expect": "查寝码",
+      "evidence": [
+        45
       ],
       "coverage": false,
       "recalled": false
     },
     {
       "level": "overall",
-      "q": "周子涵对“我”的后端/能力做过哪些整体改动？",
-      "expect": "调群聊能力权限、搬到虚拟机、加后端功能",
+      "q": "跨几天里，Hahn123（离线版）反复提到自己在忙什么长期任务？",
+      "expect": "复习计组",
       "evidence": [
-        70,
-        84,
-        134
+        129,
+        130,
+        140,
+        146,
+        150
+      ],
+      "coverage": true,
+      "recalled": false
+    },
+    {
+      "level": "overall",
+      "q": "关于记忆功能，Hahn123（离线版）对“我”做了哪些整体性升级描述？",
+      "expect": "长期记忆",
+      "evidence": [
+        109,
+        112,
+        120,
+        124
+      ],
+      "coverage": true,
+      "recalled": true
+    },
+    {
+      "level": "overall",
+      "q": "跨会话过程中，Hahn123（离线版）多次提到正在给“我”持续优化哪类后端功能？",
+      "expect": "后端功能",
+      "evidence": [
+        134,
+        148,
+        165,
+        170
+      ],
+      "coverage": false,
+      "recalled": false
+    },
+    {
+      "level": "overall",
+      "q": "在权限和可写目录这件事上，从最初到后来新 workspace 的结论变化是什么？",
+      "expect": "都能写",
+      "evidence": [
+        37,
+        40,
+        41,
+        42
+      ],
+      "coverage": true,
+      "recalled": false
+    },
+    {
+      "level": "overall",
+      "q": "Hahn123（离线版）多次测试“我”的记忆时，强调的关键变化是什么？",
+      "expect": "不再是 7s",
+      "evidence": [
+        112,
+        120,
+        157,
+        158
       ],
       "coverage": false,
       "recalled": false
