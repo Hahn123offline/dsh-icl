@@ -281,7 +281,7 @@ export function apply(ctx) {
         namespace: 'person',
         kind: 'block',
         key,
-        text: profile.slice(0, 400),
+        text: profile.slice(0, 800),
         data: {
           qq,
           ids: (() => {
@@ -294,7 +294,7 @@ export function apply(ctx) {
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
           provisional: thin || evidence.length === 0,
           evidence,
-          profile,
+          profile: profile.slice(0, 2000),
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
           aliases: Array.isArray(parsed?.aliases) ? parsed.aliases.map(String).slice(0, 10) : ((existing?.data?.aliases) ?? []),
