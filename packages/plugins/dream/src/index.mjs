@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'slang', 'cleanup', 'index']
+const DEFAULT_JOBS = ['events', 'people', 'slang', 'lexicon', 'cleanup', 'index']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -126,7 +126,7 @@ export function apply(ctx) {
           '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
           'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
           '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
-        ].join('\n'),
+        ].join('\\n'),
         payload,
       })
       blocks = parseBlocks(raw)
@@ -253,7 +253,7 @@ export function apply(ctx) {
             '· 不要把不同 QQ 的人当成同一个人；昵称/别名必须有明确原话（如「叫我XX」），不能由单个字猜。',
             '· 输出里要带 evidence：你用到的笔记编号数组。',
             '· claims：把 profile 里的每一句具体陈述拆开，各自带自己的 evidence；无法归因的就不要写进去。',
-          ].join('\n'),
+          ].join('\\n'),
           payload: context,
         })
       } catch (error) {
@@ -352,7 +352,7 @@ export function apply(ctx) {
           '整理今天遇到的新梗/新用语。',
           '输出 JSON 数组：[{"term": "词", "meaning": "一句话意思", "usage": "什么时候用", "examples": ["例句"]}]',
           '只收今天真的出现过的，不要编。只输出 JSON。',
-        ].join('\n'),
+        ].join('\\n'),
         payload: notes.map((n) => `· ${n.text}`).join('\n'),
       }))
     } catch (error) {
@@ -474,7 +474,7 @@ export function apply(ctx) {
           '· 不要为了“长度差不多”而合并：小块没有矛盾就原样留着。',
           '· 目标是去重与消除矛盾，不是把所有块整理成一个样子。',
           '没什么可整理就输出 {} 。只输出 JSON。',
-        ].join('\n'),
+        ].join('\\n'),
         payload,
         maxTokens: 1500,
       }))
@@ -578,7 +578,77 @@ export function apply(ctx) {
     return { job: 'index', ok: true, indexed, missing: missing.length }
   }
 
-  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, cleanup: jobCleanup, index: jobIndex }
+  /* ── lexicon：从对话里发现新词与用法变化 ─────── */
+
+  /** 老化：很久没出现的词，usage 变 fading、权重下降。 */
+  function ageLexicon(now) {
+    const svc = ctx.services.get('lexicon')
+    let faded = 0
+    for (const row of svc?.query?.() ?? []) {
+      const last = Number(row.data?.decay?.lastSeen ?? row.createdAt ?? 0)
+      if ((now - last) / 86_400_000 < 30) continue
+      const data = { ...(row.data ?? {}) }
+      data.usageState = 'fading'
+      data.decay = { weight: Math.max(0.1, Number(data.decay?.weight ?? 1) * 0.7), lastSeen: last }
+      memory.patch(row.id, { data })
+      faded += 1
+    }
+    return faded
+  }
+
+  async function jobLexicon({ now, force = false }) {
+    const day = dayKey(now)
+    if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
+    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 200 }))
+    const lexicon = ctx.services.get('lexicon')
+    if (!lexicon) return { job: 'lexicon', skipped: 'no-lexicon-plugin' }
+    // 没有新笔记也要做老化
+    if (!notes.length) {
+      const faded0 = ageLexicon(now)
+      recordRun(day, 'lexicon', { learned: 0, faded: faded0 }, now)
+      return { job: 'lexicon', ok: true, learned: 0, faded: faded0 }
+    }
+
+    const known = (ctx.services.get('lexicon').query?.() ?? []).map((x) => x.data?.term).filter(Boolean).slice(0, 50)
+    let items = []
+    try {
+      const raw = await ask({
+        instruction: [
+          '从这些笔记里找出"值得记的说法"：',
+          '  · 新词（以前没见过的）',
+          '  · 老词的新用法（同一个词被用在新场景）',
+          `已知词汇：${known.join('、') || '无'}`,
+          '输出 JSON 数组：[{"term":"词","meaning":"你猜的意思（不确定就留空）","conv":"来源会话，没有就留空"}]',
+          '只输出 JSON。没有就输出 []。',
+        ].join('\\n'),
+        payload: notes.map((n) => `[${n.id}] ${n.text}`).join('\n').slice(0, 8000),
+        maxTokens: 800,
+      })
+      items = parseBlocks(raw)
+    } catch (error) {
+      return { job: 'lexicon', ok: false, error: String(error?.message ?? error) }
+    }
+
+    let learned = 0
+    for (const item of items) {
+      const term = String(item?.term ?? '').trim()
+      if (!term) continue
+      const res = lexicon.upsert({
+        term,
+        conv: String(item?.conv ?? '').trim() || 'web',
+        meaning: String(item?.meaning ?? '').trim(),
+        tags: ['自动发现'],
+      })
+      if (res?.ok) learned += 1
+    }
+
+    const faded = ageLexicon(now)
+
+    recordRun(day, 'lexicon', { learned, faded }, now)
+    return { job: 'lexicon', ok: true, learned, faded }
+  }
+
+  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, cleanup: jobCleanup, index: jobIndex }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。
