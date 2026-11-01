@@ -1,22 +1,22 @@
 {
-  "dbPath": "C:\\Users\\ai_admin\\AppData\\Local\\Temp\\icl-replay-OiUz3q\\state\\memory.db",
+  "dbPath": "C:\\Users\\ai_admin\\AppData\\Local\\Temp\\icl-replay-WGrFtk\\state\\memory.db",
   "k": 4,
   "total": {
     "n": 20,
-    "c": 10,
+    "c": 6,
     "r": 4
   },
   "levels": [
     {
       "level": "detail",
       "n": 5,
-      "coverage": 3,
-      "recalled": 1
+      "coverage": 1,
+      "recalled": 0
     },
     {
       "level": "event",
       "n": 5,
-      "coverage": 5,
+      "coverage": 3,
       "recalled": 2
     },
     {
@@ -29,7 +29,7 @@
       "level": "overall",
       "n": 5,
       "coverage": 1,
-      "recalled": 0
+      "recalled": 1
     }
   ],
   "rows": [
@@ -50,7 +50,7 @@
       "evidence": [
         35
       ],
-      "coverage": true,
+      "coverage": false,
       "recalled": false
     },
     {
@@ -70,8 +70,8 @@
       "evidence": [
         36
       ],
-      "coverage": true,
-      "recalled": true
+      "coverage": false,
+      "recalled": false
     },
     {
       "level": "detail",
@@ -90,7 +90,7 @@
       "evidence": [
         35
       ],
-      "coverage": true,
+      "coverage": false,
       "recalled": false
     },
     {
@@ -100,8 +100,8 @@
       "evidence": [
         36
       ],
-      "coverage": true,
-      "recalled": true
+      "coverage": false,
+      "recalled": false
     },
     {
       "level": "event",
@@ -132,7 +132,7 @@
         84
       ],
       "coverage": true,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "person",
@@ -223,7 +223,7 @@
         83
       ],
       "coverage": true,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "overall",

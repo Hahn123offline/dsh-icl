@@ -38,6 +38,38 @@ export function composeToolDescription(definition, { maxChars = TOOL_TEXT_LIMITS
   return text
 }
 
+
+/* ───────────────────────────── raw sources ───────────────────────────── */
+
+/**
+ * 原文层不是"再存一份"，而是"按需回原始日志里查"。
+ * DSH 会话日志本身就是原文；插件只提供"按字面查一句话"的能力。
+ */
+export function createRawSourceRegistry() {
+  const sources = new Map()
+  return {
+    register({ id, search } = {}) {
+      const key = String(id ?? '')
+      if (!key) throw new Error('raw source 需要 id')
+      if (typeof search !== 'function') throw new Error(`${key} 缺少 search`)
+      sources.set(key, { id: key, search })
+      return () => { sources.delete(key) }
+    },
+    ids() { return [...sources.keys()] },
+    /** 按顺序问每个来源，返回命中的原文片段。 */
+    async search({ query, limit = 2 } = {}) {
+      const hits = []
+      for (const source of sources.values()) {
+        try {
+          const rows = await source.search({ query, limit })
+          for (const row of rows ?? []) hits.push({ ...row, source: source.id })
+        } catch { /* 单个来源失败不影响其他 */ }
+      }
+      return hits.slice(0, Math.max(1, Number(limit) || 2))
+    },
+  }
+}
+
 export function createToolRegistry({ onChange = () => {} } = {}) {
   const tools = new Map()
   let version = 0

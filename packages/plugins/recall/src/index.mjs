@@ -197,7 +197,10 @@ export function apply(ctx) {
         const pickedText = pieces.join('\n')
         let sources = []
         try {
-          if (typeof memory.archiveSearch === 'function' && query) {
+          if (ctx.services.raw?.ids?.().length) {
+            sources = (await ctx.services.raw.search({ query: uncovered.join(' ') || query, limit: 2 }))
+              .map((r) => ({ text: r.text, createdAt: r.time ?? r.createdAt ?? ctx.now() }))
+          } else if (typeof memory.archiveSearch === 'function' && query) {
             const missing = String(query).match(/[A-Za-z]:\\[^\s，。；、）)]+|[\w\u4e00-\u9fa5-]+\.(?:txt|md|json|mjs|js|py|log|db)|\d+(?:\.\d+)?\s*(?:元|块|次|天|秒|分钟|小时)/g) ?? []
             const uncovered = missing.filter((x) => !pickedText.toLowerCase().includes(String(x).toLowerCase()))
             // 精确串没被覆盖，或者块与问题的字面重合度很低，都去原文层看看
@@ -216,12 +219,28 @@ export function apply(ctx) {
               return best < 0.25
             })()
             if (uncovered.length || weak) {
-              sources = await memory.archiveSearch({ query: uncovered.join(' '), limit: 2, exclude: pieces.map((s) => s.replace(/^\[[^\]]+\]\s*/, '')) })
+              if (ctx.services.raw?.ids?.().length) {
+                sources = (await ctx.services.raw.search({ query: (uncovered.length ? uncovered.join(' ') : query), limit: 2 }))
+                  .map((r) => ({ text: r.text, createdAt: r.time ?? r.createdAt ?? ctx.now() }))
+              } else {
+                sources = await memory.archiveSearch({ query: uncovered.join(' '), limit: 2, exclude: pieces.map((s) => s.replace(/^\[[^\]]+\]\s*/, '')) })
+              }
             }
           }
         } catch { /* 原文层失败不影响主结果 */ }
 
         // 块层什么都没命中时，最后再看一眼原文：细节可能从没成块，但原文在。
+        if (!pieces.length && ctx.services.raw?.ids?.().length) {
+          try {
+            const out2 = await ctx.services.raw.search({ query, limit: 2 })
+            if (out2.length) {
+              return {
+                text: out2.map((s) => `原文（${shortDate(s.time ?? s.createdAt)}）：${String(s.text).slice(0, 160)}`).join('\n'),
+                cursor: null, more: false,
+              }
+            }
+          } catch { /* ignore */ }
+        }
         if (!pieces.length && typeof memory.archiveSearch === 'function' && query) {
           try {
             const raw = await memory.archiveSearch({ query, limit: 2 })

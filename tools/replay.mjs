@@ -224,6 +224,27 @@ if (REAL) {
   host.services.slots.bind('dream-chat', { provider: 'fake', call: async () => '[]' })
 }
 
+// 原文层：直接从原始日志按需查，不复制进记忆库
+host.services.raw.register({
+  id: 'qq-log',
+  search: ({ query, limit = 2 }) => {
+    const q = String(query ?? '').toLowerCase()
+    const grams = []
+    for (let i = 0; i < q.length - 1; i++) {
+      const g = q.slice(i, i + 2)
+      if (!/[?？。，、\s]/.test(g)) grams.push(g)
+    }
+    const scored = raw.map((m) => {
+      const text = String(m.text).toLowerCase()
+      let hit = 0
+      for (const g of grams) if (text.includes(g)) hit += 1
+      return { m, hit }
+    }).filter((x) => x.hit > 0)
+    scored.sort((a, b) => b.hit - a.hit)
+    return scored.slice(0, limit).map((x) => ({ text: x.m.text, time: x.m.ts, sender: x.m.sender }))
+  },
+})
+
 const mem = host.shared.get('memory')
 const msgs = SOURCE === 'qq' ? loadQq() : loadDsh(SESSION)
 if (!msgs.length) { console.error('没有读到原始消息'); process.exit(2) }

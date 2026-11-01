@@ -117,6 +117,21 @@ if (!fs.existsSync(FIXTURE)) { fs.mkdirSync(path.dirname(FIXTURE), { recursive: 
 const host = createHost({ log: () => {} })
 host.registerPlugin(memoryManifest, memory, { config: { root: path.dirname(path.dirname(dbPath)) } })
 host.registerPlugin(recallManifest, recall, { config: { sessionId: 'bench' } })
+host.services.raw.register({
+  id: 'bench-raw',
+  search: ({ query, limit = 2 }) => {
+    const q = String(query ?? '').toLowerCase()
+    const grams = []
+    for (let i = 0; i < q.length - 1; i++) { const g = q.slice(i, i + 2); if (!/[?？。，、\s]/.test(g)) grams.push(g) }
+    const scored = raw.map((m) => {
+      const text = String(m.text).toLowerCase()
+      let hit = 0
+      for (const g of grams) if (text.includes(g)) hit += 1
+      return { m, hit }
+    }).filter((x) => x.hit > 0).sort((a, b) => b.hit - a.hit)
+    return scored.slice(0, limit).map((x) => ({ text: x.m.text, time: x.m.ts ?? x.m.time, sender: x.m.sender }))
+  },
+})
 await host.enable('memory')
 await host.enable('recall')
 const mem = host.shared.get('memory')

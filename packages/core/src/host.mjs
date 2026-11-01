@@ -5,7 +5,7 @@
 // 提示词段、focus 租约。没有第二套状态需要同步。
 
 import { validateManifest } from './contracts.mjs'
-import { createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
+import { createRawSourceRegistry, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
@@ -13,6 +13,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   const prompt = createPromptService()
   const focus = createFocusService({ now })
   const delivery = createDeliveryService({ now })
+  const raw = createRawSourceRegistry()
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
 
@@ -78,6 +79,11 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         list: () => slots.list(),
       },
       services: {
+        raw: {
+          register: (def) => { const off = raw.register(def); record.dispose.push(off); return off },
+          search: (req) => raw.search(req),
+          ids: () => raw.ids(),
+        },
         provide(name, api) {
           const key = String(name)
           if (shared.has(key)) throw new Error(`能力重复：${key}`)
@@ -108,7 +114,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model },
+    services: { tools, prompt, focus, delivery, slots, model, raw },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {
