@@ -10,7 +10,7 @@ import * as recall from '../../plugins/recall/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 
-test('按 QQ 查人：直接返回档案，不混事件', async () => {
+test('显式 kind=person：直接返回档案，不混事件', async () => {
   const host = createHost({ log: () => {} })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-route-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
@@ -26,7 +26,7 @@ test('按 QQ 查人：直接返回档案，不混事件', async () => {
   })
   mem.put({ namespace: 'event', kind: 'block', key: 'evt:1', text: '今天开了一个很长的会', data: {} })
 
-  const out = await tools.recall.execute({ query: '42' })
+  const out = await tools.recall.execute({ kind: 'person', query: '42' })
   assert.match(out.text, /\[人物\]/)
   assert.match(out.text, /小林/)
   assert.match(out.text, /依据/)

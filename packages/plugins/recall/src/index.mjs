@@ -126,8 +126,8 @@ export function apply(ctx) {
       name: 'recall',
       summary: 'Bring back what you remember about events and things that happened - not for looking up people.',
       when: ['someone asks about the past', 'you need context that is no longer in the window'],
-      avoid: ['looking up who a person is - that is whois, not recall', 'when the answer is a person\'s identity, accounts or closeness'],
-      description: 'kind narrows to event / person / slang; query filters by meaning; tag narrows to a label. Pass the returned cursor to continue without being shown the same blocks again; the budget is about 10k tokens.',
+      avoid: ['looking up who a person is - use whois for identity, accounts and closeness'],
+      description: 'kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. Pass the returned cursor to continue without being shown the same blocks again; the budget is about 10k tokens.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -143,23 +143,20 @@ export function apply(ctx) {
       async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null } = {}) {
         const now = ctx.now()
 
-        // 人物查询不走通用检索：档案是独立维护的，按身份直接查。
-        // 只处理"明显的身份查询"（纯数字 QQ，或很短的一个名字），不抢普通问句。
-        try {
-          const q = String(query ?? '').trim()
-          const isQq = /^\d{2,12}$/.test(q)
-          const isShortName = q.length > 0 && q.length <= 8 && !/[?？。，、\s]/.test(q)
-          if (isQq || isShortName) {
-            const found = memory.findPerson(isQq ? { qq: q } : { name: q })
-            const person = found.people?.[0]
-            if (person && (found.exact || found.people.length === 1)) {
-              const claims = Array.isArray(person.data?.claims) ? person.data.claims.slice(0, 6) : []
-              const lines = [`[人物] ${person.text}`]
-              if (claims.length) lines.push('依据：', ...claims.map((c) => `· ${c.text}`))
-              return { text: lines.join('\n'), cursor: null, more: false }
-            }
+        // 人物是显式参数：kind='person' 才按身份查档案，不做字数猜测。
+        if (kind === 'person' && String(query ?? '').trim()) {
+          const q = String(query).trim()
+          const isId = /^\d{2,12}$/.test(q)
+          const found = memory.findPerson(isId ? { qq: q } : { name: q })
+          const person = found.people?.[0]
+          if (person) {
+            const claims = Array.isArray(person.data?.claims) ? person.data.claims.slice(0, 6) : []
+            const lines = [`[人物] ${person.text}`]
+            if (claims.length) lines.push('依据：', ...claims.map((c) => `· ${c.text}`))
+            return { text: lines.join('\n'), cursor: null, more: false }
           }
-        } catch { /* 路由失败就按普通检索走 */ }
+        }
+
         const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
         const seen = new Set()
         const candidates = []
