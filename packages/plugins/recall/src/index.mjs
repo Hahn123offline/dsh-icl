@@ -107,11 +107,12 @@ export function apply(ctx) {
           kind: { type: 'string', enum: Object.keys(CATEGORIES), description: 'Category (default event).' },
           key: { type: 'string', description: 'Optional stable key to update instead of adding.' },
           qq: { type: 'string', description: 'For kind=person: whose note this is (QQ number).' },
+          origin: { type: 'object', description: 'Where this came from: {conv, sender, messageId, platform}.' },
           subjectKind: { type: 'string', description: 'For kind=person: what kind of identity qq is, e.g. qq / mc / discord. Defaults to qq.' },
           about: { type: 'object', description: 'For kind=resolve: what this corrects, e.g. {"namespace":"person","key":"person:42"}.' },
         },
       },
-      async execute({ text, kind = 'event', key = null, qq = null, subjectKind = null, about = null } = {}) {
+      async execute({ text, kind = 'event', key = null, qq = null, subjectKind = null, about = null, origin = null } = {}) {
         const ns = CATEGORIES[kind] ? kind : 'event'
         const safeKey = key ?? `note:${ctx.now()}:${Math.random().toString(36).slice(2, 7)}`
         const identity = qq ? { kind: String(subjectKind ?? 'qq'), value: String(qq) } : null
@@ -122,6 +123,7 @@ export function apply(ctx) {
           // 兼容：qq 身份仍然写 qq 字段
           ...(identity?.kind === 'qq' ? { qq: identity.value } : {}),
           ...(about ? { about } : {}),
+          ...(origin ? { origin } : {}),
         }
         const created = memory.put({ namespace: ns, kind: 'note', key: safeKey, text, data, weight: 1.5, now: ctx.now() })
         // 碎片也要向量化：它可能就是主会话主动塞进来的真实信息，
@@ -146,10 +148,11 @@ export function apply(ctx) {
           limit: { type: 'number', description: 'How many items (default 6).' },
           cursor: { type: 'string', description: 'Opaque cursor from the previous recall.' },
           about: { type: 'object', description: 'For kind=resolve: what this corrects, e.g. {"namespace":"person","key":"person:42"}' },
+          conv: { type: 'string', description: 'Only memories that came from this conversation (origin.conv).' },
           tag: { type: 'string', description: 'Only blocks carrying this tag (e.g. \'看海\'). Tags narrow the search; they do not replace it.' },
         },
       },
-      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null } = {}) {
+      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null, conv = null } = {}) {
         const now = ctx.now()
 
         // 人物是显式参数：kind='person' 才按身份查档案，不做字数猜测。
@@ -170,7 +173,7 @@ export function apply(ctx) {
         const seen = new Set()
         const candidates = []
         for (const ns of namespaces) {
-          const hits = await memory.search({ namespace: ns, query, limit: 50, now, tags: tag ? [tag] : null })
+          const hits = await memory.search({ namespace: ns, query, limit: 50, now, tags: tag ? [tag] : null, conv })
           // 未消化的 note 不管哪天都要能被回忆；
           // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
           for (const hit of hits) {

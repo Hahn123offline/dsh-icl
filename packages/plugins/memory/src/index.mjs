@@ -237,7 +237,7 @@ export function apply(ctx) {
      * 检索（带评分）：相似度 × 权重 × 时间衰减。
      * @returns {Promise<Array<{item:object, score:number}>>}
      */
-    async search({ namespace = null, namespaces = null, query = '', limit = 8, includeArchive = false, now = ctx.now(), minScore = null, tags = null, tagMode = 'any' } = {}) {
+    async search({ namespace = null, namespaces = null, query = '', limit = 8, includeArchive = false, now = ctx.now(), minScore = null, tags = null, tagMode = 'any', conv = null } = {}) {
       const list = namespaces ?? (namespace == null ? null : [namespace])
       let nsRows = list
         ? list.map((id) => api.namespaceInfo(id)).filter(Boolean)
@@ -255,6 +255,13 @@ export function apply(ctx) {
       if (!rows.length) return []
       // 标签只做"缩小范围"，不参与打分——否则调用方可以靠堆标签把相关度刷上去。
       const wantedTags = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()).filter(Boolean) : null
+      if (conv) {
+        rows = rows.filter((row) => {
+          if (!row.data) return false
+          try { return JSON.parse(row.data)?.origin?.conv === String(conv) } catch { return false }
+        })
+        if (!rows.length) return []
+      }
       if (wantedTags && wantedTags.length) {
         rows = rows.filter((row) => {
           let data = null
