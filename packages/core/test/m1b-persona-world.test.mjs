@@ -64,32 +64,53 @@ test('人格：持久化在 memory 的 persona 命名空间，不是第二个库
   assert.match(rows[0].text, /落盘的卡/)
 })
 
-test('世界：默认只把 summary 层放进提示词', async () => {
+test('世界：默认只露 brief，且每个注册者受 cap 限制', async () => {
   const { host, session } = await setup({ withMemory: false })
   await host.enable('world-state')
   const w = host.shared.get('world')
-  w.registerSource({ id: 'qq', layer: 'summary', order: 30, text: () => 'QQ：3 条未读' })
-  w.registerSource({ id: 'qq-detail', layer: 'detail', order: 40, text: () => '· 群 A 2 条\n· 私聊 B 1 条' })
+  w.registerSource({
+    id: 'qq', owner: 'qq', title: 'QQ', cap: 2,
+    items: () => [
+      { key: 'unread', brief: '3 条未读' },
+      { key: 'friend', brief: '1 个好友申请' },
+      { key: 'third', brief: '不应该出现在一眼里' },
+    ],
+  })
   const prompt = session.systemPrompt()
-  assert.match(prompt, /现在是 /)
-  assert.match(prompt, /QQ：3 条未读/)
-  assert.doesNotMatch(prompt, /私聊 B/, 'summary 层不能把正文塞进提示词')
+  assert.match(prompt, /QQ：3 条未读；1 个好友申请（还有 1 项）/)
+  assert.doesNotMatch(prompt, /不应该出现在一眼里/, 'cap 之外的不进提示词')
 })
 
-test('世界：detail 层把两层都渲染出来，顺序按 order', async () => {
+test('世界：按注册者查，再展开某一项', async () => {
   const { host } = await setup({ withMemory: false })
   await host.enable('world-state')
   const w = host.shared.get('world')
-  w.registerSource({ id: 'a', layer: 'summary', order: 30, text: () => 'A' })
-  w.registerSource({ id: 'b', layer: 'detail', order: 20, text: () => 'B' })
-  const detail = w.render('detail')
-  assert.ok(detail.indexOf('B') >= 0 && detail.indexOf('A') > detail.indexOf('B'), 'order 20 在 30 前面')
+  w.registerSource({
+    id: 'qq', owner: 'qq', title: 'QQ',
+    items: () => [
+      { key: 'unread', brief: '3 条未读', detail: '群 A 2 条；私聊 B 1 条' },
+      { key: 'friend', brief: '1 个好友申请', detail: '来自 12345' },
+    ],
+  })
+  const byOwner = w.read({ owner: 'qq' })
+  assert.equal(byOwner.items.length, 2)
+  assert.match(byOwner.text, /好友申请/)
+  const one = w.read({ owner: 'qq', item: 'unread' })
+  assert.match(one.text, /私聊 B 1 条/)
+  const miss = w.read({ owner: 'qq', item: 'nope' })
+  assert.match(miss.text, /没有这一项/)
 })
 
-test('世界：未注册来源的调用方拿到空字符串，不抛错', async () => {
+test('世界：注册者可以动态撤回（没东西就不出现）', async () => {
   const { host } = await setup({ withMemory: false })
   await host.enable('world-state')
-  assert.equal(host.shared.get('world').render('detail').includes('现在是'), true)
+  const w = host.shared.get('world')
+  let alive = true
+  w.registerSource({ id: 'mc', owner: 'mc', title: 'MC', items: () => (alive ? [{ key: 'server', brief: '当前活跃：127.0.0.1:63930' }] : []) })
+  assert.match(w.renderBrief(), /127\.0\.0\.1:63930/)
+  alive = false
+  assert.doesNotMatch(w.renderBrief(), /127\.0\.0\.1:63930/, '没东西时应该彻底消失')
+  assert.deepEqual(w.read({ owner: 'mc' }).items, [])
 })
 
 test('工具统一通道：所有插件的工具都只出现在核心的工具面里', async () => {

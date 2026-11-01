@@ -55,6 +55,8 @@ export function apply(ctx) {
 
   const off = rhythm.onNightly((event) => { void run({ now: event?.at ?? ctx.now() }) })
   ctx.onDispose(off)
+  // 晚启动时（今天已经过点、还没做梦）自己补一次。
+  if (typeof rhythm.isDue === 'function' && rhythm.isDue()) void run()
   ctx.services.provide('dream', { run, slot })
   ctx.log({ msg: 'dream.ready', slot })
 }

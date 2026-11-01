@@ -1,14 +1,19 @@
-// 世界状态插件：动态拼装 + 分层，本身不产生任何"主动行为"。
+// 世界状态：一个**只读的信息总线**，深度 2 的树（注册者 → 信息项）。
 //
-// 契约（别的插件往这里挂东西）：
-//   ctx.services.get('world').registerSource({ id, layer, order, text })
-//   layer: 'summary'（默认只进提示词）| 'detail'（只在工具里展开）
+// 形状（运行时拼装，任何时候都可以变化）：
+//   owner（注册者）
+//     └─ item（信息项）: { key, brief, detail? }
 //
-// 它只负责"按层渲染"，不负责采集。QQ/MC 以后各自注册来源，
-// 但只能注册计数与摘要，不能把正文塞进 summary。
+// 语义：
+//   · 默认（无参数）：每个注册者只露出最多 cap 条 brief，用来做"全局一瞥"
+//   · 指定 owner：列出这个注册者登记的全部项（受 limit 约束）
+//   · 指定 owner + item：展开这一项的全量内容
+//   · items() 每次调用都重新求值 → 注册者可以动态撤回/新增（例如"没有活跃世界"就不投）
+//
+// 提示词里**永远只放 brief 层**；detail 只在工具/服务里展开。
 export const name = 'world-state'
 
-const LAYERS = Object.freeze(['summary', 'detail'])
+const DEFAULT_CAP = 3
 
 function stamp(now) {
   const d = new Date(now)
@@ -16,66 +21,131 @@ function stamp(now) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 统一把 items() 的返回值规整成 { key, brief, detail }。 */
+function normalizeItems(raw) {
+  const list = Array.isArray(raw) ? raw : (raw == null ? [] : [raw])
+  return list
+    .map((item, index) => {
+      if (item == null) return null
+      if (typeof item === 'string') return { key: `i${index}`, brief: item, detail: null }
+      const brief = String(item.brief ?? item.text ?? '').trim()
+      if (!brief) return null
+      return { key: String(item.key ?? `i${index}`), brief, detail: item.detail == null ? null : String(item.detail) }
+    })
+    .filter(Boolean)
+}
+
 export function apply(ctx) {
-  const sources = new Map()
+  const sources = new Map() // id -> { id, owner, title, order, cap, items }
   let seq = 0
 
   function registerSource(source) {
     const id = String(source?.id ?? '').trim()
     if (!id) throw new Error('world source 需要 id')
-    const layer = String(source.layer ?? 'summary')
-    if (!LAYERS.includes(layer)) throw new Error(`未知层级：${layer}`)
     if (sources.has(id)) throw new Error(`world source 重复：${id}`)
-    const entry = { id, layer, order: Number(source.order) || 50, text: source.text }
+    if (typeof source.items !== 'function') throw new Error(`world source ${id} 需要 items()`)
+    const entry = {
+      id,
+      owner: String(source.owner ?? id),
+      title: String(source.title ?? source.owner ?? id),
+      order: Number(source.order) || 50,
+      cap: Math.max(0, Number.isFinite(Number(source.cap)) ? Number(source.cap) : DEFAULT_CAP),
+      items: source.items,
+    }
     sources.set(id, entry)
     return () => { sources.delete(id) }
   }
 
-  /** 渲染：summary 只出 summary 层；detail 出两层。 */
-  function render(layer = 'summary') {
-    const want = layer === 'detail' ? ['summary', 'detail'] : ['summary']
-    const lines = [...sources.values()]
-      .filter((s) => want.includes(s.layer))
-      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
-      .map((s) => {
-        try { return typeof s.text === 'function' ? s.text({ now: ctx.now() }) : s.text } catch { return null }
-      })
-      .filter((line) => line != null && String(line).trim())
-      .map((line) => String(line).trim())
+  /** 取某个注册者的**已规整**信息项（每次重新求值）。 */
+  function itemsOf(owner) {
+    const out = []
+    for (const source of sources.values()) {
+      if (owner != null && source.owner !== String(owner)) continue
+      let raw = []
+      try { raw = source.items() } catch { raw = [] }
+      for (const item of normalizeItems(raw)) out.push({ ...item, source: source.id, owner: source.owner, title: source.title })
+    }
+    return out.sort((a, b) => a.source.localeCompare(b.source))
+  }
+
+  /** 注册者分组（只保留还有内容的）。 */
+  function owners() {
+    const map = new Map()
+    for (const item of itemsOf(null)) {
+      if (!map.has(item.owner)) map.set(item.owner, { owner: item.owner, title: item.title, items: [] })
+      map.get(item.owner).items.push(item)
+    }
+    return [...map.values()]
+  }
+
+  /** brief 层：全局一瞥（每个注册者最多 cap 条）。 */
+  function renderBrief({ owner = null } = {}) {
+    const groups = owners().filter((g) => owner == null || g.owner === String(owner))
+    const lines = []
+    for (const group of groups) {
+      const source = [...sources.values()].find((s) => s.owner === group.owner)
+      const cap = source?.cap ?? DEFAULT_CAP
+      const shown = group.items.slice(0, cap)
+      const more = group.items.length - shown.length
+      const body = shown.map((item) => item.brief).join('；')
+      lines.push(`${group.title}：${body}${more > 0 ? `（还有 ${more} 项）` : ''}`)
+    }
     return lines.join('\n')
   }
 
-  // 默认来源：时间。以后环境、精力等也是来源，不是硬编码。
-  registerSource({ id: 'time', layer: 'summary', order: 10, text: () => `现在是 ${stamp(ctx.now())}。` })
-
-  const world = {
-    registerSource,
-    render,
-    /** 给管理插件/调试看：有哪些来源、各在哪一层。 */
-    sources: () => [...sources.values()].map((s) => ({ id: s.id, layer: s.layer, order: s.order })),
-    seq: () => ++seq,
+  /**
+   * 读接口（工具与其它插件共用）：
+   *   read()                → { owners: [...], text }
+   *   read({ owner })       → { owner, items: [...], text }
+   *   read({ owner, item }) → { owner, item, detail, text }
+   */
+  function read({ owner = null, item = null, limit = 20 } = {}) {
+    if (owner == null) {
+      const groups = owners()
+      return { owners: groups.map((g) => ({ owner: g.owner, title: g.title, count: g.items.length })), text: renderBrief() }
+    }
+    const list = itemsOf(owner)
+    if (!list.length) return { owner: String(owner), items: [], text: `没有来自「${owner}」的信息。` }
+    if (item != null) {
+      const hit = list.find((x) => x.key === String(item))
+      if (!hit) return { owner: String(owner), items: list.map((x) => x.key), text: `「${owner}」没有这一项：${item}` }
+      return { owner: String(owner), item: hit.key, detail: hit.detail, brief: hit.brief, text: hit.detail ?? hit.brief }
+    }
+    const shown = list.slice(0, Math.max(1, Number(limit) || 20))
+    return {
+      owner: String(owner),
+      items: shown.map((x) => ({ key: x.key, brief: x.brief, hasDetail: x.detail != null })),
+      text: shown.map((x) => `· ${x.brief}`).join('\n'),
+    }
   }
 
+  // 默认来源：时间
+  registerSource({ id: 'clock', owner: 'clock', title: '时间', order: 10, items: () => [{ key: 'now', brief: `现在是 ${stamp(ctx.now())}。` }] })
+
+  const world = { registerSource, read, renderBrief, owners, itemsOf, sources: () => [...sources.values()].map((s) => ({ id: s.id, owner: s.owner, title: s.title, order: s.order, cap: s.cap })) }
   ctx.services.provide('world', world)
 
-  ctx.prompt.section({
-    name: 'world',
-    order: 10,
-    text: () => render('summary'),
-  })
+  ctx.prompt.section({ name: 'world', order: 10, text: () => renderBrief() })
 
   ctx.tools.register({
     name: 'world_status',
-    description: 'Read the assembled world state. layer="summary" (default) gives the compact view; layer="detail" expands every registered source.',
+    description: [
+      'Read the world state bus. No arguments: one brief line per source (the global glance).',
+      'owner: list that source\'s items. owner + item: expand one item\'s full detail.',
+      'Sources are assembled at runtime and may disappear when they have nothing to report.',
+    ].join(' '),
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        layer: { type: 'string', enum: ['summary', 'detail'], description: 'Which layer to render (default summary).' },
+        owner: { type: 'string', description: 'Who registered it, e.g. "qq".' },
+        item: { type: 'string', description: 'An item key within that owner.' },
+        limit: { type: 'number', description: 'Max items when listing an owner (default 20).' },
       },
     },
-    async execute({ layer = 'summary' } = {}) {
-      return { text: render(layer === 'detail' ? 'detail' : 'summary') }
+    async execute({ owner = null, item = null, limit = 20 } = {}) {
+      const out = read({ owner, item, limit })
+      return { text: out.text || '（世界状态是空的）' }
     },
   })
 

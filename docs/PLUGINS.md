@@ -82,19 +82,13 @@
 
 ## 四、rhythm（节律）
 
-- **职责**：只做"到点触发做梦"。
-- **清单**：tools 无；服务 `rhythm.onNightly(cb) / fire() / at`。
-- **实现**：每 30 秒检查本地时间是否等于配置的 `dreamAt`（默认 22:30），当天只触发一次（用 `lastDay` 去重）。
-- **明确不做**：闹钟、计时器、日历、随机唤醒——都没有。
-
-**我定的细节**
-1. 用"分钟粒度 + 当天去重"，不引入时区库；系统时区变了会按新时区算（简单）。
-2. `fire()` 暴露给测试/手动触发；生产里不会自己多触发。
-3. 没有持久化"今天已经触发过"——进程重启后同一天可能再触发一次（细节，可补）。
-
-**要你确认**：重启后同日重复触发可接受吗？（补一行 kv 就解决，但会引入存储依赖）
-
----
+- **职责**：一个稳定的时钟，只做一件事——每天到点触发“做梦”。
+- **清单**：tools 无；服务：`onNightly / fire(now,{force}) / isDue(now) / nextAt(now) / lastFiredDay()`。
+- **时钟**：每 20 秒检查一次；到点且当天未发 → 发一次。没有“启动就补发”。
+  晚启动的消费者（dream）在自己启用时用 `isDue()` 自查补一次。
+- **去重要跨重启**：`state/rhythm.json` 记 `lastFiredDay`。这是运行时状态，不是记忆，不进记忆库。
+- **为什么之前会重复**：当时只用内存 `lastDay`，进程在触发之后重启，内存丢了 → 同一天又发一次。现在落盘。
+- **明确不做**：闹钟、计时器、日历、随机唤醒。
 
 ## 五、dream（梦境）
 
@@ -116,21 +110,19 @@
 
 ## 六、world-state（世界状态）
 
-- **职责**：被动拼装 + 分层渲染。
-- **清单**：tools `world_status(layer)`；无 slots/deps。
-- **服务**：`world.registerSource({id, layer:'summary'|'detail', order, text}) / render(layer) / sources()`。
-- **默认来源**：时间（summary, order 10）。
-- **分层语义**：`summary` 只渲染 summary 层；`detail` 渲染两层。提示词里**永远只放 summary**。
-- **不采集**：QQ/MC 以后各自注册来源，但只能注册计数/摘要，明细留给 detail。
+**它是一个只读信息总线，形状是深度 2 的树：注册者 → 信息项。**
 
-**我定的细节**
-1. 来源文本可以是函数（每次渲染求值）。
-2. 单个来源抛错 → 跳过那一条，不影响整体。
-3. 没有"筛选器 DSL"：现在只有两层 + order，够用且不会变成半个模板引擎。
-
-**要你确认**：`detail` 是否要再分"按来源展开"（如 `world_status({source:'qq'})`）？现在不支持。
-
----
+- **清单**：tools `world_status(owner?, item?, limit?)`；服务 `world.read / registerSource / renderBrief / owners / itemsOf / sources`。
+- **注册**：`registerSource({ id, owner, title, order, cap, items() })`
+  - `items()` **每次调用都重新求值** → 注册者可以动态撤回或新增（如 MC 没有活跃世界时直接返回 []）
+  - 一个注册者可以注册**多个**来源（QQ：“未读消息”+“好友申请”），渲染时按 owner 合并
+  - `cap` 由注册者自己声明（默认 3）：“一眼”里每个 owner 最多露几条
+- **三种读法**
+  - 空参数 → 每个 owner 一行 brief（受 cap），“全局一眼”
+  - `owner` → 该 owner 的全部项（受 limit）
+  - `owner + item` → 这一项的全量 detail
+- **提示词里永远只放 brief 层**；detail 只在工具/服务里展开。
+- **以后**：可以再封装快捷工具（如“只看 QQ”）提交给核心工具面；现在不提前做。
 
 ## 七、model-manager（模型管理）
 
