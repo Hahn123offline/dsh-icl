@@ -40,10 +40,13 @@ export function apply(ctx) {
   const root = String(ctx.config.sessionsRoot ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh', 'sessions'))
   const days = Math.max(1, Number(ctx.config.days ?? 30))
   const maxFiles = Math.max(1, Number(ctx.config.maxFiles ?? 400))
+  const maxMessages = Math.max(100, Number(ctx.config.maxMessages ?? 20000))
+  const cacheMs = Math.max(10_000, Number(ctx.config.cacheMs ?? 5 * 60_000))
   let cache = null
+  let cachedAt = 0
 
   function load() {
-    if (cache) return cache
+    if (cache && Date.now() - cachedAt < cacheMs) return cache
     const since = Date.now() - days * 24 * 3600_000
     const files = []
     const walk = (dir) => {
@@ -63,7 +66,9 @@ export function apply(ctx) {
     for (const file of files.slice(0, maxFiles)) {
       try { messages.push(...messagesFrom(decode(file))) } catch { /* ignore */ }
     }
-    cache = messages
+    // 有上限：会话很多时不把整个日志读进内存
+    cache = messages.length > maxMessages ? messages.slice(-maxMessages) : messages
+    cachedAt = Date.now()
     return cache
   }
 
