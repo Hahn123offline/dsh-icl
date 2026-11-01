@@ -4,32 +4,32 @@
   "total": {
     "n": 20,
     "c": 6,
-    "r": 4
+    "r": 16
   },
   "levels": [
     {
       "level": "detail",
       "n": 5,
       "coverage": 1,
-      "recalled": 0
+      "recalled": 4
     },
     {
       "level": "event",
       "n": 5,
       "coverage": 3,
-      "recalled": 2
+      "recalled": 5
     },
     {
       "level": "person",
       "n": 5,
       "coverage": 1,
-      "recalled": 1
+      "recalled": 2
     },
     {
       "level": "overall",
       "n": 5,
       "coverage": 1,
-      "recalled": 1
+      "recalled": 5
     }
   ],
   "rows": [
@@ -41,7 +41,7 @@
         1
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "detail",
@@ -51,7 +51,7 @@
         35
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "detail",
@@ -61,7 +61,7 @@
         42
       ],
       "coverage": true,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "detail",
@@ -71,7 +71,7 @@
         36
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "detail",
@@ -91,7 +91,7 @@
         35
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "event",
@@ -101,7 +101,7 @@
         36
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "event",
@@ -111,7 +111,7 @@
         42
       ],
       "coverage": true,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "event",
@@ -143,7 +143,7 @@
         3
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "person",
@@ -193,7 +193,7 @@
         104
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "overall",
@@ -203,7 +203,7 @@
         124
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "overall",
@@ -213,7 +213,7 @@
         164
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     },
     {
       "level": "overall",
@@ -233,7 +233,7 @@
         112
       ],
       "coverage": false,
-      "recalled": false
+      "recalled": true
     }
   ]
 }

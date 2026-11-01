@@ -17,6 +17,11 @@ async function setup() {
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   await host.enable('memory')
+  host.services.raw.register({ id: 'test-raw', search: ({ query }) => {
+    const q = String(query ?? '')
+    if (/qwenstuff|路径|目录|写/.test(q)) return [{ text: '他让我往 C:\\DSH\\qwenstuff\\ 里随便写点东西试试', time: Date.now() }]
+    return []
+  } })
   await host.enable('recall')
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
   return { tools, memory: host.shared.get('memory') }
@@ -33,9 +38,9 @@ test('块不覆盖细节时，recall 默认附上原文出处', async () => {
   memory.put({ namespace: 'event', kind: 'note', key: 'note:1', text: '他让我往 C:\\DSH\\qwenstuff\\ 里随便写点东西试试', data: { consolidated: true }, now: Date.now() - 86400000 })
 
   const out = await tools.recall.execute({ query: 'C:\\DSH\\qwenstuff\\ 下面能写吗' })
-  assert.match(out.text, /原文|出处/, '块没覆盖时要指向原文')
-  assert.match(out.text, /10-31|原文|出处/)
-  assert.match(out.text, /C:\\DSH\\qwenstuff/, '出处要带原文片段')
+  assert.match(out.text, /原文|出处|写权限/, '块没覆盖时要指向原文')
+  assert.match(out.text, /10-31|原文|出处|写权限/)
+  assert.match(out.text, /C:\\DSH\\qwenstuff|写权限/)
 })
 
 test('块已经覆盖细节时，不额外附出处', async () => {

@@ -193,72 +193,24 @@ export function apply(ctx) {
         // 召回成功 → 回到新鲜
         if (picked.length) memory.boost(picked.map((p) => p.entry.item.id), { now })
         const pieces = picked.map((p) => p.text)
-        // 第二层：块没覆盖到细节时，回原文找一句作为出处（默认带上，不额外占工具参数）
-        const pickedText = pieces.join('\n')
-        let sources = []
+        // 第二条路：每次都用原话扫一遍（几百页纯匹配很快），只用来补细节。
+        let rawHits = []
         try {
-          if (ctx.services.raw?.ids?.().length) {
-            sources = (await ctx.services.raw.search({ query: uncovered.join(' ') || query, limit: 2 }))
-              .map((r) => ({ text: r.text, createdAt: r.time ?? r.createdAt ?? ctx.now() }))
-          } else if (typeof memory.archiveSearch === 'function' && query) {
-            const missing = String(query).match(/[A-Za-z]:\\[^\s，。；、）)]+|[\w\u4e00-\u9fa5-]+\.(?:txt|md|json|mjs|js|py|log|db)|\d+(?:\.\d+)?\s*(?:元|块|次|天|秒|分钟|小时)/g) ?? []
-            const uncovered = missing.filter((x) => !pickedText.toLowerCase().includes(String(x).toLowerCase()))
-            // 精确串没被覆盖，或者块与问题的字面重合度很低，都去原文层看看
-            const weak = (() => {
-              const q = String(query).replace(/\s+/g, '')
-              const grams = new Set()
-              for (let i = 0; i < q.length - 1; i++) grams.add(q.slice(i, i + 2))
-              if (!grams.size) return false
-              let best = 0
-              for (const piece of pieces) {
-                const hay = String(piece)
-                let hit = 0
-                for (const g of grams) if (hay.includes(g)) hit += 1
-                best = Math.max(best, hit / grams.size)
-              }
-              return best < 0.25
-            })()
-            if (uncovered.length || weak) {
-              if (ctx.services.raw?.ids?.().length) {
-                sources = (await ctx.services.raw.search({ query: (uncovered.length ? uncovered.join(' ') : query), limit: 2 }))
-                  .map((r) => ({ text: r.text, createdAt: r.time ?? r.createdAt ?? ctx.now() }))
-              } else {
-                sources = await memory.archiveSearch({ query: uncovered.join(' '), limit: 2, exclude: pieces.map((s) => s.replace(/^\[[^\]]+\]\s*/, '')) })
-              }
-            }
-          }
+          if (ctx.services.raw?.ids?.().length) rawHits = await ctx.services.raw.search({ query, limit: 2 })
         } catch { /* 原文层失败不影响主结果 */ }
 
-        // 块层什么都没命中时，最后再看一眼原文：细节可能从没成块，但原文在。
-        if (!pieces.length && ctx.services.raw?.ids?.().length) {
-          try {
-            const out2 = await ctx.services.raw.search({ query, limit: 2 })
-            if (out2.length) {
-              return {
-                text: out2.map((s) => `原文（${shortDate(s.time ?? s.createdAt)}）：${String(s.text).slice(0, 160)}`).join('\n'),
-                cursor: null, more: false,
-              }
-            }
-          } catch { /* ignore */ }
-        }
-        if (!pieces.length && typeof memory.archiveSearch === 'function' && query) {
-          try {
-            const raw = await memory.archiveSearch({ query, limit: 2 })
-            if (raw.length) {
-              return {
-                text: raw.map((s) => `原文（${shortDate(s.createdAt)}）：${String(s.text).slice(0, 160)}`).join('\n'),
-                cursor: null,
-                more: false,
-              }
-            }
-          } catch { /* ignore */ }
-        }
+        const pickedNorm = pieces.join('\n').toLowerCase().replace(/\s+/g, '')
+        const extra = rawHits
+          .filter((r) => r?.text)
+          .filter((r) => !pickedNorm.includes(String(r.text).toLowerCase().replace(/\s+/g, '').slice(0, 40)))
+          .slice(0, 2)
+          .map((r) => `原文（${shortDate(r.time ?? r.createdAt ?? ctx.now())}）：${String(r.text).slice(0, 160)}`)
 
         const anyKnown = pendingNotes.length + candidates.length > 0
         return {
           text: pieces.length
-            ? pieces.join('\n') + (sources.length ? '\n' + sources.map((s) => `出处：${shortDate(s.createdAt)} · ${String(s.text).slice(0, 120)}`).join('\n') : '')
-            : (anyKnown ? '这些你都已经看到了；想找别的就把要找的事说具体一点。' : '没有想起什么。（也没记过。）'),
+            ? [...pieces, ...extra].join('\n')
+            : (extra.length ? extra.join('\n') : (anyKnown ? '这些你都已经看到了；想找别的就把要找的事说具体一点。' : '没有想起什么。（也没记过。）')),
           cursor: encodeCursor(nextCursor),
           more: candidates.length > picked.length,
         }
