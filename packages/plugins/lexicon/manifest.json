@@ -1,0 +1,9 @@
+{
+  "id": "lexicon",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["lexicon", "lexicon_learn"],
+  "slots": [],
+  "focus": {},
+  "requires": { "plugins": ["memory"] }
+}
