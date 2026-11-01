@@ -229,30 +229,110 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
 
 /* ───────────────────────────── 模型插槽 ───────────────────────────── */
 
+/**
+ * 模型插槽：插件只声明"我需要什么样的模型"，不写模型名、不写地址、不自己调服务。
+ * 模型管理插件把符合形状的供应商接上（bind），调用一律走 slots.call。
+ */
 export function createSlotRegistry() {
   const slots = new Map()
   const bindings = new Map()
+  const providers = new Map()
+  const listeners = new Set()
+  const changed = () => { for (const fn of listeners) { try { fn() } catch { /* 忽略 */ } } }
+
+  function shapeSatisfies(requires = {}, shape = {}) {
+    for (const [key, value] of Object.entries(requires ?? {})) {
+      if (value == null) continue
+      if (shape?.[key] !== value) return false
+    }
+    return true
+  }
+
+  function match(slot) {
+    for (const provider of providers.values()) {
+      if (provider.kind !== slot.kind) continue
+      if (!shapeSatisfies(slot.requires, provider.shape)) continue
+      return provider
+    }
+    return null
+  }
+
   return {
-    /** 插件声明需求（不绑定）。 */
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+
     declare(slot) {
       const id = String(slot?.id ?? '')
       if (!id) throw new Error('插槽缺少 id')
       if (slots.has(id)) throw new Error(`插槽已存在：${id}`)
-      const entry = { id, kind: String(slot.kind ?? 'chat'), needs: slot.needs ?? [], dim: slot.dim ?? null, owner: slot.owner ?? null }
+      const entry = {
+        id,
+        kind: String(slot.kind ?? 'chat'),
+        requires: { ...(slot.requires ?? {}) },
+        meta: { ...(slot.meta ?? {}) },
+        owner: slot.owner ?? null,
+      }
       slots.set(id, entry)
-      return () => { slots.delete(id); bindings.delete(id) }
+      changed()
+      return () => { slots.delete(id); bindings.delete(id); changed() }
     },
-    /** 模型管理插件绑定。 */
+
+    /** 模型管理插件用它登记"我能提供什么形状的模型"。 */
+    registerProvider(provider) {
+      const id = String(provider?.id ?? '')
+      if (!id) throw new Error('provider 缺少 id')
+      if (typeof provider.call !== 'function') throw new Error(`provider ${id} 缺少 call`)
+      if (providers.has(id)) throw new Error(`provider 已存在：${id}`)
+      providers.set(id, {
+        id,
+        kind: String(provider.kind ?? 'chat'),
+        shape: { ...(provider.shape ?? {}) },
+        call: provider.call,
+        meta: { ...(provider.meta ?? {}) },
+      })
+      return () => { providers.delete(id); changed() }
+    },
+
+    /** 给每个未绑定的插槽找第一个形状匹配的供应商。返回绑定了哪些。 */
+    autoBind() {
+      const bound = []
+      for (const slot of slots.values()) {
+        if (bindings.has(slot.id)) continue
+        const provider = match(slot)
+        if (!provider) continue
+        bindings.set(slot.id, { provider: provider.id, call: provider.call, kind: slot.kind })
+        bound.push({ slot: slot.id, provider: provider.id })
+      }
+      if (bound.length) changed()
+      return bound
+    },
+
     bind(id, binding) {
       if (!slots.has(id)) throw new Error(`没有这个插槽：${id}`)
+      if (typeof binding?.call !== 'function') throw new Error(`绑定 ${id} 需要 call`)
       bindings.set(id, { ...binding, boundAt: Date.now() })
+      changed()
     },
+
     resolve(id) { return bindings.get(id) ?? null },
     require(id) {
       const bound = bindings.get(id)
       if (!bound) throw new Error(`插槽 ${id} 还没有绑定模型`)
       return bound
     },
+    /** 统一调用：插件只认插槽，不认服务。 */
+    async call(id, request) {
+      const bound = bindings.get(id)
+      if (!bound) {
+        const error = new Error(`插槽 ${id} 还没有绑定模型`)
+        error.code = 'SLOT_UNBOUND'
+        throw error
+      }
+      return bound.call(request)
+    },
+    unmatched() {
+      return [...slots.values()].filter((s) => !bindings.has(s.id)).map((s) => ({ id: s.id, kind: s.kind, requires: s.requires }))
+    },
+    providers() { return [...providers.values()].map((p) => ({ id: p.id, kind: p.kind, shape: p.shape })) },
     list() { return [...slots.values()].map((s) => ({ ...s, binding: bindings.get(s.id) ?? null })) },
   }
 }

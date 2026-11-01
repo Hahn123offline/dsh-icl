@@ -39,12 +39,30 @@ test('release 之后 focus 立即消失', () => {
   assert.equal(focus.current(), null)
 })
 
-test('插件声明的插槽必须被绑定才能用', () => {
+test('插槽只声明形状，管理器按形状接线', async () => {
   const host = createHost({ log: () => {} })
-  host.services.slots.declare({ id: 'chat', kind: 'chat' })
-  assert.throws(() => host.services.slots.require('chat'), /还没有绑定/)
-  host.services.slots.bind('chat', { baseUrl: 'http://127.0.0.1:1/v1', model: 'x' })
-  assert.equal(host.services.slots.require('chat').model, 'x')
+  const slots = host.services.slots
+  slots.declare({ id: 'chat', kind: 'chat', requires: { tools: true } })
+  assert.throws(() => slots.require('chat'), /还没有绑定/)
+  // 形状不符的供应商不会被选中
+  assert.deepEqual(slots.autoBind(), [])
+  slots.registerProvider({ id: 'no-tools', kind: 'chat', shape: { tools: false }, call: async () => 'x' })
+  assert.deepEqual(slots.autoBind(), [], '形状不符合就不能接')
+  slots.registerProvider({ id: 'fake-chat', kind: 'chat', shape: { tools: true }, call: async () => 'ok' })
+  assert.deepEqual(slots.autoBind(), [{ slot: 'chat', provider: 'fake-chat' }])
+  assert.equal(await slots.call('chat', {}), 'ok')
+})
+
+test('嵌入插槽：维度不对就不接，维度对了自动接上', () => {
+  const host = createHost({ log: () => {} })
+  const slots = host.services.slots
+  slots.declare({ id: 'embed-text', kind: 'embedding', requires: { dim: 1024 } })
+  slots.registerProvider({ id: 'bge-768', kind: 'embedding', shape: { dim: 768 }, call: async () => [] })
+  assert.deepEqual(slots.autoBind(), [], '768 不能接 1024 的插槽')
+  assert.equal(slots.unmatched().length, 1)
+  slots.registerProvider({ id: 'bge-m3', kind: 'embedding', shape: { dim: 1024 }, call: async () => [[0.1, 0.2]] })
+  assert.deepEqual(slots.autoBind(), [{ slot: 'embed-text', provider: 'bge-m3' }])
+  assert.equal(slots.unmatched().length, 0)
 })
 
 test('模型暂停：拒绝新请求，并中止在飞的', async () => {

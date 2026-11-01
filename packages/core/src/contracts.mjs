@@ -39,7 +39,15 @@ export function validateManifest(manifest) {
   }
   return {
     ok: true,
-    manifest: { id, version: String(manifest.version), entry: String(manifest.entry), tools, slots, focus },
+    manifest: {
+      id,
+      version: String(manifest.version),
+      entry: String(manifest.entry),
+      tools,
+      slots,
+      focus,
+      requires: manifest.requires ?? {},
+    },
   }
 }
 

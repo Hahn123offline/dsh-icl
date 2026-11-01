@@ -18,6 +18,8 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
 
   /** id -> { manifest, module, apply, dispose:Function[], enabled:boolean } */
   const plugins = new Map()
+  /** 插件之间共享能力的注册表：provide/get */
+  const shared = new Map()
 
   function makeContext(manifest, record) {
     const pluginId = manifest.id
@@ -60,8 +62,32 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
           record.dispose.push(dispose)
           return dispose
         },
+        call: (id, request) => slots.call(id, request),
         resolve: (id) => slots.resolve(id),
         require: (id) => slots.require(id),
+        onChange: (fn) => { const off = slots.onChange(fn); record.dispose.push(off); return off },
+        registerProvider: (provider) => { const off = slots.registerProvider(provider); record.dispose.push(off); return off },
+        autoBind: () => slots.autoBind(),
+        unmatched: () => slots.unmatched(),
+        providers: () => slots.providers(),
+        list: () => slots.list(),
+      },
+      services: {
+        provide(name, api) {
+          const key = String(name)
+          if (shared.has(key)) throw new Error(`能力重复：${key}`)
+          shared.set(key, api)
+          const dispose = () => { shared.delete(key) }
+          record.dispose.push(dispose)
+          return dispose
+        },
+        get(name) { return shared.get(String(name)) ?? null },
+        require(name) {
+          const api = shared.get(String(name))
+          if (!api) throw new Error(`缺少依赖能力：${name}`)
+          return api
+        },
+        list() { return [...shared.keys()] },
       },
       model: {
         chat: (input) => model.chat(input),
@@ -94,9 +120,24 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
       const record = plugins.get(String(id))
       if (!record) throw new Error(`没有这个插件：${id}`)
       if (record.enabled) return { enabled: true, already: true }
+      const requires = record.manifest.requires ?? {}
+      for (const dep of requires.plugins ?? []) {
+        const depRecord = plugins.get(String(dep))
+        if (!depRecord?.enabled) throw new Error(`${record.manifest.id} 需要先启用插件：${dep}`)
+      }
       record.dispose = []
       record.enabled = true
       const ctx = makeContext(record.manifest, record)
+      // 清单里声明的插槽由宿主代为注册：插件只写"需要什么形状"，
+      // 不自己去 declare，也就不可能写死模型名。
+      for (const slot of record.manifest.slots ?? []) {
+        try { record.dispose.push(slots.declare({ ...slot, owner: record.manifest.id })) } catch (error) {
+          for (const dispose of record.dispose.reverse()) { try { dispose() } catch { /* 忽略 */ } }
+          record.dispose = []
+          record.enabled = false
+          throw error
+        }
+      }
       try {
         const extra = await record.apply(ctx)
         if (typeof extra === 'function') record.dispose.push(extra)
@@ -134,5 +175,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
     },
     has(id) { return plugins.has(String(id)) },
     manifestOf(id) { return plugins.get(String(id))?.manifest ?? null },
+    /** 插件之间共享能力的只读视图（调试用）。 */
+    shared,
   }
 }
