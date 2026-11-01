@@ -234,7 +234,7 @@ export function apply(ctx) {
             '',
             '材料少就写得短：只写一句也可以，但那一句必须能认人。',
             '',
-            '{"profile": "...", "facts": [], "aliases": [], "ids": [{"kind": "qq", "value": "..."}], "familiarity": "...", "evidence": [1, 2]}。只输出 JSON。',
+            '{"profile": "...", "facts": [], "aliases": [], "ids": [{"kind": "qq", "value": "..."}], "familiarity": "...", "evidence": [1, 2], "claims": [{"text": "档案里的一句话", "evidence": [1]}]}。只输出 JSON。',
             '',
             '注意：',
             '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
@@ -242,6 +242,7 @@ export function apply(ctx) {
             '· 材料里没有的账号不要猜；不要推断性别，用名字或 TA。',
             '· 不要把不同 QQ 的人当成同一个人；昵称/别名必须有明确原话（如「叫我XX」），不能由单个字猜。',
             '· 输出里要带 evidence：你用到的笔记编号数组。',
+            '· claims：把 profile 里的每一句具体陈述拆开，各自带自己的 evidence；无法归因的就不要写进去。',
           ].join('\n'),
           payload: context,
         })
@@ -286,6 +287,9 @@ export function apply(ctx) {
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
           provisional: thin || evidence.length === 0,
           evidence,
+          claims: (Array.isArray(parsed?.claims) ? parsed.claims : [])
+            .map((c) => ({ text: String(c?.text ?? '').slice(0, 200), evidence: validEvidence(c?.evidence, [...list, ...pastNotes]) }))
+            .filter((c) => c.text),
           profile: profile.slice(0, 2000),
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],

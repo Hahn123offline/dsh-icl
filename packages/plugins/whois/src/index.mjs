@@ -49,6 +49,20 @@ export function apply(ctx) {
       const events = recentEventsFor(person.data?.qq ?? qq ?? '', 3)
       const parts = [line(person)]
 
+      // 逐句引用：档案里的每一句都能追到当时的笔记
+      const claims = Array.isArray(person.data?.claims) ? person.data.claims : []
+      if (claims.length) {
+        const noteText = (id) => {
+          const n = memory.query({ namespace: 'person', kind: 'note', limit: 500 }).find((x) => Number(x.id) === Number(id))
+          return n ? String(n.text).slice(0, 60) : null
+        }
+        parts.push('逐句依据：')
+        for (const claim of claims.slice(0, 6)) {
+          const src = (claim.evidence ?? []).map((e) => noteText(e.id)).filter(Boolean)
+          parts.push(`· ${claim.text}${src.length ? `  ← ${src.join('；')}` : ''}`)
+        }
+      }
+
       // 这份档案是从哪些笔记来的（成块时记下的引用）
       const evidenceIds = (person.data?.evidence ?? []).map((e) => Number(e.id)).filter(Boolean)
       if (evidenceIds.length) {

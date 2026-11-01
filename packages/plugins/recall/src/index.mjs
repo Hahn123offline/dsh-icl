@@ -142,6 +142,24 @@ export function apply(ctx) {
       },
       async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null } = {}) {
         const now = ctx.now()
+
+        // 人物查询不走通用检索：档案是独立维护的，按身份直接查。
+        // 只处理"明显的身份查询"（纯数字 QQ，或很短的一个名字），不抢普通问句。
+        try {
+          const q = String(query ?? '').trim()
+          const isQq = /^\d{2,12}$/.test(q)
+          const isShortName = q.length > 0 && q.length <= 8 && !/[?？。，、\s]/.test(q)
+          if (isQq || isShortName) {
+            const found = memory.findPerson(isQq ? { qq: q } : { name: q })
+            const person = found.people?.[0]
+            if (person && (found.exact || found.people.length === 1)) {
+              const claims = Array.isArray(person.data?.claims) ? person.data.claims.slice(0, 6) : []
+              const lines = [`[人物] ${person.text}`]
+              if (claims.length) lines.push('依据：', ...claims.map((c) => `· ${c.text}`))
+              return { text: lines.join('\n'), cursor: null, more: false }
+            }
+          }
+        } catch { /* 路由失败就按普通检索走 */ }
         const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
         const seen = new Set()
         const candidates = []
