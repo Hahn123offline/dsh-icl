@@ -76,6 +76,7 @@ const parseArray = (text) => {
   return []
 }
 
+const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'bench-qq.json')
 const LEVELS = [
   { id: 'detail', hint: '数字、路径、文件名、专有名词这类细节' },
   { id: 'event', hint: '某一天发生的一件具体的事' },
@@ -83,8 +84,9 @@ const LEVELS = [
   { id: 'overall', hint: '跨几天的整体印象或长期变化' },
 ]
 
-const questions = []
-for (const level of LEVELS) {
+const questions = fs.existsSync(FIXTURE) ? JSON.parse(fs.readFileSync(FIXTURE, 'utf8')) : []
+if (questions.length) console.log('用冻结题库：', FIXTURE, questions.length, '题')
+for (const level of questions.length ? [] : LEVELS) {
   try {
     const rawOut = await chat({
       messages: [
@@ -109,6 +111,8 @@ for (const level of LEVELS) {
   } catch (error) { console.error(level.id, '出题失败:', error.message) }
 }
 
+if (!fs.existsSync(FIXTURE)) { fs.mkdirSync(path.dirname(FIXTURE), { recursive: true }); fs.writeFileSync(FIXTURE, JSON.stringify(questions, null, 2)); console.log('题库已冻结：', FIXTURE) }
+
 // 打开 replay 出来的库
 const host = createHost({ log: () => {} })
 host.registerPlugin(memoryManifest, memory, { config: { root: path.dirname(path.dirname(dbPath)) } })
@@ -119,6 +123,9 @@ const mem = host.shared.get('memory')
 const recallTool = host.services.tools.list().find((t) => t.name === 'recall')
 const recallSvc = host.shared.get('recall')
 
+const norm = (s) => String(s ?? '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/g, '').replace(/\s+/g, '')
+const has = (haystack, needle) => norm(haystack).includes(norm(needle))
+
 const allText = ['event', 'person', 'slang']
   .flatMap((ns) => mem.query({ namespace: ns, kind: 'block', limit: 500 }))
   .map((b) => `${b.text}\n${b.data?.body ?? b.data?.profile ?? ''}`)
@@ -126,10 +133,10 @@ const allText = ['event', 'person', 'slang']
 
 const rows = []
 for (const item of questions) {
-  const coverage = allText.includes(item.expect)
+  const coverage = has(allText, item.expect)
   recallSvc?.resetCursor?.()
   const out = await recallTool.execute({ query: item.q, limit: K })
-  const recalled = String(out.text ?? '').includes(item.expect)
+  const recalled = has(out.text, item.expect)
   rows.push({ ...item, coverage, recalled })
 }
 

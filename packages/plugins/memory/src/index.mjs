@@ -244,7 +244,7 @@ export function apply(ctx) {
           const lex = needle ? bigramOverlap(item.text, needle) : 0
           sim = 0.7 * cos + 0.3 * lex
           // 精确串命中：路径/文件名/数字，加一个强权重（不靠语义猜）
-          const terms = needle ? literalTerms(query) : []
+          const terms = LITERAL_ON && needle ? literalTerms(query) : []
           const exact = literalHits(item.text, terms)
           if (exact) sim = Math.min(1, sim + 0.5 * (exact / terms.length))
         } else if (needle) {

@@ -1,0 +1,196 @@
+[
+  {
+    "level": "detail",
+    "q": "私聊中让往哪个路径里随便写点东西测试权限？",
+    "expect": "C:\\DSH\\qwenstuff\\",
+    "evidence": [
+      35
+    ]
+  },
+  {
+    "level": "detail",
+    "q": "在新 workspace 里留下的测试文件叫什么名字？",
+    "expect": "小千千千千问-搬家测试.txt",
+    "evidence": [
+      42
+    ]
+  },
+  {
+    "level": "detail",
+    "q": "发消息的人说给打了多少钱白饭？",
+    "expect": "20 块钱",
+    "evidence": [
+      61
+    ]
+  },
+  {
+    "level": "detail",
+    "q": "周子涵说吃了 7 块，把电脑搬到了哪里？",
+    "expect": "虚拟机",
+    "evidence": [
+      84
+    ]
+  },
+  {
+    "level": "detail",
+    "q": "Hahn123 说现在记忆不再是多久？",
+    "expect": "7s",
+    "evidence": [
+      112
+    ]
+  },
+  {
+    "level": "event",
+    "q": "曾嘉睿在群里说自己刚吃完什么回来了？",
+    "expect": "灌饼",
+    "evidence": [
+      22
+    ]
+  },
+  {
+    "level": "event",
+    "q": "周子涵在群里说给“我”打 20 块钱买什么？",
+    "expect": "白饭",
+    "evidence": [
+      61
+    ]
+  },
+  {
+    "level": "event",
+    "q": "周子涵让“我”往哪个目录里随便写点东西测试权限？",
+    "expect": "C:\\DSH\\qwenstuff",
+    "evidence": [
+      35
+    ]
+  },
+  {
+    "level": "event",
+    "q": "“我”在新 workspace 里留了一份文件名为什么的测试文件？",
+    "expect": "小千千千千问-搬家测试.txt",
+    "evidence": [
+      42
+    ]
+  },
+  {
+    "level": "event",
+    "q": "周子涵说花了点 Token 把“我”的电脑搬到了哪里？",
+    "expect": "虚拟机",
+    "evidence": [
+      84
+    ]
+  },
+  {
+    "level": "person",
+    "q": "周子涵的完整群昵称是什么？",
+    "expect": "周子涵2025302114061",
+    "evidence": [
+      1,
+      3,
+      12
+    ]
+  },
+  {
+    "level": "person",
+    "q": "曾嘉睿去吃什么被提到？",
+    "expect": "鸡蛋灌饼",
+    "evidence": [
+      10,
+      22
+    ]
+  },
+  {
+    "level": "person",
+    "q": "谁说了『不给他写』？",
+    "expect": "郑皓元",
+    "evidence": [
+      47,
+      48
+    ]
+  },
+  {
+    "level": "person",
+    "q": "周子涵提到他准备上什么课了？",
+    "expect": "上课",
+    "evidence": [
+      100
+    ]
+  },
+  {
+    "level": "person",
+    "q": "Hahn123（离线版）说自己在复习哪两门课程？",
+    "expect": "离散和计组",
+    "evidence": [
+      139
+    ]
+  },
+  {
+    "level": "overall",
+    "q": "Hahn123（离线版）在这几天里对“我”的记忆功能做了哪些持续的改进？",
+    "expect": "记忆、长期记忆、图片记忆、稳定人格核心",
+    "evidence": [
+      104,
+      109,
+      112,
+      113,
+      117,
+      120,
+      122,
+      124,
+      165
+    ]
+  },
+  {
+    "level": "overall",
+    "q": "Hahn123（离线版）连续几天提到自己一直在忙什么？",
+    "expect": "写作业、复习、计组、考试",
+    "evidence": [
+      121,
+      127,
+      129,
+      130,
+      132,
+      139,
+      145,
+      146,
+      150
+    ]
+  },
+  {
+    "level": "overall",
+    "q": "从聊天来看，“我”的写文件权限经历了怎样的长期变化？",
+    "expect": "qwenstuff、workspace、家目录、state、锁着",
+    "evidence": [
+      35,
+      37,
+      38,
+      40,
+      41,
+      42,
+      43
+    ]
+  },
+  {
+    "level": "overall",
+    "q": "关于B站工具的使用权限，跨越多轮对话的持续状态是什么？",
+    "expect": "被拦、白名单、没放行、等",
+    "evidence": [
+      8,
+      24,
+      25,
+      26,
+      70
+    ]
+  },
+  {
+    "level": "overall",
+    "q": "Hahn123（离线版）多次表示还在给“我”加/优化什么后端功能？",
+    "expect": "后端功能、思维系统、连续性、稳定人格核心",
+    "evidence": [
+      134,
+      148,
+      149,
+      165,
+      170
+    ]
+  }
+]
