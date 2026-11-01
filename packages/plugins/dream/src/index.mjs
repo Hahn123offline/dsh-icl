@@ -431,7 +431,10 @@ export function apply(ctx) {
       '现有记忆块（key | 类型 | 摘要 | 正文）：',
       ...blocks.map((b) => `- ${b.key} | ${b.ns} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
       pendingResolves.length
-        ? '\n主会话今天纠正的事（必须处理）：\n' + pendingResolves.map((n) => `- ${n.key}: ${n.text}`).join('\n')
+        ? '\n主会话的纠正（必须处理）：\n' + pendingResolves.map((n) => {
+          const about = n.data?.about
+          return about?.key ? `- [针对 ${about.key}] ${n.text}` : `- ${n.text}`
+        }).join('\n')
         : '',
     ].filter(Boolean).join('\n')
 
@@ -509,6 +512,16 @@ export function apply(ctx) {
       if (op?.text) memory.patch(existing.id, { text: String(op.text).slice(0, 400) })
       if (op?.body) memory.patch(existing.id, { data: { ...(existing.data ?? {}), body: String(op.body).slice(0, 4000) } })
       rewriteCount += 1
+    }
+
+    // 纠正处理完后，把它对应的疑问一并关掉（note 就是为这个存在的）。
+    const noteSvc = ctx.services.get('note')
+    for (const note of pendingResolves) {
+      const key = note.data?.about?.key
+      if (!key || !noteSvc?.resolve) continue
+      for (const q of noteSvc.open?.() ?? []) {
+        if (q.data?.about?.key === key) noteSvc.resolve(q.id, { answer: String(note.text).slice(0, 200) })
+      }
     }
 
     for (const noteKey of consumed) {
