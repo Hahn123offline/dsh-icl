@@ -48,6 +48,31 @@ export function apply(ctx) {
       const person = people[0]
       const events = recentEventsFor(person.data?.qq ?? qq ?? '', 3)
       const parts = [line(person)]
+
+      // 这份档案是从哪些笔记来的（成块时记下的引用）
+      const evidenceIds = (person.data?.evidence ?? []).map((e) => Number(e.id)).filter(Boolean)
+      if (evidenceIds.length) {
+        const notes = evidenceIds
+          .map((id) => memory.query({ namespace: 'person', kind: 'note', limit: 500 }).find((n) => Number(n.id) === id))
+          .filter(Boolean)
+          .slice(0, 5)
+        if (notes.length) {
+          parts.push('依据：')
+          for (const n of notes) parts.push(`· ${String(n.text).slice(0, 100)}`)
+        }
+      }
+
+      // 原文层：按名字/账号再要两句当时的话
+      try {
+        const raw = ctx.services.raw
+        if (raw?.ids?.().length) {
+          const hits = await raw.search({ query: person.data?.qq ?? qq ?? person.text.slice(0, 12), limit: 2 })
+          if (hits.length) {
+            parts.push('原话：')
+            for (const h of hits) parts.push(`· ${String(h.text).slice(0, 120)}`)
+          }
+        }
+      } catch { /* 原文层可选 */ }
       if (events.length) {
         parts.push('最近提到 TA 的事：')
         parts.push(...events.map((e) => `· ${e.text}`))
