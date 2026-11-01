@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'slang', 'cleanup']
+const DEFAULT_JOBS = ['events', 'people', 'slang', 'cleanup', 'index']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -428,7 +428,30 @@ export function apply(ctx) {
     return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length }
   }
 
-  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, cleanup: jobCleanup }
+  /* ── index：补建向量索引（最后一步）───────────────── */
+
+  /**
+   * 补向量：嵌入服务是后接上的时候，之前写的块没有向量；
+   * 它们只能靠字面搜到。这一步把缺的补上。
+   * 手动接口：`dream.run({ jobs: ['index'] })`。
+   */
+  async function jobIndex({ now, force = false }) {
+    const day = dayKey(now)
+    if (!force && alreadyRan(day, 'index')) return { job: 'index', skipped: 'already-ran' }
+    const missing = memory.missingVectors({ limit: 200 })
+    if (!missing.length) return { job: 'index', skipped: 'nothing-missing' }
+    let indexed = 0
+    for (const item of missing) {
+      try {
+        const ok = await memory.index(item.id, item.text)
+        if (ok) indexed += 1
+      } catch { /* 单条失败不影响其他 */ }
+    }
+    recordRun(day, 'index', { indexed, missing: missing.length }, now)
+    return { job: 'index', ok: true, indexed, missing: missing.length }
+  }
+
+  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, cleanup: jobCleanup, index: jobIndex }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。

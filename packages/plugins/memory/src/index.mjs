@@ -325,6 +325,20 @@ export function apply(ctx) {
       }
     },
 
+    /** 列出还没向量化的条目（整理轮/补建索引用）。 */
+    missingVectors({ limit = 100 } = {}) {
+      // 只给"可被回忆"的命名空间补向量：
+      // 梦境的运行记录（dream-run）之类不参与检索，没必要占嵌入额度。
+      const rows = db.prepare(`
+        SELECT i.id, i.namespace, i.kind, i.text FROM mem_items i
+        JOIN mem_ns n ON n.id = i.namespace
+        LEFT JOIN mem_vec v ON v.item_id = i.id
+        WHERE v.item_id IS NULL AND i.text <> '' AND n.recallable = 1
+        ORDER BY i.created_at ASC LIMIT ?
+      `).all(Math.max(1, Math.min(500, Number(limit) || 100)))
+      return rows.map((r) => ({ id: Number(r.id), namespace: r.namespace, kind: r.kind, text: r.text }))
+    },
+
     async index(id, text) {
       const vec = await embed(text)
       if (vec) saveVec(Number(id), vec)
