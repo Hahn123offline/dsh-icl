@@ -32,12 +32,13 @@ export function apply(ctx) {
       properties: {
         qq: { type: 'string', description: 'QQ number (exact).' },
         idKind: { type: 'string', description: 'Other account kind, e.g. mc / steam.' },
+        subjectKind: { type: 'string', description: 'Generic identity kind, e.g. qq / mc / discord.' },
         value: { type: 'string', description: 'Account value for idKind.' },
         name: { type: 'string', description: 'A name or nickname; returns candidates.' },
       },
     },
-    async execute({ qq = null, idKind = null, value = null, name = null } = {}) {
-      const found = memory.findPerson({ qq, idKind, value, name })
+    async execute({ qq = null, idKind = null, value = null, name = null, subjectKind = null } = {}) {
+      const found = memory.findPerson({ qq, idKind, value, name, subject: subjectKind && value ? { kind: subjectKind, value } : null })
       const people = found.people ?? []
       if (!people.length) {
         return { text: qq ? `还没有 ${qq} 的档案（认识之后、做梦整理过才会有）。` : '还没有这个人的档案。' }

@@ -282,6 +282,8 @@ export function apply(ctx) {
         key,
         text: profile.slice(0, 800),
         data: {
+          // 通用身份：以后 mc/discord/自定义都用同一套字段
+          subject: { kind: 'qq', value: qq },
           qq,
           ids: (() => {
             const ids = Array.isArray(parsed?.ids)

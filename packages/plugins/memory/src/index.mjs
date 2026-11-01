@@ -346,15 +346,18 @@ export function apply(ctx) {
      * 身份解析：先精确匹配账号，再按名字在档案正文里找候选。
      * 它不做"语义回忆"，只回答"这个人是谁"。
      */
-    findPerson({ qq = null, idKind = null, value = null, name = null, limit = 5 } = {}) {
+    findPerson({ qq = null, idKind = null, value = null, name = null, subject = null, limit = 5 } = {}) {
       const blocks = db.prepare("SELECT * FROM mem_items WHERE namespace = 'person' AND kind = 'block'").all().map(rowToItem)
       const wanted = []
       if (qq != null) wanted.push({ kind: 'qq', value: String(qq) })
+      if (subject?.kind && subject?.value) wanted.push({ kind: String(subject.kind), value: String(subject.value) })
       if (idKind != null && value != null) wanted.push({ kind: String(idKind), value: String(value) })
       if (wanted.length) {
         const exact = blocks.filter((b) => {
           const ids = b.data?.ids ?? []
           if (ids.some((id) => wanted.some((w) => String(id.kind) === w.kind && String(id.value) === w.value))) return true
+          const subj = b.data?.subject
+          if (subj && wanted.some((w) => String(subj.kind) === w.kind && String(subj.value) === w.value)) return true
           if (wanted.some((w) => w.kind === 'qq' && b.key === `person:${w.value}`)) return true
           if (wanted.some((w) => w.kind === 'qq' && String(b.data?.qq ?? '') === w.value)) return true
           return false
