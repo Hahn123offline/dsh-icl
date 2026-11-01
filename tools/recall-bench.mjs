@@ -29,6 +29,7 @@ const args = process.argv.slice(2)
 const arg = (n, d = null) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d }
 const PER_LEVEL = Number(arg('--n', 3))
 const K = Number(arg('--k', 4))
+const REFRESH_PERSON = args.includes('--refresh-person')
 const QQ_DB = 'C:/DSH/qwenstuff/dsh-qq/state/memory.db'
 
 function latestReplayDb() {
@@ -144,6 +145,29 @@ const recallSvc = host.shared.get('recall')
 
 const norm = (s) => String(s ?? '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/g, '').replace(/\s+/g, '')
 const has = (haystack, needle) => norm(haystack).includes(norm(needle))
+
+// 人物题要从当前档案里现出：题和答案同源，否则测的是"题库是否过时"
+if (REFRESH_PERSON) {
+  const personBlocks = mem.query({ namespace: 'person', kind: 'block', limit: 50 })
+  const claims = personBlocks.flatMap((b) => (b.data?.claims ?? []).map((c) => String(c.text)))
+  if (claims.length) {
+    const out2 = await chat({
+      messages: [
+        { role: 'system', content: '根据这些人物档案陈述，出 5 道回忆题。每题输出 {"q":"问题","expect":"逐字取自某条陈述的短片段（不超过15字）"}。只输出 JSON 数组。' },
+        { role: 'user', content: claims.map((c) => '- ' + c).join('\n') },
+      ],
+      maxTokens: 800,
+    })
+    const fresh = parseArray(out2).map((x) => ({ level: 'person', q: String(x.q), expect: String(x.expect), evidence: [] })).filter((x) => x.q && x.expect)
+    if (fresh.length) {
+      const others = questions.filter((q) => q.level !== 'person')
+      questions.length = 0
+      questions.push(...others, ...fresh)
+      fs.writeFileSync(FIXTURE, JSON.stringify(questions, null, 2))
+      console.log('人物题已按当前档案重出：', fresh.length)
+    }
+  }
+}
 
 const allText = ['event', 'person', 'slang']
   .flatMap((ns) => mem.query({ namespace: ns, kind: 'block', limit: 500 }))

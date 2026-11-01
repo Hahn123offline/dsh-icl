@@ -81,47 +81,6 @@
     ]
   },
   {
-    "level": "person",
-    "q": "周子涵的群昵称/称呼是什么？",
-    "expect": "周子涵2025302114061",
-    "evidence": [
-      1,
-      3
-    ]
-  },
-  {
-    "level": "person",
-    "q": "郑皓元对周子涵的态度是什么？",
-    "expect": "不给他写",
-    "evidence": [
-      48
-    ]
-  },
-  {
-    "level": "person",
-    "q": "Hahn123（离线版）正在忙什么？",
-    "expect": "继续肝作业",
-    "evidence": [
-      132
-    ]
-  },
-  {
-    "level": "person",
-    "q": "周子涵叫我什么昵称？",
-    "expect": "肥鱼本鱼",
-    "evidence": [
-      3
-    ]
-  },
-  {
-    "level": "person",
-    "q": "Hahn123（离线版）在复习哪两门课？",
-    "expect": "离散和计组",
-    "evidence": [
-      139
-    ]
-  },
-  {
     "level": "overall",
     "q": "Hahn123（离线版）为了让AI拥有跨会话记忆，最初做了什么？",
     "expect": "给你做了记忆",
@@ -160,5 +119,35 @@
     "evidence": [
       112
     ]
+  },
+  {
+    "level": "person",
+    "q": "周子涵把什么放行后会喊我？",
+    "expect": "B站那套工具",
+    "evidence": []
+  },
+  {
+    "level": "person",
+    "q": "周子涵把我的什么目录锁着？",
+    "expect": "state 目录被锁着",
+    "evidence": []
+  },
+  {
+    "level": "person",
+    "q": "周子涵给我加了哪两种记忆？",
+    "expect": "长期记忆和图片记忆",
+    "evidence": []
+  },
+  {
+    "level": "person",
+    "q": "曾嘉睿刚吃完什么回宿舍？",
+    "expect": "鸡蛋灌饼",
+    "evidence": []
+  },
+  {
+    "level": "person",
+    "q": "郑皓元在群里叫谁？",
+    "expect": "乐乐",
+    "evidence": []
   }
 ]
