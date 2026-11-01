@@ -189,15 +189,7 @@ export function apply(ctx) {
       if (!qq) continue
       byQq.set(qq, [...(byQq.get(qq) ?? []), note])
     }
-    // 没有新笔记时：薄档案放了 ≥ 2 天才重写一次，
-    // 否则每天硬写会越写越飘。
-    const provisionalStale = memory.query({ namespace: 'person', kind: 'block', limit: 200 })
-      .filter((b) => b.data?.provisional === true && (now - Number(b.data?.rewrittenAt ?? b.createdAt ?? 0)) >= 2 * 24 * 3600_000)
-    for (const block of provisionalStale) {
-      const qq = String(block.data?.qq ?? '').trim()
-      if (qq && !byQq.has(qq)) byQq.set(qq, [])
-    }
-    if (!notes.length && !provisionalStale.length) return { job: 'people', skipped: 'no-notes' }
+    if (!notes.length) return { job: 'people', skipped: 'no-notes' }
     const written = []
     const skippedPeople = []
     for (const [qq, list] of byQq) {
@@ -422,14 +414,14 @@ export function apply(ctx) {
     for (const ns of ['event', 'person', 'slang']) {
       for (const b of memory.query({ namespace: ns, kind: 'block', limit: 60 })) {
         if (b.data?.superseded === true) continue
-        blocks.push({ ns, key: b.key, id: b.id, text: b.text, body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
+        blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
       }
     }
     if (blocks.length < 2 && !pendingResolves.length) return { job: 'cleanup', skipped: 'nothing-to-do' }
 
     const payload = [
       '现有记忆块（key | 类型 | 摘要 | 正文）：',
-      ...blocks.map((b) => `- ${b.key} | ${b.ns} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
+      ...blocks.map((b) => `- ${b.key} | ${b.ns}${b.people.length ? ` | people=${b.people.join(',')}` : ''} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
       pendingResolves.length
         ? '\n主会话的纠正（必须处理）：\n' + pendingResolves.map((n) => {
           const about = n.data?.about
@@ -451,7 +443,8 @@ export function apply(ctx) {
           '规则：',
           '· 只合并真正说的是同一件事/同一个人的块；没把握就不合并。',
           '· 两个块互相矛盾且分不清对错：合并为一块并把 uncertain 设为 true，正文里写明"不确定"。',
-          '· 主会话的纠正优先：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
+          '· 人物块可以用 people 里含该 QQ 的事件块来补充或修正；改写时整块重写，不要丢旧信息。',
+          '· 主会话的纠正优,：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
           '· 合并后的 text 一行、body 一小段；删掉的 key 不要再出现在别的操作里。',
           '· 不要为了“长度差不多”而合并：小块没有矛盾就原样留着。',
           '· 目标是去重与消除矛盾，不是把所有块整理成一个样子。',
@@ -511,6 +504,10 @@ export function apply(ctx) {
       if (!existing) continue
       if (op?.text) memory.patch(existing.id, { text: String(op.text).slice(0, 400) })
       if (op?.body) memory.patch(existing.id, { data: { ...(existing.data ?? {}), body: String(op.body).slice(0, 4000) } })
+      if (Array.isArray(op?.evidence) && op.evidence.length) {
+        const ev = op.evidence.map((x) => ({ type: 'block', id: Number(x) })).filter((x) => Number.isFinite(x.id))
+        if (ev.length) memory.patch(existing.id, { data: { ...(existing.data ?? {}), evidence: [...(existing.data?.evidence ?? []), ...ev] } })
+      }
       rewriteCount += 1
     }
 
