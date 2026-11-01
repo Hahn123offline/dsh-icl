@@ -1,0 +1,92 @@
+{
+  "source": "qq",
+  "report": [
+    {
+      "day": "2026-10-22",
+      "messages": 43,
+      "extracted": 5,
+      "jobs": {
+        "events": 3,
+        "people": 0,
+        "slang": "no-notes",
+        "cleanup": 1,
+        "index": 5
+      },
+      "ok": true
+    },
+    {
+      "day": "2026-10-23",
+      "messages": 85,
+      "extracted": 8,
+      "jobs": {
+        "events": 2,
+        "people": 0,
+        "slang": 2,
+        "cleanup": 1,
+        "index": 10
+      },
+      "ok": true
+    },
+    {
+      "day": "2026-10-24",
+      "messages": 16,
+      "extracted": 2,
+      "jobs": {
+        "events": 1,
+        "people": 0,
+        "slang": "no-notes",
+        "cleanup": 0,
+        "index": 2
+      },
+      "ok": true
+    },
+    {
+      "day": "2026-10-25",
+      "messages": 15,
+      "extracted": 3,
+      "jobs": {
+        "events": 0,
+        "people": 0,
+        "slang": "no-notes",
+        "cleanup": 0,
+        "index": 3
+      },
+      "ok": true
+    },
+    {
+      "day": "2026-10-26",
+      "messages": 11,
+      "extracted": 6,
+      "jobs": {
+        "events": 3,
+        "people": 0,
+        "slang": "no-notes",
+        "cleanup": 0,
+        "index": 6
+      },
+      "ok": true
+    },
+    {
+      "probes": 8,
+      "hit": 8
+    }
+  ],
+  "logs": [
+    "源：qq  消息：170  天数：5  范围：2026-10-22 → 2026-10-23 → 2026-10-24 → 2026-10-25 → 2026-10-26",
+    "2026-10-22 消息  43 → 抽取  5 | {\"events\":3,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":1,\"index\":5}",
+    "2026-10-23 消息  85 → 抽取  8 | {\"events\":2,\"people\":0,\"slang\":2,\"cleanup\":1,\"index\":10}",
+    "2026-10-24 消息  16 → 抽取  2 | {\"events\":1,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":2}",
+    "2026-10-25 消息  15 → 抽取  3 | {\"events\":0,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":3}",
+    "2026-10-26 消息  11 → 抽取  6 | {\"events\":3,\"people\":0,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":6}",
+    "\n库：items 59  vectors 38",
+    " ✓ 查寝那天，曾嘉睿正在做什么？ → 期望含「灌饼」",
+    " ✓ 周子涵放开我去 qwenstuff 做了什么？ → 期望含「写测试文件」",
+    " ✓ 周子涵把整个环境搬进新 workspace 后，哪个目录一直锁着？ → 期望含「state」",
+    " ✓ 群里把我的哪项功能直接禁了？ → 期望含「PowerShell」",
+    " ✓ 周子涵拿什么把我的环境搬进了虚拟机？ → 期望含「Token」",
+    " ✓ Hahn123 说后端正在猛猛换什么？ → 期望含「架构」",
+    " ✓ Hahn123 说给小千加什么之后就不会换人了？ → 期望含「稳定人格核心」",
+    " ✓ 周子涵对我的昵称“鱼鱼”来自哪张梗图？ → 期望含「鱼」",
+    "\n召回命中：8/8"
+  ]
+}

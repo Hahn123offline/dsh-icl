@@ -474,3 +474,44 @@ message → memory.search(query=message, minScore, limit)
 另：工具调用后**不**补召回（只在用户消息时），已确认。
 "recall 想不起来就多轮" 这类行为要求不进工具描述，
 属于上线前的完整人格提示词 / 仿真契约那一层。
+
+---
+
+## 十九、按天回放重建（两步，2026-11-01）
+
+工具：`node tools/replay.mjs --source qq|dsh [--session ...] --real`
+只读原始消息；`summaries` / 已总结段落一律不碰。
+
+### 第一步：QQ 聊天重建（真实日志）
+
+数据：`dsh-qq/state/memory.db` 的 `messages`，170 条原文，
+2026-10-22 → 10-26（Asia/Hong_Kong 切天）。
+
+```
+10-22 消息 43 → 抽取 5  | events 3, people 0, slang 0, cleanup 1, index 5
+10-23 消息 85 → 抽取 8  | events 2, people 0, slang 2, cleanup 1, index 10
+10-24 消息 16 → 抽取 2  | events 1, people 0, cleanup 0, index 2
+10-25 消息 15 → 抽取 3  | events 0, people 0, index 3
+10-26 消息 11 → 抽取 6  | events 3, people 0, index 6
+库：items 59  vectors 38
+自动出题 8 道 → recall 命中 8/8
+```
+
+### 第二步：一般会话重建（coding，不带角色提示词）
+
+会话：`session-8b86faa5`（审 focus-core 的一次），7 条人话 / 1 天。
+
+```
+抽取 9 条 → events 5 块，库 17 items / 14 vectors
+自动出题 8 道 → recall 命中 8/8
+```
+
+结论：**不带人格提示词时，记忆系统作为一个干净的长期记忆库也成立**——coding 会话同样能形成可召回的块。
+
+### 这次暴露的三个问题
+
+1. **人物块难以形成**：两次回放人物块都是 0。抽取出来的 person 笔记很少，
+   而且人物 job 要求三段式档案，材料不足就不写块（设计如此）。
+   待定：两三条笔记到底该不该先建一份"薄档案"。
+2. **抽取不稳定**：10-25 抽 0 条、下一次 3 条；模型对"值得记"的判断有波动。
+3. **JSON 尾巴**：模型有时在数组后面加解释，已改成"取第一个平衡的数组"。
