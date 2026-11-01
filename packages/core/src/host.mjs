@@ -97,6 +97,8 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         isPaused: () => model.isPaused(),
       },
       config: record.config ?? {},
+      /** 统一的 HTTP 出口：插件不直接碰 globalThis.fetch，方便测试与代理 */
+      fetch: (...args) => fetchImpl(...args),
     }
   }
 

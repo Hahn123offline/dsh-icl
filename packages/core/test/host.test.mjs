@@ -25,14 +25,14 @@ test('启用插件后，工具出现在这一轮的工具面上', async () => {
   host.registerPlugin(worldManifest, worldState)
   assert.deepEqual(session.toolNames(), [], '启用前没有任何工具')
   await host.enable('world-state')
-  assert.deepEqual(session.toolNames(), ['world_now'])
+  assert.deepEqual(session.toolNames(), ['world_status'])
 })
 
 test('停用插件后，工具立刻从工具面消失（动态工具面）', async () => {
   const { host, session } = setup()
   host.registerPlugin(worldManifest, worldState)
   await host.enable('world-state')
-  assert.ok(session.toolNames().includes('world_now'))
+  assert.ok(session.toolNames().includes('world_status'))
   host.disable('world-state')
   assert.deepEqual(session.toolNames(), [], '卸载后必须一个都不剩')
 })

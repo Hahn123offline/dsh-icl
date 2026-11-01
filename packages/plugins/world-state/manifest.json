@@ -2,7 +2,7 @@
   "id": "world-state",
   "version": "0.1.0",
   "entry": "./src/index.mjs",
-  "tools": ["world_now"],
+  "tools": ["world_status"],
   "slots": [],
   "focus": {}
 }

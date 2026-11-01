@@ -4,7 +4,7 @@
 // 然后给所有声明了插槽的插件自动接线。它**不**决定插件是否启用，也不写死任何插件的模型。
 export const name = 'model-manager'
 
-function providerFrom(entry) {
+function providerFrom(entry, fetchImpl) {
   const kind = String(entry.kind ?? 'chat')
   const shape = { ...(entry.shape ?? {}) }
   if (kind === 'chat') {
@@ -28,7 +28,7 @@ function providerFrom(entry) {
       async call(request) {
         const base = String(entry.baseUrl ?? '').replace(/\/+$/, '')
         if (!base) throw new Error(`嵌入服务 ${entry.id} 缺少 baseUrl`)
-        const res = await globalThis.fetch(`${base}/embeddings`, {
+        const res = await fetchImpl(`${base}/embeddings`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...(entry.apiKey ? { authorization: `Bearer ${entry.apiKey}` } : {}) },
           body: JSON.stringify({ model: entry.model, input: request?.input ?? '' }),
@@ -48,7 +48,7 @@ export function apply(ctx) {
   const registered = []
   for (const entry of entries) {
     if (!entry?.id) continue
-    const provider = providerFrom({ ...entry, _chat: (req) => ctx.model.chat(req) })
+    const provider = providerFrom({ ...entry, _chat: (req) => ctx.model.chat(req) }, ctx.fetch)
     ctx.slots.registerProvider(provider)
     registered.push({ id: provider.id, kind: provider.kind, shape: provider.shape })
   }
