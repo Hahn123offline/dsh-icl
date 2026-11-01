@@ -242,7 +242,7 @@ export function apply(ctx) {
             '',
             '材料少就写得短：只写一句也可以，但那一句必须能认人。',
             '',
-            '输出一个 JSON 对象：{"profile": "...", "facts": [{"text": "...", "since": "YYYY-MM-DD"}], "aliases": [], "ids": [{"kind": "qq|mc|steam|其它", "value": "账号"}], "familiarity": "stranger|acquaintance|friend|close"}。只输出 JSON。',
+            '{"profile": "...", "facts": [], "aliases": [], "ids": [{"kind": "qq", "value": "..."}], "familiarity": "...", "evidence": [1, 2]}。只输出 JSON。',
             '',
             '注意：',
             '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
@@ -265,7 +265,18 @@ export function apply(ctx) {
       }
       if (!profile) { skippedPeople.push(qq); continue }
       const thin = list.length < 3 || profile.length < 60
-      const evidence = validEvidence(parsed?.evidence, [...list, ...pastNotes])
+      let evidence = validEvidence(parsed?.evidence, [...list, ...pastNotes])
+      // 模型偶尔会漏掉 evidence：问一次"你用了哪几条"，而不是直接认为没有出处。
+      if (!evidence.length && (list.length || pastNotes.length)) {
+        try {
+          const raw2 = await ask({
+            instruction: '只输出 JSON：{"evidence": [编号]}。指出上面材料里支持这份档案的笔记编号，不要解释。',
+            payload: [...list, ...pastNotes].map((n) => `[${n.id}] ${n.text}`).join('\n'),
+            maxTokens: 200,
+          })
+          evidence = validEvidence(parseBlocks(raw2)?.[0]?.evidence ?? parseBlocks(raw2)?.[0], [...list, ...pastNotes])
+        } catch { /* 补不上就当没有 */ }
+      }
       const created = memory.put({
         namespace: 'person',
         kind: 'block',

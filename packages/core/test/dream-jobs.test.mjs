@@ -100,8 +100,8 @@ test('人物 job：按 QQ 分组、整块重写、保留旧档案做输入', asy
   assert.ok(typeof block.data.familiarity === 'string', '熟悉度要有字段')
   assert.ok(block.data.facts.length >= 1)
   // 第二次做梦时旧档案要出现在输入里
-  const system = String(chat.calls.at(-1)?.[0]?.content ?? '')
-  assert.match(system, /人物档案/)
+  const systems = chat.calls.map((m) => String(m?.[0]?.content ?? ''))
+  assert.ok(systems.some((s) => /人物档案/.test(s)), '要有一次是写档案的请求')
 })
 
 test('人物：材料少也要写薄档案，标为 provisional', async () => {
