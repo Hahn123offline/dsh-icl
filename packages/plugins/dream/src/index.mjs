@@ -15,14 +15,13 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const rhythm = ctx.services.require('rhythm')
   const slot = ctx.manifest.slots?.[0]?.id ?? 'dream-chat'
-  const light = ctx.services.get('light-memory')
   const session = String(ctx.config.sessionId ?? 'default')
+  // 从事件命名空间里取今天的主动记忆（kind=note）。
+  // 以后人物/梗会各自成 job，现在只做事件这一轮。
 
   async function run({ now = ctx.now() } = {}) {
     const { start, end } = dayRange(now)
-    const notes = light
-      ? light.today({ now })
-      : memory.query({ namespace: `light:${session}`, kind: 'note', since: start, until: end, limit: 500 })
+    const notes = memory.query({ namespace: 'event', kind: 'note', since: start, until: end, limit: 500 })
     if (!notes.length) return { ok: true, skipped: 'no-notes' }
 
     const body = notes.map((n) => `· ${n.text}`).join('\n')
@@ -42,8 +41,8 @@ export function apply(ctx) {
     if (!text) return { ok: false, error: 'empty-summary' }
 
     const created = memory.put({
-      namespace: `dream:${session}`,
-      kind: 'summary',
+      namespace: 'event',
+      kind: 'block',
       key: `dream:${start}`,
       text,
       data: { from: start, to: end, notes: notes.length },

@@ -1,5 +1,5 @@
 {
-  "id": "light-memory",
+  "id": "recall",
   "version": "0.1.0",
   "entry": "./src/index.mjs",
   "tools": ["remember", "recall", "forget"],

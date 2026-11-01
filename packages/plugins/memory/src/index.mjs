@@ -1,10 +1,10 @@
 // 记忆插件：SQLite 单文件 + 命名空间，是"模型上下文之外"的唯一真实源。
 //
-// 规矩（架构决定）：
-//   · 只提供 put / query / search / remove 四个动作，不暴露任何"业务语义"
-//   · 不同插件用**不同命名空间**，互不污染；会话可以有自己的命名空间
-//   · 嵌入是可选的：声明 embed-text 插槽，由模型管理插件按形状接线；
-//     没接线就退化成关键词检索，不能因此坏掉
+// 它只做存储原语，**不理解任何业务**：
+//   · 命名空间由使用者注册（事件/人物/梗/回忆游标……），注册时声明标签、可否被回忆、半衰期
+//   · 记录只有两种：note（主动记下）与 block（沉淀后的块），由 kind 字段区分
+//   · 权重/遗忘在这里算（因为它是存储层的事实），但**怎么用**由调用方决定
+//   · 嵌入可选：插槽接上就向量化，没接上就退化成关键词，不报错
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -18,6 +18,16 @@ export function apply(ctx) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
   db.exec(`
+    CREATE TABLE IF NOT EXISTS mem_ns (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      recallable INTEGER NOT NULL DEFAULT 1,
+      half_life_days REAL NOT NULL DEFAULT 30,
+      retention TEXT,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      owner TEXT,
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS mem_items (
       id INTEGER PRIMARY KEY,
       namespace TEXT NOT NULL,
@@ -25,6 +35,9 @@ export function apply(ctx) {
       key TEXT,
       text TEXT NOT NULL,
       data TEXT,
+      weight REAL NOT NULL DEFAULT 1,
+      recall_count INTEGER NOT NULL DEFAULT 0,
+      last_recalled_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -47,6 +60,9 @@ export function apply(ctx) {
       key: row.key,
       text: row.text,
       data: row.data ? JSON.parse(row.data) : null,
+      weight: Number(row.weight ?? 1),
+      recallCount: Number(row.recall_count ?? 0),
+      lastRecalledAt: row.last_recalled_at == null ? null : Number(row.last_recalled_at),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     }
@@ -80,27 +96,57 @@ export function apply(ctx) {
   }
 
   const api = {
-    put({ namespace, kind = 'note', key = null, text = '', data = null, now = ctx.now() } = {}) {
+    /** 注册命名空间。只有注册过的命名空间才允许写入。 */
+    registerNamespace({ id, label = null, recallable = true, halfLifeDays = 30, retention = null, schemaVersion = 1, owner = null } = {}) {
+      const ns = String(id ?? '')
+      if (!/^[a-z][a-z0-9:_-]*$/i.test(ns)) throw new Error(`命名空间名不合法：${ns}`)
+      const existing = db.prepare('SELECT * FROM mem_ns WHERE id = ?').get(ns)
+      if (existing) return { id: ns, already: true, label: existing.label, recallable: Boolean(existing.recallable) }
+      db.prepare('INSERT INTO mem_ns (id, label, recallable, half_life_days, retention, schema_version, owner, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(ns, String(label ?? ns), recallable ? 1 : 0, Number(halfLifeDays) || 30, retention == null ? null : String(retention), Number(schemaVersion) || 1, owner == null ? null : String(owner), ctx.now())
+      return { id: ns, already: false }
+    },
+
+    namespaces() {
+      return db.prepare('SELECT * FROM mem_ns ORDER BY id').all().map((row) => ({
+        id: row.id,
+        label: row.label,
+        recallable: Boolean(row.recallable),
+        halfLifeDays: Number(row.half_life_days),
+        retention: row.retention,
+        schemaVersion: Number(row.schema_version),
+        owner: row.owner,
+        count: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_items WHERE namespace = ?').get(row.id).c),
+      }))
+    },
+
+    namespaceInfo(id) {
+      const row = db.prepare('SELECT * FROM mem_ns WHERE id = ?').get(String(id))
+      return row ? { id: row.id, label: row.label, recallable: Boolean(row.recallable), halfLifeDays: Number(row.half_life_days), retention: row.retention } : null
+    },
+
+    put({ namespace, kind = 'note', key = null, text = '', data = null, weight = 1, now = ctx.now() } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.put 需要 namespace')
+      if (!db.prepare('SELECT 1 FROM mem_ns WHERE id = ?').get(ns)) throw new Error(`命名空间没有注册：${ns}`)
       const body = String(text ?? '')
       if (!body.trim() && data == null) throw new Error('memory.put 需要 text 或 data')
       const at = Number(now)
       if (key != null) {
-        const existing = db.prepare('SELECT id FROM mem_items WHERE namespace = ? AND key = ?').get(ns, String(key))
-        if (existing) {
-          db.prepare('UPDATE mem_items SET kind = ?, text = ?, data = ?, updated_at = ? WHERE id = ?')
-            .run(String(kind), body, data == null ? null : JSON.stringify(data), at, existing.id)
-          return { id: Number(existing.id), updated: true }
+        const hit = db.prepare('SELECT id FROM mem_items WHERE namespace = ? AND key = ?').get(ns, String(key))
+        if (hit) {
+          db.prepare('UPDATE mem_items SET kind = ?, text = ?, data = ?, weight = ?, updated_at = ? WHERE id = ?')
+            .run(String(kind), body, data == null ? null : JSON.stringify(data), Number(weight) || 1, at, hit.id)
+          return { id: Number(hit.id), updated: true }
         }
       }
-      const info = db.prepare('INSERT INTO mem_items (namespace, kind, key, text, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(ns, String(kind), key == null ? null : String(key), body, data == null ? null : JSON.stringify(data), at, at)
+      const info = db.prepare('INSERT INTO mem_items (namespace, kind, key, text, data, weight, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(ns, String(kind), key == null ? null : String(key), body, data == null ? null : JSON.stringify(data), Number(weight) || 1, at, at)
       return { id: Number(info.lastInsertRowid), updated: false }
     },
 
-    /** 按命名空间/种类/时间取原文（梦境与召回用）。 */
-    query({ namespace, kind = null, limit = 50, since = null, until = null } = {}) {
+    /** 原始列表（不做排序/评分）。 */
+    query({ namespace, kind = null, since = null, until = null, limit = 50 } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.query 需要 namespace')
       const where = ['namespace = ?']
@@ -112,29 +158,56 @@ export function apply(ctx) {
       return db.prepare(`SELECT * FROM mem_items WHERE ${where.join(' AND ')} ORDER BY created_at ASC LIMIT ?`).all(...args).map(rowToItem)
     },
 
-    /** 检索：有嵌入用余弦，没有就退化成关键词。 */
-    async search({ namespace, query = '', limit = 8 } = {}) {
-      const ns = String(namespace ?? '')
-      if (!ns) throw new Error('memory.search 需要 namespace')
-      const rows = db.prepare('SELECT * FROM mem_items WHERE namespace = ? ORDER BY created_at DESC LIMIT 500').all(ns)
+    /**
+     * 检索（带评分）：相似度 × 权重 × 时间衰减。
+     * @returns {Promise<Array<{item:object, score:number}>>}
+     */
+    async search({ namespace = null, namespaces = null, query = '', limit = 8, includeArchive = false, now = ctx.now(), minScore = null } = {}) {
+      const list = namespaces ?? (namespace == null ? null : [namespace])
+      let nsRows = list
+        ? list.map((id) => api.namespaceInfo(id)).filter(Boolean)
+        : db.prepare('SELECT * FROM mem_ns').all().map((row) => ({ id: row.id, recallable: Boolean(row.recallable), halfLifeDays: Number(row.half_life_days) }))
+      if (!includeArchive) nsRows = nsRows.filter((row) => row.recallable !== false)
+      const nsIds = nsRows.map((row) => row.id)
+      if (!nsIds.length) return []
+      const placeholders = nsIds.map(() => '?').join(',')
+      const rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`).all(...nsIds)
       if (!rows.length) return []
-      const vec = await embed(query)
-      if (vec) {
-        const scored = []
-        for (const row of rows) {
-          const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
-          if (!hit) continue
-          const f32 = new Float32Array(new Uint8Array(hit.vec).buffer)
-          scored.push({ item: rowToItem(row), score: cosine(vec, f32) })
-        }
-        if (scored.length) return scored.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Number(limit) || 8))
-      }
+
+      const halfLife = new Map(nsRows.map((row) => [row.id, Number(row.halfLifeDays) || 30]))
+      const qvec = await embed(query)
       const needle = String(query ?? '').toLowerCase()
-      if (!needle) return rows.slice(0, limit).map((row) => ({ item: rowToItem(row), score: 0 }))
-      return rows
-        .filter((row) => String(row.text).toLowerCase().includes(needle))
-        .slice(0, Math.max(1, Number(limit) || 8))
-        .map((row) => ({ item: rowToItem(row), score: 1 }))
+      const scored = []
+      for (const row of rows) {
+        const item = rowToItem(row)
+        let sim = 0
+        if (qvec) {
+          const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
+          if (hit) sim = cosine(qvec, new Float32Array(new Uint8Array(hit.vec).buffer))
+        } else if (needle) {
+          sim = item.text.toLowerCase().includes(needle) ? 1 : 0
+        } else {
+          sim = 1 // 无查询 = 按"新鲜度/权重"排
+        }
+        if (sim <= 0) continue
+        const anchor = item.lastRecalledAt ?? item.createdAt
+        const ageDays = Math.max(0, (Number(now) - anchor) / 86_400_000)
+        const hl = halfLife.get(item.namespace) ?? 30
+        const decay = Math.exp(-ageDays / Math.max(1, hl))
+        const score = sim * item.weight * decay
+        if (minScore != null && score < Number(minScore)) continue
+        scored.push({ item, score })
+      }
+      return scored.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt).slice(0, Math.max(1, Number(limit) || 8))
+    },
+
+    /** 召回成功：回到"新鲜"状态（权重回升、计时重置）。 */
+    boost(ids, { now = ctx.now(), amount = 0.2, maxWeight = 5 } = {}) {
+      const list = (Array.isArray(ids) ? ids : [ids]).map(Number).filter((n) => Number.isFinite(n))
+      let n = 0
+      const stmt = db.prepare('UPDATE mem_items SET weight = MIN(?, weight + ?), recall_count = recall_count + 1, last_recalled_at = ? WHERE id = ?')
+      for (const id of list) n += Number(stmt.run(Number(maxWeight), Number(amount) || 0, Number(now), id).changes ?? 0)
+      return { boosted: n }
     },
 
     remove({ namespace, key = null, id = null } = {}) {
@@ -149,14 +222,15 @@ export function apply(ctx) {
       return { removed: Number(info.changes ?? 0) }
     },
 
-    namespaces() {
-      return db.prepare('SELECT namespace, COUNT(*) AS count FROM mem_items GROUP BY namespace ORDER BY namespace').all()
-        .map((r) => ({ namespace: r.namespace, count: Number(r.count) }))
+    stats() {
+      return {
+        items: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_items').get().c),
+        vectors: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_vec').get().c),
+        namespaces: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_ns').get().c),
+        embedded: embedAvailable(),
+      }
     },
 
-    stats() { return { items: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_items').get().c), vectors: Number(db.prepare('SELECT COUNT(*) AS c FROM mem_vec').get().c), embedded: embedAvailable() } },
-
-    /** 给梦境用：把一条记忆向量化（异步，失败不抛）。 */
     async index(id, text) {
       const vec = await embed(text)
       if (vec) saveVec(Number(id), vec)

@@ -12,14 +12,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import * as memory from '../../plugins/memory/src/index.mjs'
-import * as light from '../../plugins/light-memory/src/index.mjs'
 import * as rhythm from '../../plugins/rhythm/src/index.mjs'
 import * as dream from '../../plugins/dream/src/index.mjs'
+import * as recall from '../../plugins/recall/src/index.mjs'
 import * as manager from '../../plugins/model-manager/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
-import lightManifest from '../../plugins/light-memory/manifest.json' with { type: 'json' }
 import rhythmManifest from '../../plugins/rhythm/manifest.json' with { type: 'json' }
 import dreamManifest from '../../plugins/dream/manifest.json' with { type: 'json' }
+import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import managerManifest from '../../plugins/model-manager/manifest.json' with { type: 'json' }
 
 function tmpRoot() {
@@ -31,7 +31,7 @@ async function setup({ providers = [] } = {}) {
   const host = createHost({ log: () => {} })
   const root = tmpRoot()
   host.registerPlugin(memoryManifest, memory, { config: { root } })
-  host.registerPlugin(lightManifest, light, { config: { sessionId: 's1' } })
+  host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '22:30' } })
   host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1' } })
   host.registerPlugin(managerManifest, manager, { config: { providers } })
@@ -44,23 +44,25 @@ test('记忆：命名空间隔离，互不相见', async () => {
   const mem = host.services.tools // 只是为了拿到 host 已启用；实际走服务
   void mem
   const memoryApi = host.shared.get('memory')
+  memoryApi.registerNamespace({ id: 'a', label: 'A' })
+  memoryApi.registerNamespace({ id: 'b', label: 'B' })
   memoryApi.put({ namespace: 'a', text: '甲的事' })
   memoryApi.put({ namespace: 'b', text: '乙的事' })
   assert.deepEqual(memoryApi.query({ namespace: 'a' }).map((r) => r.text), ['甲的事'])
   assert.deepEqual(memoryApi.query({ namespace: 'b' }).map((r) => r.text), ['乙的事'])
 })
 
-test('轻量记忆：记下的东西落在 light:<session> 命名空间，没有第二份库', async () => {
+test('主动记忆：remember 落在事件命名空间，没有第二份库', async () => {
   const { host } = await setup()
   await host.enable('memory')
-  await host.enable('light-memory')
+  await host.enable('recall')
   const tools = host.services.tools.list()
   const remember = tools.find((t) => t.name === 'remember')
   const recall = tools.find((t) => t.name === 'recall')
   assert.ok(remember && recall)
   await remember.execute({ text: '记得给他带伞' })
   const memoryApi = host.shared.get('memory')
-  const rows = memoryApi.query({ namespace: 'light:s1' })
+  const rows = memoryApi.query({ namespace: 'event', kind: 'note' })
   assert.equal(rows.length, 1)
   assert.match(rows[0].text, /带伞/)
   const out = await recall.execute({})
@@ -95,7 +97,7 @@ test('梦境：节律触发 → 读当天笔记 → 写进长期命名空间', a
   const host = createHost({ log: () => {} })
   const root = tmpRoot()
   host.registerPlugin(memoryManifest, memory, { config: { root } })
-  host.registerPlugin(lightManifest, light, { config: { sessionId: 's1' } })
+  host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '22:30' } })
   host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1' } })
   host.registerPlugin(managerManifest, manager, {
@@ -103,12 +105,12 @@ test('梦境：节律触发 → 读当天笔记 → 写进长期命名空间', a
   })
   await host.enable('model-manager')
   await host.enable('memory')
-  await host.enable('light-memory')
+  await host.enable('recall')
   await host.enable('rhythm')
   await host.enable('dream')
 
   const remember = host.services.tools.list().find((t) => t.name === 'remember')
-  await remember.execute({ text: '今天他提到想去看海' })
+  await remember.execute({ text: '今天他提到想去看海', kind: 'event' })
   // 把 chat 供应商换成假的，避免真的打网络
   host.services.slots.registerProvider({
     id: 'fake-chat-2', kind: 'chat', shape: { tools: false },
@@ -120,7 +122,7 @@ test('梦境：节律触发 → 读当天笔记 → 写进长期命名空间', a
   assert.equal(out.ok, true)
   assert.equal(out.notes, 1)
   const memoryApi = host.shared.get('memory')
-  const dreams = memoryApi.query({ namespace: 'dream:s1', kind: 'summary' })
+  const dreams = memoryApi.query({ namespace: 'event', kind: 'block' })
   assert.equal(dreams.length, 1)
   assert.match(dreams[0].text, /看海/)
 })
@@ -129,18 +131,18 @@ test('梦境：没有笔记就跳过，不产出空记忆', async () => {
   const { host } = await setup({ providers: [{ id: 'fake-chat', kind: 'chat', shape: { tools: false } }] })
   await host.enable('model-manager')
   await host.enable('memory')
-  await host.enable('light-memory')
+  await host.enable('recall')
   await host.enable('rhythm')
   await host.enable('dream')
   const out = await host.shared.get('dream').run({ now: Date.now() })
   assert.equal(out.skipped, 'no-notes')
 })
 
-test('依赖顺序：light-memory 没先启用 memory 就拒绝启用', async () => {
+test('依赖顺序：recall 没先启用 memory 就拒绝启用', async () => {
   const host = createHost({ log: () => {} })
   host.registerPlugin(memoryManifest, memory, { config: { root: tmpRoot() } })
-  host.registerPlugin(lightManifest, light, { config: { sessionId: 's1' } })
-  await assert.rejects(() => host.enable('light-memory'), /需要先启用插件：memory/)
+  host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
+  await assert.rejects(() => host.enable('recall'), /需要先启用插件：memory/)
 })
 
 test('停用插件会收回它提供的能力（避免幽灵服务）', async () => {

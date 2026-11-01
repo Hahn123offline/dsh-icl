@@ -14,6 +14,10 @@ function stamp(now) {
 export function apply(ctx) {
   const memory = ctx.services.get('memory')
   const namespace = String(ctx.config.namespace ?? 'persona')
+  if (memory) {
+    // 人格是配置，不是「回忆」：不进 recall 检索。
+    memory.registerNamespace({ id: namespace, label: '人格', recallable: false, owner: 'persona' })
+  }
   const maxVersions = Math.max(1, Number(ctx.config.maxVersions) || 50)
   let current = String(ctx.config.card ?? '')
   let versionSeq = 0
