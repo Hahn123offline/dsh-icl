@@ -69,7 +69,8 @@ export function createModelClient({ fetchImpl = globalThis.fetch, now = () => Da
         error.code = 'MODEL_PAUSED'
         throw error
       }
-      const body = { messages, stream: false, ...(maxTokens ? { max_tokens: Number(maxTokens) } : {}), ...(temperature == null ? {} : { temperature }) }
+      const extra = binding?.extraBody ?? {}
+      const body = { messages, stream: false, ...extra, ...(maxTokens ? { max_tokens: Number(maxTokens) } : {}), ...(temperature == null ? {} : { temperature }) }
       try {
         const data = await request(body, { timeoutMs })
         return String(data?.choices?.[0]?.message?.content ?? '')

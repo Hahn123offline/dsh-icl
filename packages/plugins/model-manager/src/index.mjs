@@ -8,16 +8,15 @@ function providerFrom(entry, fetchImpl) {
   const kind = String(entry.kind ?? 'chat')
   const shape = { ...(entry.shape ?? {}) }
   if (kind === 'chat') {
+    const chatFn = entry._chat
     return {
       id: String(entry.id),
       kind,
       shape,
       async call(request) {
         const messages = request?.messages ?? []
-        const text = await this._chat({ messages, maxTokens: request?.maxTokens ?? null })
-        return text
+        return chatFn({ messages, maxTokens: request?.maxTokens ?? null })
       },
-      _chat: entry._chat,
     }
   }
   if (kind === 'embedding') {
@@ -46,9 +45,27 @@ function providerFrom(entry, fetchImpl) {
 export function apply(ctx) {
   const entries = Array.isArray(ctx.config.providers) ? ctx.config.providers : []
   const registered = []
+  const skipped = []
+  let clientBound = false
   for (const entry of entries) {
     if (!entry?.id) continue
-    const provider = providerFrom({ ...entry, _chat: (req) => ctx.model.chat(req) }, ctx.fetch)
+    // 凭据只能从环境变量来；缺就跳过这个供应商，让后面合法的接上。
+    const keyEnv = entry.apiKeyEnv == null ? null : String(entry.apiKeyEnv)
+    const apiKey = keyEnv ? (process.env[keyEnv] ?? '') : (entry.apiKey ?? '')
+    if (keyEnv && !apiKey) {
+      skipped.push({ id: String(entry.id), reason: `缺环境变量 ${keyEnv}` })
+      ctx.log({ level: 'warn', msg: 'provider.skipped', id: entry.id, reason: `缺 ${keyEnv}` })
+      continue
+    }
+    // chat 供应商还要把核心模型客户端接上去（超时/暂停/401 重试都在那里）。
+    if (String(entry.kind ?? 'chat') === 'chat' && !clientBound) {
+      const extraBody = entry.disableThinking
+        ? { chat_template_kwargs: { enable_thinking: false } }
+        : (entry.extraBody ?? {})
+      ctx.model.bind({ baseUrl: entry.baseUrl, model: entry.model, apiKey, timeoutMs: entry.timeoutMs, extraBody })
+      clientBound = true
+    }
+    const provider = providerFrom({ ...entry, apiKey, _chat: (req) => ctx.model.chat(req) }, ctx.fetch)
     ctx.slots.registerProvider(provider)
     registered.push({ id: provider.id, kind: provider.kind, shape: provider.shape })
   }
@@ -58,8 +75,9 @@ export function apply(ctx) {
   ctx.slots.onChange(() => { const bound = bind(); if (bound.length) ctx.log({ msg: 'slots.bound', bound }) })
   ctx.services.provide('model-manager', {
     providers: () => registered,
+    skipped: () => skipped,
     rebind: () => bind(),
     unmatched: () => ctx.slots.unmatched(),
   })
-  ctx.log({ msg: 'model-manager.ready', providers: registered.length, bound: first })
+  ctx.log({ msg: 'model-manager.ready', providers: registered.length, skipped: skipped.length, bound: first })
 }

@@ -1,0 +1,29 @@
+{
+  "persona": "C:/DSH/qwenstuff/focus-core/大肥鱼-QQ人格卡.md",
+  "providers": [
+    {
+      "id": "deepseek",
+      "kind": "chat",
+      "shape": { "tools": false },
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    {
+      "id": "llama-swap-chat",
+      "kind": "chat",
+      "shape": { "tools": false },
+      "baseUrl": "http://127.0.0.1:8088/v1",
+      "model": "qwen35-9b",
+      "timeoutMs": 120000,
+      "disableThinking": true
+    },
+    {
+      "id": "bge-m3",
+      "kind": "embedding",
+      "shape": { "dim": 1024 },
+      "baseUrl": "http://127.0.0.1:8088/v1",
+      "model": "embed-bge-m3"
+    }
+  ]
+}
