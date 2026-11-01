@@ -189,17 +189,20 @@ export function apply(ctx) {
     const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500 }))
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
 
+    // 按"通用身份"分组：qq 只是其中一种
     const byQq = new Map()
     for (const note of notes) {
-      const qq = String(note.data?.qq ?? '').trim()
-      if (!qq) continue
-      byQq.set(qq, [...(byQq.get(qq) ?? []), note])
+      const subject = note.data?.subject ?? (note.data?.qq ? { kind: 'qq', value: String(note.data.qq) } : null)
+      if (!subject?.value) continue
+      const key = `${subject.kind}:${subject.value}`
+      byQq.set(key, [...(byQq.get(key) ?? []), { ...note, __subject: subject }])
     }
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
     const written = []
     const skippedPeople = []
     for (const [qq, list] of byQq) {
-      const key = `person:${qq}`
+      const [subjectKind, subjectValue] = (() => { const s = list[0]?.__subject ?? { kind: 'qq', value: qq }; return [s.kind, s.value] })()
+      const key = subjectKind === 'qq' ? `person:${subjectValue}` : `person:${subjectKind}:${subjectValue}`
       const existing = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).find((r) => r.key === key)
       // 人物档案要有"全局认识"：把过去提到过这个人的事件块也带上，
       // 否则每天只能拿到一句话，写出来的档案永远认不出是谁。
@@ -246,6 +249,7 @@ export function apply(ctx) {
             '· 账号（QQ、MC 账号等）写进 ids，不要写进 profile；',
             '· "和 TA 不熟"属于 familiarity，不是元叙述；',
             '· 材料里没有的账号不要猜；不要推断性别，用名字或 TA。',
+            '· ids 里的 kind 可以是 qq / mc / discord / 其它；新身份只追加，不覆盖旧的。',
             '· 不要把不同 QQ 的人当成同一个人；昵称/别名必须有明确原话（如「叫我XX」），不能由单个字猜。',
             '· 输出里要带 evidence：你用到的笔记编号数组。',
             '· claims：把 profile 里的每一句具体陈述拆开，各自带自己的 evidence；无法归因的就不要写进去。',
@@ -283,13 +287,13 @@ export function apply(ctx) {
         text: profile.slice(0, 800),
         data: {
           // 通用身份：以后 mc/discord/自定义都用同一套字段
-          subject: { kind: 'qq', value: qq },
-          qq,
+          subject: { kind: subjectKind, value: subjectValue },
+          qq: subjectKind === 'qq' ? subjectValue : null,
           ids: (() => {
             const ids = Array.isArray(parsed?.ids)
               ? parsed.ids.map((x) => ({ kind: String(x?.kind ?? ''), value: String(x?.value ?? '') })).filter((x) => x.kind && x.value).slice(0, 10)
               : ((existing?.data?.ids) ?? [])
-            if (!ids.some((x) => x.kind === 'qq' && x.value === qq)) ids.unshift({ kind: 'qq', value: qq })
+            if (!ids.some((x) => x.kind === subjectKind && x.value === subjectValue)) ids.unshift({ kind: subjectKind, value: subjectValue })
             return ids
           })(),
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
