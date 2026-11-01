@@ -62,12 +62,13 @@ test('碎片跨天也不丢：第二天仍然可召回，并继续参与做梦',
   assert.equal(notes[0].data?.consolidated, undefined)
 })
 
-test('人物材料不足以成块时，碎片同样保留并可召回', async () => {
+test('人物材料不足时也要建档（薄档案），且笔记不丢', async () => {
   const { tools, memory, dream } = await setup({ script: (system) => (system.includes('人物档案') ? JSON.stringify({ profile: '' }) : '[]') })
   await tools.remember.execute({ text: '他好像叫什么来着', kind: 'person', qq: '99' })
-  await dream.run({ now: Date.now(), jobs: ['people'] })
-  const notes = memory.query({ namespace: 'person', kind: 'note' })
-  assert.equal(notes[0].data?.consolidated, undefined, '跳过时不能标已消化')
+  const out = await dream.run({ now: Date.now(), jobs: ['people'] })
+  assert.equal(out.results[0].blocks, 1, '有材料就要建档')
+  const block = memory.query({ namespace: 'person', kind: 'block' })[0]
+  assert.match(block.data.profile, /好像叫什么/, '空档案要用笔记原文兜底')
   const recalled = await tools.recall.execute({ kind: 'person' })
-  assert.match(recalled.text, /他好像叫什么来着/)
+  assert.match(recalled.text, /好像叫什么/)
 })
