@@ -140,7 +140,7 @@ export function createContextService() {
  * 工具面：把"已启用插件声明的工具"整理成可注入的集合。
  * 它不注册工具（那是 tools 的事），只回答"现在应该给模型看哪些"。
  */
-export function createToolSurface({ tools, plugins }) {
+export function createToolSurface({ tools, plugins, presets = null }) {
   const listeners = new Set()
   const notify = () => { for (const fn of listeners) { try { fn() } catch { /* ignore */ } } }
   return {
@@ -156,13 +156,17 @@ export function createToolSurface({ tools, plugins }) {
     list({ preset = null } = {}) {
       const owners = this.owners()
       const enabled = new Set(plugins().filter((p) => p.enabled).map((p) => p.id))
-      const presets = new Map(plugins().map((p) => [p.id, p.manifest?.preset ?? null]))
+      // 预设来自我们自己的服务；null 表示"全部插件"
+      const allowed = presets
+        ? (preset && preset !== presets.active() ? preset : presets.active())
+        : null
+      const allow = allowed && allowed !== 'default' ? new Set(presets.list().find((x) => x.id === allowed)?.plugins ?? []) : null
       return tools.list()
         .filter((def) => {
           const owner = owners.get(def.name)
           if (!owner || !enabled.has(owner)) return false
-          if (!preset) return true
-          return presets.get(owner) === preset
+          if (!allow) return true
+          return allow.has(owner)
         })
         .map((def) => ({ ...def, plugin: owners.get(def.name) }))
     },
@@ -175,6 +179,53 @@ export function createToolSurface({ tools, plugins }) {
     },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
     notify,
+  }
+}
+
+
+/* ───────────────────────────── presets ───────────────────────────── */
+
+/**
+ * 我们自己的工具面预设。和 DSH 的 preset 无关——那个在会话创建时绑死，
+ * 这里可以运行中切换，插件启停即可兑现。
+ *
+ * 规则：插件 manifest 没写 presets 的，属于所有预设（默认全量）。
+ */
+export function createPresetService({ plugins } = {}) {
+  const presets = new Map()
+  let activeId = 'default'
+  presets.set('default', { id: 'default', label: '默认（全部插件）', allow: null })
+
+  function pluginIds(presetId) {
+    const preset = presets.get(String(presetId))
+    if (!preset) return null
+    if (preset.allow === null) return null // null = 全部
+    const allow = new Set(preset.allow)
+    return [...plugins()]
+      .filter((p) => allow.has(p.id))
+      .filter((p) => {
+        const declared = p.manifest?.presets
+        return !declared || declared.includes(presetId)
+      })
+      .map((p) => p.id)
+  }
+
+  return {
+    list() { return [...presets.values()].map((p) => ({ ...p, plugins: pluginIds(p.id) })) },
+    active() { return activeId },
+    use(id) {
+      if (!presets.has(String(id))) throw new Error(`没有这个预设：${id}`)
+      activeId = String(id)
+      return { active: activeId }
+    },
+    define({ id, label = null, allow = null } = {}) {
+      const key = String(id ?? '')
+      if (!key) throw new Error('预设需要 id')
+      presets.set(key, { id: key, label: label ?? key, allow: allow == null ? null : allow.map(String) })
+      return { id: key }
+    },
+    /** 当前预设允许的插件；null 表示全部。 */
+    allowed() { return pluginIds(activeId) },
   }
 }
 

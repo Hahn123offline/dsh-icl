@@ -5,7 +5,7 @@
 // 提示词段、focus 租约。没有第二套状态需要同步。
 
 import { validateManifest } from './contracts.mjs'
-import { createContextService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
+import { createContextService, createPresetService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
@@ -15,9 +15,11 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   const delivery = createDeliveryService({ now })
   const raw = createRawSourceRegistry()
   const context = createContextService()
+  const presets = createPresetService({ plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: r.enabled })) })
   const surface = createToolSurface({
     tools,
     plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: Boolean(r.enabled) })),
+    presets,
   })
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
@@ -127,7 +129,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface },
+    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface, presets },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {
