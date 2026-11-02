@@ -267,6 +267,7 @@ export function createToolRegistry({ onChange = () => {}, stampTime = null } = {
       const composed = {
         ...definition,
         name,
+        execute: stamped,
         summary: summary.slice(0, 160),
         description: composeToolDescription(definition),
       }
