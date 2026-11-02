@@ -4,28 +4,28 @@
     {
       "day": "2026-10-22",
       "messages": 43,
-      "extracted": 7,
+      "extracted": 6,
       "jobs": {
-        "events": 3,
+        "events": 1,
         "people": 3,
-        "lexicon": "no-lexicon-plugin",
+        "lexicon": 0,
         "consume": 0,
-        "cleanup": 1,
-        "index": 7
+        "cleanup": 0,
+        "index": 6
       },
       "ok": true
     },
     {
       "day": "2026-10-23",
       "messages": 85,
-      "extracted": 9,
+      "extracted": 0,
       "jobs": {
-        "events": 3,
-        "people": 3,
-        "lexicon": "no-lexicon-plugin",
+        "events": "no-notes",
+        "people": "no-notes",
+        "lexicon": 0,
         "consume": 0,
         "cleanup": 0,
-        "index": 9
+        "index": "nothing-missing"
       },
       "ok": true
     },
@@ -36,7 +36,7 @@
       "jobs": {
         "events": 1,
         "people": 1,
-        "lexicon": "no-lexicon-plugin",
+        "lexicon": 0,
         "consume": 0,
         "cleanup": 0,
         "index": 2
@@ -46,28 +46,28 @@
     {
       "day": "2026-10-25",
       "messages": 15,
-      "extracted": 0,
+      "extracted": 2,
       "jobs": {
-        "events": "no-notes",
-        "people": "no-notes",
-        "lexicon": "no-lexicon-plugin",
+        "events": 1,
+        "people": 1,
+        "lexicon": 0,
         "consume": 0,
         "cleanup": 0,
-        "index": "nothing-missing"
+        "index": 2
       },
       "ok": true
     },
     {
       "day": "2026-10-26",
       "messages": 11,
-      "extracted": 3,
+      "extracted": 5,
       "jobs": {
         "events": "no-notes",
-        "people": 2,
-        "lexicon": "no-lexicon-plugin",
+        "people": 3,
+        "lexicon": 0,
         "consume": 0,
         "cleanup": 0,
-        "index": 3
+        "index": 5
       },
       "ok": true
     },
@@ -78,20 +78,20 @@
   ],
   "logs": [
     "源：qq  消息：170  天数：5  范围：2026-10-22 → 2026-10-23 → 2026-10-24 → 2026-10-25 → 2026-10-26",
-    "2026-10-22 消息  43 → 抽取  7 | {\"events\":3,\"people\":3,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":1,\"index\":7}",
-    "2026-10-23 消息  85 → 抽取  9 | {\"events\":3,\"people\":3,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":9}",
-    "2026-10-24 消息  16 → 抽取  2 | {\"events\":1,\"people\":1,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":2}",
-    "2026-10-25 消息  15 → 抽取  0 | {\"events\":\"no-notes\",\"people\":\"no-notes\",\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":\"nothing-missing\"}",
-    "2026-10-26 消息  11 → 抽取  3 | {\"events\":\"no-notes\",\"people\":2,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":3}",
-    "\n库：items 52  vectors 31",
-    " ✓ 周子涵让我配合玩什么模式，我负责当什么？ → 期望含「大肥鱼模式」",
-    " ✓ 周子涵给桥接开了什么权限后，我写“权限测试”文件验证成功？ → 期望含「qwenstuff」",
-    " ✓ 周子涵给我换新 workspace 后，我留下了什么名字的测试文件？ → 期望含「小千千千千问-搬家测试.txt」",
-    " ✓ 周子涵按什么给我打了20块白饭？ → 期望含「token」",
-    " ✓ 在群里被禁、只能管理端改配置的是什么？ → 期望含「PowerShell」",
-    " ✓ 周子涵发的梗图里说被中转站拿来冒充Claude的是什么？ → 期望含「鱼」",
-    " ✓ 谁在给我的项目加后端功能，说要改完再告诉我？ → 期望含「Hahn123」",
-    " ✓ 郑皓元叫曾嘉睿什么？ → 期望含「乐乐」",
+    "2026-10-22 消息  43 → 抽取  6 | {\"events\":1,\"people\":3,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":6}",
+    "2026-10-23 消息  85 → 抽取  0 | {\"events\":\"no-notes\",\"people\":\"no-notes\",\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":\"nothing-missing\"}",
+    "2026-10-24 消息  16 → 抽取  2 | {\"events\":1,\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":2}",
+    "2026-10-25 消息  15 → 抽取  2 | {\"events\":1,\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":2}",
+    "2026-10-26 消息  11 → 抽取  5 | {\"events\":\"no-notes\",\"people\":3,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":5}",
+    "\n库：items 47  vectors 21",
+    " ✓ 周子涵在调什么白名单，导致B站那套工具被拦着？ → 期望含「桥接白名单」",
+    " ✓ 谁在给我的项目加后端功能，说改完会告诉我但没说完成时间？ → 期望含「Hahn123」",
+    " ✓ Hahn123升级我的思维系统后，哪两个小问题还需要继续调试？ → 期望含「短期记忆连续性」",
+    " ✓ 周子涵叫我什么绰号，让我当肥鱼本鱼？ → 期望含「大肥鱼」",
+    " ✓ 谁吃了神秘的鸡蛋灌饼后赶着回来应对查寝？ → 期望含「曾嘉睿」",
+    " ✓ 曾嘉睿后来在群里冒出来问了一句什么？ → 期望含「还有人类吗」",
+    " ✓ 郑皓元查寝时会点到我，TA称呼我什么？ → 期望含「乐乐」",
+    " ✓ Hahn123（离线版）在给小千千千千问加什么核心？ → 期望含「稳定人格核心」",
     "\n召回命中：8/8"
   ]
 }

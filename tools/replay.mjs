@@ -232,7 +232,7 @@ if (REAL) {
 // 原文层：直接从原始日志按需查，不复制进记忆库
 host.services.raw.register({
   id: 'qq-log',
-  list: ({ since = null, until = null, limit = 500 }) => raw
+  list: ({ since = null, until = null, limit = 500 }) => msgs
     .filter((m) => (since == null || m.ts >= since) && (until == null || m.ts < until))
     .slice(0, limit)
     .map((m) => ({ text: m.text, time: m.ts, sender: m.sender })),
@@ -243,7 +243,7 @@ host.services.raw.register({
       const g = q.slice(i, i + 2)
       if (!/[?？。，、\s]/.test(g)) grams.push(g)
     }
-    const scored = raw.map((m) => {
+    const scored = msgs.map((m) => {
       const text = String(m.text).toLowerCase()
       let hit = 0
       for (const g of grams) if (text.includes(g)) hit += 1
