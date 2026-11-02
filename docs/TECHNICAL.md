@@ -86,10 +86,23 @@ Look up a person. Use when: someone mentions them; you need their account ids. A
 | 8 | 投递第 5 次静默丢弃且无观测出口 | 未修 |
 | 9 | `binding.timeoutMs` 被忽略 | 未修 |
 | 10 | provider 注销不解除已绑定插槽 | 未修 |
+| 11 | dream 四个提示词用字面 `\n` 拼接（单行） | **已修**（`bc2a709`） |
+| 12 | 人物笔记永远不被标 `consolidated`，每晚重复进提示词 | **已修**（`bc2a709`） |
+| 13 | `alreadyRan` 只查 200 行，约 29 天后幂等失效 | 未修 |
+| 14 | 人物跨天上下文比较 `qq:42` 与 `42`，永远为空 | 未修 |
+| 15 | 重跑 events 会把已有块降级（evidence 空、provisional） | 未修 |
+| 16 | world-state 的 `order` 是死配置；同 owner 的标题/cap 取第一个来源 | 未修 |
+| 17 | compaction 取"最旧 20 条里最新的一条"，第 21 条后注入过期摘要 | 未修 |
+| 18 | 同一会话存在两个 chat provider（配置歧义） | 未修 |
+| 19 | icl-live 用不存在的 `host.services.get('rhythm')`，到点自动做梦从不触发 | **已修**（改用 `host.shared.get`） |
+| 20 | `recall-bench --refresh-person` 覆写所谓"冻结题库" | 未修 |
+| 21 | `marathon.mjs` 的 `cfg.plugins` 是死配置，凭据变量名与 config 不一致 | 未修 |
+| 22 | `replay.mjs` 的 `msgs` 存在 TDZ 隐患 | 未修 |
+| 23 | bili 接缝、`bili_frames`、`editor` 路径逃逸、`dsh-raw` 的 `.zstd` 分支均无测试 | 未修 |
 
 ## 7. 不成熟、已停用的部分
 
-- **DSH 接线**：`~/.dsh/plugins/icl-live`（已从 profile 移除，文件保留）
+- **DSH 接线**：`~/.dsh/plugins/icl-live`（已从 profile 移除，文件保留；其中 rhythm 查询 bug 已修）
 - **bili 接缝**：子进程调外部 MCP，路径依赖 `~/.dsh/bili-duty`
 - **bili_frames**：调 `dsh-video-storyboard` CLI，默认截前 4 分钟
 - **马拉松脚手架**：`tools/marathon.mjs`，自建 agent 循环，不是产品路径

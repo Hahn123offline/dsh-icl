@@ -325,7 +325,7 @@
 
 ## 7. 已知缺口与脆弱点（均可由代码证明）
 
-1. **`ICL_TOOL_TIME` 是死代码。** `services.mjs:258` 计算了 `stamped`，`:267-272` 的 `composed` 却 `...definition` 展开原始 `execute`，`stamped` 从未被引用；实测 `{ text: 'done' }` 原样返回。`docs/STATUS.md:83` 声称"每次工具结果后追加当前时间"，与代码不符。
+1. **`ICL_TOOL_TIME` 曾经是死代码（已于 5d8c190 修复，本条保留为历史记录）。** `services.mjs:258` 计算了 `stamped`，`:267-272` 的 `composed` 却 `...definition` 展开原始 `execute`，`stamped` 从未被引用；实测 `{ text: 'done' }` 原样返回。`docs/STATUS.md:83` 声称"每次工具结果后追加当前时间"，与代码不符。
 2. **启用插件不会把新工具推给已挂上的 DSH 适配器。** `enable()` 在 `apply` **之前**调 `surface.notify()`（`host.mjs:160`），而 `ctx.tools.register` 只触发 `tools` 的 `onChange`（仅写日志，`host.mjs:13`），不触发 `surface.notify`。实测：适配器先 attach、再启用插件，DSH 侧工具集仍是空；必须等下一次 `surface.notify()`（例如另一个插件 enable/disable）才会补上。
 3. **`sync()` 每次都会重注册全部工具。** `adapter-dsh.mjs:27-38` 对每个 `want` 都先 dispose 旧的、再 register，并 push 进 `added`，所以 `added` 永远是"当前全量"而不是增量；实测连续两次 `sync()` 的 `added` 都是 `['b_tool']`，注册计数从 3 涨到 5。
 4. **`validateManifest` 丢掉未知字段。** 返回对象只含 7 个键（实测），于是 `surface.summary()` 的 `p.manifest?.preset` 永远是 `null`（`services.mjs:191`），`presetService` 里 `p.manifest?.presets` 的过滤分支（`services.mjs:220-222`）永远走 `!declared`——即"插件可以用 `presets` 声明自己属于哪些预设"这条规则实际不可能排除任何插件。
