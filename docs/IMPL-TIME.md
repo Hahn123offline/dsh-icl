@@ -50,9 +50,9 @@
 
 ## M6 控制面
 
-- [ ] 进程内 API：`time.pause/resume/status/arm/cancel`
-- [ ] CLI 入口（外部脚本用）：`tools/time.mjs`
-- [ ] 测试脚本：模拟 10 分钟定时器 → 唤醒 → 睡觉 → dream → 醒来
+- [x] 进程内 API：`time.pause/resume/status/arm/cancel`
+- [x] CLI 入口：`tools/time.mjs`（文件邮箱协议，见 `docs/TIME-CONTROL.md`）
+- [x] 验收脚本：`tools/time-accept.mjs`（9/9 通过）
 
 ## 验收场景
 
@@ -71,4 +71,4 @@
 - M3 完成（除"按日程创建 goal"）
 - M4 完成（工具：now/schedule/add/remove/sleep/wake/skip/delay/goal_add/goal_remove/goal_list）
 - M5 完成：turn-end 信号、单会话锁、dream 并行调用
-- M6 未做：CLI 入口、pause/resume 工具、验收脚本
+- M6 完成：CLI（`tools/time.mjs`）、pause/resume 工具、验收脚本（9/9）

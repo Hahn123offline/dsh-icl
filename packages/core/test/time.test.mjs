@@ -107,3 +107,29 @@ test('重启时释放积压并明确报错', async () => {
   assert.match(text, /重启发生错误/)
   assert.match(text, /重启前的消息/)
 })
+
+
+test('暂停期间消息积压，恢复时释放', async () => {
+  const { host } = setup()
+  await host.enable('world-state')
+  await host.enable('time')
+  const api = host.shared.get('time')
+  api.pause()
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '暂停时来的' })
+  assert.equal(api.status().backlog, 1)
+  api.resume()
+  assert.match(drainText(host), /（暂停期间）积压了 1 条消息/)
+})
+
+test('inbox 命令会被执行并写到 outbox', async () => {
+  const { host, root } = setup()
+  await host.enable('world-state')
+  await host.enable('time')
+  const api = host.shared.get('time')
+  const inbox = path.join(root, 'time.inbox.jsonl')
+  fs.writeFileSync(inbox, `${JSON.stringify({ id: 'c1', cmd: 'status', args: {} })}\n`, 'utf8')
+  const out = api.processInbox()
+  assert.equal(out.processed, 1)
+  const outbox = fs.readFileSync(path.join(root, 'time.outbox.jsonl'), 'utf8')
+  assert.match(outbox, /"id":"c1"/)
+})

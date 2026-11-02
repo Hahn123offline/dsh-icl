@@ -53,6 +53,13 @@ export function apply(ctx) {
     ? String(ctx.config.stateFile)
     : path.join(String(ctx.config.root ?? '.'), 'state', 'time.json')
   const tickMs = Math.max(1000, Number(ctx.config.tickMs ?? 15_000))
+  const inboxFile = ctx.config.inboxFile
+    ? String(ctx.config.inboxFile)
+    : path.join(path.dirname(stateFile), 'time.inbox.jsonl')
+  const outboxFile = ctx.config.outboxFile
+    ? String(ctx.config.outboxFile)
+    : path.join(path.dirname(stateFile), 'time.outbox.jsonl')
+  let inboxOffset = 0
   const signals = ctx.signals ?? ctx.services.require('signals')
   const world = ctx.services.get('world')
   const focusApi = ctx.focus ?? ctx.services.get('focus') ?? null
@@ -236,6 +243,7 @@ export function apply(ctx) {
   }
 
   async function tick(at = ctx.now()) {
+    try { processInbox() } catch { /* 控制通道失败不影响主流程 */ }
     // 目标到期：发"目标结束"，不再唤醒
     const alive = []
     for (const goal of state.goals) {
@@ -298,6 +306,73 @@ export function apply(ctx) {
     ctx.signals.on({ tags: ['turn-end'] }, () => { resumeGoals('turn-end') })
   } catch { /* 没有信号服务时退化为不支持 resume */ }
 
+  function pause() {
+    state.phase = 'paused'
+    state.since = ctx.now()
+    persist()
+    return { paused: true }
+  }
+
+  function resume() {
+    if (state.phase !== 'paused') return { resumed: false, phase: state.phase }
+    state.phase = 'awake'
+    state.since = ctx.now()
+    persist()
+    const released = flushQueue('暂停期间')
+    return { resumed: true, released }
+  }
+
+  /** 控制后门：读 inbox，执行命令，把结果写 outbox。 */
+  function processInbox() {
+    let text = ''
+    try { text = fs.readFileSync(inboxFile, 'utf8') } catch { return { processed: 0 } }
+    if (text.length <= inboxOffset) return { processed: 0 }
+    const chunk = text.slice(inboxOffset)
+    inboxOffset = text.length
+    let processed = 0
+    for (const line of chunk.split('\n')) {
+      const raw = line.trim()
+      if (!raw) continue
+      let request = null
+      try { request = JSON.parse(raw) } catch { continue }
+      const result = runCommand(request)
+      try {
+        fs.mkdirSync(path.dirname(outboxFile), { recursive: true })
+        fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: ctx.now(), ...result })}\n`, 'utf8')
+      } catch { /* 没写成也不影响执行 */ }
+      processed += 1
+    }
+    return { processed }
+  }
+
+  function runCommand(request) {
+    const cmd = String(request?.cmd ?? '')
+    const args = request?.args ?? {}
+    try {
+      switch (cmd) {
+        case 'status': return { ok: true, result: api.status() }
+        case 'pause': return { ok: true, result: pause() }
+        case 'resume': return { ok: true, result: resume() }
+        case 'sleep': void api.sleep({ message: args.message, durationMin: args.durationMin }); return { ok: true, result: { started: true } }
+        case 'arm': {
+          const schedule = addSchedule({ id: args.id ?? `arm-${Date.now()}`, at: args.at ?? new Date(ctx.now() + (Number(args.afterMin) || 10) * 60_000).toISOString(), message: args.message ?? args.text ?? '到点了', durationMin: args.durationMin ?? null, role: args.role ?? null, allow: args.allow ?? null })
+          return { ok: true, result: { id: schedule.id, at: schedule.at } }
+        }
+        case 'cancel': return { ok: true, result: removeSchedule(args.id) }
+        case 'skip': return { ok: true, result: api.skip(args.id) }
+        case 'delay': return { ok: true, result: api.delay(args.id, args.minutes) }
+        case 'queue': return { ok: true, result: api.queue() }
+        case 'goal_add': return { ok: true, result: addGoal(args) }
+        case 'goal_remove': return { ok: true, result: removeGoal(args.id) }
+        case 'goal_list': return { ok: true, result: api.goals() }
+        case 'wake': void api.wake(); return { ok: true, result: { waking: true } }
+        default: return { ok: false, error: `未知命令：${cmd}` }
+      }
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) }
+    }
+  }
+
   // 时钟唯一来源
   const api = {
     now: () => ctx.now(),
@@ -331,6 +406,10 @@ export function apply(ctx) {
     removeGoal,
     goals: () => state.goals.map((g) => ({ ...g })),
     resumeGoals,
+    pause,
+    resume,
+    processInbox,
+    runCommand,
     status: () => ({
       phase: state.phase,
       since: state.since,
@@ -466,6 +545,20 @@ export function apply(ctx) {
     async execute() {
       const list = api.goals()
       return { text: list.length ? list.map((g) => `· ${g.id}：${g.theme}（到 ${new Date(g.until).toLocaleString('zh-CN', { hour12: false })}${g.focus ? `，focus=${g.focus}` : ''}）`).join('\n') : '当前没有目标。' }
+    },
+  })
+
+  tool({
+    name: 'time_pause', summary: '暂停时间模块：不再安排唤醒，消息全部积压。',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() { pause(); return { text: '已暂停。' } },
+  })
+  tool({
+    name: 'time_resume', summary: '恢复时间模块，并释放暂停期间积压的消息。',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      const out = resume()
+      return { text: out.resumed ? `已恢复，释放了 ${out.released ?? 0} 条积压。` : `当前不是暂停状态：${out.phase}` }
     },
   })
 
