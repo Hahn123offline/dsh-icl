@@ -89,6 +89,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         raw: {
           register: (def) => { const off = raw.register(def); record.dispose.push(off); return off },
           search: (req) => raw.search(req),
+          list: (req) => raw.list(req),
           ids: () => raw.ids(),
         },
         context: {

@@ -91,7 +91,12 @@ export function apply(ctx) {
     return scored.slice(0, Math.max(1, Number(limit) || 2)).map((x) => ({ text: x.m.text, time: x.m.time, role: x.m.role }))
   }
 
-  ctx.services.raw.register({ id: 'dsh-sessions', search })
+  const list = ({ since = null, until = null, limit = 500 } = {}) => load()
+    .filter((m) => (since == null || m.time >= since) && (until == null || m.time < until))
+    .slice(0, limit)
+    .map((m) => ({ text: m.text, time: m.time, role: m.role }))
+
+  ctx.services.raw.register({ id: 'dsh-sessions', search, list })
   ctx.services.provide('dsh-raw', { search, size: () => load().length })
   ctx.log({ msg: 'dsh-raw.ready', root, days })
 }

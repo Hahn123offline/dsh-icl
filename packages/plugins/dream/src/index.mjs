@@ -600,6 +600,14 @@ export function apply(ctx) {
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
     // slang 已并入 lexicon：采集范围包括旧的 slang 笔记
+    // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
+    let sourceLines = []
+    try {
+      const today = memory.query({ namespace: 'event', kind: 'note', limit: 1 })
+      void today
+      const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
+      sourceLines = rawRows.map((m) => String(m.text ?? '')).filter(Boolean)
+    } catch { /* 没有原文来源就退回笔记 */ }
     const notes = ['event', 'slang'].flatMap((ns) => consolidated(memory.query({ namespace: ns, kind: 'note', limit: 200 })))
     const lexicon = ctx.services.get('lexicon')
     if (!lexicon) return { job: 'lexicon', skipped: 'no-lexicon-plugin' }
@@ -615,7 +623,7 @@ export function apply(ctx) {
     try {
       const raw = await ask({
         instruction: [
-          '从这些笔记里挑出"你不认识或不确定的新说法"：',
+          '从这些聊天记录里挑出"你不认识或不确定的新说法"：',
           '  · 不管它是网络梗、技术黑话、还是本群自造的说法，只要你不确定它什么意思就算',
           '  · 也包括你觉得"好像知道但不能确认"的说法',
           '  · 不要为了凑数而挑；没有就输出 []',
@@ -623,7 +631,7 @@ export function apply(ctx) {
           '输出 JSON 数组：[{"term":"词","meaning":"你猜的意思（不确定就留空）","conv":"来源会话，没有就留空"}]',
           '只输出 JSON。没有就输出 []。',
         ].join('\\n'),
-        payload: notes.map((n) => `[${n.id}] ${n.text}`).join('\n').slice(0, 8000),
+        payload: (sourceLines.length ? sourceLines.join('\n') : notes.map((n) => n.text).join('\n')).slice(0, 8000),
         maxTokens: 800,
       })
       items = parseBlocks(raw)

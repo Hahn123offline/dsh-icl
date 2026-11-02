@@ -48,14 +48,27 @@ export function composeToolDescription(definition, { maxChars = TOOL_TEXT_LIMITS
 export function createRawSourceRegistry() {
   const sources = new Map()
   return {
-    register({ id, search } = {}) {
+    register({ id, search, list } = {}) {
       const key = String(id ?? '')
       if (!key) throw new Error('raw source 需要 id')
       if (typeof search !== 'function') throw new Error(`${key} 缺少 search`)
-      sources.set(key, { id: key, search })
+      sources.set(key, { id: key, search, list: typeof list === 'function' ? list : null })
       return () => { sources.delete(key) }
     },
     ids() { return [...sources.keys()] },
+    /** 列出某个时间段的原文（供采集用）。 */
+    async list({ since = null, until = null, limit = 500 } = {}) {
+      const out = []
+      for (const source of sources.values()) {
+        if (!source.list) continue
+        try {
+          const rows = await source.list({ since, until, limit })
+          for (const row of rows ?? []) out.push({ ...row, source: source.id })
+        } catch { /* ignore */ }
+      }
+      return out.slice(0, limit)
+    },
+
     /** 按顺序问每个来源，返回命中的原文片段。 */
     async search({ query, limit = 2 } = {}) {
       const hits = []

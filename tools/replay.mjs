@@ -232,6 +232,10 @@ if (REAL) {
 // 原文层：直接从原始日志按需查，不复制进记忆库
 host.services.raw.register({
   id: 'qq-log',
+  list: ({ since = null, until = null, limit = 500 }) => raw
+    .filter((m) => (since == null || m.ts >= since) && (until == null || m.ts < until))
+    .slice(0, limit)
+    .map((m) => ({ text: m.text, time: m.ts, sender: m.sender })),
   search: ({ query, limit = 2 }) => {
     const q = String(query ?? '').toLowerCase()
     const grams = []
