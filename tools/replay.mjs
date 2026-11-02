@@ -307,7 +307,7 @@ for (const day of [...days.keys()].sort()) {
   }
   if (skippedPeople) log(`${day} 跳过无 QQ 的人物条目 ${skippedPeople} 条`)
   const out = await host.shared.get('dream').run({ now: dayEnd(day) })
-  const jobs = Object.fromEntries(out.results.map((r) => [r.job, r.skipped ? r.skipped : (r.ok ? (r.blocks ?? r.merged ?? r.indexed ?? 0) : 'fail')]))
+  const jobs = Object.fromEntries(out.results.map((r) => [r.job, r.skipped ? r.skipped : (r.ok ? (r.blocks ?? r.learned ?? r.merged ?? r.indexed ?? 0) : 'fail')]))
   report.push({ day, messages: list.length, extracted: wrote, jobs, ok: out.ok })
   log(`${day} 消息 ${String(list.length).padStart(3)} → 抽取 ${String(wrote).padStart(2)} | ${JSON.stringify(jobs)}`)
 }
