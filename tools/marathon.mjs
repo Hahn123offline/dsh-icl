@@ -45,7 +45,7 @@ host.registerPlugin(editorManifest, editor, { config: { root } })
 host.registerPlugin(biliManifest, bili, {})
 host.registerPlugin(worldManifest, world, {})
 host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '23:00', stateFile: path.join(root, 'rhythm.json') } })
-host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'marathon', persona: '你是记忆沉淀器。' } })
+host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'marathon', persona: fs.readFileSync(path.join(import.meta.dirname, '..', 'prompts', 'dream.md'), 'utf8') } })
 for (const id of ['memory', 'recall', 'note', 'lexicon', 'editor', 'bili', 'world-state', 'rhythm', 'dream']) {
   try { await host.enable(id) } catch (error) { console.log('enable fail', id, String(error?.message ?? error)) }
 }
@@ -56,6 +56,26 @@ host.services.model.bind({
   apiKey: process.env.DASHSCOPE_API_KEY ?? '',
   timeoutMs: cfg.model.timeoutMs ?? 120000,
   extraBody: cfg.model.disableThinking ? { chat_template_kwargs: { enable_thinking: false } } : undefined,
+})
+
+// 会话自己就是原文来源：每一步都存进去，晚上做梦才有原料
+const transcript = []
+host.services.raw.register({
+  id: 'marathon-log',
+  search: ({ query, limit = 3 }) => transcript.filter((m) => String(m.text).includes(String(query))).slice(0, limit),
+  list: ({ since = null, until = null, limit = 400 } = {}) => transcript
+    .filter((m) => (since == null || m.time >= since) && (until == null || m.time < until))
+    .slice(0, limit),
+})
+
+// 做梦用同一个本地模型
+host.services.slots.registerProvider({
+  id: 'local-chat', kind: 'chat', shape: { tools: false },
+  call: async ({ messages, maxTokens }) => host.services.model.chat({ messages, maxTokens }),
+})
+host.services.slots.bind('dream-chat', {
+  provider: 'local-chat',
+  call: async ({ messages, maxTokens }) => host.services.model.chat({ messages, maxTokens }),
 })
 
 const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
@@ -99,6 +119,7 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
     break
   }
   counts.steps += 1
+  transcript.push({ text: reply.slice(0, 600), time: Date.now(), conv: 'marathon' })
   fs.appendFileSync(logFile, `${JSON.stringify({ t: Date.now() - started, role: 'assistant', text: reply })}\n`, 'utf8')
 
   const pick = (() => {
@@ -145,6 +166,13 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
   if (Date.now() - started > seconds * 1000) { stopReason = 'duration'; break }
 }
 
+// 收尾：把这段会话当成"今天"跑一次做梦
+let dreamRun = null
+try {
+  const out = await host.shared.get('dream').run({ now: Date.now() })
+  dreamRun = out.results
+} catch (error) { dreamRun = { error: String(error?.message ?? error) } }
+
 const mem = host.shared.get('memory')
 const stat = mem.stats()
 const notes = mem.query({ namespace: 'event', kind: 'note', limit: 500 })
@@ -161,6 +189,8 @@ const report = {
   memory: stat,
   notes: notes.length,
   lexicon: lex.length,
+  blocks: mem.query({ namespace: 'event', kind: 'block', limit: 200 }).length,
+  dream: dreamRun,
   files,
   logFile,
 }

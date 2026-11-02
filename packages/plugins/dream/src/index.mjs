@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
+const DEFAULT_JOBS = ['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -106,6 +106,71 @@ export function apply(ctx) {
   }
 
   /* ── events：按话题切块 ───────────────────────────────────────── */
+
+  /* ── wash：从当天原话里先洗出笔记 ───────── */
+
+  /**
+   * 作梦不能只靠主会话自己记：每天先把原话过一遍，
+   * 把值得记的事与人洗成 note，后面的 events/people 才有原料。
+   * remember 仍然是"主观想记住"的强参考，但不是唯一入口。
+   */
+  async function jobWash({ now, force = false }) {
+    const day = dayKey(now)
+    if (!force && alreadyRan(day, 'wash')) return { job: 'wash', skipped: 'already-ran' }
+    let rows = []
+    try {
+      rows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
+    } catch { rows = [] }
+    if (!rows.length) return { job: 'wash', skipped: 'no-raw' }
+
+    const chatLines = rows
+      .slice(0, 200)
+      .map((r, i) => `[${i + 1}] ${String(r.text ?? '').replace(/[<>]/g, ' ').slice(0, 240)}`)
+      .join('\n')
+    let items = []
+    try {
+      const raw = await ctx.slots.call(slot, {
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '你在把一天的对话过一遍，把"以后可能会想起来"的东西挑出来。',
+              '只挑真事：发生过的事、人物的信息与变化、约定。不要挑寒暄与重复。',
+              '输出 JSON 数组：[{"kind":"event|person","text":"一句话","source_id":"1"}]',
+              '没有就输出 []。只输出 JSON。',
+            ].join('\n'),
+          },
+          { role: 'user', content: chatLines },
+        ],
+        maxTokens: 900,
+      })
+      items = parseBlocks(raw)
+    } catch (error) {
+      return { job: 'wash', ok: false, error: String(error?.message ?? error) }
+    }
+
+    let wrote = 0
+    const seen = new Set()
+    for (const item of items) {
+      const kind = item?.kind === 'person' ? 'person' : 'event'
+      const text = String(item?.text ?? '').trim()
+      if (!text || seen.has(kind + text)) continue
+      seen.add(kind + text)
+      const idx = Number(item?.source_id)
+      const origin = Number.isFinite(idx) ? (rows[idx - 1]?.conv ?? null) : null
+      memory.put({
+        namespace: kind,
+        kind: 'note',
+        text,
+        data: { day, washed: true, ...(origin ? { origin: { conv: origin } } : {}) },
+        weight: 1.1,
+        now,
+      })
+      wrote += 1
+    }
+    recordRun(day, 'wash', { notes: wrote }, now)
+    return { job: 'wash', ok: true, notes: wrote }
+  }
 
   async function jobEvents({ now, force = false }) {
     const { start, end } = dayRange(now)
@@ -731,7 +796,7 @@ export function apply(ctx) {
     return { job: 'consume', ok: true, written, archived }
   }
 
-  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, consume: jobConsume, cleanup: jobCleanup, index: jobIndex }
+  const JOBS = { wash: jobWash, events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, consume: jobConsume, cleanup: jobCleanup, index: jobIndex }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。

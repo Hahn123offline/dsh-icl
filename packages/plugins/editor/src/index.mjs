@@ -32,12 +32,12 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'write_file',
-    summary: 'Write or overwrite a text file inside your workspace.',
-    when: ['you want to keep notes or draft something'],
+    summary: 'Write a text file inside your workspace. Overwrites by default; pass append:true to add to the end instead.',
+    when: ['you want to keep notes or draft something', 'use append:true when adding to a note you already wrote today, otherwise you erase it'],
     avoid: ['editing code you do not understand'],
     parameters: {
       type: 'object', additionalProperties: false, required: ['path', 'text'],
-      properties: { path: { type: 'string' }, text: { type: 'string' }, append: { type: 'boolean' } },
+      properties: { path: { type: 'string' }, text: { type: 'string' }, append: { type: 'boolean', description: 'true = add to the end instead of replacing the file' } },
     },
     async execute({ path: p, text, append = false } = {}) {
       const full = inside(p)
