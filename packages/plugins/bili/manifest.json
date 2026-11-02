@@ -1,0 +1,9 @@
+{
+  "id": "bili",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["bili_search", "bili_watch", "bili_comments"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}
