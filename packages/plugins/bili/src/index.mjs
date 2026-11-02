@@ -8,7 +8,9 @@ import path from 'node:path'
 export const name = 'bili'
 
 const PY = String(process.env.BILI_PYTHON ?? 'C:\\Users\\ai_admin\\.dsh\\bili-duty\\.venv\\Scripts\\python.exe')
-const RUNNER = path.join(process.cwd(), 'tools', 'bili-run.py')
+// 不能用 cwd：DSH 进程的 cwd 不是我们的仓库
+const ICL_ROOT = process.env.ICL_ROOT ?? 'C:/DSH/qwenstuff/icl'
+const RUNNER = process.env.BILI_RUNNER ?? path.join(ICL_ROOT, 'tools', 'bili-run.py')
 const STORYBOARD_CLI = process.env.STORYBOARD_CLI ?? 'C:\\Users\\ai_admin\\.dsh\\profiles\\desktop\\node_modules\\dsh-video-storyboard\\bin\\storyboard.mjs'
 
 function callTool(fn, args, { timeout = 60000 } = {}) {
