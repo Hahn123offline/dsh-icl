@@ -655,7 +655,7 @@ export function apply(ctx) {
         term,
         conv: String(item?.conv ?? '').trim() || 'web',
         meaning: String(item?.meaning ?? '').trim(),
-        tags: ['自动发现'],
+        tags: item?.hot ? ['热词'] : ['自动发现'],
       })
       if (res?.ok) learned += 1
     }
