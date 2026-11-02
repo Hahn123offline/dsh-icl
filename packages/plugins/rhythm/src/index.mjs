@@ -86,6 +86,23 @@ export function apply(ctx) {
     /** 今天到点了吗、还没发过？（给晚启动的消费者自查用） */
     isDue(now = ctx.now()) { return now >= todayPoint(now) && lastFiredDay !== dayKey(now) },
   }
+  // 把"下一次作梦"挂到世界状态：她随时知道离睡觉还有多久
+  try {
+    const world = ctx.services.get('world')
+    if (world?.registerSource) {
+      world.registerSource({
+        id: 'rhythm', owner: 'clock', title: '作息', order: 20, cap: 1,
+        items: () => {
+          const next = api.nextAt()
+          if (!next) return []
+          const mins = Math.max(0, Math.round((next - ctx.now()) / 60000))
+          const hh = Math.floor(mins / 60), mm = mins % 60
+          return [{ key: 'next', brief: `下一次做梦：${new Date(next).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)}（还有 ${hh ? `${hh} 小时 ` : ''}${mm} 分）。` }]
+        },
+      })
+    }
+  } catch { /* 没有世界状态也没关系 */ }
+
   ctx.services.provide('rhythm', api)
   ctx.log({ msg: 'rhythm.ready', at, lastFiredDay, stateFile })
   return api
