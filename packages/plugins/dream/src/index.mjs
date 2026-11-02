@@ -211,7 +211,7 @@ export function apply(ctx) {
           '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
           'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
           '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
-        ].join('\\n'),
+        ].join('\n'),
         payload,
       })
       blocks = parseBlocks(raw)
@@ -338,7 +338,7 @@ export function apply(ctx) {
             '· 不要把不同 QQ 的人当成同一个人；昵称/别名必须有明确原话（如「叫我XX」），不能由单个字猜。',
             '· 输出里要带 evidence：你用到的笔记编号数组。',
             '· claims：把 profile 里的每一句具体陈述拆开，各自带自己的 evidence；无法归因的就不要写进去。',
-          ].join('\\n'),
+          ].join('\n'),
           payload: context,
         })
       } catch (error) {
@@ -408,9 +408,17 @@ export function apply(ctx) {
     }
     // 只标被档案引用到的 note（claims/evidence 里出现过的）。
     const citedPeople = new Set()
-    for (const qq of new Set(notes.map((n) => String(n.data?.qq ?? '')).filter(Boolean))) {
-      if (skippedPeople.includes(qq)) continue
-      const block = memory.query({ namespace: 'person', kind: 'block', limit: 200 }).find((b) => b.data?.qq === qq)
+    const subjectsOf = (n) => {
+      const subject = n.data?.subject ?? (n.data?.qq ? { kind: 'qq', value: String(n.data.qq) } : null)
+      return subject?.value ? subject : null
+    }
+    const blockKeys = new Set(
+      notes.map(subjectsOf).filter(Boolean)
+        .map((s) => (s.kind === 'qq' ? `person:${s.value}` : `person:${s.kind}:${s.value}`)),
+    )
+    for (const key of blockKeys) {
+      if (skippedPeople.includes(key)) continue
+      const block = memory.query({ namespace: 'person', kind: 'block', limit: 200 }).find((b) => b.key === key)
       if (!block) continue
       for (const e of block.data?.evidence ?? []) citedPeople.add(Number(e.id))
       for (const c of block.data?.claims ?? []) for (const e of c.evidence ?? []) citedPeople.add(Number(e.id))
@@ -437,7 +445,7 @@ export function apply(ctx) {
           '整理今天遇到的新梗/新用语。',
           '输出 JSON 数组：[{"term": "词", "meaning": "一句话意思", "usage": "什么时候用", "examples": ["例句"]}]',
           '只收今天真的出现过的，不要编。只输出 JSON。',
-        ].join('\\n'),
+        ].join('\n'),
         payload: notes.map((n) => `· ${n.text}`).join('\n'),
       }))
     } catch (error) {
@@ -559,7 +567,7 @@ export function apply(ctx) {
           '· 不要为了“长度差不多”而合并：小块没有矛盾就原样留着。',
           '· 目标是去重与消除矛盾，不是把所有块整理成一个样子。',
           '没什么可整理就输出 {} 。只输出 JSON。',
-        ].join('\\n'),
+        ].join('\n'),
         payload,
         maxTokens: 1500,
       }))

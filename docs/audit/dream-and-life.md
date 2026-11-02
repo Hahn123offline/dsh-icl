@@ -139,7 +139,7 @@ system = `persona` + `\n\n` + 以下 6 行，行间是字面 `\n`：
 把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。\n块里可以是你做过的事，也可以是你今天看到/刷到/学到的东西（写成“我刷到一个讲…”）。\n按话题切：同一件事、同一个人、同一段对话放一块；不要按时间顺序切碎。\n每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}\nevidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。\n只输出 JSON 数组，不要解释。没有值得记的就输出 []。
 ```
 
-payload = `notes.map((n) => [n.id] n.text).join('\n')`（真换行），notes 是全部未消化 `event` note（500，跨天），
+payload 每行 `[<note.id>] <note.text>`，用真换行 `join('\n')`；notes 是全部未消化 `event` note（500，跨天），
 `maxTokens` 用默认 1200。映射：`summary`→`text`（`slice(0,200)`，空则丢块）；`body`→`data.body`（≤4000）；
 `evidence`→`validEvidence`（≤20，`{type:'note',id}`），空则 `data.provisional = true` 并
 `raiseQuestion('「<summary 前 40 字>」没有出处，以后问一下。')`；`people` 字符串化；`tags` 过 `normalizeTags`；
@@ -401,8 +401,7 @@ config 只有 `maxChars` 默认 6000（`:28`）。四条工具的最终 descript
    文件头"摘要器的人格由 config.persona 提供"只对一半 job 成立。
 3. **幂等约 29 天后失效**：`alreadyRan` 查 `dream-run` limit 200，而 `memory.query` 是 `created_at ASC LIMIT`（`memory:233`）
    → 拿到最早 200 行。实测 200 条历史 run 行后第二次 `events` 不再 `already-ran`。
-4. **person note 永不标 `consolidated`**：标记循环只遍历 `String(n.data?.qq ?? '')`（`:411-412`），分组键却是 `${kind}:${value}`（`:282`），
-   `name`/`mc` 主体没有 `data.qq`。实测跑完 `people` 后 note 的 data 仍无 `consolidated` → 每晚重复进提示词、recall 里永远 `[未整理]`。
+4. **person note 永不标 `consolidated`**：标记循环只遍历 `String(n.data?.qq ?? '')`（`:411-412`），分组键却是 `${kind}:${value}`（`:282`），`name`/`mc` 主体没有 `data.qq`。实测跑完 `people` 后 note 的 data 仍无 `consolidated` → 每晚重复进提示词、recall 里永远 `[未整理]`。
 5. **people 的跨天上下文恒为空**：`relatedEvents` 用 `b.data.people.includes(qq)`，此处 `qq` 是 `qq:42` 形态（`:294-295`），
    event 块存的是 `42`；`pastNotes` 用 `String(n.data?.qq) === qq`（`:297-298`）同理永不相等。实测 user 消息里只有
    `内部编号/现有档案/今天记下的`。
@@ -417,9 +416,7 @@ config 只有 `maxChars` 默认 6000（`:28`）。四条工具的最终 descript
     dream manifest 只要求 memory+rhythm；无 recall 时写 `slang` 抛 `命名空间没有注册：slang`（实测 `event` 报同类错）。
 11. **lexicon 的 `reason` 从不被要求**：instruction 只出 `content/source_id`，代码按 `item.reason` 选 tag（`:758`）→ 恒 `['待查']`；
     实测 origins 只有 `{status:'candidate',seenAt}`。
-12. **死代码**：`events`/`people` 的 `const { start, end } = dayRange(now)` 未使用（`:195,270`）；
-    `lexicon` 的 `const today = memory.query(...); void today`（`:699-700`）、`known` 算完没用（`:714`）；
-    event 块里 `...(evidence.length ? {} : {})` 是空操作（`:233`）；`people` 重复的 `if (!notes.length)`（`:275,285`）。
+12. **死代码**：`events`/`people` 的 `const { start, end } = dayRange(now)` 未使用（`:195,270`）；`lexicon` 的 `const today = memory.query(...); void today`（`:699-700`）、`known` 算完没用（`:714`）；event 块里 `...(evidence.length ? {} : {})` 是空操作（`:233`）；`people` 重复的 `if (!notes.length)`（`:275,285`）。
 13. **wash 的 `origin` 实际拿不到**：只在原始行有 `conv` 时才写（`:173`），而 dsh-raw 的 `list` 只返回 `{text,time,role}`（`dsh-raw:97`）。
 14. **`data.sources` 语义偏了**：写的是本次输入全部 note 的 key（`:241`），不是被块引用那些；wash note 无 key 时为空。
 15. **`index` 在无嵌入时也记账**：`indexed:0` 仍 `recordRun`（`:662`），当天不再重试。
@@ -439,12 +436,12 @@ config 只有 `maxChars` 默认 6000（`:28`）。四条工具的最终 descript
 23. **`config.persona` 语义不一致**：dream 把 `config.persona` 当正文、`config.personaFile` 当路径（`dream:75,851-854`）；
     `config/icl.example.json` 的 `persona` 是路径且只被 `tools/wire-check.mjs:38` 读成 persona 卡的 `card`；
     `tools/marathon.mjs:50` 则给 dream 传 `prompts/dream.md` 正文。同一个 key 名三种用法。
-24. **persona 版本键可撞**：`v:<stamp>-<++versionSeq>` 的 `versionSeq` 是进程内计数（`persona:23,56`），重启后同一秒内可能与
-    历史版本撞键，而 `memory` 的 `(namespace,key)` 唯一索引会 upsert 覆盖（`memory:47`）。
+24. **persona 版本键只含秒级时间**：`v:<stamp>-<++versionSeq>` 的时间戳精确到秒、`versionSeq` 是进程内计数（`persona:23,56`），
+    跨进程同秒同序号会撞同一个 key，而 `memory` 的 `(namespace,key)` 唯一索引是 upsert，会覆盖旧版本（`memory:47`）。
 
 ### 附：引用到的测试
 
-`dream-jobs`（块/档案/梗、幂等、失败不吞原文、独立人格、```json 包裹）、`partial-coverage`（只标被引用的 note）、
+`dream-jobs`（块/档案/梗、幂等、失败不吞原文、独立人格、fenced json 包裹）、`partial-coverage`（只标被引用的 note）、
 `cleanup`（合并/uncertain/纠正改写/幂等/nothing-to-do）、`consume`（done 回收与"没结论不归档"）、
 `lexicon-dream`（学新词进待办、30 天老化）、`m1b-persona-world`（`QQ：3 条未读；1 个好友申请（还有 1 项）` 的 cap 文本、
 按 owner 查/展开、动态撤回、工具统一通道）、`rhythm`（同日不重复、isDue、落盘重启、第二天、nextAt，全部直接调 API）、
