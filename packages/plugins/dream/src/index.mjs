@@ -631,17 +631,20 @@ export function apply(ctx) {
     try {
       const raw = await ask({
         instruction: [
-          '你在给词汇建档案：目的不是考你认不认识，而是记下"这里真的怎么用它"。',
-          '  · 不管它是网络梗、技术黑话、还是本群自造的说法，只要你不确定它什么意思就算',
-          '  · 也包括你觉得"好像知道但不能确认"的说法',
-          '  · 不要为了凑数而挑；没有就输出 []',
-          `已知词汇：${known.join('、') || '无'}`,
-          '输出 JSON 数组：[{"term":"词","meaning":"你猜的意思（不确定就留空）","conv":"来源会话，没有就留空"}]',
-          '只输出 JSON。没有就输出 []。',
-        ].join('\\n'),
+          '你在给词汇建档案：目的不是考你认不认识，而是记下这里真的怎么用它。',
+          '宁可多候选，不要主动猜。下面这几类都要列：',
+          '  · 你不确定它在这里是什么意思',
+          '  · 你知道它的旧意，但怀疑这里用的是新意',
+          '  · 本群特有的说法、缩写、代称',
+          '  · 今天反复出现的说法',
+          'meaning 只写你有把握且与这里用法一致的解释；没把握就留空，不要猜。',
+          `已有词汇：${known.join('、') || '无'}`,
+          '输出 [{"term":"词","meaning":"","reason":"unknown|shifted|in-group|frequent"}]；没有就 []。只输出 JSON 数组。',
+        ].join('\n'),
         payload: (sourceLines.length ? sourceLines.join('\n') : notes.map((n) => n.text).join('\n')).slice(0, 8000),
         maxTokens: 800,
       })
+      if (ctx.config.debugLexicon) console.error('[lexraw]', JSON.stringify(String(raw).slice(0, 400)), 'src=', sourceLines.length, 'payload=', JSON.stringify((sourceLines.length ? sourceLines.join('\n') : notes.map((n) => n.text).join('\n')).slice(0, 120)))
       items = parseBlocks(raw)
     } catch (error) {
       return { job: 'lexicon', ok: false, error: String(error?.message ?? error) }
