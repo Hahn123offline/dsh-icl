@@ -33,6 +33,8 @@ const arg = (n, d = null) => { const i = args.indexOf(n); return i >= 0 ? args[i
 const cfg = JSON.parse(fs.readFileSync(arg('--config', path.join(import.meta.dirname, '..', 'config', 'marathon.json')), 'utf8'))
 const seconds = Number(arg('--seconds', cfg.durationSec ?? 300))
 const root = path.resolve(String(cfg.workspace ?? 'state/marathon-workspace'))
+// 每次都干净启动：清掉上一轮的库与文件
+if (!args.includes('--keep')) fs.rmSync(root, { recursive: true, force: true })
 fs.mkdirSync(root, { recursive: true })
 const persona = fs.readFileSync(path.join(import.meta.dirname, '..', String(cfg.personaFile)), 'utf8')
 
@@ -194,4 +196,40 @@ const report = {
   files,
   logFile,
 }
+function exportAll() {
+  const dir = path.join(import.meta.dirname, '..', 'state', 'marathon-exports', new Date().toISOString().replace(/[:.]/g, '-'))
+  fs.mkdirSync(dir, { recursive: true })
+  const rows = (ns, kind) => mem.query({ namespace: ns, kind, limit: 500 })
+  const fmt = (r) => {
+    const d = r.data ?? {}
+    const extra = {
+      ...(d.profile ? { profile: d.profile } : {}),
+      ...(d.body ? { body: d.body } : {}),
+      ...(d.origins ? { origins: d.origins } : {}),
+      ...(d.evidence ? { evidence: d.evidence } : {}),
+      ...(d.term ? { term: d.term } : {}),
+      ...(d.status ? { status: d.status } : {}),
+    }
+    return `- ${r.text}${Object.keys(extra).length ? `\n  \`${JSON.stringify(extra).slice(0, 600)}\`` : ''}`
+  }
+  const parts = ['# 记忆导出', '']
+  for (const [ns, kind] of [['event', 'block'], ['person', 'block'], ['lexicon', 'term'], ['event', 'note'], ['note', 'note']]) {
+    const list = rows(ns, kind)
+    parts.push(`## ${ns}/${kind} (${list.length})`, '')
+    parts.push(list.length ? list.map(fmt).join('\n') : '（空）')
+    parts.push('')
+  }
+  fs.writeFileSync(path.join(dir, 'memory.md'), parts.join('\n'))
+  const lines = []
+  for (const line of fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean)) {
+    try {
+      const o = JSON.parse(line)
+      lines.push(o.role === 'tool' ? `- [${o.name}] ${String(o.text).slice(0, 200)}` : `→ ${String(o.text).slice(0, 300)}`)
+    } catch { /* ignore */ }
+  }
+  fs.writeFileSync(path.join(dir, 'transcript.md'), ['# 会话记录', '', ...lines].join('\n'))
+  return dir
+}
+const exportDir = exportAll()
+console.log('EXPORT ' + exportDir)
 console.log(JSON.stringify(report, null, 2))
