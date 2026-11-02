@@ -143,7 +143,7 @@ export function apply(ctx) {
           {
             role: 'system',
             content: [
-              '你在把一天的对话过一遍，把"以后可能会想起来"的东西挑出来。',
+              '你在把一天的对话过一遍。先挑那些你真的有印象的东西——让你停下来、觉得有意思、或者想跟别人讲的；而不是先挑完整的。',
               '只挑真实发生过的：你做过的事、你看到/刷到/学到的东西、别人说的值得记的话、约定。',
               '看视频、看评论、看字幕都是"看到的东西"，只要有具体内容就该记。不要挑寒暄与重复。',
               '每条写两三句，把具体细节（说了什么、发生了什么、怎么回事）写进去，不要只给一句提纲。',
@@ -169,6 +169,7 @@ export function apply(ctx) {
       if (!text || seen.has(kind + text)) continue
       seen.add(kind + text)
       const idx = Number(item?.source_id)
+      const at = Number.isFinite(idx) ? Number(rows[idx - 1]?.time ?? 0) || null : null
       const origin = Number.isFinite(idx) ? (rows[idx - 1]?.conv ?? null) : null
       memory.put({
         namespace: kind,
@@ -179,6 +180,7 @@ export function apply(ctx) {
           washed: true,
           ...(kind === 'person' && String(item?.who ?? '').trim() ? { subject: { kind: 'name', value: String(item.who).trim().slice(0, 40) } } : {}),
           ...(origin ? { origin: { conv: origin } } : {}),
+          ...(at ? { at } : {}),
         },
         weight: 1.1,
         now,
