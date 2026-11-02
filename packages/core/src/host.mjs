@@ -7,6 +7,7 @@
 import { validateManifest } from './contracts.mjs'
 import { createContextService, createPresetService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
+import { createSignalService } from './signals.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
   const tools = createToolRegistry({
@@ -22,8 +23,19 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
     plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: Boolean(r.enabled) })),
     presets,
   })
+  const signals = createSignalService({ now })
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
+  signals.setDeliver((signal) => {
+    delivery.push({
+      to: 'session',
+      channel: 'signal',
+      source: { plugin: signal.from.plugin, activity: signal.from.activity ?? 'signal', seq: null },
+      content: { text: signal.text },
+      batchKey: `signal:${signal.from.plugin}:${signal.focus ?? ''}`,
+      exactlyOnce: false,
+    })
+  })
 
   /** id -> { manifest, module, apply, dispose:Function[], enabled:boolean } */
   const plugins = new Map()
@@ -86,6 +98,14 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         providers: () => slots.providers(),
         list: () => slots.list(),
       },
+      // 统一信号：插件只往这里发，谁放行由时间模块决定
+      signals: {
+        offer: (signal) => signals.offer(signal),
+        emit: (signal) => signals.emit(signal),
+        on: (filter, fn) => { const off = signals.on(filter, fn); record.dispose.push(off); return off },
+        setGate: (fn) => signals.setGate(fn),
+        stats: () => signals.stats(),
+      },
       services: {
         raw: {
           register: (def) => { const off = raw.register(def); record.dispose.push(off); return off },
@@ -131,7 +151,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface, presets },
+    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {

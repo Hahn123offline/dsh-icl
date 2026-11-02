@@ -3,6 +3,7 @@
 export { validateManifest, resolvePierce, PIERCE_LEVELS } from './contracts.mjs'
 export { createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 export { createModelClient } from './model-client.mjs'
+export { createSignalService, validateSignal, SIGNAL_KINDS, SIGNAL_ROUTES, SIGNAL_TO } from './signals.mjs'
 export { attachDshAdapter } from './adapter-dsh.mjs'
 export { createHost } from './host.mjs'
 export { createSessionAdapter } from './session.mjs'
