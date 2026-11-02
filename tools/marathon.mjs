@@ -121,7 +121,6 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
     break
   }
   counts.steps += 1
-  transcript.push({ text: reply.slice(0, 600), time: Date.now(), conv: 'marathon' })
   fs.appendFileSync(logFile, `${JSON.stringify({ t: Date.now() - started, role: 'assistant', text: reply })}\n`, 'utf8')
 
   const pick = (() => {
@@ -151,17 +150,32 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
         recentCalls.push(sig)
         const repeats = recentCalls.filter((x) => x === sig).length
         const out = await tool.execute(call.args ?? {})
+        // 原文只留自然语言：写进文件的那段话也算她说的
+        if ((call.tool === 'write_file' || call.tool === 'remember') && typeof call.args?.text === 'string') {
+          transcript.push({ text: call.args.text.slice(0, 800), time: Date.now(), conv: 'marathon', kind: 'note' })
+        }
         const text = String(out?.text ?? JSON.stringify(out)).slice(0, 1200)
         fs.appendFileSync(logFile, `${JSON.stringify({ t: Date.now() - started, role: 'tool', name: call.tool, text })}\n`, 'utf8')
-        history.push({ role: 'assistant', content: reply })
         const warn = repeats >= 2 ? '\n\n（同一个调用重复了。换一个，或者把刚才看到的东西记一句。）' : ''
-        history.push({ role: 'user', content: `工具 ${call.tool} 返回：\n${text}${warn}` })
+        const imagePath = out?.imagePath && fs.existsSync(out.imagePath) ? out.imagePath : null
+        if (imagePath) {
+          const b64 = fs.readFileSync(imagePath).toString('base64')
+          history.push({ role: 'assistant', content: reply })
+          history.push({ role: 'user', content: [
+            { type: 'text', text: `工具 ${call.tool} 返回：\n${text}${warn}` },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
+          ] })
+        } else {
+          history.push({ role: 'assistant', content: reply })
+          history.push({ role: 'user', content: `工具 ${call.tool} 返回：\n${text}${warn}` })
+        }
         acted = true
       }
     } catch { /* 不是合法工具调用就当普通发言 */ }
   }
   if (!acted) {
     counts.say += 1
+    transcript.push({ text: reply.slice(0, 800), time: Date.now(), conv: 'marathon', kind: 'say' })
     history.push({ role: 'assistant', content: reply })
     history.push({ role: 'user', content: '（继续。按你想做的来。）' })
   }
