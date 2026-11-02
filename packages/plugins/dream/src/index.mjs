@@ -620,7 +620,7 @@ export function apply(ctx) {
     const lexicon = ctx.services.get('lexicon')
     if (!lexicon) return { job: 'lexicon', skipped: 'no-lexicon-plugin' }
     // 没有新笔记也要做老化
-    if (!notes.length) {
+    if (!notes.length && !sourceLines.length) {
       const faded0 = ageLexicon(now)
       recordRun(day, 'lexicon', { learned: 0, faded: faded0 }, now)
       return { job: 'lexicon', ok: true, learned: 0, faded: faded0 }
