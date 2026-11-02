@@ -13,6 +13,7 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
   if (typeof push !== 'function') throw new Error('push(text, opts) 必填')
   let timer = null
   let draining = false
+  const releaseClaim = host.claimSession ? host.claimSession(sessionId) : () => {}
 
   return {
     sessionId,
@@ -55,6 +56,10 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
             log({ msg: 'delivery.failed', error: String(error?.message ?? error) })
           }
         }
+        // 一轮结束：告诉时间模块"模型停下了"（goal 靠它 resume）
+        try {
+          host.services.signals.emit({ from: { plugin: 'session' }, kind: 'event', text: 'turn-end', tags: ['turn-end'] })
+        } catch { /* 没有信号服务也不影响投递 */ }
       } finally { draining = false }
       return { delivered: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results }
     },
@@ -66,6 +71,7 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
       if (typeof timer.unref === 'function') timer.unref()
     },
     stop() { if (timer) { clearInterval(timer); timer = null } },
+    dispose() { this.stop(); releaseClaim() },
 
     status() {
       const focus = host.services.focus.current()

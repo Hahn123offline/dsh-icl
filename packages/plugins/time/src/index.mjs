@@ -55,6 +55,9 @@ export function apply(ctx) {
   const tickMs = Math.max(1000, Number(ctx.config.tickMs ?? 15_000))
   const signals = ctx.signals ?? ctx.services.require('signals')
   const world = ctx.services.get('world')
+  const focusApi = ctx.focus ?? ctx.services.get('focus') ?? null
+  const clock = ctx.services.clock ?? null
+  const goalLeases = new Map()
   const focus = ctx.services.get('focus')
 
   let state = { phase: 'awake', since: ctx.now(), schedules: [], queue: [], goals: [], fired: {} }
@@ -149,6 +152,7 @@ export function apply(ctx) {
       state.sleepUntil = schedule.durationMin ? now + schedule.durationMin * 60_000 : null
       send({ kind: 'wake', text: schedule.message ?? '你困了，接下来不会有人打扰你。', tags: ['sleep'] })
       // 做梦与时间并行，互不阻塞
+      try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] }) } catch { /* ignore */ }
       try {
         const dream = ctx.services.get('dream')
         if (dream?.run) void dream.run({ now })
@@ -173,7 +177,78 @@ export function apply(ctx) {
     return { ended: true, released }
   }
 
+  function goalMessage(goal) {
+    return `你在目标内：${goal.theme}。若退出，请卸载目标（goal_remove ${goal.id}）。`
+  }
+
+  function addGoal(input = {}) {
+    const theme = String(input.theme ?? '').trim()
+    if (!theme) throw new Error('goal_add 需要 theme')
+    let until = null
+    if (input.until != null) {
+      const parsed = Date.parse(String(input.until))
+      if (!Number.isFinite(parsed)) throw new Error(`until 不是合法时间：${input.until}`)
+      until = parsed
+    } else if (input.afterMin != null) {
+      until = ctx.now() + Math.max(1, Number(input.afterMin)) * 60_000
+    } else {
+      until = ctx.now() + 60 * 60_000
+    }
+    const goal = {
+      id: String(input.id ?? `g-${state.goals.length + 1}`),
+      theme,
+      until,
+      focus: input.focus == null ? null : String(input.focus),
+      resumeOnStop: input.resumeOnStop !== false,
+      createdAt: ctx.now(),
+    }
+    state.goals = state.goals.filter((g) => g.id !== goal.id).concat(goal)
+    if (goal.focus && focusApi?.enter) {
+      try {
+        const lease = focusApi.enter({ label: goal.focus, owner: 'time', reason: `goal:${goal.id}` })
+        goalLeases.set(goal.id, lease)
+      } catch { /* focus 不在也不影响目标 */ }
+    }
+    send({ kind: 'goal', text: goalMessage(goal), tags: ['goal'], focus: goal.focus })
+    persist()
+    return goal
+  }
+
+  function removeGoal(id) {
+    const key = String(id)
+    const before = state.goals.length
+    state.goals = state.goals.filter((g) => g.id !== key)
+    const lease = goalLeases.get(key)
+    if (lease) { try { lease.release?.() } catch { /* ignore */ } goalLeases.delete(key) }
+    persist()
+    return { removed: before !== state.goals.length }
+  }
+
+  function resumeGoals(reason) {
+    if (state.phase !== 'awake') return 0
+    let n = 0
+    for (const goal of state.goals) {
+      if (!goal.resumeOnStop) continue
+      send({ kind: 'goal', text: goalMessage(goal), tags: ['goal', 'resume'] })
+      n += 1
+    }
+    return n
+  }
+
   async function tick(at = ctx.now()) {
+    // 目标到期：发"目标结束"，不再唤醒
+    const alive = []
+    for (const goal of state.goals) {
+      if (goal.until && at >= goal.until) {
+        send({ kind: 'goal', text: `目标结束：${goal.theme}。`, tags: ['goal', 'ended'] })
+        const lease = goalLeases.get(goal.id)
+        if (lease) { try { lease.release?.() } catch { /* ignore */ } goalLeases.delete(goal.id) }
+        continue
+      }
+      alive.push(goal)
+    }
+    if (alive.length !== state.goals.length) { state.goals = alive; persist() }
+
     if (state.phase === 'sleeping' && state.sleepUntil && at >= state.sleepUntil) {
       await endSleep('你睡醒了，昨天的记忆已经整理好了。')
     }
@@ -219,6 +294,9 @@ export function apply(ctx) {
   if (state.phase === 'sleeping' && !state.sleepingId) state.phase = 'awake'
 
   signals.setGate(gate)
+  try {
+    ctx.signals.on({ tags: ['turn-end'] }, () => { resumeGoals('turn-end') })
+  } catch { /* 没有信号服务时退化为不支持 resume */ }
 
   // 时钟唯一来源
   const api = {
@@ -247,6 +325,12 @@ export function apply(ctx) {
     },
     async wake() { return endSleep('你醒了。') },
     tick: (at) => tick(at),
+    setClock(fn) { return clock ? clock.set(fn) : () => {} },
+    ownsClock: () => Boolean(clock?.owns?.()),
+    addGoal,
+    removeGoal,
+    goals: () => state.goals.map((g) => ({ ...g })),
+    resumeGoals,
     status: () => ({
       phase: state.phase,
       since: state.since,
@@ -351,6 +435,38 @@ export function apply(ctx) {
     name: 'time_wake', summary: '现在醒来。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() { await api.wake(); return { text: '醒来了。' } },
+  })
+
+  tool({
+    name: 'goal_add', summary: '创建一个与时间联动的目标：到点结束，模型停下会被拉回。',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['theme'], properties: {
+        theme: { type: 'string' }, until: { type: 'string', description: 'ISO 时间' },
+        afterMin: { type: 'number', description: '多少分钟后结束' },
+        focus: { type: 'string', description: '绑定哪个注意力空间' },
+        resumeOnStop: { type: 'boolean' },
+      },
+    },
+    async execute(input = {}) {
+      const goal = addGoal(input)
+      return { text: `目标开始：${goal.theme}（到 ${new Date(goal.until).toLocaleString('zh-CN', { hour12: false })} 结束）。` }
+    },
+  })
+  tool({
+    name: 'goal_remove', summary: '卸载一个目标（同时释放它绑定的注意力空间）。',
+    parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string' } } },
+    async execute({ id } = {}) {
+      const out = removeGoal(id)
+      return { text: out.removed ? `目标已卸载：${id}` : `没有这个目标：${id}` }
+    },
+  })
+  tool({
+    name: 'goal_list', summary: '查看当前所有目标。',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      const list = api.goals()
+      return { text: list.length ? list.map((g) => `· ${g.id}：${g.theme}（到 ${new Date(g.until).toLocaleString('zh-CN', { hour12: false })}${g.focus ? `，focus=${g.focus}` : ''}）`).join('\n') : '当前没有目标。' }
+    },
   })
 
   const timer = setInterval(() => { void tick() }, tickMs)

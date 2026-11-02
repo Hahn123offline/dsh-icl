@@ -9,7 +9,12 @@ import { createContextService, createPresetService, createRawSourceRegistry, cre
 import { createModelClient } from './model-client.mjs'
 import { createSignalService } from './signals.mjs'
 
-export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
+export function createHost({ log = () => {}, now: systemNow = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
+  let clockOverride = null
+  const now = () => {
+    const value = clockOverride ? clockOverride() : systemNow()
+    return Number(value) || systemNow()
+  }
   const tools = createToolRegistry({
     stampTime: process.env.ICL_TOOL_TIME === '1' ? () => new Date().toLocaleTimeString('zh-CN', { hour12: false }) : null, onChange: (event) => log({ msg: 'tools.change', ...event }) })
   const prompt = createPromptService()
@@ -38,9 +43,16 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   })
 
   /** id -> { manifest, module, apply, dispose:Function[], enabled:boolean } */
+  let claimedSession = null
   const plugins = new Map()
   /** 插件之间共享能力的注册表：provide/get */
   const shared = new Map()
+
+  const clockBridge = {
+    set(fn) { const prev = clockOverride; clockOverride = typeof fn === 'function' ? fn : null; return () => { clockOverride = prev } },
+    reset() { clockOverride = null },
+    owns: () => Boolean(clockOverride),
+  }
 
   function makeContext(manifest, record) {
     const pluginId = manifest.id
@@ -107,6 +119,12 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         stats: () => signals.stats(),
       },
       services: {
+        /** 时间模块接管系统时钟；其它插件只读。 */
+        clock: {
+          set: (fn) => clockBridge.set(fn),
+          reset: () => clockBridge.reset(),
+          owns: () => clockBridge.owns(),
+        },
         raw: {
           register: (def) => { const off = raw.register(def); record.dispose.push(off); return off },
           search: (req) => raw.search(req),
@@ -151,7 +169,24 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
   }
 
   return {
-    services: { tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals },
+    services: {
+      tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals,
+      /** 时间模块接管系统时钟：set 返回恢复函数。 */
+      clock: {
+        set: (fn) => clockBridge.set(fn),
+        reset: () => clockBridge.reset(),
+        owns: () => clockBridge.owns(),
+      },
+    },
+
+    /** 单会话锁：核心只指向一个会话，第二个直接报错。 */
+    claimSession(sessionId) {
+      const id = String(sessionId ?? '').trim()
+      if (!id) throw new Error('claimSession 需要 sessionId')
+      if (claimedSession && claimedSession !== id) throw new Error(`已经指向会话 ${claimedSession}，不能再指向 ${id}`)
+      claimedSession = id
+      return () => { if (claimedSession === id) claimedSession = null }
+    },
 
     /** 登记一个插件（不启用）。 */
     registerPlugin(manifestInput, module, { config = {} } = {}) {

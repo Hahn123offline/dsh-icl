@@ -2,7 +2,7 @@
   "id": "time",
   "version": "0.1.0",
   "entry": "./src/index.mjs",
-  "tools": ["time_now", "time_schedule", "time_add", "time_remove", "time_sleep", "time_wake", "time_skip", "time_delay"],
+  "tools": ["time_now", "time_schedule", "time_add", "time_remove", "time_sleep", "time_wake", "time_skip", "time_delay", "goal_add", "goal_remove", "goal_list"],
   "slots": [],
   "focus": {},
   "requires": {}
