@@ -102,7 +102,7 @@
 
 ---
 
-## E. 为什么 `icl-live` 没加载
+## E. 为什么 `icl-live` 没加载（已修复，待重启验证）
 
 DSH 的插件不是放进 `~/.dsh/plugins/` 就自动生效，要满足三个条件：
 
@@ -126,3 +126,29 @@ DSH 的插件不是放进 `~/.dsh/plugins/` 就自动生效，要满足三个条
 6. 再谈"插件自动建会话"
 
 在这六步完成之前，**不要开始 30 分钟长测**——否则测试结果会被接线问题污染。
+
+
+---
+
+## G. DSH 接线进度（2026-11-02 晚）
+
+已完成：
+
+1. `dsh.bundle.patch` + `presets/icl-live.patch.yml`（preset id `icl-live`，显示名「ICL Live」）
+2. profile `dependencies` 加了 `dsh-icl-live: link:...`，`dsh.profile.bundles` 加了 `dsh-icl-live`
+3. `pnpm install` 通过（lockfile 校验 192 条）
+4. 提示词改成每 5 秒刷新（世界状态不再是快照）
+5. 参数 schema 转成 DSH 认的形状（对象必须显式 additionalProperties）
+6. 干跑验证：mock ctx 下 18 个工具全部注册成功
+
+待你重启 DSH 后验证：
+
+- 新建会话时能看到「ICL Live」预设
+- 会话里能看到 18 个工具（remember / recall / memo* / lexicon* / read_file / write_file / list_dir / bili_* / world_status）
+- 人格段出现且时间在走
+
+仍未做：
+
+- 会话自动创建（`api.sessions.create`）
+- 真实压缩联调
+- 楼中楼、时间优先的块、印象优先提示词
