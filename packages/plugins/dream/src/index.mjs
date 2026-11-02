@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'slang', 'lexicon', 'cleanup', 'index']
+const DEFAULT_JOBS = ['events', 'people', 'slang', 'lexicon', 'consume', 'cleanup', 'index']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -648,7 +648,55 @@ export function apply(ctx) {
     return { job: 'lexicon', ok: true, learned, faded }
   }
 
-  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, cleanup: jobCleanup, index: jobIndex }
+  /* ── consume：回收已完成的备忘 ──────────────── */
+
+  /**
+   * 主会话把一条备忘标成 done 之后，晚上把结论写回它归属的地方。
+   *
+   * 只做三个明确分支（不上抽象）：lexicon / person / event。
+   * 防“为了写而写”：没有 result 且没有追加内容的，不写，也不归档。
+   */
+  async function jobConsume({ now, force = false }) {
+    const day = dayKey(now)
+    if (!force && alreadyRan(day, 'consume')) return { job: 'consume', skipped: 'already-ran' }
+    const noteSvc = ctx.services.get('note')
+    if (!noteSvc) return { job: 'consume', skipped: 'no-note-plugin' }
+    const done = memory.query({ namespace: 'note', kind: 'note', limit: 200 })
+      .filter((n) => n.data?.status === 'done')
+
+    let written = 0
+    let archived = 0
+    for (const row of done) {
+      const about = row.data?.about
+      const result = String(row.data?.result ?? '').trim() || String((row.data?.updates ?? []).at(-1)?.text ?? '').trim()
+      if (!about?.namespace || !result) continue
+      let ok = false
+      try {
+        if (about.namespace === 'lexicon') {
+          const key = String(about.key ?? '')
+          const existing = memory.query({ namespace: 'lexicon', kind: 'term', limit: 200 }).find((x) => x.key === key)
+          const term = existing?.data?.term ?? key.split(':').pop()
+          const conv = existing?.data?.origins?.find((o) => o.conv)?.conv ?? 'web'
+          const svc = ctx.services.get('lexicon')
+          if (svc?.upsert) { svc.upsert({ term, conv, meaning: result }); ok = true }
+        } else if (about.namespace === 'person') {
+          memory.put({ namespace: 'person', kind: 'note', text: `（备忘回收）${result}`, data: { consolidated: false, fromNote: row.id }, now })
+          ok = true
+        } else if (about.namespace === 'event') {
+          memory.put({ namespace: 'event', kind: 'note', text: `（备忘回收）${result}`, data: { consolidated: false, fromNote: row.id }, now })
+          ok = true
+        }
+      } catch { ok = false }
+      if (!ok) continue
+      memory.patch(row.id, { data: { ...(row.data ?? {}), status: 'archived', consumedAt: now } })
+      written += 1
+      archived += 1
+    }
+    recordRun(day, 'consume', { written, archived }, now)
+    return { job: 'consume', ok: true, written, archived }
+  }
+
+  const JOBS = { events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, consume: jobConsume, cleanup: jobCleanup, index: jobIndex }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。
