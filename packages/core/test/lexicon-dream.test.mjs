@@ -30,7 +30,7 @@ test('做梦轮能从笔记里学到新词，并进待办', async () => {
   for (const id of ['memory', 'recall', 'rhythm', 'dream', 'note', 'lexicon']) await host.enable(id)
   host.services.slots.bind('dream-chat', { provider: 'fake', call: async ({ messages }) => {
     const sys = String(messages?.[0]?.content ?? '')
-    if (sys.includes('词汇建档案')) return JSON.stringify([{ term: '典', meaning: '', conv: 'group:1' }])
+    if (sys.includes('黑话学习器')) return JSON.stringify([{ term: '典', meaning: '', conv: 'group:1' }])
     return '[]'
   } })
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
