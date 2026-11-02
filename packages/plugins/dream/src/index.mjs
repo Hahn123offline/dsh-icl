@@ -123,10 +123,19 @@ export function apply(ctx) {
     } catch { rows = [] }
     if (!rows.length) return { job: 'wash', skipped: 'no-raw' }
 
-    const chatLines = rows
-      .slice(0, 200)
-      .map((r, i) => `[${i + 1}] ${String(r.text ?? '').replace(/[<>]/g, ' ').slice(0, 240)}`)
-      .join('\n')
+    // 总预算嫗而不是单行上限：珍惜长字幕与长评论
+    const budget = Math.max(2000, Number(ctx.config.washChars ?? 12000))
+    const perLine = Math.max(240, Number(ctx.config.washLineChars ?? 1200))
+    const lines = []
+    let used = 0
+    for (const [i, r] of rows.entries()) {
+      const text = String(r.text ?? '').replace(/[<>]/g, ' ').slice(0, perLine)
+      if (!text) continue
+      if (used + text.length > budget) break
+      lines.push(`[${i + 1}] ${text}`)
+      used += text.length
+    }
+    const chatLines = lines.join('\n')
     let items = []
     try {
       const raw = await ctx.slots.call(slot, {
