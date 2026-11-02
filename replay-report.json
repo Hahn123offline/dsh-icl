@@ -4,13 +4,14 @@
     {
       "day": "2026-10-22",
       "messages": 43,
-      "extracted": 5,
+      "extracted": 7,
       "jobs": {
-        "events": 1,
+        "events": 3,
         "people": 3,
-        "slang": "no-notes",
-        "cleanup": 0,
-        "index": 5
+        "lexicon": "no-lexicon-plugin",
+        "consume": 0,
+        "cleanup": 1,
+        "index": 7
       },
       "ok": true
     },
@@ -19,11 +20,12 @@
       "messages": 85,
       "extracted": 9,
       "jobs": {
-        "events": 2,
-        "people": 2,
-        "slang": 2,
+        "events": 3,
+        "people": 3,
+        "lexicon": "no-lexicon-plugin",
+        "consume": 0,
         "cleanup": 0,
-        "index": 11
+        "index": 9
       },
       "ok": true
     },
@@ -32,9 +34,10 @@
       "messages": 16,
       "extracted": 2,
       "jobs": {
-        "events": 0,
+        "events": 1,
         "people": 1,
-        "slang": "no-notes",
+        "lexicon": "no-lexicon-plugin",
+        "consume": 0,
         "cleanup": 0,
         "index": 2
       },
@@ -43,26 +46,28 @@
     {
       "day": "2026-10-25",
       "messages": 15,
-      "extracted": 2,
+      "extracted": 0,
       "jobs": {
-        "events": 2,
-        "people": 1,
-        "slang": "no-notes",
+        "events": "no-notes",
+        "people": "no-notes",
+        "lexicon": "no-lexicon-plugin",
+        "consume": 0,
         "cleanup": 0,
-        "index": 2
+        "index": "nothing-missing"
       },
       "ok": true
     },
     {
       "day": "2026-10-26",
       "messages": 11,
-      "extracted": 6,
+      "extracted": 3,
       "jobs": {
-        "events": 2,
-        "people": 3,
-        "slang": "no-notes",
-        "cleanup": 1,
-        "index": 6
+        "events": "no-notes",
+        "people": 2,
+        "lexicon": "no-lexicon-plugin",
+        "consume": 0,
+        "cleanup": 0,
+        "index": 3
       },
       "ok": true
     },
@@ -73,20 +78,20 @@
   ],
   "logs": [
     "源：qq  消息：170  天数：5  范围：2026-10-22 → 2026-10-23 → 2026-10-24 → 2026-10-25 → 2026-10-26",
-    "2026-10-22 消息  43 → 抽取  5 | {\"events\":1,\"people\":3,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":5}",
-    "2026-10-23 消息  85 → 抽取  9 | {\"events\":2,\"people\":2,\"slang\":2,\"cleanup\":0,\"index\":11}",
-    "2026-10-24 消息  16 → 抽取  2 | {\"events\":0,\"people\":1,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":2}",
-    "2026-10-25 消息  15 → 抽取  2 | {\"events\":2,\"people\":1,\"slang\":\"no-notes\",\"cleanup\":0,\"index\":2}",
-    "2026-10-26 消息  11 → 抽取  6 | {\"events\":2,\"people\":3,\"slang\":\"no-notes\",\"cleanup\":1,\"index\":6}",
-    "\n库：items 57  vectors 36",
-    " ✓ qwenstuff 根目录能写，state 目录被什么拦住写不进去？ → 期望含「桥接」",
-    " ✓ 周子涵给我打多少钱白饭？ → 期望含「20」",
-    " ✓ 周子涵用多少 Token 把我电脑搬进虚拟机？ → 期望含「7块」",
-    " ✓ 周子涵发来中转站冒充 Claude 的什么梗图？ → 期望含「鱼鱼」",
-    " ✓ 谁在给我的项目加后端功能？ → 期望含「Hahn123」",
-    " ✓ 升级思维系统后，主打什么？ → 期望含「连续性」",
-    " ✓ 周子涵说要再来测一次我的记忆连续性和什么能力？ → 期望含「反应」",
-    " ✓ 曾嘉睿刚吃完什么回宿舍差点赶上查寝？ → 期望含「鸡蛋灌饼」",
+    "2026-10-22 消息  43 → 抽取  7 | {\"events\":3,\"people\":3,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":1,\"index\":7}",
+    "2026-10-23 消息  85 → 抽取  9 | {\"events\":3,\"people\":3,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":9}",
+    "2026-10-24 消息  16 → 抽取  2 | {\"events\":1,\"people\":1,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":2}",
+    "2026-10-25 消息  15 → 抽取  0 | {\"events\":\"no-notes\",\"people\":\"no-notes\",\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":\"nothing-missing\"}",
+    "2026-10-26 消息  11 → 抽取  3 | {\"events\":\"no-notes\",\"people\":2,\"lexicon\":\"no-lexicon-plugin\",\"consume\":0,\"cleanup\":0,\"index\":3}",
+    "\n库：items 52  vectors 31",
+    " ✓ 周子涵让我配合玩什么模式，我负责当什么？ → 期望含「大肥鱼模式」",
+    " ✓ 周子涵给桥接开了什么权限后，我写“权限测试”文件验证成功？ → 期望含「qwenstuff」",
+    " ✓ 周子涵给我换新 workspace 后，我留下了什么名字的测试文件？ → 期望含「小千千千千问-搬家测试.txt」",
+    " ✓ 周子涵按什么给我打了20块白饭？ → 期望含「token」",
+    " ✓ 在群里被禁、只能管理端改配置的是什么？ → 期望含「PowerShell」",
+    " ✓ 周子涵发的梗图里说被中转站拿来冒充Claude的是什么？ → 期望含「鱼」",
+    " ✓ 谁在给我的项目加后端功能，说要改完再告诉我？ → 期望含「Hahn123」",
+    " ✓ 郑皓元叫曾嘉睿什么？ → 期望含「乐乐」",
     "\n召回命中：8/8"
   ]
 }
