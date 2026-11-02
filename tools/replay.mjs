@@ -53,6 +53,7 @@ function loadQq() {
     .map((r) => ({
       ts: Number(r.ts),
       sender: String(r.sender ?? (Number(r.is_self) ? '我' : '?')),
+      conv: String(r.conv_key ?? ''),
       qq: String(r.sender_id ?? ''),
       text: String(r.text).replace(/\s+/g, ' ').trim().slice(0, 400),
       self: Number(r.is_self) === 1,
@@ -263,6 +264,9 @@ log(`源：${SOURCE}  消息：${msgs.length}  天数：${days.size}  范围：$
 const report = []
 for (const day of [...days.keys()].sort()) {
   const list = days.get(day)
+  const convCount = new Map()
+  for (const m of list) if (m.conv) convCount.set(m.conv, (convCount.get(m.conv) ?? 0) + 1)
+  const dayConv = [...convCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
   const transcript = list.map((m) => `[qq=${m.qq || '-'}] ${m.sender}: ${m.text}`).join('\n').slice(0, 12000)
   let items = []
   try {
@@ -293,7 +297,7 @@ for (const day of [...days.keys()].sort()) {
       for (const [sender, id] of nameToQq) if (sender && text.includes(sender)) { qq = id; break }
     }
     if (kind === 'person' && !qq) { skippedPeople += 1; continue }
-    const data = { day, source: SOURCE, qq: qq || null }
+    const data = { day, source: SOURCE, qq: qq || null, ...(dayConv ? { origin: { conv: dayConv } } : {}) }
     mem.put({ namespace: kind, kind: 'note', text, data, now: dayEnd(day) })
     wrote += 1
   }
