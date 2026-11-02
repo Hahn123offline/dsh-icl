@@ -660,17 +660,19 @@ export function apply(ctx) {
       return { job: 'lexicon', ok: false, error: String(error?.message ?? error) }
     }
 
+    // 去重：同一个词只建一次档，也只提一次待办
+    const seenTerms = new Set((lexicon.query?.() ?? []).map((r) => String(r.data?.term ?? '')))
     let learned = 0
     for (const item of items) {
       const term = String(item?.term ?? item?.content ?? '').trim()
-      if (!term) continue
+      if (!term || seenTerms.has(term)) continue
       const res = lexicon.upsert({
         term,
         conv: String(item?.conv ?? '').trim() || 'web',
         meaning: String(item?.meaning ?? '').trim(),
-        tags: item?.hot ? ['热词'] : ['自动发现'],
+        tags: [item?.reason === 'shifted' ? '新义' : item?.reason === 'in-group' ? '本群' : item?.reason === 'frequent' ? '高频' : '待查'],
       })
-      if (res?.ok) learned += 1
+      if (res?.ok) { learned += 1; seenTerms.add(term) }
     }
 
     const faded = ageLexicon(now)
