@@ -129,7 +129,11 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
   ]
   let reply = ''
   try {
-    reply = String(await host.services.model.chat({ messages, maxTokens: 900 }) ?? '').trim()
+    const detailed = await host.services.model.chatDetailed({ messages, maxTokens: 1200 })
+    reply = String(detailed?.text ?? '').trim()
+    if (String(detailed?.reasoning ?? '').trim()) {
+      transcript.push({ text: String(detailed.reasoning).slice(0, 1200), time: Date.now(), conv: 'marathon', kind: 'think' })
+    }
   } catch (error) {
     console.log('model error:', String(error?.message ?? error))
     break

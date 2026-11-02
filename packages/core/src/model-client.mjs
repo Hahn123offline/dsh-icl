@@ -63,7 +63,16 @@ export function createModelClient({ fetchImpl = globalThis.fetch, now = () => Da
      * @param {object} input
      * @param {Array<{role:string, content:string}>} input.messages
      */
+    async chatDetailed({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
+      return this.chatInner({ messages, maxTokens, timeoutMs, temperature })
+    },
+
     async chat({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
+      const { text } = await this.chatInner({ messages, maxTokens, timeoutMs, temperature })
+      return text
+    },
+
+    async chatInner({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
       if (paused) {
         const error = new Error(`模型已暂停：${paused.reason}`)
         error.code = 'MODEL_PAUSED'
@@ -71,13 +80,16 @@ export function createModelClient({ fetchImpl = globalThis.fetch, now = () => Da
       }
       const extra = binding?.extraBody ?? {}
       const body = { messages, stream: false, ...extra, ...(maxTokens ? { max_tokens: Number(maxTokens) } : {}), ...(temperature == null ? {} : { temperature }) }
+      const parse = (data) => {
+        const msg = data?.choices?.[0]?.message ?? {}
+        return { text: String(msg?.content ?? ''), reasoning: String(msg?.reasoning_content ?? msg?.reasoning ?? '') }
+      }
       try {
-        const data = await request(body, { timeoutMs })
-        return String(data?.choices?.[0]?.message?.content ?? '')
+        return parse(await request(body, { timeoutMs }))
       } catch (error) {
         if (error?.status === 401 && typeof onAuthError === 'function') {
           const renewed = await onAuthError(error)
-          if (renewed) { binding = { ...binding, ...renewed }; const retry = await request(body, { timeoutMs }); return String(retry?.choices?.[0]?.message?.content ?? '') }
+          if (renewed) { binding = { ...binding, ...renewed }; return parse(await request(body, { timeoutMs })) }
         }
         if (String(error?.name) === 'AbortError' || /aborted/i.test(String(error?.message ?? ''))) {
           const wrapped = new Error(paused ? '模型已暂停（请求被中止）' : '模型请求超时或被中止')

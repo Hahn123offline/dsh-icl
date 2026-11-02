@@ -1,0 +1,13 @@
+{
+  "personaFile": "prompts/marathon.md",
+  "workspace": "state/marathon-workspace",
+  "model": {
+    "baseUrl": "http://127.0.0.1:8088/v1",
+    "model": "coder390-27b-q3-df2-4x500",
+    "disableThinking": false,
+    "timeoutMs": 180000
+  },
+  "plugins": ["memory", "recall", "note", "lexicon", "editor", "bili", "world-state", "rhythm"],
+  "durationSec": 1800,
+  "maxSteps": 200
+}
