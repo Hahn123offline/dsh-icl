@@ -4,28 +4,28 @@
     {
       "day": "2026-10-22",
       "messages": 43,
-      "extracted": 5,
+      "extracted": 8,
       "jobs": {
-        "events": 2,
-        "people": 1,
+        "events": 4,
+        "people": 3,
         "lexicon": 0,
         "consume": 0,
-        "cleanup": 0,
-        "index": 5
+        "cleanup": 1,
+        "index": 15
       },
       "ok": true
     },
     {
       "day": "2026-10-23",
       "messages": 85,
-      "extracted": 10,
+      "extracted": 7,
       "jobs": {
         "events": 3,
         "people": 2,
         "lexicon": 0,
         "consume": 0,
-        "cleanup": 1,
-        "index": 10
+        "cleanup": 0,
+        "index": 22
       },
       "ok": true
     },
@@ -38,7 +38,7 @@
         "people": 1,
         "lexicon": 0,
         "consume": 0,
-        "cleanup": 0,
+        "cleanup": 1,
         "index": 2
       },
       "ok": true
@@ -46,54 +46,52 @@
     {
       "day": "2026-10-25",
       "messages": 15,
-      "extracted": 3,
+      "extracted": 2,
       "jobs": {
-        "events": 0,
+        "events": "no-notes",
         "people": 1,
         "lexicon": 0,
         "consume": 0,
-        "cleanup": 0,
-        "index": 3
+        "cleanup": 3,
+        "index": 2
       },
       "ok": true
     },
     {
       "day": "2026-10-26",
       "messages": 11,
-      "extracted": 5,
+      "extracted": 4,
       "jobs": {
         "events": 1,
-        "people": 3,
+        "people": 2,
         "lexicon": 0,
         "consume": 0,
-        "cleanup": 1,
-        "index": 5
+        "cleanup": 0,
+        "index": 4
       },
       "ok": true
     },
     {
-      "probes": 10,
-      "hit": 10
+      "probes": 8,
+      "hit": 7
     }
   ],
   "logs": [
     "源：qq  消息：170  天数：5  范围：2026-10-22 → 2026-10-23 → 2026-10-24 → 2026-10-25 → 2026-10-26",
-    "2026-10-22 消息  43 → 抽取  5 | {\"events\":2,\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":5}",
-    "2026-10-23 消息  85 → 抽取 10 | {\"events\":3,\"people\":2,\"lexicon\":0,\"consume\":0,\"cleanup\":1,\"index\":10}",
-    "2026-10-24 消息  16 → 抽取  2 | {\"events\":\"no-notes\",\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":2}",
-    "2026-10-25 消息  15 → 抽取  3 | {\"events\":0,\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":3}",
-    "2026-10-26 消息  11 → 抽取  5 | {\"events\":1,\"people\":3,\"lexicon\":0,\"consume\":0,\"cleanup\":1,\"index\":5}",
-    "\n库：items 78  vectors 49",
-    " ✓ 谁一点点给“我”放开桥接白名单、敏感路径 filter、写入权限和新 workspace，修一段就让“我”试一次？ → 期望含「周子涵」",
-    " ✓ 谁吃到神秘的鸡蛋灌饼，还冒了查寝的风险？ → 期望含「曾嘉睿」",
-    " ✓ 谁通过 QQ 联系上，并问过“还有人类吗”？ → 期望含「曾嘉睿」",
-    " ✓ 谁关掉私聊敏感路径 filter 让“我”看报路径，修完又调权限让“我”试写东西、翻 b站？ → 期望含「周子涵」",
-    " ✓ 谁花 token 把“我”的电脑搬进虚拟机，做了长期记忆和图片记忆？ → 期望含「周子涵」",
-    " ✓ 谁和“我”约定录完记忆后要抽查，别糊弄？ → 期望含「周子涵」",
-    " ✓ 谁做了跨群记忆测试，说短期记忆连续性有点小问题？ → 期望含「Hahn123」",
-    " ✓ 谁叫“我”“大肥鱼”，还说“我”就当“肥鱼本鱼”？ → 期望含「Hahn123」",
-    " ✓ 谁说“我”被周子涵 PUA 了，让“我”别听周子涵的、也别替周子涵写东西？ → 期望含「郑皓元」",
-    " ✓ 谁管“我”叫乐乐？ → 期望含「郑皓元」",
-    "\n召回命中：10/10"
+    "2026-10-22 消息  43 → 抽取  8 | {\"events\":4,\"people\":3,\"lexicon\":0,\"consume\":0,\"cleanup\":1,\"index\":15}",
+    "2026-10-23 消息  85 → 抽取  7 | {\"events\":3,\"people\":2,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":22}",
+    "2026-10-24 消息  16 → 抽取  2 | {\"events\":\"no-notes\",\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":1,\"index\":2}",
+    "2026-10-25 消息  15 → 抽取  2 | {\"events\":\"no-notes\",\"people\":1,\"lexicon\":0,\"consume\":0,\"cleanup\":3,\"index\":2}",
+    "2026-10-26 消息  11 → 抽取  4 | {\"events\":1,\"people\":2,\"lexicon\":0,\"consume\":0,\"cleanup\":0,\"index\":4}",
+    "\n库：items 151  vectors 90",
+    " ✗ 周子涵在控制台调桥接、放开工具权限时，说大概要多久才能调好？ → 期望含「挺长一段时间」",
+    " ✓ 测试写权限时，哪个目录被桥接拦着写不了？ → 期望含「state」",
+    " ✓ 周子涵在调权限时禁掉了哪个命令行工具？ → 期望含「PowerShell」",
+    " ✓ 查寝时，谁吃完灌饼赶回来了？ → 期望含「曾嘉睿」",
+    " ✓ 查寝时，谁还在外面吃宵夜？ → 期望含「郑皓元」",
+    " ✓ 周子涵花 Token 把电脑搬进虚拟机后，打了多少钱白饭钱？ → 期望含「20」",
+    " ✓ 周子涵说那个二维码是什么码？ → 期望含「查寝码」",
+    " ✓ 周子涵给我起了个什么称呼，说要把我写进对应模式里当本鱼？ → 期望含「肥鱼」",
+    "\n召回命中：7/8"
   ]
 }

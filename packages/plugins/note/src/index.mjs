@@ -55,11 +55,11 @@ export function apply(ctx) {
   }
 
   /** 标记完成：把追加内容冻成"新消息"，等做梦回收后归档。 */
-  function commit(id, { result = null } = {}) {
+  function commit(id, { result = null, source = null } = {}) {
     const row = rows().find((r) => Number(r.id) === Number(id))
     if (!row) return { ok: false, error: 'not-found' }
     memory.patch(row.id, {
-      data: { ...(row.data ?? {}), status: 'done', result: result == null ? null : String(result), doneAt: ctx.now() },
+      data: { ...(row.data ?? {}), status: 'done', result: result == null ? null : String(result), source: source == null ? null : String(source), doneAt: ctx.now() },
     })
     return { ok: true, id: row.id, status: 'done' }
   }
@@ -139,10 +139,10 @@ export function apply(ctx) {
     avoid: ['marking something done that you only partly answered (append instead)'],
     parameters: {
       type: 'object', additionalProperties: false, required: ['id'],
-      properties: { id: { type: 'number' }, result: { type: 'string' } },
+      properties: { id: { type: 'number' }, result: { type: 'string' }, source: { type: 'string', description: 'Where the answer came from, e.g. a URL.' } },
     },
-    async execute({ id, result = null } = {}) {
-      const out = commit(id, { result })
+    async execute({ id, result = null, source = null } = {}) {
+      const out = commit(id, { result, source })
       return { text: out.ok ? '完成了。' : '没找到那条。' }
     },
   })

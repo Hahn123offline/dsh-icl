@@ -700,7 +700,8 @@ export function apply(ctx) {
           const term = about.term ?? existing?.data?.term ?? key.split(':').pop()
           const conv = about.conv ?? existing?.data?.origins?.find((o) => o.conv)?.conv ?? 'web'
           const svc = ctx.services.get('lexicon')
-          if (svc?.upsert) { svc.upsert({ term, conv, meaning: result }); ok = true }
+          const source = row.data?.source ?? null
+          if (svc?.upsert) { svc.upsert({ term, conv, meaning: result, url: source && source.startsWith('http') ? source : null, platform: source && !source.startsWith('http') ? source : null }); ok = true }
         } else if (about.namespace === 'person') {
           memory.put({ namespace: 'person', kind: 'note', text: `（备忘回收）${result}`, data: { consolidated: false, fromNote: row.id }, now })
           ok = true
