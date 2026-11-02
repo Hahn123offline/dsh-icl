@@ -98,8 +98,8 @@ export function apply(ctx) {
 
   function runKey(day, job) { return `run:${day}:${job}` }
   function alreadyRan(day, job) {
-    const rows = memory.query({ namespace: 'dream-run', kind: 'run', limit: 200 })
-    return rows.some((r) => r.key === runKey(day, job))
+    const rows = memory.query({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), limit: 1 })
+    return rows.length > 0
   }
   function recordRun(day, job, detail, now) {
     memory.put({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: `${day} ${job}`, data: detail, now })
@@ -224,6 +224,9 @@ export function apply(ctx) {
       if (!summary) continue
       const key = `evt:${day}:${hash(summary)}`
       const evidence = validEvidence(block?.evidence, notes)
+      const previous = memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
+      // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
+      if (!evidence.length && previous) continue
       const created = memory.put({
         namespace: 'event',
         kind: 'block',
@@ -291,11 +294,16 @@ export function apply(ctx) {
       const existing = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).find((r) => r.key === key)
       // 人物档案要有"全局认识"：把过去提到过这个人的事件块也带上，
       // 否则每天只能拿到一句话，写出来的档案永远认不出是谁。
+      const matchesSubject = (entry) => {
+        const subject = entry?.subject ?? (entry?.qq ? { kind: 'qq', value: String(entry.qq) } : null)
+        return Boolean(subject?.value) && String(subject.value) === String(subjectValue)
+          && String(subject.kind ?? 'qq') === String(subjectKind)
+      }
       const relatedEvents = memory.query({ namespace: 'event', kind: 'block', limit: 500 })
-        .filter((b) => Array.isArray(b.data?.people) && b.data.people.map(String).includes(qq))
+        .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => String(p) === String(subjectValue)))
         .slice(-20)
       const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
-        .filter((n) => String(n.data?.qq ?? '') === qq && !list.some((x) => x.id === n.id))
+        .filter((n) => matchesSubject(n.data) && !list.some((x) => x.id === n.id))
         .slice(-20)
 
       const context = [

@@ -180,6 +180,7 @@ export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl =
         record.dispose = []
         throw error
       }
+      surface.notify()
       log({ msg: 'plugin.enabled', id: record.manifest.id, disposers: record.dispose.length })
       return { enabled: true }
     },

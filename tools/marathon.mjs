@@ -48,7 +48,8 @@ host.registerPlugin(biliManifest, bili, {})
 host.registerPlugin(worldManifest, world, {})
 host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '23:00', stateFile: path.join(root, 'rhythm.json') } })
 host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'marathon', persona: fs.readFileSync(path.join(import.meta.dirname, '..', 'prompts', 'dream.md'), 'utf8') } })
-for (const id of ['memory', 'recall', 'note', 'lexicon', 'editor', 'bili', 'world-state', 'rhythm', 'dream']) {
+const enabledIds = Array.isArray(cfg.plugins) && cfg.plugins.length ? cfg.plugins : ['memory', 'recall', 'note', 'lexicon', 'editor', 'bili', 'world-state', 'rhythm', 'dream']
+for (const id of enabledIds) {
   try { await host.enable(id) } catch (error) { console.log('enable fail', id, String(error?.message ?? error)) }
 }
 

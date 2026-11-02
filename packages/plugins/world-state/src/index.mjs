@@ -80,15 +80,19 @@ export function apply(ctx) {
 
   /** brief 层：全局一瞥（每个注册者最多 cap 条）。 */
   function renderBrief({ owner = null } = {}) {
-    const groups = owners().filter((g) => owner == null || g.owner === String(owner))
+    const sourceOf = (name) => [...sources.values()].filter((s) => s.owner === name).sort((a, b) => a.order - b.order)[0]
+    const groups = owners()
+      .filter((g) => owner == null || g.owner === String(owner))
+      .sort((a, b) => (sourceOf(a.owner)?.order ?? 50) - (sourceOf(b.owner)?.order ?? 50) || a.owner.localeCompare(b.owner))
     const lines = []
     for (const group of groups) {
-      const source = [...sources.values()].find((s) => s.owner === group.owner)
+      const source = sourceOf(group.owner)
       const cap = source?.cap ?? DEFAULT_CAP
       const shown = group.items.slice(0, cap)
       const more = group.items.length - shown.length
-      const body = shown.map((item) => item.brief).join('；')
-      lines.push(`${group.title}：${body}${more > 0 ? `（还有 ${more} 项）` : ''}`)
+      // 同一 owner 的多条 brief 用分号连接；先去掉句末的句号，免得出现 "。；"
+      const body = shown.map((item) => String(item.brief).replace(/[。；;]\s*$/, '')).join('；')
+      lines.push(`${group.title}：${body}${more > 0 ? `（还有 ${more} 项）` : ''}。`)
     }
     return lines.join('\n')
   }

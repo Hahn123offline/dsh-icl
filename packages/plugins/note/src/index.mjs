@@ -151,7 +151,7 @@ export function apply(ctx) {
     name: 'note_status',
     summary: 'How many notes are open, done, or archived - just counts, no content.',
     when: ['you want a quick sense of how much is pending'],
-    avoid: ['when you need the actual text (use memo_list)'],
+    avoid: ['when you need the actual text (use memos)'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() {
       const all = rows()

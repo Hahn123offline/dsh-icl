@@ -229,6 +229,8 @@ if (REAL) {
   host.services.slots.bind('dream-chat', { provider: 'fake', call: async () => '[]' })
 }
 
+const msgs = SOURCE === 'qq' ? loadQq() : loadDsh(SESSION)
+
 // 原文层：直接从原始日志按需查，不复制进记忆库
 host.services.raw.register({
   id: 'qq-log',
@@ -255,7 +257,6 @@ host.services.raw.register({
 })
 
 const mem = host.shared.get('memory')
-const msgs = SOURCE === 'qq' ? loadQq() : loadDsh(SESSION)
 if (!msgs.length) { console.error('没有读到原始消息'); process.exit(2) }
 const days = new Map()
 for (const m of msgs) {

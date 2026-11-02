@@ -13,7 +13,7 @@ export function apply(ctx) {
   memory.registerNamespace({ id: 'compaction', label: '折叠摘要', recallable: false, owner: 'compaction' })
 
   function latest() {
-    const rows = memory.query({ namespace: 'compaction', kind: 'summary', limit: 20 })
+    const rows = memory.query({ namespace: 'compaction', kind: 'summary', limit: 500 })
     return rows.sort((a, b) => Number(b.createdAt) - Number(a.createdAt))[0] ?? null
   }
 

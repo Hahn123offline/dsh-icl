@@ -15,15 +15,16 @@ export function createModelClient({ fetchImpl = globalThis.fetch, now = () => Da
     if (!binding) throw new Error('模型没有绑定：先由模型管理插件 bind')
     const base = String(binding.baseUrl ?? '').replace(/\/+$/, '')
     if (!base || !binding.model) throw new Error('模型绑定不完整（baseUrl / model）')
-    return { base, model: String(binding.model), apiKey: binding.apiKey ?? null }
+    return { base, model: String(binding.model), apiKey: binding.apiKey ?? null, timeoutMs: Number(binding.timeoutMs) > 0 ? Number(binding.timeoutMs) : null }
   }
 
-  async function request(body, { timeoutMs = 120_000, force = null } = {}) {
+  async function request(body, { timeoutMs = null, force = null } = {}) {
     const cfg = configured()
     const controller = new AbortController()
     const entry = { controller, at: now() }
     inflight.add(entry)
-    const timer = setTimeout(() => controller.abort(new Error('超时')), Math.max(1000, Number(timeoutMs) || 120_000))
+    const effectiveTimeout = Math.max(1000, Number(timeoutMs) || Number(cfg.timeoutMs) || 120_000)
+    const timer = setTimeout(() => controller.abort(new Error('超时')), effectiveTimeout)
     if (typeof timer.unref === 'function') timer.unref()
     try {
       const res = await fetchImpl(`${cfg.base}/chat/completions`, {
@@ -63,16 +64,16 @@ export function createModelClient({ fetchImpl = globalThis.fetch, now = () => Da
      * @param {object} input
      * @param {Array<{role:string, content:string}>} input.messages
      */
-    async chatDetailed({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
+    async chatDetailed({ messages = [], maxTokens = null, timeoutMs = null, temperature = undefined } = {}) {
       return this.chatInner({ messages, maxTokens, timeoutMs, temperature })
     },
 
-    async chat({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
+    async chat({ messages = [], maxTokens = null, timeoutMs = null, temperature = undefined } = {}) {
       const { text } = await this.chatInner({ messages, maxTokens, timeoutMs, temperature })
       return text
     },
 
-    async chatInner({ messages = [], maxTokens = null, timeoutMs = 120_000, temperature = undefined } = {}) {
+    async chatInner({ messages = [], maxTokens = null, timeoutMs = null, temperature = undefined } = {}) {
       if (paused) {
         const error = new Error(`模型已暂停：${paused.reason}`)
         error.code = 'MODEL_PAUSED'

@@ -167,7 +167,7 @@ export function apply(ctx) {
       return row ? { id: row.id, label: row.label, recallable: Boolean(row.recallable), halfLifeDays: Number(row.half_life_days), retention: row.retention } : null
     },
 
-    put({ namespace, kind = 'note', key = null, text = '', data = null, weight = 1, now = ctx.now() } = {}) {
+    put({ namespace, kind = 'note', key = null, text = '', data = null, weight = null, now = ctx.now() } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.put 需要 namespace')
       if (!db.prepare('SELECT 1 FROM mem_ns WHERE id = ?').get(ns)) throw new Error(`命名空间没有注册：${ns}`)
@@ -175,15 +175,18 @@ export function apply(ctx) {
       if (!body.trim() && data == null) throw new Error('memory.put 需要 text 或 data')
       const at = Number(now)
       if (key != null) {
-        const hit = db.prepare('SELECT id FROM mem_items WHERE namespace = ? AND key = ?').get(ns, String(key))
+        const hit = db.prepare('SELECT id, text, weight FROM mem_items WHERE namespace = ? AND key = ?').get(ns, String(key))
         if (hit) {
+          // 不传 weight 就保留原权重；文本变了旧向量失效，删掉等补
+          const nextWeight = weight == null ? Number(hit.weight ?? 1) : Number(weight) || 1
           db.prepare('UPDATE mem_items SET kind = ?, text = ?, data = ?, weight = ?, updated_at = ? WHERE id = ?')
-            .run(String(kind), body, data == null ? null : JSON.stringify(data), Number(weight) || 1, at, hit.id)
+            .run(String(kind), body, data == null ? null : JSON.stringify(data), nextWeight, at, hit.id)
+          if (String(hit.text) !== body) db.prepare('DELETE FROM mem_vec WHERE item_id = ?').run(hit.id)
           return { id: Number(hit.id), updated: true }
         }
       }
       const info = db.prepare('INSERT INTO mem_items (namespace, kind, key, text, data, weight, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(ns, String(kind), key == null ? null : String(key), body, data == null ? null : JSON.stringify(data), Number(weight) || 1, at, at)
+        .run(ns, String(kind), key == null ? null : String(key), body, data == null ? null : JSON.stringify(data), weight == null ? 1 : Number(weight) || 1, at, at)
       return { id: Number(info.lastInsertRowid), updated: false }
     },
 

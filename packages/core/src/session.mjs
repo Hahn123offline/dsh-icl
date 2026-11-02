@@ -18,25 +18,25 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
     sessionId,
 
     /** 当前这轮应该看到的工具名（由 host 决定，适配器只读）。 */
-    toolNames() { return host.services.tools.names() },
+    toolNames() { return host.services.surface.names() },
 
     /** 把工具接到真实的 DSH 工具面上（DSH: ctx.tools.register）。 */
     installTools() {
       if (!toolSink) return () => {}
-      const disposers = host.services.tools.list().map((definition) => toolSink.register(definition))
+      const disposers = host.services.surface.list().map((definition) => toolSink.register(definition))
       return () => { for (const dispose of disposers.reverse()) { try { dispose() } catch { /* 忽略 */ } } }
     },
 
     /** 系统提示词（DSH: ctx.systemPrompt.section 的 text 函数）。 */
     systemPrompt(ctx = {}) {
       const core = `你正在通过 ICL 运行。当前会话：${sessionId}。`
-      const index = host.services.tools.index()
+      const index = host.services.tools.index({ defs: host.services.surface.list() })
       const pluginText = host.services.prompt.assemble({ sessionId, ...ctx })
       return [core, index ? `现在开着的工具：\n${index}` : '', pluginText].filter(Boolean).join('\n\n')
     },
 
     /** 工具面的最终形态（DSH: ctx.tools.register 的入参）。 */
-    toolDefinitions() { return host.services.tools.list() },
+    toolDefinitions() { return host.services.surface.list() },
 
     /** 投递一轮：drain → push → ack/nack。返回这一轮的结果，便于测试。 */
     async drainOnce() {
@@ -73,7 +73,7 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
         sessionId,
         now: now(),
         focus: focus ? { label: focus.label, owner: focus.owner, since: focus.since, expiresAt: focus.expiresAt } : null,
-        tools: host.services.tools.names(),
+        tools: host.services.surface.names(),
         pending: host.services.delivery.pendingCount(),
         plugins: host.list(),
       }

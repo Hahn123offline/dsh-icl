@@ -27,7 +27,7 @@ export function apply(ctx) {
       .slice(0, maxItems)
     if (!picked.length) return null
     const lines = picked.map((h) => {
-      const tag = h.item.kind === 'note' ? '未整理' : (h.namespace ?? '记忆')
+      const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
       return `· [${tag}] ${String(h.item.text).slice(0, 80)}`
     })
     let text = `你可能记得（检索结果，仅供参考）：\n${lines.join('\n')}`

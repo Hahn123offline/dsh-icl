@@ -18,22 +18,27 @@ export function attachDshAdapter(host, dsh, { sessionId = null, order = 30 } = {
     const want = new Map(surface.list(sessionId ? { preset: host.services.presets.active() } : {}).map((t) => [t.name, t]))
     const added = []
     const removed = []
-    for (const [name, off] of [...registered]) {
+    for (const [name, entry] of [...registered]) {
       if (want.has(name)) continue
-      try { off() } catch { /* ignore */ }
+      try { entry.off() } catch { /* ignore */ }
       registered.delete(name)
       removed.push(name)
     }
     for (const [name, def] of want) {
       const prev = registered.get(name)
-      if (prev) { try { prev() } catch { /* ignore */ } registered.delete(name) }
+      if (prev) {
+        // 定义没变就不要 churn：execute 与描述都相同视为同一个工具
+        if (prev.def?.execute === def.execute && prev.def?.description === def.description) continue
+        try { prev.off() } catch { /* ignore */ }
+        registered.delete(name)
+      }
       const off = dsh.tools.register({
         name,
         description: def.description,
         parameters: def.parameters,
         execute: def.execute,
       })
-      registered.set(name, typeof off === 'function' ? off : () => {})
+      registered.set(name, { off: typeof off === 'function' ? off : () => {}, def })
       added.push(name)
     }
     return { added, removed }
@@ -63,7 +68,7 @@ export function attachDshAdapter(host, dsh, { sessionId = null, order = 30 } = {
       disposed = true
       try { offChange() } catch { /* ignore */ }
       try { sectionOff?.() } catch { /* ignore */ }
-      for (const off of registered.values()) { try { off() } catch { /* ignore */ } }
+      for (const entry of registered.values()) { try { entry.off() } catch { /* ignore */ } }
       registered.clear()
     },
   }

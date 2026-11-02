@@ -34,7 +34,7 @@ export function composeToolDescription(definition, { maxChars = TOOL_TEXT_LIMITS
   // 超预算：先砍结尾的要求行，再截正文；不会把它变成空字符串。
   while (bullets.length && (head + ' ' + bullets.join(' ')).length > maxChars) bullets.pop()
   text = [head, ...bullets].filter(Boolean).join(' ')
-  if (text.length > maxChars) text = text.slice(0, Math.max(40, maxChars - 1)).trimEnd() + '…'
+  if (text.length > maxChars) text = maxChars <= 1 ? '…'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '…'
   return text
 }
 
@@ -127,7 +127,7 @@ export function createContextService() {
         } catch { /* \u5355\u4e2a\u7b56\u7565\u574f\u4e86\u4e0d\u5f71\u54cd\u5176\u4ed6 */ }
       }
       let text = pieces.join('\n')
-      if (text.length > maxChars) text = text.slice(0, Math.max(20, maxChars - 1)).trimEnd() + '\u2026'
+      if (text.length > maxChars) text = maxChars <= 1 ? '\u2026'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '\u2026'
       return text
     },
     /** \u6ce8\u518c\u538b\u7f29\u5b9e\u73b0\uff08\u7531\u9002\u914d\u5668\u63d0\u4f9b\u66ff\u6362\u5386\u53f2\u7684\u80fd\u529b\uff09\u3002 */
@@ -173,7 +173,10 @@ export function createToolSurface({ tools, plugins, presets = null }) {
       const allowed = presets
         ? (preset && preset !== presets.active() ? preset : presets.active())
         : null
-      const allow = allowed && allowed !== 'default' ? new Set(presets.list().find((x) => x.id === allowed)?.plugins ?? []) : null
+      const presetDef = allowed && allowed !== 'default' ? presets.list().find((x) => x.id === allowed) : null
+      // 预设可用 allow 或 plugins 声明允许的插件；两者都为 null 表示"全部"
+      const allowSpec = presetDef ? (presetDef.allow ?? presetDef.plugins ?? null) : null
+      const allow = allowSpec == null ? null : new Set(allowSpec)
       return tools.list()
         .filter((def) => {
           const owner = owners.get(def.name)
@@ -285,8 +288,8 @@ export function createToolRegistry({ onChange = () => {}, stampTime = null } = {
     has(name) { return tools.has(String(name)) },
     version() { return version },
     /** 给模型看的工具索引：只有启用中的工具，一行一个。 */
-    index({ maxChars = TOOL_TEXT_LIMITS.index } = {}) {
-      const rows = [...tools.values()]
+    index({ maxChars = TOOL_TEXT_LIMITS.index, defs = null } = {}) {
+      const rows = [...(defs ?? [...tools.values()])]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((t) => `- ${t.name}: ${t.summary}`)
       let text = rows.join('\n')
@@ -350,7 +353,7 @@ export function createPromptService() {
         } catch { /* 单个提供者坏了不影响对话 */ }
       }
       let text = pieces.join('\n')
-      if (text.length > maxChars) text = text.slice(0, Math.max(20, maxChars - 1)).trimEnd() + '…'
+      if (text.length > maxChars) text = maxChars <= 1 ? '…'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '…'
       return text
     },
     /** 装配：按 order 排序，跳过 when()===false 的段。 */
@@ -435,6 +438,7 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
   const queue = []                 // 待投递条目
   const inflight = new Map()       // batchId -> 条目
   let seq = 0
+  let droppedCount = 0
 
   const keyOf = (source) => `${source?.plugin ?? ''}|${source?.activity ?? ''}`
   // 第一次失败立即重试（往往是会话正忙），之后才退避。
@@ -517,7 +521,7 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
       for (const item of items) {
         item.attempts += 1
         item.lastError = error == null ? null : String(error)
-        if (item.attempts >= maxAttempts) { item.dropped = true; continue }
+        if (item.attempts >= maxAttempts) { item.dropped = true; droppedCount += 1; continue }
         item.nextAt = at + backoff(item.attempts)
         queue.push(item)
       }
@@ -527,6 +531,9 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
     watermarkOf(plugin, activity) { return watermark.get(`${plugin}|${activity}`) ?? 0 },
     pendingCount() { return queue.length },
     inflightCount() { return inflight.size },
+
+    /** 重试用尽后被静默丢弃的条目数（可观测出口）。 */
+    droppedCount() { return droppedCount },
   }
 }
 
@@ -592,7 +599,14 @@ export function createSlotRegistry() {
         call: provider.call,
         meta: { ...(provider.meta ?? {}) },
       })
-      return () => { providers.delete(id); changed() }
+      return () => {
+        providers.delete(id)
+        // 供应商注销后，指向它的绑定不能继续可用（否则 call 仍会执行已卸载的实现）
+        for (const [slotId, binding] of [...bindings]) {
+          if (binding?.provider === id) bindings.delete(slotId)
+        }
+        changed()
+      }
     },
 
     /** 给每个未绑定的插槽找第一个形状匹配的供应商。返回绑定了哪些。 */

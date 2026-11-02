@@ -163,8 +163,9 @@ if (REFRESH_PERSON) {
       const others = questions.filter((q) => q.level !== 'person')
       questions.length = 0
       questions.push(...others, ...fresh)
-      fs.writeFileSync(FIXTURE, JSON.stringify(questions, null, 2))
-      console.log('人物题已按当前档案重出：', fresh.length)
+      const refreshed = path.join(path.dirname(FIXTURE), 'bench-qq.refreshed.json')
+      fs.writeFileSync(refreshed, JSON.stringify(questions, null, 2))
+      console.log('人物题已按当前档案重出：', fresh.length, '（写到', refreshed, '，不覆盖冻结题库）')
     }
   }
 }
