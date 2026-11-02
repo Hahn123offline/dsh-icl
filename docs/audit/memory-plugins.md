@@ -322,7 +322,7 @@ ${term}：${status === 'confirmed' ? '已确认' : '待确认'}${usage ? `，${u
 · ${event.text}
 ```
 
-`ids` 是把 `data.ids` 逐项写成 `<kind>:<value>` 再用 `、` 连接；`familiarity` 缺省 `'unknown'`；第二行前是两个空格；`←` 前有两个空格。`逐句依据：` 只有在 `claims` 非空时出现（最多 6 条），`依据：` 在 `data.evidence` 能查到笔记时出现（最多 5 条），`原话：` 只有在 `ctx.services.raw` 有来源且有命中时出现，`最近提到 TA 的事：` 只在事件非空时出现（最多 3 条）。
+`ids` 是把 `data.ids` 逐项写成 `<kind>:<value>` 再用 `、` 连接；`familiarity` 缺省 `'unknown'`；第二行前是两个空格；`←` 前有两个空格。`逐句依据：` 只有在 `claims` 非空时出现（最多 6 条，每条依据文案由 `noteText` 取前 60 字），`依据：` 在 `data.evidence` 能查到笔记时出现（最多 5 条），`原话：` 只有在 `ctx.services.raw` 有来源且有命中时出现，`最近提到 TA 的事：` 只在事件非空时出现（最多 3 条）。
 
 多个候选：
 

@@ -40,6 +40,7 @@ export function validateManifest(manifest) {
   return {
     ok: true,
     manifest: {
+      ...manifest,
       id,
       version: String(manifest.version),
       entry: String(manifest.entry),

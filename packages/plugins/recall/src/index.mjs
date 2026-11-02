@@ -56,8 +56,7 @@ export function apply(ctx) {
   const cursorKey = `cursor:${session}`
 
   function loadCursor() {
-    const rows = memory.query({ namespace: cursorNamespace, kind: 'cursor', limit: 1 })
-    const row = rows.find((r) => r.key === cursorKey)
+    const row = memory.query({ namespace: cursorNamespace, kind: 'cursor', key: cursorKey, limit: 1 })[0]
     if (!row?.data) return { items: [] }
     try { return { items: Array.isArray(row.data.items) ? row.data.items : [] } } catch { return { items: [] } }
   }
@@ -187,7 +186,9 @@ export function apply(ctx) {
         // 已经被梦境消化的 note 不再以"今天"的身份出现：
         // 它们已经变成块了，否则既重复又会把块挤出去。
         // 未消化的 note（任何日期）优先展示，标签用"未整理"
-        const pendingNotes = tag ? [] : namespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200 })
+        // 不可回忆的类别（如 resolve 纠正队列）不能以待整理笔记的身份出现在回忆里
+        const pendingNamespaces = namespaces.filter((ns) => CATEGORIES[ns]?.recallable !== false)
+        const pendingNotes = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200 })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: 1.15, namespace: ns })))
 

@@ -221,12 +221,13 @@ export function apply(ctx) {
     },
 
     /** 原始列表（不做排序/评分）。 */
-    query({ namespace, kind = null, since = null, until = null, limit = 50 } = {}) {
+    query({ namespace, kind = null, key = null, since = null, until = null, limit = 50 } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.query 需要 namespace')
       const where = ['namespace = ?']
       const args = [ns]
       if (kind != null) { where.push('kind = ?'); args.push(String(kind)) }
+      if (key != null) { where.push('key = ?'); args.push(String(key)) }
       if (since != null) { where.push('created_at >= ?'); args.push(Number(since)) }
       if (until != null) { where.push('created_at <= ?'); args.push(Number(until)) }
       args.push(Math.max(1, Math.min(500, Number(limit) || 50)))
