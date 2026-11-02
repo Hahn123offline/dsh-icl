@@ -596,6 +596,14 @@ export function apply(ctx) {
     return faded
   }
 
+  // 按配置时区算当天
+  function ymdInTz(now) {
+    const tz = String(ctx.config.timezone ?? 'Asia/Hong_Kong')
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now))
+  }
+  function dayStartOf(now) { return Date.parse(`${ymdInTz(now)}T00:00:00+08:00`) }
+  function dayEndOf(now) { return dayStartOf(now) + 86400000 }
+
   async function jobLexicon({ now, force = false }) {
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
