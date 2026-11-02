@@ -242,7 +242,7 @@ export function createPresetService({ plugins } = {}) {
   }
 }
 
-export function createToolRegistry({ onChange = () => {} } = {}) {
+export function createToolRegistry({ onChange = () => {}, stampTime = null } = {}) {
   const tools = new Map()
   let version = 0
   return {
@@ -253,6 +253,17 @@ export function createToolRegistry({ onChange = () => {} } = {}) {
       if (tools.has(name)) throw new Error(`工具已存在：${name}`)
       if (typeof definition.execute !== 'function') throw new Error(`${name} 缺少 execute`)
       const summary = String(definition.summary ?? definition.description ?? '').trim().split(/(?<=[.!?])\s/)[0] ?? ''
+      // 每次回结果附一句当前时间（旧版本的轻量世界状态）
+      const rawExecute = definition.execute
+      const stamped = typeof rawExecute === 'function'
+        ? async (input) => {
+            const out = await rawExecute(input)
+            if (out && typeof out === 'object' && typeof out.text === 'string' && stampTime) {
+              out.text += `\n（现在 ${stampTime()} ）`
+            }
+            return out
+          }
+        : rawExecute
       const composed = {
         ...definition,
         name,

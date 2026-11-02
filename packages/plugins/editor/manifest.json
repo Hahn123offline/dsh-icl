@@ -1,0 +1,9 @@
+{
+  "id": "editor",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["read_file", "write_file", "list_dir"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}

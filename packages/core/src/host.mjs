@@ -9,7 +9,8 @@ import { createContextService, createPresetService, createRawSourceRegistry, cre
 import { createModelClient } from './model-client.mjs'
 
 export function createHost({ log = () => {}, now = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
-  const tools = createToolRegistry({ onChange: (event) => log({ msg: 'tools.change', ...event }) })
+  const tools = createToolRegistry({
+    stampTime: process.env.ICL_TOOL_TIME === '1' ? () => new Date().toLocaleTimeString('zh-CN', { hour12: false }) : null, onChange: (event) => log({ msg: 'tools.change', ...event }) })
   const prompt = createPromptService()
   const focus = createFocusService({ now })
   const delivery = createDeliveryService({ now })
