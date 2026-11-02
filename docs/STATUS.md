@@ -140,6 +140,8 @@ DSH 的插件不是放进 `~/.dsh/plugins/` 就自动生效，要满足三个条
 4. 提示词改成每 5 秒刷新（世界状态不再是快照）
 5. 参数 schema 转成 DSH 认的形状（对象必须显式 additionalProperties）
 6. 干跑验证：mock ctx 下 18 个工具全部注册成功
+7. 修复 `apply` 必须同步（返回 disposer）：之前用 async apply 会让 cordis 报 "never started"；现在异步初始化在内部 boot()
+8. preset 里的插件模块名改成包名 `dsh-icl-live/index.mjs`（之前写成 `icl-live/index.mjs` 解析不到）
 
 待你重启 DSH 后验证：
 
