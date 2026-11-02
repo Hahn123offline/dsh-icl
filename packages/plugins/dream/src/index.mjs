@@ -66,7 +66,7 @@ export function normalizeTags(tags, { max = 5, maxLen = 10 } = {}) {
 
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
-  const rhythm = ctx.services.require('rhythm')
+  const rhythm = ctx.services.get('rhythm')
   const slot = ctx.manifest.slots?.[0]?.id ?? 'dream-chat'
   const session = String(ctx.config.sessionId ?? 'default')
 
@@ -850,9 +850,18 @@ export function apply(ctx) {
     return { ok, day, results }
   }
 
-  const off = rhythm.onNightly((event) => { void run({ now: event?.at ?? ctx.now() }) })
-  ctx.onDispose(off)
-  if (typeof rhythm.isDue === 'function' && rhythm.isDue()) void run()
+  // 与时间模块的轻耦合：睡觉开始时收到事件就跑一轮（rhythm 是旧兼容，可以没有）
+  try {
+    const off = ctx.signals.on({ kind: 'event', tags: ['sleep'] }, (signal) => {
+      if (signal.text === 'sleep-start') void run({ now: signal.createdAt ?? ctx.now() })
+    })
+    ctx.onDispose(off)
+  } catch { /* 没有信号服务时退化为纯手动 */ }
+  if (typeof rhythm?.onNightly === 'function') {
+    const off = rhythm.onNightly((event) => { void run({ now: event?.at ?? ctx.now() }) })
+    ctx.onDispose(off)
+    if (typeof rhythm.isDue === 'function' && rhythm.isDue()) void run()
+  }
 
   ctx.services.provide('dream', { run, jobs: Object.keys(JOBS), slot, persona })
   ctx.log({ msg: 'dream.ready', slot, jobs: Object.keys(JOBS), hasPersona: Boolean(persona) })

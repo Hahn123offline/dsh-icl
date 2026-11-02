@@ -65,6 +65,7 @@ export function apply(ctx) {
   const focusApi = ctx.focus ?? ctx.services.get('focus') ?? null
   const clock = ctx.services.clock ?? null
   const goalLeases = new Map()
+  let sleepLease = null
   const focus = ctx.services.get('focus')
 
   let state = { phase: 'awake', since: ctx.now(), schedules: [], queue: [], goals: [], fired: {} }
@@ -152,12 +153,23 @@ export function apply(ctx) {
   async function startSchedule(schedule) {
     const now = ctx.now()
     const role = schedule.role ?? (schedule.durationMin ? 'activity' : 'reminder')
+    if (role === 'goal') {
+      addGoal({ theme: schedule.message ?? schedule.id, until: now + (Number(schedule.durationMin) || 60) * 60_000, focus: schedule.focus ?? null })
+      state.fired[`${schedule.id}@${dayKey(now)}`] = now
+      persist()
+      return { started: schedule.id, role }
+    }
     if (role === 'sleep') {
       state.phase = 'sleeping'
       state.sleepingId = schedule.id
       state.since = now
       state.sleepUntil = schedule.durationMin ? now + schedule.durationMin * 60_000 : null
+      // 睡觉时自己也占一个注意力空间：纵向白名单之外再有横向拦截
+      if (focusApi?.enter) {
+        try { sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping' }) } catch { sleepLease = null }
+      }
       send({ kind: 'wake', text: schedule.message ?? '你困了，接下来不会有人打扰你。', tags: ['sleep'] })
+      try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] }) } catch { /* ignore */ }
       // 做梦与时间并行，互不阻塞
       try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] }) } catch { /* ignore */ }
       try {
@@ -178,6 +190,8 @@ export function apply(ctx) {
     state.sleepingId = null
     state.sleepUntil = null
     state.since = ctx.now()
+    if (sleepLease) { try { sleepLease.release?.() } catch { /* ignore */ } sleepLease = null }
+    try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] }) } catch { /* ignore */ }
     send({ kind: 'wake', text: reason ?? '你睡醒了，昨天的记忆已经整理好了。', tags: ['wake'] })
     const released = flushQueue('你睡觉时')
     persist()

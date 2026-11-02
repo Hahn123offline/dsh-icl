@@ -17,7 +17,7 @@
 | 测试 `packages/core/test` | 35 个文件 | ~2,400 |
 | 工具 `tools/` | 9 个脚本 | — |
 
-测试：**154 通过 / 0 失败**（`node --test packages/core/test`，37 个文件）。
+测试：**178 通过 / 0 失败**（`node --test packages/core/test`，40 个文件）。
 
 ## 插件清单（15）
 
@@ -31,7 +31,8 @@
 | dream | 夜间整理：wash→events→people→lexicon→consume→cleanup→index | 可用，质量待调 |
 | persona | 人格卡注入系统提示 | 成熟 |
 | world-state | 只读信息总线，深度 2 的树 | 成熟 |
-| rhythm | 做梦时间与倒计时（**无真正定时器**） | 简化 |
+| rhythm | 旧的做梦闹钟（已被 time 取代，保留兼容） | 旧 |
+| time | 时钟 + 日程 + 唤醒 + 纵向拦截 + goal | 新，M1-M6 完成 |
 | eager-recall | 每轮预取召回 | 成熟 |
 | compaction | 压缩钩子（**未在 DSH 联调**） | 未验证 |
 | dsh-raw | 把 `~/.dsh/sessions` 当原文来源 | 成熟 |

@@ -25,7 +25,7 @@
 
 ## P0：能自己动起来（不做就没法测）
 
-1. **时间模块**（正式插件，见 `docs/TIME-MODULE.md`）
+1. **时间模块**（正式插件 `packages/plugins/time`，已接入 live，取代 rhythm；见 `docs/TIME-MODULE.md`）
    - 唯一能主动发消息启动会话的插件
    - 唯一提供系统时间的地方
    - 睡觉是一个特殊日程；做梦由睡觉调用，依赖很轻
@@ -67,3 +67,12 @@
 - 真实的 DSH 会话创建/指向从未跑通
 
 结论：**结构上按单会话设计，行为上未强制、未验证。** P0 需要补一条单会话锁。
+
+
+## 2026-11-03 进展
+
+- 信号层（`packages/core/src/signals.mjs`）完成
+- 时间模块 M1–M6 完成：阶段、日程、白名单、队列、goal、时钟接管、单会话锁、控制后门
+- `icl-live` 已把 `rhythm` 换成 `time`；`dream` 与 `rhythm` 解耦，改为订阅 `sleep-start` 事件
+- 验收脚本 `tools/time-accept.mjs` 9/9；测试 178
+- 下一步：P1（遗忘、做梦 v1、回忆概览）

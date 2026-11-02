@@ -5,5 +5,5 @@
   "tools": [],
   "slots": [{ "id": "dream-chat", "kind": "chat", "requires": { "tools": false } }],
   "focus": {},
-  "requires": { "plugins": ["memory", "rhythm"] }
+  "requires": { "plugins": ["memory"] }
 }
