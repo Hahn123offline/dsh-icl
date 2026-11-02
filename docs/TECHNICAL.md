@@ -112,3 +112,30 @@ Look up a person. Use when: someone mentions them; you need their account ids. A
 `node --test packages/core/test` → **154 通过 / 0 失败**（37 个测试文件）。
 覆盖核心服务、记忆类插件、审计回归（`audit-regressions`）与边界接缝（`sandbox-and-seams`）。
 **没有覆盖**：真实 DSH 适配、DSH 内压缩、`.zstd` 分支、做梦产出的质量。
+
+
+---
+
+## 9. 确定性修复记录（2026-11-02 晚，`7643262` 及之后）
+
+以下问题不涉及设计取舍，已按审计结论直接修复，并有回归测试：
+
+| 领域 | 修复 |
+|---|---|
+| 核心 | enable 成功后 `surface.notify()`；会话工具名/索引/定义都走预设过滤后的 surface；截断不超过预算；投递暴露 `droppedCount()`；`binding.timeoutMs` 生效；provider 注销解除绑定；适配器跳过未变化的定义；预设支持 `allow` 与 `plugins` 两种声明 |
+| 做梦 | `alreadyRan` 按 key 精确查；人物跨天上下文按 subject 比较；重跑无出处时保留旧块 |
+| 记忆 | `put` 保留原权重、文本变更时删除过期向量；eager-recall 标签用真实命名空间；`note_status` 不再指向不存在的工具 |
+| 世界 | 按 source order 排序；`。；` 归一为 `；` |
+| 压缩 | 取最新摘要（先查 500 条） |
+| 召回 | 原文只在不够细节时补；与已给内容重合 ≥60% 的原文不再重复 |
+| 工具 | `recall-bench` 不再覆写冻结题库；`marathon` 按 `cfg.plugins` 启用、`apiKeyEnv`；`replay` 声明提前消除 TDZ |
+
+仍留给设计决定的：
+
+- 预设 `default` 与"未写 plugins"的语义差别（已按 allow/plugins 统一，但 default 特例保留）
+- 世界状态同一 owner 的 title/cap 取第一个来源
+- 节律的补跑、跨进程队列、时区
+- 做梦的块粒度（时间优先）、印象阈值、质量评估
+- DSH 内压缩联调
+- 评论楼中楼
+- 会话创建与界面

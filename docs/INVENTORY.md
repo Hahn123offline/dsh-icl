@@ -17,7 +17,7 @@
 | 测试 `packages/core/test` | 35 个文件 | ~2,400 |
 | 工具 `tools/` | 9 个脚本 | — |
 
-测试：**146 通过 / 0 失败**（`node --test packages/core/test`）。
+测试：**154 通过 / 0 失败**（`node --test packages/core/test`，37 个文件）。
 
 ## 插件清单（15）
 

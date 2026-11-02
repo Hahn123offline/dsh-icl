@@ -51,7 +51,7 @@ test('块已经覆盖细节时，不额外附出处', async () => {
   })
   const out = await tools.recall.execute({ query: '我往哪个路径写测试文件？' })
   assert.match(out.text, /C:\\DSH\\qwenstuff/)
-  assert.doesNotMatch(out.text, /出处：/, '主结果已覆盖就不查原文层')
+  assert.doesNotMatch(out.text, /原文（/, '主结果已覆盖就不补原文')
 })
 
 test('没有精确串的普通问句，不触发原文层', async () => {

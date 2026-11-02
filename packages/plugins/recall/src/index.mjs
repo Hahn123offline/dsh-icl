@@ -228,8 +228,20 @@ export function apply(ctx) {
         } catch { /* 原文层失败不影响主结果 */ }
 
         const pickedNorm = pieces.join('\n').toLowerCase().replace(/\s+/g, '')
+        // 原文只用来补细节：一条原文如果和已给内容高度重合，就不再重复
+        const gramsOf = (s) => {
+          const q = String(s ?? '').toLowerCase().replace(/\s+/g, '')
+          const out = []
+          for (let i = 0; i < q.length - 1; i++) out.push(q.slice(i, i + 2))
+          return out
+        }
+        const overlaps = (text) => {
+          const g = gramsOf(text)
+          if (!g.length) return 0
+          return g.filter((x) => pickedNorm.includes(x)).length / g.length
+        }
         const extra = rawHits
-          .filter((r) => r?.text)
+          .filter((r) => r?.text && overlaps(r.text) < 0.6)
           .filter((r) => !pickedNorm.includes(String(r.text).toLowerCase().replace(/\s+/g, '').slice(0, 40)))
           .slice(0, 2)
           .map((r) => `原文（${shortDate(r.time ?? r.createdAt ?? ctx.now())}）：${String(r.text).slice(0, 160)}`)
