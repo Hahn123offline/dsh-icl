@@ -67,7 +67,7 @@ export function apply(ctx) {
       const noteSvc = ctx.services.get('note')
       noteSvc?.add?.({
         text: `查一下「${word}」是什么意思、从哪来的。`,
-        about: { namespace: 'lexicon', key },
+        about: { namespace: 'lexicon', key, term: word, conv: conv === 'web' ? null : conv },
         raisedBy: 'lexicon',
         kind: 'question',
       })

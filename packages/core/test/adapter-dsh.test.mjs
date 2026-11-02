@@ -43,7 +43,7 @@ async function setup() {
 
 test('适配器把当前工具面注入 DSH', async () => {
   const { dsh } = await setup()
-  assert.deepEqual(dsh.names(), ['forget', 'memo', 'memo_append', 'memo_commit', 'memos', 'recall', 'remember'])
+  assert.deepEqual(dsh.names(), ['forget', 'memo', 'memo_append', 'memo_commit', 'memos', 'note_status', 'recall', 'remember'])
 })
 
 test('切换预设后，DSH 的工具面跟着变', async () => {

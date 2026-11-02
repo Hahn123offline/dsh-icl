@@ -147,6 +147,21 @@ export function apply(ctx) {
     },
   })
 
+  ctx.tools.register({
+    name: 'note_status',
+    summary: 'How many notes are open, done, or archived - just counts, no content.',
+    when: ['you want a quick sense of how much is pending'],
+    avoid: ['when you need the actual text (use memo_list)'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      const all = rows()
+      const open = all.filter(isOpen).length
+      const done = all.filter((r) => r.data?.status === 'done').length
+      const archived = all.filter((r) => r.data?.status === 'archived').length
+      return { text: `待办 ${open} 条，已完成待回收 ${done} 条，已归档 ${archived} 条。` }
+    },
+  })
+
   ctx.services.provide('note', { add, append, commit, resolve, count, open: openNotes })
   ctx.log({ msg: 'note.ready', open: count() })
 }

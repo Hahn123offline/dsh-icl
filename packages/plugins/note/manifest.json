@@ -6,7 +6,8 @@
     "memo",
     "memos",
     "memo_append",
-    "memo_commit"
+    "memo_commit",
+    "note_status"
   ],
   "slots": [],
   "focus": {},

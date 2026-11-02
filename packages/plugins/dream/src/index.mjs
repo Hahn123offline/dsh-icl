@@ -17,7 +17,7 @@ import path from 'node:path'
 
 export const name = 'dream'
 
-const DEFAULT_JOBS = ['events', 'people', 'slang', 'lexicon', 'consume', 'cleanup', 'index']
+const DEFAULT_JOBS = ['events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
 
 function dayRange(now) {
   const d = new Date(now)
@@ -599,7 +599,8 @@ export function apply(ctx) {
   async function jobLexicon({ now, force = false }) {
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
-    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 200 }))
+    // slang 已并入 lexicon：采集范围包括旧的 slang 笔记
+    const notes = ['event', 'slang'].flatMap((ns) => consolidated(memory.query({ namespace: ns, kind: 'note', limit: 200 })))
     const lexicon = ctx.services.get('lexicon')
     if (!lexicon) return { job: 'lexicon', skipped: 'no-lexicon-plugin' }
     // 没有新笔记也要做老化
@@ -675,8 +676,9 @@ export function apply(ctx) {
         if (about.namespace === 'lexicon') {
           const key = String(about.key ?? '')
           const existing = memory.query({ namespace: 'lexicon', kind: 'term', limit: 200 }).find((x) => x.key === key)
-          const term = existing?.data?.term ?? key.split(':').pop()
-          const conv = existing?.data?.origins?.find((o) => o.conv)?.conv ?? 'web'
+          // about 里已经带了显式字段，不再依赖从键里拆
+          const term = about.term ?? existing?.data?.term ?? key.split(':').pop()
+          const conv = about.conv ?? existing?.data?.origins?.find((o) => o.conv)?.conv ?? 'web'
           const svc = ctx.services.get('lexicon')
           if (svc?.upsert) { svc.upsert({ term, conv, meaning: result }); ok = true }
         } else if (about.namespace === 'person') {
