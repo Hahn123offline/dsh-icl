@@ -95,7 +95,7 @@ export function apply(ctx) {
       properties: {
         target: { type: 'string', description: 'Bilibili URL or BV id.' },
         from: { type: 'number' }, to: { type: 'number' },
-        cells: { type: 'number', description: '1-16, default 6.' },
+        cells: { type: 'number', description: '1-16, default 6. Long videos: pass from/to, otherwise only the first 4 minutes are scanned.' },
       },
     },
     async execute({ target, from = null, to = null, cells = 6 } = {}) {
@@ -106,8 +106,9 @@ export function apply(ctx) {
       const sheet = path.join(dir, 'sheet.png')
       const manifest = path.join(dir, 'm.json')
       const args = [STORYBOARD_CLI, url, '--cells', String(Math.min(16, Math.max(1, Number(cells) || 6))), '--out', sheet, '--manifest', manifest, '--allow-anonymous']
-      if (Number.isFinite(Number(from))) args.push('--from', String(from))
-      if (Number.isFinite(Number(to))) args.push('--to', String(to))
+      const start = Number.isFinite(Number(from)) ? Number(from) : 0
+      const end = Number.isFinite(Number(to)) ? Number(to) : start + 240
+      args.push('--from', String(start), '--to', String(end), '--scan-height', '240')
       try {
         execFileSync(process.execPath, args, { timeout: 600000, maxBuffer: 8 * 1024 * 1024 })
       } catch (error) {

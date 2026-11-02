@@ -80,6 +80,20 @@ host.services.slots.bind('dream-chat', {
   call: async ({ messages, maxTokens }) => host.services.model.chat({ messages, maxTokens }),
 })
 
+// 工具结果里的自然语言也要进原始层（去掉 JSON 结构）
+function naturalize(name, out) {
+  const text = String(out?.text ?? '')
+  if (name !== 'bili_search' && name !== 'bili_watch' && name !== 'bili_comments') return text.slice(0, 1200)
+  try {
+    const data = JSON.parse(text)
+    const parts = []
+    if (data.videos) for (const v of data.videos) parts.push(`看到视频《${v.title}》（${v.author}，${v.play} 播放）`)
+    if (data.title) parts.push(`看了《${data.title}》，${data.author}，${data.stat?.view ?? '?'} 播放。${String(data.description ?? '').slice(0, 200)}`)
+    if (data.comments) for (const c of data.comments) parts.push(`评论区 ${c.user}：${String(c.content ?? '').slice(0, 160)}`)
+    return parts.join('\n').slice(0, 1500)
+  } catch { return text.slice(0, 800) }
+}
+
 const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
 const toolHelp = host.services.tools.list()
   .map((t) => `- ${t.name}: ${t.summary || t.description.slice(0, 80)}\n  args: ${JSON.stringify(t.parameters?.properties ?? {})}`)
@@ -157,6 +171,11 @@ for (let step = 0; step < (cfg.maxSteps ?? 60); step++) {
         const text = String(out?.text ?? JSON.stringify(out)).slice(0, 1200)
         fs.appendFileSync(logFile, `${JSON.stringify({ t: Date.now() - started, role: 'tool', name: call.tool, text })}\n`, 'utf8')
         const warn = repeats >= 2 ? '\n\n（同一个调用重复了。换一个，或者把刚才看到的东西记一句。）' : ''
+        // 工具调用之外的那句话也是原文
+        const prose = reply.replace(JSON.stringify(pick), '').replace(/```(json)?/g, '').trim()
+        if (prose.length > 4) transcript.push({ text: prose.slice(0, 500), time: Date.now(), conv: 'marathon', kind: 'say' })
+        const seen = naturalize(call.tool, out)
+        if (seen) transcript.push({ text: seen, time: Date.now(), conv: 'marathon', kind: 'saw' })
         const imagePath = out?.imagePath && fs.existsSync(out.imagePath) ? out.imagePath : null
         if (imagePath) {
           const b64 = fs.readFileSync(imagePath).toString('base64')

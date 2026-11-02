@@ -237,7 +237,7 @@ export function apply(ctx) {
         return {
           text: pieces.length
             ? [...pieces, ...extra].join('\n')
-            : (extra.length ? extra.join('\n') : (anyKnown ? '这些你都已经看到了；想找别的就把要找的事说具体一点。' : '没有想起什么。（也没记过。）')),
+            : (extra.length ? extra.join('\n') : (anyKnown ? '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。' : '没有想起什么。（也没记过。）')),
           cursor: encodeCursor(nextCursor),
           more: candidates.length > picked.length,
         }
