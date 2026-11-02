@@ -106,8 +106,9 @@ time.arm({ at, message, once: true })    // 外部设计时器
 {
   "phase": "sleeping",
   "allow": [
-    { "from": "qq", "keyword": ["醒醒", "着火了"], "level": "always" },
-    { "from": "admin", "level": "always" }
+    { "from": "admin" },
+    { "from": "qq", "any": ["醒醒", "着火了"] },
+    { "from": "system", "kinds": ["notice"] }
   ]
 }
 ```
@@ -124,10 +125,12 @@ time.arm({ at, message, once: true })    // 外部设计时器
 ## 8. 重启语义
 
 ```
-重启 → 立即释放所有积压 → 大声报错：
+重启 → 立即释放所有积压（成批发给会话）→ 大声报错：
   "日程因重启发生错误，已释放所有积压的消息。"
-  → 同时把这条写进 world_status
+  → 同时把这条写进 world_status 的 time 来源
 ```
+
+积压默认**永不过期**；TTL 只在发送方显式设置 `expiresAt` 时生效（见 MESSAGE-MODEL §5）。
 
 不静默、不假装没发生。队列不跨重启保留（释放并告知）。
 

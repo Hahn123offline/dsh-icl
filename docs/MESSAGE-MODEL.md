@@ -1,84 +1,111 @@
-# 消息模型：我们到底在用什么传信号
+# 消息模型 v2：Signal（统一信号）
 
-> 2026-11-03。回答"白名单条件之前，先搞清消息是什么"。
-> 结论：现在有 **七条并行通道**，它们共享的只有"一段文本"，其余元数据各写各的。
+> 2026-11-03 第三轮。按"统一、不留债"的要求收敛。
+> 需要你审的是 §4 的约束语法、§5 的 TTL 语义、§7 的迁移顺序。
 
-## 1. 现状盘点
+## 1. 一句话
 
-| 通道 | 形状 | 方向 | 排序 | 去重 | 谁读 |
-|---|---|---|---|---|---|
-| `delivery.push` | `{to, channel, source:{plugin,activity,seq}, content:{text,images}, batchKey, exactlyOnce}` | 插件 → 会话 | 队列顺序 + `nextAt` 退避 | 按 `plugin\|activity` 水位 | session 适配器 `drain` |
-| `prompt.section` | `{name, order, text}` | 插件 → 模型（每轮） | `order` 升序 | 无 | `prompt.assemble` |
-| `prompt.onTurn` / `turnText` | `({message}) => text` | 插件 → 模型（仅当轮） | 注册顺序 | 无 | 每轮装配 |
-| `context.onAssemble` | `{name, order, apply}` | 插件 → 模型（每轮） | `order` | 无 | 上下文装配 |
-| `world-state` | `{id, owner, title, order, cap, items(): [{key, brief, detail}]}` | 插件 → 模型（brief）/ 工具（detail） | `order` | 无 | `renderBrief` / `world_status` |
-| `slots` provider | `{id, kind, shape, call({messages, maxTokens})}` | 插件 → 模型（调用） | — | — | 绑定者 |
-| `raw` | `{id, search(), list()}` → `{text, time, sender, ...}` | 插件 → 检索 | — | — | `raw.search/list` |
-| `focus` | `{label, owner, pierce, ttl}` | 插件 → 拦截规则 | `since` 最新 | — | `canPierce` |
-| 工具 | `{name, description, parameters, execute}` | 插件 → 模型（可调用） | 注册表 | — | `tools` |
+**所有跨边界的"消息"统一成一个 Signal 信封；三种路由：给模型、给插件、给注意力空间。**
+提示词片段（prompt.section 等）**不是消息**，它们是装配材料，不进总线。
 
-## 2. 共同点与差异
+## 2. Signal
 
-**共同点**：核心都是"一段文本 + 一点元数据"。
-
-**差异**：
-
-- 只有 `delivery` 有 **来源、顺序号、恰好一次**；其它通道没有身份，也没有去重
-- 只有 `prompt`/`context`/`world` 有 **order**；`delivery` 是队列顺序
-- **没有一条通道有"类型"**：`wake`、`goal`、`notice`、普通内容，现在都只能靠文本自己表达
-- **没有一条通道有约束/白名单**：拦截只发生在 `focus`，而且只认标签
-- **没有优先级、没有 TTL**：积压永远积压，除非手工清
-- `to` 只有 `'session'` 一个值；`channel` 只有 `'conversation'`
-
-## 3. 这意味着什么
-
-时间模块要做的"纵向拦截 + 白名单 + 队列 + TTL + 类型"，**在现有任何通道上都没有对应物**。
-
-如果直接往 `delivery` 上加字段，会把"投递"变成"信号总线"，影响所有现有使用者；
-如果每条通道各自加一套，又会出现七套语义。
-
-## 4. 建议：一个信号信封（Signal），三条路由
-
-```
-Signal {
-  id, from, kind, text,        // kind: wake | goal | notice | content | event
-  focus, constraints, ttl,     // 约束与生命周期
-  priority, createdAt, once,   // 队列行为
-  meta                          // 通道私有字段
+```js
+{
+  id: 's-123',
+  from: { plugin: 'qq', activity: 'group:123' },   // 谁发的，必填
+  kind: 'wake' | 'goal' | 'notice' | 'content' | 'event',
+  text: '群里有人 @ 你',                            // 正文
+  to: 'model' | 'plugin' | 'focus',                // 路由
+  focus: 'qq:group:123',                            // 期望进入的注意力空间（可空）
+  tags: ['direct', 'sleep'],                        // 路由/白名单用的标签
+  createdAt: 1793...,
+  expiresAt: null,                                  // 默认不过期；见 §5
+  meta: {}                                          // 通道私有字段
 }
 ```
 
-三条路由，语义不同：
+规则：
 
-| 路由 | 去哪 | 谁判定 | 现有对应物 |
+- `kind` 是**固定枚举**，由 API/系统给出，**模型不能自己写**（模型只写正文和安排）
+- `from` 必填，不允许匿名信号
+- 顺序：**同一来源保序**；跨来源按 `createdAt` 先进先出；**不引入优先级**
+- 幂等：`id` 由发送方生成，重复 `id` 丢弃
+
+## 3. 三种路由
+
+| 路由 | 谁消费 | 拦截 | 现有对应物 |
 |---|---|---|---|
-| `toModel` | 会话/模型 | 时间模块（纵向）+ focus（横向） | `delivery` |
-| `toPlugin` | 插件事件总线 | 订阅者自己 | 目前**没有**统一事件总线 |
-| `toFocus` | 进入/离开注意力空间 | focus 服务 | `focus.enter/release` |
+| `to: 'model'` | 会话 | 时间（纵向）→ focus（横向） | `delivery.push` |
+| `to: 'plugin'` | 订阅了 `kind/from/tags` 的插件 | 订阅者自己 | **新建事件总线** |
+| `to: 'focus'` | focus 服务 | 入/出规则 | `focus.enter/release` |
 
-关键取舍：**先把 `toModel` 收敛到 Signal**，`toPlugin`/`toFocus` 先维持现状，等时间模块跑起来再统一。否则一次改七个通道，风险大于收益。
+- `to:'model'` **只能由时间模块放行**；其它插件一律 `time.offer(signal)`
+- `to:'plugin'` 是**事件**，不排队、不持久化、失败只记日志（`ctx.events.emit` / `ctx.events.on(filter, fn)`）
+- `to:'focus'` 不是消息流，是请求：`focus.request(signal)` → 时间模块决定是否允许入座
 
-## 5. 与 DSH goal 的对照
+## 4. 约束与白名单（我的方案，待审）
 
-DSH 的 goal（本会话可用的 `create_goal`/`update_goal`）：
+**不复用 focus 的 pierce**。时间模块用一张**声明式白名单**，只有"拦住"和"放行"：
 
-- 目标持久化，跨回合继续
-- 模型停下时，系统以"继续当前目标"的消息把它拉回来
-- 人要求继续/恢复时才重新武装；`complete`/`blocked` 由模型判定
+```js
+// 挂在阶段/日程上
+allow: [
+  { from: 'admin' },                              // 这个人/来源一律放行
+  { from: 'qq', any: ['醒醒', '着火了'] },          // 正文包含任一关键词
+  { from: 'qq', tags: ['direct'] },                // 带 direct 标签
+  { from: 'system', kinds: ['notice'] }            // 特定类型
+]
+```
 
-我们要做的 goal 是它的 **时间联动版**：
+判定：**任一条规则全部字段匹配**即放行。字段：
 
-- 带 `until`（10 分钟后 / 23:00）
-- 可按日程创建（每周日 10:00 起，2 小时）
-- 卸载即释放绑定的 focus
-- resume 消息由时间模块发出（"你在目标内，若退出请卸载目标"）
+| 字段 | 含义 |
+|---|---|
+| `from` | 来源插件名（也允许 `'admin'` 这种伪来源） |
+| `any` | 正文包含任一子串（不区分大小写） |
+| `tags` | 信号的 tags 包含任一值 |
+| `kinds` | 信号的 kind 属于列表 |
 
-## 6. 待确认的问题
+**不做正则**（避免注入与性能问题），需要复杂匹配就加标签。
 
-1. **Signal 的落地范围**：只做 `toModel`（delivery 升级），还是同时新建 `toPlugin` 事件总线？
-2. **谁有权发 Signal**：所有插件都可以 `time.offer()`，还是只有白名单插件可以？
-3. **`kind` 的取值**：`wake/goal/notice/content/event` 够吗？要不要允许插件自定义 kind？
-4. **约束的表达**：`{from, keyword[], level}` 还是直接复用 focus 的 `pierce` glob？
-5. **TTL 默认值**：积压消息多久算过期？（比如 1 小时）
-6. **顺序**：同一来源保序即可，还是需要全局顺序（`priority` + `createdAt`）？
-7. **插件间事件**：现在没有事件总线，插件之间靠 `services.provide/get` 直接调用；要不要借这次统一？
+## 5. TTL（我的方案，待审）
+
+**默认永不过期**。TTL 只在发送方显式设置时生效：
+
+- `expiresAt` 由发送方给（比如"10 分钟后的提醒"，过了就没意义）
+- 过期只对 `notice` / `content` 有意义；`wake` / `goal` 永不过期
+- 排队中过期 → 丢弃并计数（`droppedCount`），在 `world_status` 里可见
+- **睡眠 8 小时不影响积压**：默认无 TTL，醒来照常释放
+
+## 6. 睡觉期间的队列
+
+- `phase === 'sleeping'`：不在白名单的全部入队，保留原顺序与 `from`
+- 醒来时：**一次性成批释放**，前缀说明"你睡觉时积压了 N 条"，逐条列出来源与正文
+- 模型可以 `time.skip(id)` 跳过某一条（仅本次）
+
+## 7. 迁移顺序（不留债，但分三步落地）
+
+1. **引入 `signals` 服务 + `to:'plugin'` 事件总线**，先把 `delivery` 包成一条路由，行为不变
+2. **时间模块接管 `to:'model'`**：所有插件不再直接 `delivery.push`，改 `time.offer`
+3. **`to:'focus'`**：时间模块调用 focus，睡觉/goal 自动入座；`focus.request` 走同一条判定
+
+旧 API 保留一个适配层（`delivery.push(text)` → `Signal{kind:'content'}`），迁移完再删。
+
+## 8. world_status 与队列
+
+时间模块注册一个 world source：`owner: 'time'`，brief 形如：
+
+```
+时间：现在是 2026-11-03 01:12。
+日程：23:00 睡觉（还有 22 小时）；当前阶段：awake。
+积压：2 条（来自 qq 1 条，来自 bili 1 条）。
+```
+
+`world_status` 展开 `time` 时列出积压的来源与正文摘要——**醒来时模型一条 `world_status` 就能看到全部**。
+
+## 9. 待你审的三点
+
+1. §4 的约束语法（`from/any/tags/kinds`，无正则）是否可以
+2. §5 的"默认永不过期、TTL 由发送方显式设置"是否可以
+3. §7 的三步迁移顺序是否可以
