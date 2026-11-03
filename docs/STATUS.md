@@ -1,174 +1,172 @@
-# 当前状态清单（冻结快照）
+# 现状与缺陷台账
 
-> 目的：在接 DSH、开长测之前，把"哪些是真的、哪些只是脚手架"钉死。
-> 每次改动请更新本文件，不要靠记忆。
->
-> 快照时间：2026-11-02（后续已变化）。**本文件的进度结论已被 `docs/TECHNICAL.md` + `docs/audit/` 取代。**
-
----
-
-## A. 100% 已实现（有测试覆盖，可以依赖）
-
-### A1. 核心（`packages/core`，无运行时依赖）
-
-| 能力 | 文件 | 测试 |
-|---|---|---|
-| 插件宿主、生命周期、enable/disable | `host.mjs` | `host.test.mjs` |
-| 工具注册表（描述合成、索引、参数校验） | `services.mjs` | `tool-constraints.test.mjs` |
-| 工具面 surface（按预设过滤、变更通知） | `services.mjs` | `surface.test.mjs` |
-| 提示词段 prompt sections + 每轮 brief | `services.mjs` | `context.test.mjs` |
-| 槽位 slots（按 shape 匹配、失败回退） | `services.mjs` | `focus-model.test.mjs` 等 |
-| 投递 delivery（`plugin\|activity\|seq` 恰好一次、ack/nack） | `services.mjs` | `delivery.test.mjs` |
-| 原文来源 raw registry（search / list） | `services.mjs` | `dsh-raw.test.mjs` |
-| 模型客户端（chat / chatDetailed 带 reasoning） | `model-client.mjs` | 间接覆盖 |
-| 预设 presets（运行时切换） | `services.mjs` | `presets.test.mjs` |
-| 会话装配（工具定义、系统提示） | `session.mjs` | `loop.test.mjs` |
-| 边界规则（插件不直接发 HTTP 等） | — | `boundary.test.mjs` |
-
-### A2. 记忆与召回
-
-| 能力 | 状态 | 测试 |
-|---|---|---|
-| SQLite 存储、命名空间注册（recallable / halfLifeDays） | ✅ | `m1-plugins.test.mjs` |
-| 混合检索（向量 + 字面 bigram + 字面词加权） | ✅ | `recall.test.mjs`、`literal.test.mjs` |
-| 标签过滤、会话过滤、cursor | ✅ | `origin-tags.test.mjs` |
-| 归档回退（raw 原文补细节） | ✅ | `archive-fallback.test.mjs` |
-| 人物检索 `findPerson`（qq / name / subject） | ✅ | `route-person.test.mjs`、`subject.test.mjs` |
-| 权重衰减、boost、补向量 | ✅ | `vector-backfill.test.mjs` |
-
-### A3. 插件（15 个）
-
-| 插件 | 成熟度 | 备注 |
-|---|---|---|
-| `memory` | ✅ 成熟 | 核心存储 |
-| `recall` | ✅ 成熟 | 四类召回 + 原文兜底 |
-| `note` | ✅ 成熟 | memo / memo_append / memo_commit / note_status |
-| `lexicon` | ✅ 成熟 | 一术语一块，origins 多来源 |
-| `dream` | ⚠️ 可用但质量待调 | 见 C 区 |
-| `persona` | ✅ | 人格卡注入 |
-| `world-state` | ✅ | 世界状态源汇总 |
-| `rhythm` | ⚠️ 简化 | 固定做梦时间 + 倒计时，**无完整节律** |
-| `eager-recall` | ✅ | 预取召回 |
-| `compaction` | ⚠️ 未在 DSH 验证 | 单元测试有，真实压缩未联调 |
-| `dsh-raw` | ✅ | 把 `~/.dsh/sessions` 当原文源 |
-| `whois` | ✅ | 身份查询 + 逐句依据 |
-| `model-manager` | ✅ | 槽位绑定模型 |
-| `editor` | ⚠️ 最小可用 | 只有 read/write/list，无版本、无行编辑 |
-| `bili` | ⚠️ 临时接缝 | 见 C 区 |
+> 读者：要判断"这个能不能信"、或准备修东西的人。
+> 口径：本文所有结论基于 2026-11-03 的 HEAD `d9b5f84` 与一次实跑（`node --test packages/core/test` → 193 通过）。
+> 证据等级见 [OVERVIEW.md §4](OVERVIEW.md#4-资产盘点)。**旧审计的"未修/已修"状态列是 11-02 快照，不要直接引用。**
 
 ---
 
-## B. 只是脚手架（不属于产品，随时可删）
+## 1. 基线
 
-| 东西 | 用途 | 风险 |
-|---|---|---|
-| `tools/marathon.mjs` | 自建 agent 循环，模拟"刷 B 站" | **不是产品路径**；协议是自定 JSON，真实 DSH 不走这里 |
-| `tools/replay.mjs` | 用历史 QQ 记录回放做梦 | 只验证管线，不产生正式记忆 |
-| `tools/recall-bench.mjs` / `recall-diagnose.mjs` | 召回基准与漏斗诊断 | 依赖冻结题目 |
-| `tools/cleanup-eval.mjs` / `dream-eval.mjs` / `threshold-calib.mjs` | 评估/调参 | — |
-| `tools/bili-run.py` | 调 bili-duty 的子进程桥 | 正式版应改成 MCP 客户端或库调用 |
-| `config/marathon*.json`、`prompts/marathon.md` | 测试用的角色与配置 | 不是正式人格 |
-| `state/marathon-*` | 测试产物与导出 | 可直接删 |
-| `~/.dsh/plugins/icl-live` | 让 ICL 在 DSH 会话里跑的插件 | **尚未加载成功**，见 D |
-
----
-
-## C. 临时实现 / 想到啥写啥（能跑，但不是最终形态）
-
-1. **`bili` 插件**：子进程调 `bili-duty` 的 MCP 函数；路径写死；只有搜索/看/评论/切帧；**没有楼中楼、没有下载、没有关注流**。
-2. **`bili_frames`**：调 `dsh-video-storyboard` 的 CLI，默认截前 4 分钟、240p；**会阻塞数十秒**。
-3. **wash 的输入**：总预算 12000 字、单行 1200 字（`ctx.config.washChars` / `washLineChars`）。
-4. **wash 的笔记**：带 `who` 时会写 `data.subject`，但**没有时间戳**，所以"按时间段成块"做不了。
-5. **人物归属**：靠 wash 的 `who`，**没有"同一 UP 多次出现"判定**（按你的要求，不做机械阈值）。
-6. **工具时间戳**：`ICL_TOOL_TIME=1` 时在每次工具结果后追加当前时间。
-7. **`chatDetailed`**：新加，取 `reasoning_content`；思考记录只在脚手架里用。
-8. **`icl-live` 插件**：提示词是**加载时快照**，世界状态不会每轮刷新。
-
----
-
-## D. 明确没做（不要以为有）
-
-| 缺口 | 影响 |
+| 项 | 实测值 |
 |---|---|
-| **DSH 真实集成** | 适配器只对 fake DSH 测过；`icl-live` 未加载成功（见下） |
-| **会话自动创建** | 旧插件用 `api.sessions.create`，我们没接 |
-| **楼中楼** | `bili_comments` 只有顶层 + top_replies，翻不了楼 |
-| **时间优先的块** | 块仍按"同一件事"合并，不是按时间段 |
-| **印象优先** | wash 提示词还没强调"先挑留下印象的" |
-| **完整节律** | 只有固定 23:00 做梦 + 倒计时 |
-| **真实压缩联调** | `compaction` 插件未在 DSH 里跑过 |
-| **向量索引常开** | 测试会话里 vectors=0，召回实际走字面 |
-| **30 分钟正式长测** | 配置在，没跑 |
+| 测试 | **193 通过 / 0 失败**，43 个文件，约 0.8 秒 |
+| 源码 | 40 个 `.mjs` / **8,277 行**（core 9 文件 1468 · plugins 16 目录 3766 · adapters 2 文件 1064 · tools 13 文件 1979） |
+| 服务 | 13 个（`tools prompt focus delivery slots model raw context surface presets signals vision clock`） |
+| 插件 | 16 个 / **28 个工具**（manifest 与代码完全一致，无多无少） |
+| 数据 | SQLite 3 表 / 11 个命名空间 / 向量 1024 维 |
+| 做梦 | 7 个 job（`wash → events → people → lexicon → consume → cleanup → index`） |
+| 依赖 | 核心零依赖；适配器需要 `js-yaml`、`@deepseek-ai/dsh-host-apiproxy`（**未在 package.json 声明**） |
 
----
+## 2. 能力状态
 
-## E. 为什么 `icl-live` 没加载（已修复，待重启验证）
+| 能力 | 状态 | 证据 | 说明 |
+|---|---|---|---|
+| 插件宿主 / 生命周期 / 工具面 | 可用 | E1 | 启停、预设过滤、注销链都有测试 |
+| 记忆存取 / 混合检索 / 四类召回 | 可用 | E1 | 全仓库测试最厚的地方 |
+| 原文兜底（raw） | 可用但残缺 | E1 + E3 | 只解析两类事件，工具结果进不来 |
+| 做梦七步 | 可用但产物质量待调 | E1 + 真模型固定素材 | 幂等、跳过、失败语义都有测试；块的粒度与人物合并靠模型 |
+| 词汇层 | 可用但噪声大 | E1 + E3 | 5 分钟会话抽出 16 条，多数是单字噪声 |
+| 时间 / 日程 / 唤醒 / 积压 | 可用 | E1 + E3 | 真实会话里通过一次（5 分钟） |
+| 信号路由 | 可用 | E1 | 三条路由（model / plugin / focus） |
+| 人格注入 | 可用 | E1 + E3 | 每 5 秒求值，不再是一加载就冻结 |
+| 世界状态 | 可用（基础版） | E1 | 只读总线；`time` 与 `world-state` 各注册一个「时间」来源，提示词会出现两行 |
+| 投递 | 部分空转 | E1 | `delivery.push` 在插件里**零调用**，只有信号层在用 |
+| 压缩 | 未验证 | E0 | 只过单测；真实会话到不了 12000 字符阈值 |
+| B 站工具链 | 临时接缝 | E3（人工跑过） | 4 个工具；`bili_frames` 阻塞可达 600 秒 |
+| DSH 接线 | 半断 | E3（两次 5 分钟） | 见 [DSH-INTEGRATION.md](DSH-INTEGRATION.md) |
+| 单会话约束 | 未强制 | — | 仓库内没有任何东西阻止两个实例同跑 |
 
-DSH 的插件不是放进 `~/.dsh/plugins/` 就自动生效，要满足三个条件：
+## 3. 缺陷台账（HEAD 上复核仍存在）
 
-1. `~/.dsh/profiles/desktop/package.json` 的 `dependencies` 里有它（`link:` 指向插件目录）
-2. 同文件的 `dsh.profile.bundles` 数组里列出包名
-3. 跑一次 `pnpm install`，然后重启 DSH
+编号沿用原审计（`C` 核心 / `M` 记忆 / `D` 做梦 / `T` 工具），便于和归档对账。
+原 80 条已归档到 [archive/2026-11-02-audit-findings.md](archive/2026-11-02-audit-findings.md)。
 
-我们的插件目前**三个都没做**，而且 `package.json` 还缺 `dsh.bundle.patch`（指向一个 preset yml）。
+### 3.1 核心
 
-**这是"接 DSH"这一整块还没完成的地面工作**，不是重启能解决的。
+| ID | 问题 | 后果 |
+|---|---|---|
+| C-16 | 装配期所有 `try/catch` 是空体 | 提示词段、上下文策略、raw 单源出错时静默消失，连日志都没有 |
+| C-12 | 三条注入路径互不知情：`session.installTools`、`attachDshAdapter`、`surface` | 只有 adapter 那条按预设过滤；另两条会把未声明的工具交出去 |
+| C-13 | `session.start()` 的定时器不被 `host.disable` 回收 | 插件停用后仍在跑 |
+| — | `model` 服务只把 6 个方法挂上 ctx | `chatDetailed` / `current` / `inflightCount` 在 `ctx.model` 上取不到，想拿 reasoning 得绕路 |
+| — | `presets` 机制整体空转 | 唯一预设有且只有 `default`；`use/define` 无调用方；`manifest.presets` 没有读方。改预设不影响任何行为 |
 
----
+### 3.2 死代码（不是风格问题，是会误导后来人）
 
-## F. 接 DSH 还有哪些地面工作（按顺序）
+| 符号 | 事实 |
+|---|---|
+| `ctx.delivery.push` | **没有任何插件调用过**。"投递是唯一出口"在代码里只有信号层一个使用者 |
+| `services.presets.use/define` | 无调用方；唯一预设有且只有 `default`；16 个 manifest 都没写 `presets` |
+| `focus` 服务 | 只有 `time` 一个真实使用者（进入 / 释放注意力空间），`session.mjs` 另有一处读取 |
+| `memory.archiveSearch` | 无调用方，与 `raw` 功能重叠 |
+| `context.compactors()`、`signals.peekGate()` | 无调用方 |
+| `session.mjs` | 仅被 `tools/time-accept.mjs` 与测试使用 |
+| `packages/adapters/*` | 仓库内零调用方，真实使用者是仓库外的 `icl-live` |
+| `dream.jobSlang` | 在 `JOBS` 表里但不在默认序列（`slang` 已并入 `lexicon`） |
+| `time` 的 `ctx.services.require('signals')` 兜底 | 该分支**必然抛错**（`signals` 不在 `shared` 能力表里） |
 
-1. 给 `icl-live` 补 `dsh.bundle.patch` + 一个最小 preset yml
-2. 加进 profile 依赖与 bundles，`pnpm install`
-3. 重启，确认工具面出现在会话里
-4. 世界状态/人格改成**每轮刷新**（接 `session/event`）
-5. 确认模型能选到本地 llama-swap
-6. 再谈"插件自动建会话"
+### 3.3 记忆与做梦
 
-在这六步完成之前，**不要开始 30 分钟长测**——否则测试结果会被接线问题污染。
+记忆侧的 12 条缺陷归 [MEMORY.md §8](MEMORY.md#8-已知缺陷记忆侧) 所有（5 条高危），这里不重复。
+只留最影响"她记不住 / 记错"的四条，加一条跨域：
 
+| 现象 | 详见 | 后果 |
+|---|---|---|
+| 窗口全是"最老 N 条"：`query` 500、`events` 回查 200、`consume` 200、`lexicon` 500 | MEMORY §8-4 | 库长大以后新行进不了窗口，表现为"记不住最近的事" |
+| `raw.list` 只返回 `{text,time,role}`，`wash` 却读 `r.sender` | MEMORY §8-5 | 原话层丢掉"谁说的"，是"记错人"的主因 |
+| `cleanup` 三次 `patch` 都基于改写前的 `existing.data` | MEMORY §8-2 | 块越改越薄，正文与证据不匹配 |
+| 日界三套实现（本机时区 / `+08:00` 写死 / `config.timezone`） | MEMORY §8-12 | 改时区后同一天跑两遍 wash，幂等键记两份 |
+| `model-manager` 只 bind 第一个 chat provider | PLUGINS §5 | 配置里有两个 chat 时，第二个永远拿不到模型 |
 
----
+### 3.4 时间与信号
 
-## G. DSH 接线进度（2026-11-02 晚）
+同样不重复：[TIME.md §8](TIME.md#8-已知问题) 有 15 条带行号的清单，其中三条高危：
 
-已完成：
+| 现象 | 后果 |
+|---|---|
+| `ctx.services.require('signals')` 的兜底分支必然抛错 | 没有 `ctx.signals` 的场合不是降级而是崩 |
+| `inboxOffset` 只在内存里，重启归零 | 重启把历史 inbox 命令全部重放一遍（`pause` / `arrange` / `reset` 各再执行一次） |
+| `time` 与 `world-state` 各注册一个「时间」来源 | 系统提示里出现两行「时间：」，其中一行没有阶段与日程 |
 
-1. `dsh.bundle.patch` + `presets/icl-live.patch.yml`（preset id `icl-live`，显示名「ICL Live」）
-2. profile `dependencies` 加了 `dsh-icl-live: link:...`，`dsh.profile.bundles` 加了 `dsh-icl-live`
-3. `pnpm install` 通过（lockfile 校验 192 条）
-4. 提示词改成每 5 秒刷新（世界状态不再是快照）
-5. 参数 schema 转成 DSH 认的形状（对象必须显式 additionalProperties）
-6. 干跑验证：mock ctx 下 18 个工具全部注册成功
-7. 修复 `apply` 必须同步（返回 disposer）：之前用 async apply 会让 cordis 报 "never started"；现在异步初始化在内部 boot()
-8. preset 里的插件模块名改成包名 `dsh-icl-live/index.mjs`（之前写成 `icl-live/index.mjs` 解析不到）
+### 3.5 接缝与工程
 
-待你重启 DSH 后验证：
+| ID | 问题 | 后果 |
+|---|---|---|
+| — | `time` 的 `inboxOffset` 不持久化 | 重启后游标归零，**历史 inbox 命令会被全部重放**（重跑一遍 arrange/cancel） |
+| T-8 | `icl-live` 曾在 `host.services.get('rhythm')` 上抛 TypeError 被吞 | 已改为 `host.shared.get`，但**"到点自动整理"没有在真实会话里复验** |
+| — | `js-yaml`、`@deepseek-ai/dsh-host-apiproxy` 三个 `package.json` 都没声明 | 只在本机靠 junction 指到 `dsh-qq/node_modules`；换机器即断 |
+| — | 没有任何文件锁 | `memory.db` 与 `time.json` 多进程共写无保护 |
+| — | 4 处 `C:\Users\ai_admin\...` 绝对路径 | 见 [PLUGINS.md §6](PLUGINS.md) |
+| — | 仓库根三个评测 JSON（`recall-bench/diagnose`、`replay-report`）未 gitignore | 报告产物混进源码树（整理时已移走） |
 
-- 新建会话时能看到「ICL Live」预设
-- 会话里能看到 18 个工具（remember / recall / memo* / lexicon* / read_file / write_file / list_dir / bili_* / world_status）
-- 人格段出现且时间在走
+## 4. 静默失败清单
 
-仍未做：
+这一节单独列，因为它是**系统性问题**，不是某一条 bug。对一个记忆系统来说，这是最危险的失败形态：
+记忆变薄、人格段消失、工具没注册，**都不会报错**，只表现为"她想不起来"或"她不说话"。
 
-- 会话自动创建（`api.sessions.create`）
-- 真实压缩联调
-- 楼中楼、时间优先的块、印象优先提示词
+| 位置 | 失败表现 | 调用方能知道吗 |
+|---|---|---|
+| 装配期全部 `try/catch` | 段消失、策略消失、raw 源失效 | ❌ |
+| `delivery` 第 5 次 `nack` | 条目丢弃、水位不推进 | 只能查 `droppedCount()` |
+| `dsh-raw` `.zstd` 解压失败 | 返回空串 → 当天原文为空 | ❌ |
+| `dsh-raw` 只解析 `user/assistant` | 工具结果从不进原文层 | ❌（表现为人物记忆里没有 UP 主） |
+| DSH 插件未挂进 profile | 工具面 / 人格都不出现 | ❌（插件根本没被加载） |
+| 模型 provider 缺 key | 跳过该 provider 并 warn | 需看日志 |
 
+## 5. 测试覆盖与盲区
 
----
+覆盖是**不均匀**的，方向恰好与风险相反：
 
-## H. 整理（做梦）怎么触发
+| 区域 | 覆盖 | 备注 |
+|---|---|---|
+| 记忆 / 做梦 / 召回 | 厚（约 24 个文件、2000 行） | 数据流水线质量高 |
+| 核心服务 | 直接覆盖 8/10，`contracts` 与 `session` 仅间接 | — |
+| `vision.mjs`（44 行） | **零** | 视觉描述无任何测试 |
+| `adapters/dsh-client.mjs`（1008 行） | **零** | 全仓库最大文件，也是最不可替代的一块 |
+| `tools/*.mjs`（13 个、1979 行） | **零** | 它们自己就是断言脚本，但不进 `npm test` |
+| `bili` 子进程分支 | 零 | 只测了工具面形状与路径逃逸 |
+| 真实 DSH / 真实模型 / 真实网络 | **全部没有** | 所有测试跑在 `os.tmpdir()` 的临时库上 |
 
-1. **到点自动**：`icl-live` 每 30 秒看一次 rhythm 的下一次做梦时间（默认 23:00），
-   到点就跑一轮 wash → events → people → lexicon → consume → cleanup → index。
-2. **手动收尾**：会话里有个 `dream_now` 工具，让她"睡一觉"或对方说"整理一下"即可，
-   不用等到点。
-3. **原文来源**：`dsh-raw` 已接进 live 会话，dream 从 `~/.dsh/sessions` 读原话。
+## 6. 真实会话证据（唯一）
 
-## I. 压缩的坑（未解决，先绕开）
+2026-11-03，两轮各约 5 分钟，preset `icl-live`，模型 `coder390-27b`：
 
-- live 预设**没有**接自定义压缩，DSH 自带压缩在上下文接近上限时会自动触发。
-- 自动压缩会改写历史，做梦读到的原文就变样了。
-- 现阶段的对策：**测试会话控制在 10–15 分钟**，结束前调 `dream_now`，
-  不让上下文逼近上限。真正的压缩联调是后续工作。
+| 项 | 结果 |
+|---|---|
+| 建会话 / 指定工作区 / 发消息 | ✅ |
+| 定时器（`arrange in 1m, duration 3m`）→ 到点 → 醒来 | ✅ |
+| 睡觉触发做梦 | ✅ 触发；❌ 产物只有 1 条词、无块 |
+| 做梦产物不全的原因 | `dsh-raw` 把 v4 消息读成空（已修，有 `dsh-raw-v4.test.mjs`） |
+| 修好后用同一天重放 | wash 11 行 · events 1 块 · people **0** · lexicon 16 条（多为噪声） |
+| `people 0` 的原因 | 工具结果不进 raw，视频作者永远不在原文里 |
+| 内容质量 | 她自己写了 10 条笔记，细节可读——这是唯一"效果"证据 |
+| 作废的一轮 | 两个会话共用一份 `time.json`，预写状态被启动时的 `persist()` 覆盖 |
+
+## 7. 下一步（按证据优先级，不按功能优先级）
+
+现在的瓶颈不是"缺功能"，而是"缺一条走通的线"。所以顺序是：
+
+1. **把 `icl-live` 搬进仓库**，让 profile 接线成为仓库内可复现的两步命令。这一步做完，
+   所有接线问题才会进入测试范围。
+2. **修 preset 写死工作区**，让会话工作区与插件工作区一致，否则测一次脏一次。
+3. **让 `tool/result` 进原文层**（`dsh-raw` 解析第三类事件）。这是 `people 0` 的正解，
+   也是"她记住看过什么"的前提。
+4. **跑一次 ≥30 分钟闭环**：醒来 → 做事 → 睡觉 → 做梦 → 醒来，全程一个会话，
+   结束固定导出 `memory_export` + `raw_export`。判据见 [DSH-INTEGRATION.md §3](DSH-INTEGRATION.md#3-当前实测状态)。
+5. **补测试给两块零覆盖**：`dsh-client.mjs` 至少要有契约测试（它一旦漂移，接 DSH 就全断）；
+   `vision.mjs` 一次性补完。
+6. **然后才谈**：压缩联调、`focus`/`presets` 的去留（要么接进真实路径，要么删）、
+   B 站工具深度、QQ/MC 连接器。
+
+## 8. 已修复的历史缺陷（不要重复报告）
+
+11-02 晚的 `7643262`、`bc2a709` 等提交修掉了一批审计结论（当时记了 23 条对照表）。
+以下主题**已有回归测试**，不要当作新发现：`ICL_TOOL_TIME` 死代码、enable 后不推送新工具、
+`sync()` 非增量、`validateManifest` 丢字段、非 `default` 预设清空工具面、
+`systemPrompt/installTools` 不按预设过滤、截断超预算、投递丢弃无计数、`binding.timeoutMs` 被忽略、
+provider 注销不解除绑定、dream 提示词字面 `\n`、人物笔记永不 `consolidated`、
+`alreadyRan` 只看 200 行、跨天上下文 `qq:42` vs `42`、重跑降级 evidence、
+world-state 的 `order` 与 `。；`、compaction 取最旧 20 条里的最新、`marathon.cfg.plugins` 死配置。
+
+**仍然开着的**：同一会话两个 chat provider（`model-manager` 只 bind 第一个，即 D-20）。
