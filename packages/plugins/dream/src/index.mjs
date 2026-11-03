@@ -71,6 +71,7 @@ export function apply(ctx) {
   const session = String(ctx.config.sessionId ?? 'default')
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
+  try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
 
@@ -187,8 +188,27 @@ export function apply(ctx) {
       })
       wrote += 1
     }
-    recordRun(day, 'wash', { notes: wrote }, now)
-    return { job: 'wash', ok: true, notes: wrote }
+    // 当天原话完整留一份：后面每一轮都从它出发，避免 wash 的抽取成为唯一入口
+    const startMs = dayStartOf(now)
+    const endMs = dayEndOf(now)
+    const timeOfRow = (r) => Number(r.time ?? r.createdAt ?? 0)
+    const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
+    const logLines = rows
+      .filter((r) => { const at = timeOfRow(r); return !at || (at >= startMs && at < endMs) })
+      .map((r, i) => `[${i + 1}] ${hhmm(timeOfRow(r) || now)} ${String(r.sender ?? '').slice(0, 20)}：${String(r.text ?? '').replace(/\s+/g, ' ').slice(0, 400)}`)
+    if (logLines.length) {
+      memory.put({
+        namespace: 'day',
+        kind: 'log',
+        key: `day:${day}`,
+        text: logLines.join('\n').slice(0, 30000),
+        data: { day, lines: logLines.length, times: rows.filter((r) => { const at = Number(r.time ?? r.createdAt ?? 0); return !at || (at >= dayStartOf(now) && at < dayEndOf(now)) }).map((r) => Number(r.time ?? r.createdAt ?? 0)) },
+        now,
+      })
+    }
+
+    recordRun(day, 'wash', { notes: wrote, lines: logLines.length }, now)
+    return { job: 'wash', ok: true, notes: wrote, lines: logLines.length }
   }
 
   async function jobEvents({ now, force = false }) {
@@ -202,7 +222,11 @@ export function apply(ctx) {
     // 每行带稳定 id：摘要必须能指回原句。
     const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
-    const payload = notes
+    let dayLog = null
+    try { dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLog = null }
+    const payload = dayLog
+      ? `${dayLog.text}\n\n（上面每行开头的编号就是 evidence 要用的编号）`
+      : notes
       .slice()
       .sort((a, b) => timeOf(a) - timeOf(b))
       .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${n.text}`)
@@ -231,7 +255,12 @@ export function apply(ctx) {
       const summary = String(block?.summary ?? '').trim()
       if (!summary) continue
       const key = `evt:${day}:${hash(summary)}`
-      const evidence = validEvidence(block?.evidence, notes)
+      const evidence = dayLog
+        ? (Array.isArray(block?.evidence) ? block.evidence : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id >= 1 && id <= Number(dayLog.data?.lines ?? 0))
+          .map((id) => ({ type: 'day', id }))
+        : validEvidence(block?.evidence, notes)
       const previous = memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
       // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
       if (!evidence.length && previous) continue
@@ -251,6 +280,12 @@ export function apply(ctx) {
           tags: normalizeTags(block?.tags),
           sources: notes.map((n) => n.key).filter(Boolean),
           ...(() => {
+            if (dayLog) {
+              const times = (evidence ?? [])
+                .map((e) => Number(dayLog.data?.times?.[Number(e.id) - 1] ?? 0))
+                .filter(Boolean)
+              return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
+            }
             const cited = evidence.map((e) => notes.find((n) => Number(n.id) === Number(e.id))).filter(Boolean)
             const times = cited.map((n) => Number(n.data?.at ?? n.createdAt ?? 0)).filter(Boolean)
             return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
@@ -275,9 +310,12 @@ export function apply(ctx) {
       for (const e of block?.data?.evidence ?? []) cited.add(Number(e.id))
     }
     const covered = notes.filter((n) => cited.has(Number(n.id)))
-    if (covered.length) markNotes(covered, now)
+    if (dayLog) {
+      // 用当天原话成块后，wash 的笔记已被原话覆盖，不再作为待整理项
+      markNotes(notes.filter((n) => n.data?.consolidated !== true), now)
+    } else if (covered.length) markNotes(covered, now)
     recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: notes.length - covered.length }, now)
-    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: notes.length - covered.length }
+    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: dayLog ? 0 : notes.length - covered.length }
   }
 
   /* ── people：逐人整块重写 ─────────────────────────────────────── */
@@ -286,6 +324,39 @@ export function apply(ctx) {
     const { start, end } = dayRange(now)
     const day = dayKey(now)
     if (!force && alreadyRan(day, 'people')) return { job: 'people', skipped: 'already-ran' }
+    // 先看当天原话：人物不应该依赖 wash 恰好抽到了谁
+    let dayLog = null
+    try { dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLog = null }
+    if (dayLog) {
+      try {
+        const raw = await ask({
+          instruction: [
+            '从当天原话里找出被提到的人，只记"这个人做了什么/说过什么"。',
+            '输出 JSON 数组：[{"who":"名字","fact":"一句具体事实","source_id":1}]',
+            'who 用原话里的称呼，不要合并不同的人；没有就输出 []。只输出 JSON。',
+          ].join('\n'),
+          payload: `${dayLog.text}\n\n（source_id 用上面每行开头的编号）`,
+          maxTokens: 900,
+        })
+        for (const item of parseBlocks(raw)) {
+          const who = String(item?.who ?? '').trim()
+          const fact = String(item?.fact ?? '').trim()
+          if (!who || !fact) continue
+          const dup = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
+            .some((n) => String(n.data?.subject?.value ?? '') === who && String(n.text).includes(fact.slice(0, 20)))
+          if (dup) continue
+          const idx = Number(item?.source_id)
+          memory.put({
+            namespace: 'person', kind: 'note', text: fact, now,
+            data: {
+              subject: { kind: 'name', value: who },
+              evidence: Number.isFinite(idx) ? [{ type: 'day', id: idx }] : [],
+              at: Number(dayLog.createdAt) || now,
+            },
+          })
+        }
+      } catch { /* 抽取失败就退回笔记路径 */ }
+    }
     // 人物档案跨天：只要还没被消化，不管哪天的笔记都带上。
     const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500 }))
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
