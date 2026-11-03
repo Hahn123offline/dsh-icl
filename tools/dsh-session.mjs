@@ -52,6 +52,16 @@ async function prompt() {
   console.log('已投递')
 }
 
+async function cancel() {
+  const sessionId = String(arg('--session', ''))
+  if (!sessionId) throw new Error('cancel 需要 --session')
+  const out = await api.sessions.cancel({ sessionId })
+  if (!out?.result?.ok && out?.result?.error?.code !== 'session/not-found') {
+    throw new Error(`cancel 失败：${JSON.stringify(out?.result?.error ?? out)}`)
+  }
+  console.log('已取消')
+}
+
 async function model() {
   const sessionId = String(arg('--session', ''))
   if (!sessionId) throw new Error('model 需要 --session')
@@ -67,8 +77,9 @@ try {
   else if (cmd === 'create') await create()
   else if (cmd === 'prompt') await prompt()
   else if (cmd === 'model') await model()
+  else if (cmd === 'cancel') await cancel()
   else {
-    console.error('用法：node tools/dsh-session.mjs <list|create|prompt|model> [options]')
+    console.error('用法：node tools/dsh-session.mjs <list|create|prompt|model|cancel> [options]')
     process.exit(2)
   }
 } catch (error) {

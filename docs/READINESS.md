@@ -60,22 +60,30 @@ wash 只影响当天可读的 log，原始 JSON 仍可在 raw 里检索/导出�
 - 影响：每测一次多一个会话，GUI 会越堆越多
 - 风险等级：低
 
-## 测试计划（定时器版）
+## 测试计划（定时器版，已按复盘修正）
 
-`tools/plan-test.mjs` 往会话工作区预写 `time.json`：
+**不要预写 `time.json`**：插件启动时会把自己读到的状态写回去，预写可能被覆盖。
+正确顺序是"先起会话，再用 inbox 下命令"：
 
 ```bash
-# 2 分钟后睡，睡 3 分钟，醒来自动做梦
-node tools/plan-test.mjs --workspace C:/DSH/qwenstuff/icl/state/test-a \
-  --in 2 --duration 3
-
-# 再建会话（会用这个工作区）
+# 1. 建会话（一个，且只用一个工作区）
 node tools/dsh-session.mjs create --preset icl-live \
   --workspace C:/DSH/qwenstuff/icl/state/test-a
+
+# 2. 等插件启动（time.json 时间戳变化）
+
+# 3. 通过控制通道设定时器（会话内 time 插件 15 秒内处理）
+node tools/time.mjs arrange \
+  '{"mode":"wake","kind":"span","sleep":true,"in":"1m","duration":"3m","message":"你困了"}' \
+  --state <会话工作区>/time.json
+
+# 4. 发第一条消息
+node tools/dsh-session.mjs prompt --session <id> --text "去刷吧"
+
+# 5. 结束：cancel + memory_export + raw_export
 ```
 
-会话里时间模块启动后读这份状态：到点发"你困了"→ 触发 dream → 3 分钟后
-发"你睡醒了"，并释放期间积压。
+`tools/plan-test.mjs` 只在"确认没有旧插件实例"时用来预置状态。
 
 要观察的：
 
