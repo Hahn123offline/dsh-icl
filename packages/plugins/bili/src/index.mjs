@@ -24,8 +24,36 @@ function callTool(fn, args, { timeout = 60000 } = {}) {
   })
 }
 
+async function describeSheet(sheetPath, config = {}) {
+  const baseUrl = String(config.baseUrl ?? process.env.ICL_VISION_BASE ?? 'http://127.0.0.1:8088/v1').replace(/\/+$/, '')
+  const model = String(config.model ?? process.env.ICL_VISION_MODEL ?? 'coder390-27b-q3-df2-4x500')
+  if (!model) return ''
+  try {
+    const b64 = fs.readFileSync(sheetPath).toString('base64')
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}) },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: '你在看一张视频关键帧宫格图。用中文逐格描述画面里实际发生的事：人物、动作、字幕文字、场景变化。只描述看到的，不要猜剧情。' },
+          { role: 'user', content: [
+            { type: 'text', text: '这些格子按时间顺序排列，请逐格说明。' },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
+          ] },
+        ],
+        max_tokens: 700,
+      }),
+    })
+    if (!res.ok) return ''
+    const data = await res.json()
+    return String(data?.choices?.[0]?.message?.content ?? '').trim()
+  } catch { return '' }
+}
+
 export function apply(ctx) {
   const limit = Number(ctx.config.maxChars ?? 6000)
+  const vision = { ...(ctx.config.vision ?? {}) }
 
   ctx.tools.register({
     name: 'bili_search',
@@ -48,7 +76,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'bili_watch',
-    summary: 'Open a Bilibili video by link or BV id: title, description, stats, and subtitles if any.',
+    summary: 'Open a Bilibili video: title, description, stats, and subtitles when available. If it has no subtitles or you need to see what happens, use bili_frames next.',
     when: ['a video looks interesting and you want to know what it actually says'],
     avoid: ['using it as a search tool'],
     parameters: {
@@ -71,7 +99,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'bili_comments',
-    summary: 'Read comments on a Bilibili video (read only).',
+    summary: 'Read the top comments and their top replies on a Bilibili video (read only).',
     when: ['you want to know how people reacted'],
     avoid: ['replying - this tool cannot comment'],
     parameters: {
@@ -89,7 +117,7 @@ export function apply(ctx) {
   // 看画面：把 B 站视频交给 dsh-video-storyboard 的 CLI，拿回宫格图 + 时间轴
   ctx.tools.register({
     name: 'bili_frames',
-    summary: 'Look at the actual frames of a Bilibili video: returns a storyboard image path plus a timeline, so you can see what happens instead of guessing from the title.',
+    summary: 'See the actual frames: a storyboard grid plus a timeline, sent to you as an image. Use it for videos without subtitles or when the visual content is the point.',
     when: ['a video has no subtitles', 'the title or description is not enough to know what it shows'],
     avoid: ['very long videos - pass from/to to look at one stretch'],
     parameters: {
@@ -125,7 +153,10 @@ export function apply(ctx) {
         timeline = cellsList.slice(0, 16).map((c) => `#${c.i ?? ''} ${secs(c.t_start)}–${secs(c.t_end)}`).join(' / ')
         if (data.transcript?.chars) timeline += `\n字幕：${String(data.transcript.chars)} 字`
       } catch { /* manifest 缺失也没关系 */ }
-      return { text: `已切好宫格图：${sheet}\n${timeline}`, imagePath: sheet }
+      const described = ctx.config.visionEnabled === false ? '' : await describeSheet(sheet, vision)
+      const lines = [`已切好宫格图：${sheet}`, timeline]
+      if (described) lines.push('', '画面描述：', described)
+      return { text: lines.join('\n').slice(0, limit), imagePath: sheet }
     },
   })
 
