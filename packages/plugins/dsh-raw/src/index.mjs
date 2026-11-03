@@ -16,7 +16,7 @@ function decode(file) {
   return buf.toString('utf8')
 }
 
-function messagesFrom(text) {
+function messagesFrom(text, sessionId = null) {
   const out = []
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
@@ -31,7 +31,7 @@ function messagesFrom(text) {
     if (obj.type !== 'user/message' && obj.type !== 'assistant/message') continue
     // 跳过注入的运行上下文
     if (/^(Current runtime context|Time sampled|This is an automatically generated checkpoint|<system-reminder>)/.test(body.trim())) continue
-    out.push({ time: t, text: body.replace(/\s+/g, ' ').trim().slice(0, 600), role: obj.type === 'user/message' ? 'user' : 'assistant' })
+    out.push({ time: t, text: body.replace(/\s+/g, ' ').trim().slice(0, 600), role: obj.type === 'user/message' ? 'user' : 'assistant', sessionId })
   }
   return out
 }
@@ -64,7 +64,10 @@ export function apply(ctx) {
     files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
     const messages = []
     for (const file of files.slice(0, maxFiles)) {
-      try { messages.push(...messagesFrom(decode(file))) } catch { /* ignore */ }
+      try {
+        const sid = path.basename(file).replace(/\.jsonl(\.zstd)?$/, '')
+        messages.push(...messagesFrom(decode(file), sid))
+      } catch { /* ignore */ }
     }
     // 有上限：会话很多时不把整个日志读进内存
     cache = messages.length > maxMessages ? messages.slice(-maxMessages) : messages
@@ -88,15 +91,37 @@ export function apply(ctx) {
       if (hit) scored.push({ m, hit })
     }
     scored.sort((a, b) => b.hit - a.hit || b.m.time - a.m.time)
-    return scored.slice(0, Math.max(1, Number(limit) || 2)).map((x) => ({ text: x.m.text, time: x.m.time, role: x.m.role }))
+    return scored.slice(0, Math.max(1, Number(limit) || 2)).map((x) => ({ text: x.m.text, time: x.m.time, role: x.m.role, sessionId: x.m.sessionId }))
   }
 
   const list = ({ since = null, until = null, limit = 500 } = {}) => load()
     .filter((m) => (since == null || m.time >= since) && (until == null || m.time < until))
     .slice(0, limit)
-    .map((m) => ({ text: m.text, time: m.time, role: m.role }))
+    .map((m) => ({ text: m.text, time: m.time, role: m.role, sessionId: m.sessionId }))
 
   ctx.services.raw.register({ id: 'dsh-sessions', search, list })
-  ctx.services.provide('dsh-raw', { search, size: () => load().length })
+  ctx.tools.register({
+    name: 'raw_export',
+    summary: '把 DSH 会话原文导出成文本文件（可按 sessionId / 时间过滤）。',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['path'], properties: {
+        path: { type: 'string' }, sessionId: { type: 'string' },
+        since: { type: 'string', description: 'ISO 时间' }, limit: { type: 'number' },
+      },
+    },
+    async execute({ path: target, sessionId = null, since = null, limit = 1000 } = {}) {
+      const sinceMs = since ? Date.parse(String(since)) : null
+      const rows = list({ since: Number.isFinite(sinceMs) ? sinceMs : null, limit: Math.max(1, Number(limit) || 1000) })
+        .filter((r) => !sessionId || r.sessionId === String(sessionId))
+      const text = rows.map((r) => `${new Date(r.time).toLocaleString('zh-CN', { hour12: false })} ${r.role === 'user' ? '用户' : '我'}：${r.text}`).join('\n')
+      try {
+        fs.mkdirSync(path.dirname(String(target)), { recursive: true })
+        fs.writeFileSync(String(target), text, 'utf8')
+      } catch (error) { return { text: `写不进去：${String(error?.message ?? error)}` } }
+      return { text: `导出了 ${rows.length} 条到 ${target}` }
+    },
+  })
+
+  ctx.services.provide('dsh-raw', { search, list, size: () => load().length })
   ctx.log({ msg: 'dsh-raw.ready', root, days })
 }

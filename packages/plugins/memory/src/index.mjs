@@ -423,7 +423,57 @@ export function apply(ctx) {
     },
   }
 
-  ctx.services.provide('memory', api)
+  // 正式导出通道：把记忆库整份导出（测试、备份、迁移都用它）
+  function exportAll({ namespace = null } = {}) {
+    const namespaces = db.prepare('SELECT * FROM mem_ns ORDER BY id').all().map((row) => row.id)
+    const wanted = namespace ? namespaces.filter((id) => id === String(namespace)) : namespaces
+    const items = []
+    for (const ns of wanted) {
+      for (const row of db.prepare('SELECT * FROM mem_items WHERE namespace = ? ORDER BY created_at ASC').all(ns)) {
+        let data = null
+        try { data = row.data ? JSON.parse(row.data) : null } catch { data = null }
+        items.push({
+          id: Number(row.id), namespace: row.namespace, kind: row.kind, key: row.key,
+          text: row.text, data, weight: Number(row.weight), recallCount: Number(row.recall_count),
+          createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+        })
+      }
+    }
+    return { version: 1, exportedAt: ctx.now(), namespaces: wanted, items }
+  }
+
+  ctx.tools.register({
+    name: 'memory_export',
+    summary: '把记忆库导出到文件（JSON 或 Markdown），用于备份、迁移和调试。',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['path'], properties: {
+        path: { type: 'string' }, format: { type: 'string', enum: ['json', 'md'] },
+        namespace: { type: 'string' },
+      },
+    },
+    async execute({ path: target, format = 'json', namespace = null } = {}) {
+      const dump = exportAll({ namespace })
+      let body = ''
+      if (format === 'md') {
+        const lines = [`# 记忆导出（${new Date(dump.exportedAt).toLocaleString('zh-CN', { hour12: false })}）`, '']
+        for (const item of dump.items) {
+          lines.push(`## ${item.namespace}/${item.kind}${item.key ? ` · ${item.key}` : ''}`)
+          lines.push('', item.text, '')
+          if (item.data && Object.keys(item.data).length) lines.push('```json', JSON.stringify(item.data).slice(0, 1200), '```', '')
+        }
+        body = lines.join('\n')
+      } else {
+        body = JSON.stringify(dump, null, 1)
+      }
+      try {
+        fs.mkdirSync(path.dirname(String(target)), { recursive: true })
+        fs.writeFileSync(String(target), body, 'utf8')
+      } catch (error) { return { text: `写不进去：${String(error?.message ?? error)}` } }
+      return { text: `导出了 ${dump.items.length} 条（${dump.namespaces.join('、') || '空'}）到 ${target}` }
+    },
+  })
+
+  ctx.services.provide('memory', { ...api, exportAll })
   ctx.log({ msg: 'memory.ready', file, embedded: embedAvailable() })
   ctx.onDispose(() => { try { db.close() } catch { /* 已关 */ } })
   return api

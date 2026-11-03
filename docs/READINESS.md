@@ -42,6 +42,17 @@
 - 测试期对策：**只开一个测试会话**
 - 风险等级：中（人为保证即可）
 
+### 3.5 raw 覆盖不全（新发现）
+
+`dsh-raw` 只解析 `user/message` 与 `assistant/message` **两种事件**。
+工具结果（B 站视频信息、评论 JSON、QQ 详情）不在里面，所以：
+
+- raw 不是"唯一完整源"，它缺工具观测
+- wash 去掉 JSON 之后，这部分信息就真的丢了
+
+修法（未做）：把 `tool/result` 事件也解析成 raw 行（role=`tool`），raw 保留完整内容；
+wash 只影响当天可读的 log，原始 JSON 仍可在 raw 里检索/导出。
+
 ### 4. 测试会话不会自己消失
 
 没有接删除会话的 API。
@@ -79,3 +90,17 @@ node tools/dsh-session.mjs create --preset icl-live \
 1. 先跑这一轮 5 分钟受控测试（确认定时器与做梦在真实会话里工作）
 2. 再修第 2 条（会话级历史），然后跑 30 分钟
 3. 单会话锁等正式版再做
+
+
+## 导出通道（新增）
+
+```
+memory_export({ path, format: 'json'|'md', namespace? })
+  写入整库快照；服务 side 是 memory.exportAll()
+
+raw_export({ path, sessionId?, since?, limit? })
+  把某个 DSH 会话的原文导出成文本
+```
+
+测试结束后的标准动作：`memory_export` 一份 JSON + `raw_export` 一份原文，
+两者一起归档，就能对照"记忆 vs 原话"。

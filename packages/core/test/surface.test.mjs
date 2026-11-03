@@ -27,7 +27,7 @@ test('工具面只列已启用插件的工具，并标出归属', async () => {
   await host.enable('recall')
   const list = host.services.surface.list()
   const names = list.map((t) => t.name).sort()
-  assert.deepEqual(names, ['forget', 'recall', 'remember'])
+  assert.deepEqual(names, ['forget', 'memory_export', 'recall', 'remember'])
   assert.equal(list.find((t) => t.name === 'remember').plugin, 'recall')
 })
 
