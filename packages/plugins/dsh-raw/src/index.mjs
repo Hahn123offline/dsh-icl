@@ -23,12 +23,14 @@ function messagesFrom(text, sessionId = null) {
     let obj
     try { obj = JSON.parse(line) } catch { continue }
     const t = Number(obj.time ?? 0)
-    const content = obj.data?.content
+    const content = obj.data?.content ?? obj.data?.message?.content
     const body = Array.isArray(content)
       ? content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n')
       : (typeof content === 'string' ? content : '')
     if (!body) continue
+    const innerRole = obj.data?.message?.role
     if (obj.type !== 'user/message' && obj.type !== 'assistant/message') continue
+    if (innerRole && innerRole !== 'user' && innerRole !== 'assistant') continue
     // 跳过注入的运行上下文
     if (/^(Current runtime context|Time sampled|This is an automatically generated checkpoint|<system-reminder>)/.test(body.trim())) continue
     out.push({ time: t, text: body.replace(/\s+/g, ' ').trim().slice(0, 600), role: obj.type === 'user/message' ? 'user' : 'assistant', sessionId })
@@ -65,7 +67,8 @@ export function apply(ctx) {
     const messages = []
     for (const file of files.slice(0, maxFiles)) {
       try {
-        const sid = path.basename(file).replace(/\.jsonl(\.zstd)?$/, '')
+        // 会话 id 是目录名（.../session-<id>/session.v4.jsonl.zstd）
+        const sid = path.basename(path.dirname(file))
         messages.push(...messagesFrom(decode(file), sid))
       } catch { /* ignore */ }
     }
