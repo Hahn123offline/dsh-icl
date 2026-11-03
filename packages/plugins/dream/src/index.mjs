@@ -200,14 +200,22 @@ export function apply(ctx) {
     if (!notes.length) return { job: 'events', skipped: 'no-notes' }
 
     // 每行带稳定 id：摘要必须能指回原句。
-    const payload = notes.map((n) => `[${n.id}] ${n.text}`).join('\n')
+    const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
+    const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
+    const payload = notes
+      .slice()
+      .sort((a, b) => timeOf(a) - timeOf(b))
+      .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${n.text}`)
+      .join('\n')
     let blocks = []
     try {
       const raw = await ask({
         instruction: [
           '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
           '块里可以是你做过的事，也可以是你今天看到/刷到/学到的东西（写成“我刷到一个讲…”）。',
-          '按话题切：同一件事、同一个人、同一段对话放一块；不要按时间顺序切碎。',
+          '时间优先：先按"一段经历"分组——时间挨得很近、连续发生的笔记算同一次经历；',
+          '再在这一次经历内部按话题合并。同一次连续经历里的碎片要放进同一块，不要拆开。',
+          '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
           '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
           'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
           '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
@@ -242,6 +250,11 @@ export function apply(ctx) {
           people: (block?.people ?? []).map(String),
           tags: normalizeTags(block?.tags),
           sources: notes.map((n) => n.key).filter(Boolean),
+          ...(() => {
+            const cited = evidence.map((e) => notes.find((n) => Number(n.id) === Number(e.id))).filter(Boolean)
+            const times = cited.map((n) => Number(n.data?.at ?? n.createdAt ?? 0)).filter(Boolean)
+            return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
+          })(),
         },
         now,
       })
