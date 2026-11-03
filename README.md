@@ -17,7 +17,7 @@
 npm test        # node --test packages/core/test → 193 通过 / 43 文件
 ```
 
-无构建步骤、无运行时依赖（核心零依赖；适配器需要 `js-yaml` 与 `@deepseek-ai/dsh-host-apiproxy`）。
+无构建步骤。核心零依赖；适配器需要 `js-yaml` 与 `@deepseek-ai/dsh-host-apiproxy`，已在 `package.json` 声明。
 
 ## 三条不变量（写进测试，不要改）
 
