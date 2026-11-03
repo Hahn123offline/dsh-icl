@@ -8,6 +8,7 @@ import { validateManifest } from './contracts.mjs'
 import { createContextService, createPresetService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 import { createSignalService } from './signals.mjs'
+import { createVisionService } from './vision.mjs'
 
 export function createHost({ log = () => {}, now: systemNow = () => Date.now(), fetchImpl = globalThis.fetch } = {}) {
   let clockOverride = null
@@ -29,6 +30,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     presets,
   })
   const signals = createSignalService({ now })
+  const vision = createVisionService({ fetchImpl })
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
   signals.setDeliver((signal) => {
@@ -119,6 +121,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
         stats: () => signals.stats(),
       },
       services: {
+        vision: { describe: (req) => vision.describe(req) },
         /** 时间模块接管系统时钟；其它插件只读。 */
         clock: {
           set: (fn) => clockBridge.set(fn),
@@ -170,7 +173,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
 
   return {
     services: {
-      tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals,
+      tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals, vision,
       /** 时间模块接管系统时钟：set 返回恢复函数。 */
       clock: {
         set: (fn) => clockBridge.set(fn),

@@ -24,30 +24,17 @@ function callTool(fn, args, { timeout = 60000 } = {}) {
   })
 }
 
-async function describeSheet(sheetPath, config = {}) {
-  const baseUrl = String(config.baseUrl ?? process.env.ICL_VISION_BASE ?? 'http://127.0.0.1:8088/v1').replace(/\/+$/, '')
-  const model = String(config.model ?? process.env.ICL_VISION_MODEL ?? 'coder390-27b-q3-df2-4x500')
-  if (!model) return ''
+async function describeSheet(ctx, sheetPath) {
+  const vision = ctx.services?.vision
+  if (!vision?.describe) return ''
   try {
-    const b64 = fs.readFileSync(sheetPath).toString('base64')
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}) },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: '你在看一张视频关键帧宫格图。用中文逐格描述画面里实际发生的事：人物、动作、字幕文字、场景变化。只描述看到的，不要猜剧情。' },
-          { role: 'user', content: [
-            { type: 'text', text: '这些格子按时间顺序排列，请逐格说明。' },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
-          ] },
-        ],
-        max_tokens: 700,
-      }),
+    return await vision.describe({
+      path: sheetPath,
+      config: { ...(ctx.config.vision ?? {}) },
+      system: '你在看一张视频关键帧宫格图。用中文逐格描述画面里实际发生的事：人物、动作、字幕文字、场景变化。只描述看到的，不要猜剧情。',
+      prompt: '这些格子按时间顺序排列，请逐格说明。',
+      maxTokens: 700,
     })
-    if (!res.ok) return ''
-    const data = await res.json()
-    return String(data?.choices?.[0]?.message?.content ?? '').trim()
   } catch { return '' }
 }
 
@@ -153,7 +140,7 @@ export function apply(ctx) {
         timeline = cellsList.slice(0, 16).map((c) => `#${c.i ?? ''} ${secs(c.t_start)}–${secs(c.t_end)}`).join(' / ')
         if (data.transcript?.chars) timeline += `\n字幕：${String(data.transcript.chars)} 字`
       } catch { /* manifest 缺失也没关系 */ }
-      const described = ctx.config.visionEnabled === false ? '' : await describeSheet(sheet, vision)
+      const described = ctx.config.visionEnabled === false ? '' : await describeSheet(ctx, sheet)
       const lines = [`已切好宫格图：${sheet}`, timeline]
       if (described) lines.push('', '画面描述：', described)
       return { text: lines.join('\n').slice(0, limit), imagePath: sheet }
