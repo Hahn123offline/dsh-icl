@@ -121,6 +121,17 @@ export function apply(ctx) {
       state.goals = Array.isArray(saved.goals) ? saved.goals : []
       state.spans = Array.isArray(saved.spans) ? saved.spans : []
       for (const schedule of state.schedules) { try { schedule.__parsed = parseAt(schedule.at) } catch { /* 坏数据跳过 */ } }
+      // 清理：过期的 one-time 日程、以及完全重复的日程（重启/多次测试最容易堆出来）
+      const nowMs = ctx.now()
+      const seen = new Set()
+      state.schedules = state.schedules.filter((schedule) => {
+        const parsed = schedule.__parsed
+        if (parsed?.kind === 'once' && parsed.at != null && parsed.at < nowMs - 10 * 60_000) return false
+        const key = `${schedule.mode}|${schedule.kind}|${parsed?.at ?? schedule.at}|${schedule.message ?? ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
     }
   } catch { /* 第一次运行 */ }
 
@@ -255,13 +266,15 @@ export function apply(ctx) {
       }
       send({
         kind: 'wake',
-        text: schedule.message || (schedule.sleep ? '你困了，接下来不会有人打扰你。' : `开始了：${schedule.id}`),
+        text: schedule.message || (schedule.sleep
+        ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
+        : `开始了：${schedule.id}`),
         tags: [schedule.sleep ? 'sleep' : 'span'],
       })
       state.spans.push({
         id: schedule.id,
         until: endAt,
-        endMessage: schedule.sleep ? '你睡醒了，昨天的记忆已经整理好了。' : `结束了：${schedule.id}`,
+        endMessage: schedule.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${schedule.id}`,
         sleep: Boolean(schedule.sleep),
       })
       if (schedule.sleep) {
@@ -429,7 +442,7 @@ export function apply(ctx) {
       persist()
       return { skipped: before !== state.queue.length }
     },
-    async sleep({ message = '你困了，接下来不会有人打扰你。', durationMin = null } = {}) {
+    async sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = null } = {}) {
       const schedule = addSchedule({ id: `sleep-${Date.now()}`, at: 'now', mode: 'wake', sleep: true, message, durationMin })
       return startSchedule(schedule)
     },

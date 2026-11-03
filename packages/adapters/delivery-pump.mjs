@@ -26,7 +26,7 @@ export function createDeliveryPump({ delivery, sessionId, prompt, intervalMs = 1
         const text = String(batch.text ?? '').trim()
         if (!text) { delivery.ack(batch.id); continue }
         try {
-          await prompt({ sessionId: id, text })
+          await prompt({ sessionId: id, text, urgent: Boolean(batch.urgent ?? batch.content?.urgent) })
           delivery.ack(batch.id)
           stats.sent += 1
           sent += 1
