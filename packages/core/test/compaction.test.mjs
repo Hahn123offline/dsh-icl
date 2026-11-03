@@ -14,7 +14,7 @@ async function setup() {
   const host = createHost({ log: () => {} })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-compact-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
-  host.registerPlugin(compactionManifest, compaction, { config: { keepRecent: 2 } })
+  host.registerPlugin(compactionManifest, compaction, { config: { keepRecent: 2, persona: '你是小千。', triggerChars: 2500 } })
   await host.enable('memory')
   await host.enable('compaction')
   host.services.slots.bind('compact-chat', { provider: 'fake', call: async ({ messages }) => '早前在讨论记忆系统，决定先做证据链。' })
@@ -50,4 +50,29 @@ test('压缩：模型给空时不写摘要，明确失败', async () => {
   const out = await host.services.context.compact({ history: Array.from({ length: 6 }, (_, i) => ({ role: 'user', text: 'x' + i })) })
   assert.equal(out.ok, false)
   assert.equal(out.error, 'empty-summary')
+})
+
+
+test('压缩摘要用同一个人格写自己的回忆', async () => {
+  const { host } = await setup()
+  let system = ''
+  host.services.slots.bind('compact-chat', {
+    provider: 'capture',
+    call: async ({ messages }) => { system = String(messages?.[0]?.content ?? ''); return '我后来把记忆系统做成了块。' },
+  })
+  await host.services.context.compact({ history: [
+    { role: 'user', text: 'a' }, { role: 'assistant', text: 'b' },
+    { role: 'user', text: 'c' }, { role: 'assistant', text: 'd' },
+  ] })
+  assert.match(system, /你是小千/)
+  assert.match(system, /你自己的口吻/)
+})
+
+test('超过阈值才自动压缩', async () => {
+  const { host } = await setup()
+  const short = await host.shared.get('compaction').maybe({ history: [{ role: 'user', text: '短' }] })
+  assert.equal(short.skipped, 'under-threshold')
+  const long = await host.shared.get('compaction').maybe({ history: Array.from({ length: 6 }, (_, i) => ({ role: 'user', text: 'x'.repeat(600) + i })) })
+  assert.equal(long.ok, true)
+  assert.ok(long.dropped > 0)
 })

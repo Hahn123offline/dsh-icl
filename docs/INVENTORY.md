@@ -34,7 +34,7 @@
 | rhythm | 旧的做梦闹钟（已被 time 取代，保留兼容） | 旧 |
 | time | 时钟 + 日程 + 唤醒 + 纵向拦截 + goal | 新，M1-M6 完成 |
 | eager-recall | 每轮预取召回 | 成熟 |
-| compaction | 压缩钩子（**未在 DSH 联调**） | 未验证 |
+| compaction | 人格化压缩：超阈值时自己写压缩块 | 已接 live，待真实会话验证 |
 | dsh-raw | 把 `~/.dsh/sessions` 当原文来源 | 成熟 |
 | model-manager | 槽位 → 模型绑定 | 成熟 |
 | editor | 最小文件读写（read/write/list） | 最小可用 |

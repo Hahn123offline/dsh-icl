@@ -9,6 +9,8 @@ export function apply(ctx) {
   const slot = ctx.manifest.slots?.[0]?.id ?? 'compact-chat'
   const keepRecent = Math.max(2, Number(ctx.config.keepRecent ?? 12))
   const maxChars = Math.max(200, Number(ctx.config.maxChars ?? 1200))
+  const triggerChars = Math.max(2000, Number(ctx.config.triggerChars ?? 12_000))
+  const persona = String(ctx.config.persona ?? '')
 
   memory.registerNamespace({ id: 'compaction', label: '折叠摘要', recallable: false, owner: 'compaction' })
 
@@ -22,7 +24,15 @@ export function apply(ctx) {
     try {
       const out = await ctx.slots.call(slot, {
         messages: [
-          { role: 'system', content: '把这段较早的对话压成一小段第一人称的回忆，保留事实、决定、未完成的事。不要评价。' },
+          {
+            role: 'system',
+            content: [
+              persona,
+              '',
+              '把上面这段较早的对话，用你自己的口吻写成一小段回忆。',
+              '保留事实、决定、没做完的事；不要评价，不要总结成报告。',
+            ].filter(Boolean).join('\n'),
+          },
           { role: 'user', content: text.slice(0, 12000) },
         ],
         maxTokens: 600,
@@ -54,6 +64,14 @@ export function apply(ctx) {
     },
   })
 
-  ctx.services.provide('compaction', { run: (input) => ctx.services.context.compact(input), latest })
+  /** 上下文超过阈值就自动压一次（调用方每轮把历史递进来）。 */
+  async function maybe({ history = [], force = false } = {}) {
+    const list = Array.isArray(history) ? history : []
+    const chars = list.reduce((n, m) => n + String(m?.text ?? '').length, 0)
+    if (!force && chars < triggerChars) return { ok: true, skipped: 'under-threshold', chars }
+    return ctx.services.context.compact({ history: list })
+  }
+
+  ctx.services.provide('compaction', { run: (input) => ctx.services.context.compact(input), maybe, latest, triggerChars })
   ctx.log({ msg: 'compaction.ready', keepRecent, maxChars })
 }

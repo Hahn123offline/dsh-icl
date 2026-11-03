@@ -60,6 +60,14 @@ export function createSessionAdapter({ sessionId, host, push, toolSink = null, n
         try {
           host.services.signals.emit({ from: { plugin: 'session' }, kind: 'event', text: 'turn-end', tags: ['turn-end'] })
         } catch { /* 没有信号服务也不影响投递 */ }
+        // 上下文超阈值就压一次（人格自己写自己的压缩块）
+        try {
+          const compaction = host.shared.get('compaction')
+          if (compaction?.maybe) {
+            const history = await host.services.context.history({ sessionId })
+            if (history.length) await compaction.maybe({ history })
+          }
+        } catch { /* 压缩失败不影响这一轮 */ }
       } finally { draining = false }
       return { delivered: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results }
     },
