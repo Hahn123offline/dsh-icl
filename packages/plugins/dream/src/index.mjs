@@ -64,6 +64,53 @@ export function normalizeTags(tags, { max = 5, maxLen = 10 } = {}) {
   return out
 }
 
+/** 把结构化 JSON 从一段文本里去掉，只留自然语言。 */
+export function stripStructured(input) {
+  let text = String(input ?? "")
+  // 整段就是 JSON：整条丢掉
+  const trimmed = text.trim()
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try { JSON.parse(trimmed); return "" } catch { /* 不是合法 JSON，继续处理 */ }
+  }
+  // 去掉围栏里的 JSON
+  text = text.replace(/```[a-zA-Z]*\s*([\s\S]*?)```/g, (whole, body) => {
+    const b = String(body).trim()
+    if (b.startsWith("{") || b.startsWith("[")) {
+      try { JSON.parse(b); return " " } catch { return whole }
+    }
+    return whole
+  })
+  // 去掉行内嵌的 JSON 片段（成对的 { } / [ ]，且像 JSON）
+  const out = []
+  let depth = 0
+  let started = -1
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === "\\") escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"' && depth > 0) { inString = true; continue }
+    if (c === "{" || c === "[") { if (depth === 0) started = i; depth += 1; continue }
+    if ((c === "}" || c === "]") && depth > 0) {
+      depth -= 1
+      if (depth === 0) {
+        const seg = text.slice(started, i + 1)
+        let looksJson = false
+        try { JSON.parse(seg); looksJson = true } catch { looksJson = seg.includes('":') }
+        if (looksJson) { out.push(text.slice(0, started)); text = text.slice(i + 1); i = -1; continue }
+        started = -1
+      }
+    }
+  }
+  if (out.length === 0) return text.replace(/\s+/g, " ").trim()
+  return (out.join("") + text).replace(/\s+/g, " ").trim()
+}
+
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const rhythm = ctx.services.get('rhythm')
@@ -120,95 +167,35 @@ export function apply(ctx) {
     if (!force && alreadyRan(day, 'wash')) return { job: 'wash', skipped: 'already-ran' }
     let rows = []
     try {
-      rows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
+      rows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 2000 }) ?? []
     } catch { rows = [] }
     if (!rows.length) return { job: 'wash', skipped: 'no-raw' }
 
-    // 总预算嫗而不是单行上限：珍惜长字幕与长评论
-    const budget = Math.max(2000, Number(ctx.config.washChars ?? 12000))
-    const perLine = Math.max(240, Number(ctx.config.washLineChars ?? 1200))
-    const lines = []
-    let used = 0
-    for (const [i, r] of rows.entries()) {
-      const text = String(r.text ?? '').replace(/[<>]/g, ' ').slice(0, perLine)
-      if (!text) continue
-      if (used + text.length > budget) break
-      lines.push(`[${i + 1}] ${text}`)
-      used += text.length
-    }
-    const chatLines = lines.join('\n')
-    let items = []
-    try {
-      const raw = await ctx.slots.call(slot, {
-        messages: [
-          {
-            role: 'system',
-            content: [
-              '你在把一天的对话过一遍。先挑那些你真的有印象的东西——让你停下来、觉得有意思、或者想跟别人讲的；而不是先挑完整的。',
-              '只挑真实发生过的：你做过的事、你看到/刷到/学到的东西、别人说的值得记的话、约定。',
-              '看视频、看评论、看字幕都是"看到的东西"，只要有具体内容就该记。不要挑寒暄与重复。',
-              '每条写两三句，把具体细节（说了什么、发生了什么、怎么回事）写进去，不要只给一句提纲。',
-              '如果这条主要讲的是某个人（UP 主、群友、评论者），就把 kind 写成 person，并在 who 里写 TA 的名字。',
-              '输出 JSON 数组：[{"kind":"event|person","text":"两三句","who":"人名或空","source_id":"1"}]',
-              '没有就输出 []。只输出 JSON。',
-            ].join('\n'),
-          },
-          { role: 'user', content: chatLines },
-        ],
-        maxTokens: 900,
-      })
-      items = parseBlocks(raw)
-    } catch (error) {
-      return { job: 'wash', ok: false, error: String(error?.message ?? error) }
-    }
-
-    let wrote = 0
-    const seen = new Set()
-    for (const item of items) {
-      const kind = item?.kind === 'person' ? 'person' : 'event'
-      const text = String(item?.text ?? '').trim()
-      if (!text || seen.has(kind + text)) continue
-      seen.add(kind + text)
-      const idx = Number(item?.source_id)
-      const at = Number.isFinite(idx) ? Number(rows[idx - 1]?.time ?? 0) || null : null
-      const origin = Number.isFinite(idx) ? (rows[idx - 1]?.conv ?? null) : null
-      memory.put({
-        namespace: kind,
-        kind: 'note',
-        text,
-        data: {
-          day,
-          washed: true,
-          ...(kind === 'person' && String(item?.who ?? '').trim() ? { subject: { kind: 'name', value: String(item.who).trim().slice(0, 40) } } : {}),
-          ...(origin ? { origin: { conv: origin } } : {}),
-          ...(at ? { at } : {}),
-        },
-        weight: 1.1,
-        now,
-      })
-      wrote += 1
-    }
-    // 当天原话完整留一份：后面每一轮都从它出发，避免 wash 的抽取成为唯一入口
     const startMs = dayStartOf(now)
     const endMs = dayEndOf(now)
     const timeOfRow = (r) => Number(r.time ?? r.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
-    const logLines = rows
-      .filter((r) => { const at = timeOfRow(r); return !at || (at >= startMs && at < endMs) })
-      .map((r, i) => `[${i + 1}] ${hhmm(timeOfRow(r) || now)} ${String(r.sender ?? '').slice(0, 20)}：${String(r.text ?? '').replace(/\s+/g, ' ').slice(0, 400)}`)
-    if (logLines.length) {
-      memory.put({
-        namespace: 'day',
-        kind: 'log',
-        key: `day:${day}`,
-        text: logLines.join('\n').slice(0, 30000),
-        data: { day, lines: logLines.length, times: rows.filter((r) => { const at = Number(r.time ?? r.createdAt ?? 0); return !at || (at >= dayStartOf(now) && at < dayEndOf(now)) }).map((r) => Number(r.time ?? r.createdAt ?? 0)) },
-        now,
-      })
+    const cleaned = []
+    for (const r of rows) {
+      const at = timeOfRow(r)
+      if (at && (at < startMs || at >= endMs)) continue
+      const text = stripStructured(r.text)
+      if (!text) continue
+      cleaned.push({ at, sender: String(r.sender ?? '').slice(0, 24), text })
     }
+    if (!cleaned.length) return { job: 'wash', skipped: 'nothing-clean' }
 
-    recordRun(day, 'wash', { notes: wrote, lines: logLines.length }, now)
-    return { job: 'wash', ok: true, notes: wrote, lines: logLines.length }
+    const lines = cleaned.map((x, i) => `[${i + 1}] ${hhmm(x.at || now)}${x.sender ? ` ${x.sender}` : ''}：${x.text}`)
+    memory.put({
+      namespace: 'day',
+      kind: 'log',
+      key: `day:${day}`,
+      text: lines.join('\n'),
+      data: { day, lines: lines.length, times: cleaned.map((x) => x.at) },
+      now,
+    })
+    recordRun(day, 'wash', { lines: lines.length }, now)
+    return { job: 'wash', ok: true, lines: lines.length }
   }
 
   async function jobEvents({ now, force = false }) {
@@ -217,7 +204,9 @@ export function apply(ctx) {
     if (!force && alreadyRan(day, 'events')) return { job: 'events', skipped: 'already-ran' }
     // 事件笔记也要跨天：太短没写成块的片段，明天要跟新材料一起重试。
     const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500 }))
-    if (!notes.length) return { job: 'events', skipped: 'no-notes' }
+    let dayLogGate = null
+    try { dayLogGate = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLogGate = null }
+    if (!notes.length && !dayLogGate) return { job: 'events', skipped: 'no-notes' }
 
     // 每行带稳定 id：摘要必须能指回原句。
     const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
@@ -825,10 +814,13 @@ export function apply(ctx) {
     // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
     let sourceLines = []
     try {
-      const today = memory.query({ namespace: 'event', kind: 'note', limit: 1 })
-      void today
-      const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
-      sourceLines = rawRows.map((m) => String(m.text ?? '')).filter(Boolean)
+      // 优先用当天洗好的干净原话；没有才退回原文来源
+      const dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${dayKey(now)}`, limit: 1 })[0]
+      if (dayLog?.text) sourceLines = dayLog.text.split('\n')
+      else {
+        const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
+        sourceLines = rawRows.map((m) => stripStructured(m.text)).filter(Boolean)
+      }
     } catch { /* 没有原文来源就退回笔记 */ }
     const notes = ['event', 'slang'].flatMap((ns) => consolidated(memory.query({ namespace: ns, kind: 'note', limit: 200 })))
     const lexicon = ctx.services.get('lexicon')
