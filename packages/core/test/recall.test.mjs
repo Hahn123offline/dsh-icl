@@ -115,3 +115,11 @@ test('forget 只删自己那一条', async () => {
   const rows = memory.query({ namespace: 'event', kind: 'note' })
   assert.deepEqual(rows.map((r) => r.text), ['要留的'])
 })
+
+
+test('overview=true 按时间列出最近的事', async () => {
+  const { tools } = await setup()
+  await tools.remember.execute({ text: '昨晚看了个纪录片', kind: 'event' })
+  const out = await tools.recall.execute({ overview: true, days: 2 })
+  assert.match(out.text, /\[今天\] 昨晚看了个纪录片/)
+})

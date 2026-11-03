@@ -137,7 +137,7 @@ export function apply(ctx) {
       summary: 'Bring back what you remember about events and things that happened - not for looking up people.',
       when: ['someone asks about the past', 'you need context that is no longer in the window'],
       avoid: ['looking up who a person is - use whois for identity, accounts and closeness'],
-      description: 'kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. Pass the returned cursor to continue without being shown the same blocks again; the budget is about 10k tokens.',
+      description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -149,9 +149,11 @@ export function apply(ctx) {
           about: { type: 'object', description: 'For kind=resolve: what this corrects, e.g. {"namespace":"person","key":"person:42"}' },
           conv: { type: 'string', description: 'Only memories that came from this conversation (origin.conv).' },
           tag: { type: 'string', description: 'Only blocks carrying this tag (e.g. \'看海\'). Tags narrow the search; they do not replace it.' },
+          days: { type: 'number', description: 'With overview: how many days back. Default 2.' },
+          overview: { type: 'boolean', description: 'Set true for a time-ordered summary of the last few days (what happened recently).' },
         },
       },
-      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null, conv = null } = {}) {
+      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null, conv = null, days = 2, overview = false } = {}) {
         const now = ctx.now()
 
         // 人物是显式参数：kind='person' 才按身份查档案，不做字数猜测。
@@ -168,11 +170,46 @@ export function apply(ctx) {
           }
         }
 
+        // overview=true 才是"最近发生了什么"：按时间窗列块与未整理笔记，不走向量排序
+        if (overview === true && !String(query ?? '').trim() && kind !== 'person') {
+          const span = Math.max(1, Math.min(30, Number(days) || 2))
+          const since = now - span * 86_400_000
+          const rows = []
+          for (const ns of Object.keys(CATEGORIES)) {
+            if (CATEGORIES[ns].recallable === false) continue
+            const blocks = memory.query({ namespace: ns, kind: 'block', limit: 200 })
+              .filter((b) => Number(b.createdAt) >= since && b.data?.superseded !== true)
+            for (const b of blocks) rows.push({ ns, b, kind: 'block' })
+            const notes = memory.query({ namespace: ns, kind: 'note', limit: 200 })
+              .filter((n) => Number(n.createdAt) >= since && n.data?.consolidated !== true)
+            for (const n of notes) rows.push({ ns, b: n, kind: 'note' })
+          }
+          rows.sort((a, b) => b.b.createdAt - a.b.createdAt)
+          // 一条都没有就退回普通检索，保持旧行为
+          if (rows.length) {
+            const picked = rows.slice(0, Math.max(1, Number(limit) || DEFAULT_LIMIT))
+            const today = new Date(now).toDateString()
+            const text = picked.map(({ ns, b, kind }) => {
+              if (kind === 'note') {
+                const same = new Date(b.createdAt).toDateString() === today
+                return `${same ? '[今天]' : `[未整理 · ${shortDate(b.createdAt)}]`} ${b.text}`
+              }
+              return `${label(ns, b.createdAt, now)} ${b.text}`
+            }).join('\n')
+            return { text, cursor: null, more: rows.length > picked.length }
+          }
+        }
+
         const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
         const seen = new Set()
         const candidates = []
         for (const ns of namespaces) {
-          const hits = await memory.search({ namespace: ns, query, limit: 50, now, tags: tag ? [tag] : null, conv })
+          // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
+          const deeper = Boolean(cursor)
+          const hits = await memory.search({
+            namespace: ns, query, limit: deeper ? 200 : 50, now,
+            tags: tag ? [tag] : null, conv, includeArchive: deeper,
+          })
           // 未消化的 note 不管哪天都要能被回忆；
           // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
           for (const hit of hits) {

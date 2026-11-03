@@ -538,16 +538,44 @@ export function apply(ctx) {
 
     const blocks = []
     for (const ns of ['event', 'person', 'slang']) {
-      for (const b of memory.query({ namespace: ns, kind: 'block', limit: 60 })) {
+      for (const b of memory.query({ namespace: ns, kind: 'block', limit: 500 })) {
         if (b.data?.superseded === true) continue
         blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
       }
     }
     if (blocks.length < 2 && !pendingResolves.length) return { job: 'cleanup', skipped: 'nothing-to-do' }
 
+    // 跨天近似重复只做"报告"，合不合由模型决定（不做算法合并）
+    const grams = (text) => {
+      const q = String(text ?? '').replace(/\s+/g, '')
+      const out = new Set()
+      for (let i = 0; i < q.length - 1; i++) out.add(q.slice(i, i + 2))
+      return out
+    }
+    const similar = (a, b) => {
+      const A = grams(a), B = grams(b)
+      if (!A.size || !B.size) return 0
+      let hit = 0
+      for (const g of A) if (B.has(g)) hit += 1
+      return hit / Math.min(A.size, B.size)
+    }
+    const pairs = []
+    for (let i = 0; i < blocks.length; i++) {
+      for (let j = i + 1; j < blocks.length; j++) {
+        const score = similar(blocks[i].text + blocks[i].body, blocks[j].text + blocks[j].body)
+        if (score >= 0.5) pairs.push({ a: blocks[i].key, b: blocks[j].key, score: Number(score.toFixed(2)), aText: blocks[i].text, bText: blocks[j].text })
+      }
+    }
+    pairs.sort((x, y) => y.score - x.score)
+    const nearPairs = pairs.slice(0, 10)
+
+    const shownBlocks = blocks.slice(-150)
     const payload = [
       '现有记忆块（key | 类型 | 摘要 | 正文）：',
-      ...blocks.map((b) => `- ${b.key} | ${b.ns}${b.people.length ? ` | people=${b.people.join(',')}` : ''} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
+      ...shownBlocks.map((b) => `- ${b.key} | ${b.ns}${b.people.length ? ` | people=${b.people.join(',')}` : ''} | ${b.text} | ${b.body.replace(/\n/g, ' ').slice(0, 200)}`),
+      nearPairs.length
+        ? '\n内容可能重复的块（只是候选，是否合并你自己判断）：\n' + nearPairs.map((p) => `- ${p.a}（${p.aText}）≈ ${p.b}（${p.bText}） 相似度 ${p.score}`).join('\n')
+        : '',
       pendingResolves.length
         ? '\n主会话的纠正（必须处理）：\n' + pendingResolves.map((n) => {
           const about = n.data?.about
@@ -573,6 +601,7 @@ export function apply(ctx) {
           '· 主会话的纠正优,：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
           '· 合并后的 text 一行、body 一小段；删掉的 key 不要再出现在别的操作里。',
           '· 不要为了“长度差不多”而合并：小块没有矛盾就原样留着。',
+          '· 允许跨天合并：两个块讲的是同一件事（哪怕隔了几天），合并成一块，保留双方细节。',
           '· 目标是去重与消除矛盾，不是把所有块整理成一个样子。',
           '没什么可整理就输出 {} 。只输出 JSON。',
         ].join('\n'),
