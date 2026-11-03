@@ -589,7 +589,11 @@ export function apply(ctx) {
     async execute() { const out = resume(); return { text: out.resumed ? `恢复了，释放了 ${out.released ?? 0} 条。` : `当前不是暂停状态：${out.phase}` } },
   })
 
-  const timer = setInterval(() => { void tick() }, tickMs)
+  const timer = setInterval(() => {
+    void tick().catch((error) => {
+      try { fs.writeFileSync(path.join(path.dirname(stateFile), 'tick-error.json'), String(error?.stack ?? error), 'utf8') } catch { /* ignore */ }
+    })
+  }, tickMs)
   if (typeof timer.unref === 'function') timer.unref()
   ctx.onDispose(() => clearInterval(timer))
   ctx.onDispose(() => { signals.setGate(null) })
