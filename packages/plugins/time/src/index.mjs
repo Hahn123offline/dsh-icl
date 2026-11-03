@@ -392,7 +392,13 @@ export function apply(ctx) {
       if (!raw) continue
       let request = null
       try { request = JSON.parse(raw) } catch { continue }
-      const result = runCommand(request)
+      let result
+      try {
+        result = runCommand(request)
+      } catch (error) {
+        try { fs.writeFileSync(path.join(path.dirname(stateFile), 'inbox-error.json'), String(error?.stack ?? error), 'utf8') } catch { /* ignore */ }
+        result = { ok: false, error: String(error?.message ?? error) }
+      }
       try {
         fs.mkdirSync(path.dirname(outboxFile), { recursive: true })
         fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: ctx.now(), ...result })}\n`, 'utf8')
