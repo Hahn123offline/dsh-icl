@@ -17,9 +17,11 @@ host.registerPlugin(worldManifest, world, {})
 host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(root, 'time.json'), tickMs: 3600_000 } })
 await host.enable('world-state')
 
-// dream 用一个会记录的替身
+// dream 用事件替身：真实 dream 插件订阅的就是 sleep-start
 let dreamCalls = 0
-host.shared.set('dream', { run: async () => { dreamCalls += 1; return { results: [] } } })
+host.services.signals.on({ kind: 'event', tags: ['sleep'] }, (signal) => {
+  if (signal.text === 'sleep-start') dreamCalls += 1
+})
 
 await host.enable('time')
 const api = host.shared.get('time')

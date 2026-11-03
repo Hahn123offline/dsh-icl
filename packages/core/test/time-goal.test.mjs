@@ -71,3 +71,24 @@ test('单会话锁：第二个会话直接被拒绝', () => {
   release()
   assert.doesNotThrow(() => host.claimSession('s2'))
 })
+
+
+test('goal+single 用轮次上限，用完发"目标结束"', async () => {
+  const { host, api } = await setup()
+  drainText(host)
+  api.addGoal({ theme: '一次任务', turnLimit: 1 })
+  api.resumeGoals()
+  assert.match(drainText(host), /你在目标内：一次任务（还剩 0 轮）/)
+  api.resumeGoals()
+  assert.match(drainText(host), /目标结束：一次任务/)
+  assert.equal(api.goals().length, 0)
+})
+
+test('取消进行中的睡觉会结束睡眠', async () => {
+  const { host, api } = await setup()
+  await api.sleep({ message: '睡', durationMin: 30 })
+  const span = api.status().spans[0]
+  const tool = host.services.tools.list().find((t) => t.name === 'time_cancel')
+  await tool.execute({ id: span.id })
+  assert.equal(api.phase(), 'awake')
+})

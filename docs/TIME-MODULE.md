@@ -163,3 +163,38 @@ time.arm({ at, message, once: true })    // 外部设计时器
 4. **白名单条件**：先看 `docs/MESSAGE-MODEL.md`，消息信封定下来再定条件。
 5. **cancel 语义**：仅本次跳过；一次性安排则等价于删除。
 6. **顺序**：先发"你困了"，再异步触发 dream。
+
+
+---
+
+## 13. 工具面（v3，2026-11-03 重设计）
+
+安排只有两个正交维度：
+
+```
+mode = wake | goal     这次唤醒是"叫她一声"还是"让她持续做"
+kind = single | span   单发（一次消息）还是长日程（有开始和结束）
+起点：at（HH:mm / ISO / now）或 in（10m / 2h）
+```
+
+| 组合 | 含义 |
+|---|---|
+| wake + single | 到点发一条消息（"10 分钟后提醒我"） |
+| wake + span | 开始时一条、结束时一条（睡觉 = 这个 + `sleep:true`） |
+| goal + single | 轮次任务，只有 `turnLimit`（等价 DSH goal） |
+| goal + span | 限时任务，到 `duration`/`until` 结束 |
+
+工具只留七个：
+
+| 工具 | 作用 |
+|---|---|
+| `time_status` | 现在、阶段、进行中的安排与目标、积压 |
+| `time_arrange` | 新建安排（上表四种组合都走它） |
+| `time_list` | 列出安排（含进行中） |
+| `time_edit` | 改安排（延后 = 改 at/in） |
+| `time_cancel` | 取消安排；进行中的长日程立刻结束 |
+| `time_pause` | 只暂停计时，消息积压 |
+| `time_resume` | 恢复计时并释放积压 |
+
+**不再有** `time_sleep`、`time_wake`、`time_add`、`time_delay`、`goal_*`。
+睡觉、目标、提醒都是"安排"的不同参数，不是一个新工具。

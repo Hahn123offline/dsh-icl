@@ -38,12 +38,10 @@
 | `status` | — | 阶段、日程、积压、目标 |
 | `pause` | — | 暂停：不安排唤醒，消息全部积压 |
 | `resume` | — | 恢复并释放暂停期间积压 |
-| `sleep` | `{message?, durationMin?}` | 立即进入睡眠（异步执行） |
-| `wake` | — | 立即醒来（异步执行） |
-| `arm` | `{at \| afterMin, message, durationMin?, role?, allow?}` | 设计时器/日程 |
-| `cancel` | `{id}` | 删除日程 |
+| `arrange` | `{mode, kind, at\|in, duration, message, sleep?, allow?}` | 新建安排（提醒/睡觉/目标都走它） |
+| `edit` | `{id, at?\|in?, message?, mode?}` | 改一条安排（延后 = 改时间） |
+| `cancel` | `{id}` | 取消安排 |
 | `skip` | `{id}` | 跳过一条积压（仅本次） |
-| `delay` | `{id, minutes}` | 推迟一条积压 |
 | `queue` | — | 列出积压 |
 | `goal_add` | `{theme, until\|afterMin, focus?, resumeOnStop?}` | 创建目标 |
 | `goal_remove` | `{id}` | 卸载目标（并释放 focus） |
@@ -53,9 +51,9 @@
 
 ```bash
 node tools/time.mjs status
-node tools/time.mjs arm '{"afterMin":10,"message":"该出门了"}'
-node tools/time.mjs sleep '{"message":"去睡吧","durationMin":0}'
-node tools/time.mjs goal_add '{"theme":"玩我的世界","afterMin":120}'
+node tools/time.mjs arrange '{"mode":"wake","kind":"single","in":"10m","message":"该出门了"}'
+node tools/time.mjs arrange '{"mode":"wake","kind":"span","at":"now","sleep":true,"duration":"30m"}'
+node tools/time.mjs arrange '{"mode":"goal","kind":"span","at":"now","theme":"玩我的世界","duration":"2h"}'
 node tools/time.mjs status --state C:/path/time.json --wait 5000
 node tools/time.mjs pause --no-wait
 ```

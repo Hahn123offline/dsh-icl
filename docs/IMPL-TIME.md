@@ -37,9 +37,9 @@
 ## M4 工具面
 
 - [x] `time_now` / `time_schedule`（查）
-- [x] `time_add` / `time_remove` / `time_skip` / `time_delay`
-- [x] `time_sleep` / `time_wake`
-- [x] `goal_add` / `goal_remove` / `goal_list`（M3）
+- [x] `time_arrange` / `time_list` / `time_edit` / `time_cancel`
+- [x] 睡觉 = `{mode:'wake', kind:'span', sleep:true}`（不再单独成工具）
+- [x] goal = `{mode:'goal', ...}`（不再单独成工具）（M3）
 
 ## M5 与既有模块对接
 
