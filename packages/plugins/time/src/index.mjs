@@ -383,6 +383,8 @@ export function apply(ctx) {
   function processInbox() {
     let text = ''
     try { text = fs.readFileSync(inboxFile, 'utf8') } catch { return { processed: 0 } }
+    // 文件被截断/重建时 offset 会比长度大，必须归零，否则永远读不到新命令
+    if (text.length < inboxOffset) inboxOffset = 0
     if (text.length <= inboxOffset) return { processed: 0 }
     const chunk = text.slice(inboxOffset)
     inboxOffset = text.length
@@ -421,6 +423,11 @@ export function apply(ctx) {
         case 'edit': return { ok: true, result: editSchedule(args.id, args) }
         case 'skip': return { ok: true, result: api.skip(args.id) }
         case 'queue': return { ok: true, result: api.queue() }
+        case 'reset': {
+          state = blank()
+          persist()
+          return { ok: true, result: { phase: state.phase } }
+        }
         case 'goal_add': return { ok: true, result: addGoal(args) }
         case 'goal_remove': return { ok: true, result: removeGoal(args.id) }
         case 'goal_list': return { ok: true, result: api.goals() }
