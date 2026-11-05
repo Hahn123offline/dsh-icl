@@ -136,18 +136,29 @@ export function writeRunMeta(runId, meta) {
  * 把 presets/lab.patch.yml 的占位符替换成本次 run 的绝对路径，写到 runDir 下。
  * 不能用静态文件直接 --patch：preset 的 config.plugins 不做相对路径锚定（见文件头注释）。
  */
+/** mc-lab 自己的正常地形验收服（fresh normal world，不进用户 survival，不碰 flat 54837）。 */
+export const LAB_MC_SERVER_PORT = Number(process.env.ICL_LAB_MC_SERVER_PORT ?? 54840)
+export const LAB_MC_SERVER_NAME = 'lab-normal'
+
 export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
+  // lab 的服务器清单（mc-link 会把它和插件自带 servers.json 合并）：正常地形验收服 + flat 调试服。
+  const serversFile = path.join(runDir, 'mc-servers.json')
+  fs.writeFileSync(serversFile, `${JSON.stringify([
+    { name: LAB_MC_SERVER_NAME, host: '127.0.0.1', port: LAB_MC_SERVER_PORT, note: 'lab 专用 normal 地形验收服（fresh world）' },
+    { name: 'flat', host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
+  ], null, 2)}\n`, 'utf8')
   const output = template
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
+    .replaceAll('__LAB_MC_SERVERS__', posix(serversFile))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')

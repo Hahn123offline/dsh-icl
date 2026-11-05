@@ -86,6 +86,8 @@
                   username: ICL-mclab-1
                   # 默认 stateDir 会落到仓库根 .state/mc-live；lab 必须自带。
                   stateDir: '__LAB_STATE__/mc-body'
+                  # lab 自己的服务器清单（含正常地形验收服 lab-normal:54840）。
+                  serversFile: '__LAB_MC_SERVERS__'
               plugins:
                 - memory
                 - world-state

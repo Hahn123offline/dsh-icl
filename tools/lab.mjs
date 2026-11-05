@@ -138,8 +138,13 @@ function llamaLockPath() {
 function acquireLocalModelLock(runId) {
   const file = llamaLockPath()
   const existing = readJson(file, null)
-  if (existing && existing.owner && existing.owner !== 'mc-lab' && isPidAlive(existing.pid)) {
-    fail(`本地模型锁被占用（owner=${existing.owner} pid=${existing.pid} ${existing.purpose ?? ''}）；等它释放或找 lead 协调`)
+  // 绝不覆盖外来锁：owner 不是 mc-lab 就无条件拒绝（即使对方没写 pid，例如 cache 的锁 pid=0）。
+  // 2026-11-05 18:37 的教训：这里曾用 isPidAlive(pid) 判断，pid=0 被当成"没活主"，把 cache 的锁覆盖了。
+  if (existing && existing.owner && existing.owner !== 'mc-lab') {
+    fail(`本地模型锁被占用（owner=${existing.owner}${existing.purpose ? `，${existing.purpose}` : ''}${existing.eta ? `，ETA ${existing.eta}` : ''}）；等它释放或找 lead 协调，不要抢`)
+  }
+  if (existing && existing.owner === 'mc-lab' && existing.runId && existing.runId !== runId && isPidAlive(existing.pid)) {
+    fail(`本地模型锁被 mc-lab 自己的 run ${existing.runId} 占用（pid=${existing.pid}）；先 down 那个 run`)
   }
   writeJson(file, { owner: 'mc-lab', runId, purpose: 'lab --model local', pid: process.pid, at: nowIso() })
 }
@@ -486,9 +491,14 @@ function appendJsonl(file, row) {
 async function scene() {
   const run = requireRun()
   const file = String(arg('--file', positionals()[0] ?? ''))
-  if (!file) fail('用法：node tools/lab.mjs scene tools/scenarios/mc-A.json [--no-interview]')
+  if (!file) fail('用法：node tools/lab.mjs scene tools/scenarios/mc-A.json [--server survival] [--username ICL-mclab-1] [--block oak_log] [--no-interview]')
   const { runScene } = await import('./lab-scene.mjs')
-  const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview') })
+  const vars = {}
+  for (const key of ['server', 'username', 'block']) {
+    const value = arg(`--${key}`, null)
+    if (value != null) vars[key] = String(value)
+  }
+  const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview'), vars })
   console.log(JSON.stringify({ ok: result.ok, verdict: result.verdictFile, checks: result.checks.length, failed: result.checks.filter((row) => !row.ok).length }, null, 2))
   if (!result.ok) process.exitCode = 1
 }

@@ -227,11 +227,15 @@ function evaluateAssertion(predicate, window, state) {
  * 跑一个场景。
  * @returns {Promise<{ok:boolean, verdictFile:string, checks:object[]}>}
  */
-export async function runScene({ run, sceneFile, interview = true }) {
+export async function runScene({ run, sceneFile, interview = true, vars: inputVars = {} }) {
   const meta = { ...run.meta, runDir: run.runDir }
   if (!meta.sessionId) throw new Error('run 没有 sessionId；先 `lab up`')
   const scene = readJson(sceneFile, null)
   if (!scene) throw new Error(`读不到场景文件：${sceneFile}`)
+  // 场景变量：同一份 A/C/E 既能跑 flat 超平坦，也能跑 survival/normal 地形。
+  // 优先级：defaults < 命令行 --server/--username/--block。
+  const vars = { server: 'flat', username: 'ICL-mclab-1', block: 'dirt', ...(scene.defaults ?? {}), ...inputVars }
+  const subst = (text) => String(text ?? '').replace(/\{\{(\w+)\}\}/g, (match, key) => (vars[key] == null ? match : String(vars[key])))
   const eventsFile = path.join(run.runDir, 'events.jsonl')
   const api = apiFor(meta.port)
   const startedAt = nowIso()
@@ -265,7 +269,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
     console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
   }
 
-  const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, text, timeoutSec)
+  const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, subst(text), timeoutSec)
 
   for (const step of scene.steps ?? []) {
     const id = step.id ?? step.op
@@ -274,7 +278,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
       if (step.op === 'prompt') {
         boundarySeq = lastSeqNow()
         const window = await say(step.text, Number(step.timeoutSec ?? 300))
-        steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: step.text, turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
+        steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: subst(step.text), turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
         console.log(`[scene] ${id} → turn ${window?.turn}，工具 [${(window?.tools ?? []).join(',')}]`)
       } else if (step.op === 'wait') {
         await sleep(Number(step.seconds ?? 1) * 1000)
@@ -341,7 +345,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
   const cleanup = { ran: false, reply: '', leftoverKilled: [] }
   if (scene.cleanup !== false) {
     const cleanupText = typeof scene.cleanup === 'string'
-      ? scene.cleanup
+      ? subst(scene.cleanup)
       : '这局先到这里：如果身体还连着，用 mcb_leave 退出 MC，然后一句话说明你现在在哪、身体是不是已经退出。'
     try {
       const window = await say(cleanupText, 180)
@@ -386,6 +390,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
     ok,
     checks,
     steps,
+    vars,
     preCleanup,
     body: bodyState,
     cleanup,
@@ -421,6 +426,7 @@ function renderVerdict(verdict, meta) {
   push()
   push(`- run：\`${verdict.runId}\` · preset：\`${verdict.preset}\` · 模型：${verdict.model?.provider ?? '?'} / ${verdict.model?.model ?? '?'}`)
   push(`- session：\`${verdict.sessionId}\` · 端口：${meta.port}`)
+  if (verdict.vars) push(`- 场景变量：server=${verdict.vars.server} · username=${verdict.vars.username} · block=${verdict.vars.block}`)
   push(`- 时间：${verdict.startedAt} → ${verdict.endedAt}（${(verdict.durationMs / 1000).toFixed(1)}s） · seq ${verdict.startSeq} → ${verdict.endSeq}`)
   if (verdict.preCleanup?.killedPids?.length) push(`- 前置清理：杀掉上一场残留 body pid ${verdict.preCleanup.killedPids.join(',')}（保证本场从"未连接"开始）`)
   push(`- 判据：docs/MC-ACCEPTANCE.md（机器断言=链路证据；三问=当事人自述，不算链路证据）`)
