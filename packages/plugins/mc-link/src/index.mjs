@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import dgram from 'node:dgram'
 import { closest as closestIn } from './closest.mjs'
+import { EXIT_REASON_TEXT, exitReasonText, sameReasonAdvice } from './exit.mjs'
 import { createBodySupervisor, describeExit } from './lifecycle.mjs'
 import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT } from './events.mjs'
 
@@ -54,26 +55,6 @@ function readServersFile(file) {
   } catch { return [] }
 }
 
-/** mc-body 的退出归因（body-exit.json / stderr exit reason=）→ 人话。 */
-const EXIT_REASON_TEXT = Object.freeze({
-  sigterm: '收到 SIGTERM（外部要求停止，不是崩溃）',
-  sigint: '收到 SIGINT（Ctrl-C）',
-  'api-shutdown': '通过 /v1/shutdown 主动停止',
-  'idle-timeout': '暂停太久被自动下线',
-  'reconnect-exhausted': '重连次数耗尽，服务器可能没开/被踢',
-  'uncaught-exception': '未捕获异常崩溃（body 自己的 bug）',
-  'unhandled-rejection': '未处理的 Promise 拒绝（body 自己的 bug）',
-  'startup-error': '启动失败（连不上/参数错）',
-})
-
-function exitReasonText(event) {
-  const reason = event?.exitInfo?.reason
-  if (reason) return EXIT_REASON_TEXT[String(reason)] ?? `退出原因 ${reason}`
-  if (event?.signal) return describeExit(event.code, event.signal)
-  if (event?.code === 0) return '正常退出（code 0，没有归因文件）'
-  return '被强制结束/崩溃（body 没留下退出归因）'
-}
-
 export function apply(ctx) {
   const raw = ctx.config ?? {}
   const base = String(raw.baseUrl ?? raw.mcBaseUrl ?? DEFAULT_BASE).replace(/\/+$/, '')
@@ -101,6 +82,8 @@ export function apply(ctx) {
   let lastExitAt = 0
   let lastLostReportAt = 0
   let exitTimes = []
+  /** 本会话的退出原因账本：同因第 2 次起要在通知里说清楚，别让她重复踩同一个坑。 */
+  let exitReasons = []
   let lastLan = []
   let joinedServer = null
 
@@ -151,10 +134,10 @@ export function apply(ctx) {
     }
     let result = null
     try { result = ctx.signals.offer(payload) } catch (error) {
-      record({ kind: 'signal-error', text: payload.text, error: String(error?.message ?? error) })
+      record({ kind: 'signal-error', at: Date.now(), text: payload.text, error: String(error?.message ?? error) })
       return { accepted: false, error: String(error?.message ?? error) }
     }
-    record({ kind: 'signal', type: payload.tags[1] ?? 'event', priority: payload.meta.priority, text: payload.text, accepted: result?.accepted !== false, reason: result?.reason ?? null })
+    record({ kind: 'signal', at: Date.now(), type: payload.tags[1] ?? 'event', priority: payload.meta.priority, text: payload.text, accepted: result?.accepted !== false, reason: result?.reason ?? null })
     return result
   }
 
@@ -181,20 +164,37 @@ export function apply(ctx) {
         if (event.expected) return
         const exitCount = exitTimes.length
         const reason = exitReasonText(event)
-        const deadTask = before?.task
-          ? `死时任务 ${before.task.kind} ${before.task.state}${before.task.progress ? `（${JSON.stringify(before.task.progress).slice(0, 80)}）` : ''}`
-          : '死时没有任务在跑'
+        const status = event.exitInfo?.status ?? null
+        const reasonKey = event.exitInfo?.reason
+          ? String(event.exitInfo.reason)
+          : event.signal ? `signal:${event.signal}` : `code:${event.code ?? '?'}`
+        // 同因 = 同一个 reason + 同一个任务上下文（mc-body 建议 reason + taskId/position）。
+        const same = `${reasonKey}|${status?.taskId ?? ''}|${status?.pausedReason ?? ''}`
+        const sameCount = exitReasons.filter((row) => row.same === same).length + 1
+        exitReasons.push({ same, reason: reasonKey, at: lastExitAt, pid: event.pid ?? null })
+        if (exitReasons.length > 20) exitReasons.shift()
+        record({ kind: 'crash-detect', at: lastExitAt, exitAt: event.at ?? null, pid: event.pid ?? null, reason: reasonKey, sameCount, latencyMs: event.at ? lastExitAt - event.at : null })
+        const task = status?.taskId
+          ? `死时任务 ${status.taskId} ${status.taskState ?? status.task?.state ?? ''}`.trim()
+          : before?.task
+            ? `死时任务 ${before.task.kind} ${before.task.state}${before.task.progress ? `（${JSON.stringify(before.task.progress).slice(0, 60)}）` : ''}`
+            : '死时没有任务在跑'
         const deadPos = before?.adapter?.position
           ? `，位置 ${Math.round(before.adapter.position.x)},${Math.round(before.adapter.position.y)},${Math.round(before.adapter.position.z)}`
           : ''
-        const info = event.exitInfo?.status?.lastError ? `；最后错误：${String(event.exitInfo.status.lastError).slice(0, 100)}` : ''
-        const tail = Array.isArray(event.stderrTail)
-          ? event.stderrTail.filter((line) => line && !/^\s*\[out\]\s*$/.test(line) && !/spawn_safe|spawn|connected as|path_stuck|path_recovered|heartbeat|http:\/\//i.test(line)).slice(-1)[0]
-          : ''
+        const info = status?.lastError ? `；最后错误：${String(status.lastError).slice(0, 100)}` : ''
+        // 崩溃栈只取首行，完整栈在 body-exit.json / 日志里；最后 1-2 条 recentEvents 帮她判断"死前在干嘛"。
+        const stack = event.exitInfo?.detail ? String(event.exitInfo.detail).split('\n')[0].slice(0, 160) : ''
+        const recent = (event.exitInfo?.recentEvents ?? []).slice(-2)
+          .map((row) => `#${row.seq ?? '?'} ${row.type ?? '?'}`).join(' / ')
+        const tail = (event.exitInfo?.stderrTail?.length ? event.exitInfo.stderrTail : event.stderrTail ?? [])
+          .filter((line) => line && !/^\s*\[out\]\s*$/.test(line) && !/spawn_safe|spawn|connected as|path_stuck|path_recovered|heartbeat|http:\/\//i.test(line))
+          .slice(-1)[0]
+        const sameText = sameCount >= 2 ? `；本会话第 ${sameCount} 次同因退出（${reasonKey}）${sameReasonAdvice(reasonKey)}` : ''
         sendSignal({
           kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
           id: `mc:exit:${event.pid ?? '?'}:${event.at}`,
-          text: `[MC] 身体进程退出了：${reason}（${describeExit(event.code, event.signal)}；本会话第 ${exitCount} 次退出${exitCount > 1 ? `，近 10 分钟 ${exitCount} 次` : ''}）。${deadTask}${deadPos}${info}${tail ? `；最后日志：${tail}` : ''}。旧任务不会自动续跑；先 mcb_status 看背包/位置，再决定 mcb_join 重连还是 mcb_leave 收尾。`,
+          text: `[MC] 身体进程退出了：${reason}（${describeExit(event.code, event.signal)}；本会话第 ${exitCount} 次退出${exitCount > 1 ? `，近 10 分钟 ${exitCount} 次` : ''}）。${task}${deadPos}${info}${stack ? `；栈：${stack}` : ''}${recent ? `；死前事件：${recent}` : ''}${tail ? `；最后日志：${tail}` : ''}${sameText}。旧任务不会自动续跑；先 mcb_status 看背包/位置，再决定 mcb_join 重连还是 mcb_leave 收尾。`,
         })
       }
     },
