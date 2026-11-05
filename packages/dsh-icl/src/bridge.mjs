@@ -357,8 +357,24 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   function onEvent(session, event) {
     if (!state.session || String(session?.id) !== String(state.session.id)) return
     appendRaw(session, event)
-    if (event?.type !== 'turn/end') return
+    const type = event?.type
+    if (type !== 'turn/end' && type !== 'turn/start') return
     const seq = Number(event.seq)
+    if (type === 'turn/start') {
+      // 一轮开始：给 time 心跳一个精确的"最后一次模型活动开始"时间。
+      // 只是插件总线信号（to:'plugin'），不进 prompt/历史，不影响缓存。
+      try {
+        host.services.signals.emit({
+          id: `turn-start:${session.id}:${Number.isFinite(seq) ? seq : randomUUID()}`,
+          from: { plugin: 'dsh' },
+          kind: 'event',
+          text: 'turn-start',
+          tags: ['turn-start'],
+          meta: { sessionId: String(session.id), seq: Number.isFinite(seq) ? seq : null },
+        })
+      } catch (error) { report('turn-start.emit', error) }
+      return
+    }
     state.stats.turnEnds += 1
     // 一轮结束：上一轮的用户消息 id 不再需要，避免长会话里集合无限增长
     state.injected.clear()
