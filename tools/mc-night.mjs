@@ -888,6 +888,17 @@ function renderReport() {  const metrics = readJsonl(metricsFile)
   push(`- 服务器：${cfg.serverName} 127.0.0.1:${cfg.serverPort}（重启 ${state.serverStarts} 次）· lab 重启 ${state.labStarts} 次 · body 端口 ${cfg.mcPort}`)
   push(`- checkpoint：${state.checkpoints} 个 · 提示 ${state.prompts} 次 · 策略调整 ${state.strategyCount} 次`)
   push(`- 模式时间：任务 ${fmtMode(state.modeSeconds.task)} · 生存 ${fmtMode(state.modeSeconds.survival)} · 休息 ${fmtMode(state.modeSeconds.rest)} · 睡眠 ${fmtMode(state.modeSeconds.sleep)}（任务推进 vs 生存时间分开统计）`)
+  // 睡眠期外部直投（validity 污染）：按 events 的 source.kind==='user' 全量清点，不是只记最后一条
+  try {
+    const sleepInjections = readJson(path.join(runDir, 'sleep-direct-injections.json'), null)
+    const skippedCount = readJsonl(path.join(runDir, 'skipped-injections.jsonl')).length
+    if (sleepInjections) {
+      push(`- 睡眠期外部直投：**${sleepInjections.count} 次**（${sleepInjections.sleepStart} → 最后 turn/end ${sleepInjections.lastTurnEndAt}，修复前；来源 ${JSON.stringify(sleepInjections.bySource ?? {})}）；之后静默；guard 修复后 skipped=${skippedCount}`)
+      push(`  - 证据：\`${path.join(runDir, 'sleep-direct-injections.json')}\`（seq 全量在文件内；另有 strategy.jsonl type=sleep-direct-injection-corrected）`)
+    } else {
+      push(`- 睡眠期外部直投：未清点（文件缺失）；guard 后 skipped=${skippedCount}`)
+    }
+  } catch (error) { push(`- 睡眠期外部直投：读取失败（${String(error?.message ?? error)}）`) }
   push(`- 死亡：${state.lastDeaths} 次（**当前 lab 代**；body.jsonl 跨代保留，报告只统计最后一个 ledger_loaded 之后，避免把上一代 replay 当成本代）· 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
   push()
   push('## 最后状态')
