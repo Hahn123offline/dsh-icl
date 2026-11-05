@@ -120,3 +120,29 @@ node tools/lab.mjs down
 ③**facts 仍在 runtime-context**：快照 3 条（415/450/415），`systemHasDynamicFacts` 应为 false；
 ④**hit%**：云端无引擎日志，只能定性（静态段更小、且零重发，方向非回归）。若需要 hit%/prefill/TTFT 硬数字，
 需要一次**本地** run（GPU 根锁，非我 scope）——按 night-1 同法按窗口切片即可。
+
+## 10. cache 复核结果（cache，2026-11-06，只读，不占 GPU）
+
+复核对象：misc 的云端 A/B run `C:/DSH/icl-wt/misc/.state/lab/firstscreen-{base,after}`（同 5 轮场景）。
+复核工具（只读 `events.jsonl` / `context/system-*.txt`）：
+
+```powershell
+node tools/cache-layout-audit.mjs `
+  --run C:/DSH/icl-wt/misc/.state/lab/firstscreen-base `
+  --run C:/DSH/icl-wt/misc/.state/lab/firstscreen-after
+```
+
+| 场景（CACHE-MODEL §7 附录 B） | 改前 | 改后 | 判定 |
+|---|---|---|---|
+| ① 相邻 turn firstDiff | system 1 次 append、0 次 replace，system 文本恒等 | 同左（1/0、恒等） | ✅ **firstDiff=-1**（5 轮内 system 一个字节都没变） |
+| ② 体积 | system **5011 字符 / 8485 字节**；tools 34 / `7047e6c4f3e8` / 18910 字符 | system **2294 字符 / 5762 字节**（-54.2% / -32.1%）；tools **34 / `7047e6c4f3e8` / 18910** | ✅ 静态段变短、工具面完全不变 |
+| ③ facts 布局 | `systemHasDynamicFacts=false`；快照 3 条（415/449/415），sections=[sandbox:policy, approval:policy, **icl:facts**] | `false`；快照 3 条（415/450/415），sections 完全一致 | ✅ `icl:facts` 仍在 runtime-context（order 850 未动，`bridge.mjs:209` 核对）；≤1 条/轮（3/5=0.6）；`icl:core` persona+sim 保留 |
+| ④ 命中（hit%/prefill/TTFT） | — | 云端 run 无引擎日志，**不可直接测** | ⚠️ 方向非回归（见下）；硬数字需本地 run + GPU 根锁 |
+
+**实现核对（只读代码）**：`PURIFY_CATALOG` 只含 4 个**非 ICL** 段（`harness:identity` / `ui:deliverable-file-references` / `harness:source` / `app:web-surface`），
+未 shadow `icl:core` / `icl:facts`，未用 `complete:true`；`purifySections` 只在 `presets/lab.patch.yml` 的 icl-lab 出现，`config.mjs` 默认 `[]`（产品 preset 未开）。
+
+**命中为什么判"方向非回归"（定性）**：本次改动只缩短**静态前缀**，run 内 system 0 次重发、facts 快照条数/位置/sections 完全一致、toolsHash 不变；
+也就是说每步请求的"append-only 增量"与改前同构，前缀稳定性没有变化，唯一变化是冷启动/每个请求的前缀更短（只会降低 prefill）。
+**预期收益**：冷启动静态前缀少 2723 字节（-32.1% bytes），冷启动 prefill 同比减少（具体 token 数需本地实测）。
+**待办**：要 hit%/prefill/TTFT 硬数字时，lead 排 GPU 根锁、用本地 `--model local` 跑同 5 轮场景，然后按 night-1 方法切片引擎日志（`tools/cache-longrun.mjs`）。
