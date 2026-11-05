@@ -92,3 +92,14 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
   - 没有可用工具/等级不够 → **立即失败**，`task.error`/result 带 `needsTool`、`suggestCraft`、以及可执行步骤（如“先 craft stone_pickaxe（3 cobblestone+2 stick）”），**不会原地重试**；
   - `mine`/`dig` 参数传 `autoTool:false` 可关闭自动换工具（模型自己用 equip 管）。
 - 自动反应（战斗/低血/危险）仍由 body 自己切武器/食物；普通挖掘/采集默认尊重模型的装备选择。
+
+### 设计转向与真服证据（2026-11-06 夜间用户要求）
+
+转向：**装备/工具归模型管**（能看快捷栏、自己 equip），脚本只在战斗/危险/紧急等自动反应里兜底；**普通挖掘不再靠脚本替模型决定目标**。
+
+真服证据（night-1，body pid 29116，部署后 session 保留；events seq）：
+- `seq 390/391 mcb_inventory` → `手持（快捷栏 8）：stone_pickaxe×1（pickaxe·石） 耐久 79/131 ｜ 快捷栏：… ★8 stone_pickaxe×1(pickaxe) …`（新格式生效；她当时已有 cobblestone×64/3 把石镐）。
+- `seq 370/372 mine stone count=10`（手持已是 pickaxe）→ `{"mined":10,"net":10,"requested":10,"item":"cobblestone","reason":"net-target"}`（body 未多此一举换手，符合“模型已有对工具就不打扰”）。
+- 回归证据（空手/dirt 挖 stone 必须立即失败，不走路不重试）：`packages/mc-body/src/tools.mjs` 规则 + `test/tools.test.mjs` 单测 + 真服 smoke `C:/DSH/icl/.state/lab/mc-body-soak/tool-smoke2/`；报错含 `needsTool/suggestCraft` 与 3 步链（详见 §装备与工具）。
+- `equip` 真服回执：`{selectedSlot, held, toolFor}`（54839 smoke）；night-1 里她尚未调用 equip（手持已对）——待她下次换手补 seq。
+- 已知遗留（非本功能）：同一长 `mcb_do`（mine）连发会触发 mc-link 120s 超时/`tool call aborted`（seq 376/378），body 后续会加 doPlan 单飞锁。

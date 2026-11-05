@@ -220,3 +220,10 @@ ICL 集成测试：
 - **动作前置判定**：`mine`/`dig` 开始前检查方块所需工具与手持；手持不合适但背包有更合适 → body **自动换上**并在 `progress`/结果标 `autoTool:true`（事件 `auto_tool`）；**没有可用工具/等级不够 → 立即 `failed`**，`task.result` 带 `needsTool`/`suggestCraft` 与可执行步骤，禁止原地重试。`autoTool:false` 可让模型完全自己决定。
 - **脚本兜底仅限自动反应**：战斗/低血/危险/掉落时 body 自动切武器/食物（emergency）；普通挖掘/采集不替模型做目标决策。
 - `mcb_do` 单步长动作（mine/goto/explore）建议改用 `{"op":"task"}` 提交（body 有台账/事件/取消，且不阻塞请求）。
+
+### 设计转向：装备归模型，脚本只兜底自动反应（2026-11-06 用户要求，v1.1）
+
+- **可见/可控**：`mcb_inventory` 必须给手持、9 格快捷栏（★=当前选中）、`toolFor`（pickaxe/axe/shovel/shears）、等级与耐久；`equip {item}` / `equip {slot:1-9}` 由模型自由使用。
+- **动作前置判定**：mine/dig 前检查方块所需工具；手持不合适但背包有更合适 → 自动换上（`autoTool:true` 事件/结果标注）；**没有/等级不足 → 立即 failed，result 带 needsTool/suggestCraft/held/block/requiredTier 与可执行步骤，禁止原地重试**（真服回归：空手/dirt 挖 stone → 立即失败 + “先 craft wooden_pickaxe…”）。
+- **兜底边界**：只有战斗/低血/危险/掉落等自动反应由 body 切武器/食物；普通采集不替模型做目标决策。`autoTool:false` 可让模型完全自管。
+- 真服证据：night-1 deploy 后 seq 390/391（inventory 新格式）、370/372（mine 用已有镐成功、net 10）；空手拦截图见 `.state/lab/mc-body-soak/tool-smoke2/`。
