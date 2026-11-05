@@ -122,6 +122,7 @@ const state = {
   loopBreakersSinceMode: 0,
   degradeSignals: 0,
   survivalMode: false,
+  survivalSince: null,
   restMode: false,
   lastMilestoneLogAt: null,
   lastProgressSeq: 0,
@@ -485,6 +486,16 @@ const SINGLE_STEPS = [
   { id: 'look', text: 'mcb_look，看看周围有没有玩家/危险方块。' },
 ]
 
+/** 生存模式单步：先活下来（躲怪/封坑/等天亮），不逼任务。 */
+const SURVIVAL_STEPS = [
+  { id: 'status', text: 'mcb_status，看位置、血量、附近玩家。' },
+  { id: 'look', text: 'mcb_look，看最近的怪在多远、哪个方向。' },
+  { id: 'flee', text: '如果附近有怪：朝怪的反方向 goto 10 格，离开开阔地（别跑远）。' },
+  { id: 'dig', text: 'mcb_do {"steps":[{"op":"dig","params":{"pos":"脚下"}}]} 往下挖 3 格做个坑，然后走进去。' },
+  { id: 'seal', text: 'mcb_do {"steps":[{"op":"place","params":{"name":"dirt"}}]} 把坑口封上，躲在里面。' },
+  { id: 'wait', text: 'mcb_do {"steps":[{"op":"wait","params":{"seconds":10}}]} 先等一会儿，别出去。' },
+]
+
 function sleepPhaseNow() {
   try {
     const file = path.join(runDir, 'state', cfg.preset, 'time.json')
@@ -518,6 +529,19 @@ async function milestoneSnapshot() {
 
 function readBodyEvents() {
   return readJsonl(path.join(runDir, 'state', 'mc-body', 'body.jsonl'), { limit: 5000 })
+}
+
+/**
+ * 当前 lab 代（generation）的 body 事件：从最后一个 ledger_loaded 之后算起。
+ * body.jsonl 跨 lab 重启保留，直接全量统计会把上一代的死亡/事件当成本代（replay）。
+ */
+function currentGenerationBodyEvents() {
+  const rows = readBodyEvents()
+  let start = 0
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i].type === 'ledger_loaded') { start = i; break }
+  }
+  return rows.slice(start)
 }
 
 function gameSummary(events) {
@@ -554,7 +578,7 @@ async function checkpoint(kind = 'tick') {
   const body = await bodyStatus()
   const events = readEvents()
   const stats = turnStats(events)
-  const game = gameSummary(readBodyEvents())
+  const game = gameSummary(currentGenerationBodyEvents())
   const row = {
     at: nowIso(),
     kind,
@@ -700,7 +724,7 @@ function renderReport() {  const metrics = readJsonl(metricsFile)
   push(`- 服务器：${cfg.serverName} 127.0.0.1:${cfg.serverPort}（重启 ${state.serverStarts} 次）· lab 重启 ${state.labStarts} 次 · body 端口 ${cfg.mcPort}`)
   push(`- checkpoint：${state.checkpoints} 个 · 提示 ${state.prompts} 次 · 策略调整 ${state.strategyCount} 次`)
   push(`- 模式时间：任务 ${fmtMode(state.modeSeconds.task)} · 生存 ${fmtMode(state.modeSeconds.survival)} · 休息 ${fmtMode(state.modeSeconds.rest)} · 睡眠 ${fmtMode(state.modeSeconds.sleep)}（任务推进 vs 生存时间分开统计）`)
-  push(`- 死亡：${state.lastDeaths} 次 · 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
+  push(`- 死亡：${state.lastDeaths} 次（**当前 lab 代**；body.jsonl 跨代保留，报告只统计最后一个 ledger_loaded 之后，避免把上一代 replay 当成本代）· 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
   push()
   push('## 最后状态')
   push()
@@ -729,7 +753,7 @@ function renderReport() {  const metrics = readJsonl(metricsFile)
   push('## 工具错误 / 卡住统计')
   push()
   push(`- 工具错误：${last.toolErrors ?? 0} / 工具调用 ${last.toolCalls ?? 0}`)
-  const failedTasks = readBodyEvents().filter((row) => row.type === 'task_failed').slice(-12)
+  const failedTasks = currentGenerationBodyEvents().filter((row) => row.type === 'task_failed').slice(-12)
   for (const row of failedTasks) push(`- task_failed：\`${String(JSON.stringify(row.data?.task?.params ?? {})).slice(0, 100)}\` ${String(row.data?.task?.reason ?? row.data?.task?.error ?? '').slice(0, 80)}`)
   push()
   push('## 策略调整')
@@ -904,6 +928,8 @@ async function main() {
     const events = readEvents()
     const stats = turnStats(events)
     state.lastSeenEventAt = stats.lastEventAt ? new Date(stats.lastEventAt).toISOString() : null
+    // body 状态提前取（模式判断/死亡/生存策略都要用）
+    const bodyNow = await bodyStatus()
     const sleepInfo = sleepPhaseNow()
     const sleeping = sleepInfo.phase === 'sleeping'
     // 模式切换（task / survival / rest / sleep）：睡眠期只做健康监控，不 cancel、不催、不打搅
@@ -919,10 +945,14 @@ async function main() {
     }
     if (sleeping) {
       state.survivalMode = false
-    } else if (!state.survivalMode && state.degradeSignals >= 3 && !progressed) {
+    } else if (!state.survivalMode && (state.degradeSignals >= 3 || state.lastDeaths >= 1 || (bodyNow.connected && Number(bodyNow.health ?? 20) <= 14))) {
       state.survivalMode = true
+      state.survivalSince = nowIso()
       state.loopBreakersSinceMode = 0
-      recordStrategy('survival-mode', `30 分钟内 ${state.degradeSignals} 次熔断/重启且无推进：切生存模式（只许单步 op，目标=保持存活+到点睡觉/做梦）`)
+      recordStrategy('survival-mode', `切生存模式：deaths=${state.lastDeaths} health=${bodyNow.health ?? '?'} degrade=${state.degradeSignals} → 只做躲怪/封坑/等天亮单步，不逼任务`)
+    } else if (state.survivalMode && state.lastDeaths === 0 && Number(bodyNow.health ?? 20) > 16 && progressed && state.survivalSince && nowMs - Date.parse(state.survivalSince) > 60_000) {
+      state.survivalMode = false
+      recordStrategy('mode-recover', '死亡归零、血量恢复且检测到有效推进，退出生存模式恢复任务')
     } else if (state.survivalMode && state.loopBreakersSinceMode >= 3) {
       state.restMode = true
       recordStrategy('rest-mode', '生存模式下单步仍连续失败 3 次：切休息/整理/聊天模式，不再逼任务')
@@ -958,7 +988,6 @@ async function main() {
     }
 
     // paused 单步特判：body 暂停时只许先 resume；连续 2 次无效由 supervisor 代发 resume
-    const bodyNow = await bodyStatus()
     if (!sleeping && bodyNow.paused) {
       const lastPauseAt = state.lastPausedAt ? Date.parse(state.lastPausedAt) : 0
       if (nowMs - lastPauseAt > 90_000) {
@@ -985,7 +1014,7 @@ async function main() {
       state.loopBreakersSinceMode += 1
       state.degradeSignals += 1
       const nextStep = state.survivalMode || state.restMode
-        ? SINGLE_STEPS[state.playbookIndex % SINGLE_STEPS.length]
+        ? (state.survivalMode ? SURVIVAL_STEPS : SINGLE_STEPS)[state.playbookIndex % (state.survivalMode ? SURVIVAL_STEPS : SINGLE_STEPS).length]
         : PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
       recordStrategy('loop-breaker', `${loop.kind} 连续 ${loop.count} 次：${loop.name} ${loop.args.slice(0, 120)}；错误：${String(loop.error).slice(0, 100)}`, { kind: loop.kind, count: loop.count, name: loop.name })
       try {
@@ -1040,7 +1069,8 @@ async function main() {
     const stepAllowed = !sleeping && !state.restMode && sinceStartMin < 90 && !stats.inTurn && lastEventAgeSec != null && lastEventAgeSec > 120 && nowMs - lastStepAt > 150_000
     if (stepAllowed) {
       const useSingle = state.survivalMode || state.playbookIndex >= PLAYBOOK.length
-      const step = useSingle ? SINGLE_STEPS[state.playbookIndex % SINGLE_STEPS.length] : PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
+      const stepper = state.survivalMode ? SURVIVAL_STEPS : SINGLE_STEPS
+      const step = useSingle ? stepper[state.playbookIndex % stepper.length] : PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
       state.lastStepAt = nowIso()
       state.playbookIndex += 1
       recordStrategy('playbook-step', `单步推进（${state.survivalMode ? '生存模式单步' : '任务链'}）：${step.id}（第 ${state.playbookIndex} 步）`)
@@ -1080,7 +1110,7 @@ async function main() {
     }
 
     // 死亡探测：body 的 death 事件（不再让她在"我是不是死了"上打转）
-    const bodyEvents = readBodyEvents()
+    const bodyEvents = currentGenerationBodyEvents()
     const deaths = bodyEvents.filter((row) => row.type === 'death').length
     const deathIncreased = deaths > state.lastDeaths
     if (deathIncreased) {
@@ -1091,7 +1121,7 @@ async function main() {
       recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
       if (!sleeping) {
         try {
-          await sendPrompt(`你刚死了一次（死亡位置 ${position}）。死亡掉落 5 分钟内会消失：先 mcb_look 看 item 实体距离/方向，走到它旁边 1 格内再 wait（**goto 本身不会捡东西**）；捡不到就别硬找，换个安全的目标继续。先 mcb_status 看现在在哪。`, { timeoutSec: 300 })
+          await sendPrompt(`你刚死了（本 lab 代第 ${deaths} 次，死亡位置 ${position}）。**先保命**：mcb_look 看最近怪在多远哪个方向 → 朝反方向 goto 10 格 → 往下 dig 3 格做坑 → place 封口 → wait 到天亮。掉落 5 分钟会消失，现在别回去捡、别在原地纠缠；活下来优先。`, { timeoutSec: 300 })
         } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
       }
     }

@@ -92,6 +92,10 @@
                   stateDir: '__LAB_STATE__/mc-body'
                   # lab 自己的服务器清单（含正常地形验收服 lab-normal:54840）。
                   serversFile: '__LAB_MC_SERVERS__'
+                loop-probe:
+                  # 夜测专用：lab/supervisor 重启时不要把 time/focus 状态 reset 掉，
+                  # 否则 time 自己的"跨重启恢复"（sleep span/queue/fired）永远验证不到。
+                  resetOnStart: false
               plugins:
                 - memory
                 - world-state
