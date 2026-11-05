@@ -114,6 +114,16 @@ const state = {
   windowCalls: 0,
   windowErrors: 0,
   badWindows: 0,
+  mode: 'task',
+  modeStart: null,
+  modeSeconds: { task: 0, survival: 0, rest: 0, sleep: 0 },
+  lastModeTickAt: null,
+  loopBreakersSinceMode: 0,
+  degradeSignals: 0,
+  survivalMode: false,
+  restMode: false,
+  lastMilestoneLogAt: null,
+  lastProgressSeq: 0,
   lastSeenEventAt: null,
   sessionId: null,
   pendingPromptAt: null,
@@ -450,6 +460,49 @@ const PLAYBOOK = [
   { id: 'explore', text: '第五步：在出生点 30 格内看看周围（mcb_map / mcb_scan 附近方块），把看到的东西 remember 记一笔；天黑了就回安全点。' },
 ]
 
+/** 生存模式/降级后的单步指令：一次只给一个 op，做完再下一步（弱模型成功率更高）。 */
+const SINGLE_STEPS = [
+  { id: 'status', text: 'mcb_status，看完告诉我位置和血量。' },
+  { id: 'mine1', text: 'mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":1}}]} —— 用 mine task，不要 goto+dig 指定坐标。' },
+  { id: 'inventory', text: 'mcb_inventory，看背包里 oak_log 有几个。' },
+  { id: 'planks', text: 'mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":4}}]}；报没有配方就先 mcb_inventory，然后停手。' },
+  { id: 'table', text: 'mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功就好，不成就停手。' },
+  { id: 'scan', text: 'mcb_scan {"name":"oak_log","radius":32}，拿新坐标。' },
+  { id: 'map', text: 'mcb_map，看看脚下方块层和空地在哪。' },
+  { id: 'look', text: 'mcb_look，看看周围有没有玩家/危险方块。' },
+]
+
+function sleepPhaseNow() {
+  try {
+    const file = path.join(runDir, 'state', cfg.preset, 'time.json')
+    const data = readJson(file, null)
+    return { phase: data?.phase ?? null, sleepingId: data?.sleepingId ?? null, queue: data?.queue?.length ?? null }
+  } catch { return { phase: null, sleepingId: null, queue: null } }
+}
+
+/** 里程碑快照（每 30 分钟打一行 MILESTONE，早报与命中率统计用）。 */
+async function milestoneSnapshot() {
+  const body = await bodyStatus()
+  let inventory = null
+  if (body.alive) {
+    const result = await bodyDo([{ op: 'inventory' }], 8000)
+    inventory = result?.json?.results?.[0]?.result?.text ?? null
+  }
+  const time = sleepPhaseNow()
+  return {
+    at: nowIso(),
+    position: body.position ?? null,
+    health: body.health ?? null,
+    food: body.food ?? null,
+    task: body.task ?? null,
+    inventory: String(inventory ?? '').replace(/\n/g, ' ').slice(0, 180) || null,
+    timePhase: time.phase,
+    sleepQueue: time.queue,
+    mode: state.mode,
+    deaths: state.lastDeaths,
+  }
+}
+
 function readBodyEvents() {
   return readJsonl(path.join(runDir, 'state', 'mc-body', 'body.jsonl'), { limit: 5000 })
 }
@@ -611,8 +664,13 @@ function strategyFromErrors(row) {
 
 /* ── 早报 ─────────────────────────────────────────────── */
 
-function renderReport() {
-  const metrics = readJsonl(metricsFile)
+function fmtMode(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0))
+  const minutes = Math.round(total / 60)
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60}m` : `${minutes}m`
+}
+
+function renderReport() {  const metrics = readJsonl(metricsFile)
   const strategies = readJsonl(strategyFile)
   const last = metrics.at(-1) ?? state.lastMetrics ?? {}
   const game = last.game ?? {}
@@ -628,6 +686,8 @@ function renderReport() {
   push(`- 模型：${cfg.model} · preset：${cfg.preset} · commit：\`${meta.commit ?? '?'}\` · session：\`${meta.sessionId ?? state.sessionId ?? '?'}\``)
   push(`- 服务器：${cfg.serverName} 127.0.0.1:${cfg.serverPort}（重启 ${state.serverStarts} 次）· lab 重启 ${state.labStarts} 次 · body 端口 ${cfg.mcPort}`)
   push(`- checkpoint：${state.checkpoints} 个 · 提示 ${state.prompts} 次 · 策略调整 ${state.strategyCount} 次`)
+  push(`- 模式时间：任务 ${fmtMode(state.modeSeconds.task)} · 生存 ${fmtMode(state.modeSeconds.survival)} · 休息 ${fmtMode(state.modeSeconds.rest)} · 睡眠 ${fmtMode(state.modeSeconds.sleep)}（任务推进 vs 生存时间分开统计）`)
+  push(`- 死亡：${state.lastDeaths} 次 · 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
   push()
   push('## 最后状态')
   push()
@@ -745,18 +805,28 @@ async function main() {
   if (!(await ensureServer())) throw new Error('服务器不可用，无法开始')
 
   if (await labAlive()) {
-    log('发现已有 lab 在跑，先停掉以保证干净起点')
-    await stopLab()
+    // 接管已有 lab（supervisor 自己重启/换代码时用）：不打断当前会话，只继续监控。
+    const meta = labMeta()
+    state.labStarts = Math.max(1, state.labStarts)
+    state.sessionId = meta?.sessionId ?? null
+    log(`接管已有 lab（session=${state.sessionId}），不重开新会话`)
+    recordStrategy('adopt-lab', `发现存活的 lab（session ${state.sessionId}），supervisor 接管而不重启会话`)
+    state.phase = 'running'
+    writeStatus()
+    await checkpoint('adopt')
+  } else {
+    if (!(await startLab({ fresh: true }))) throw new Error('lab 启动失败')
+    // 初始指令：让她自己安排这一夜
+    const baseline = await sendPrompt(initialInstruction(), { timeoutSec: 600 })
+    state.phase = 'running'
+    writeStatus()
+    const firstTurn = await waitTurnEnd(baseline, 60)
+    if (!firstTurn) log('初始指令 60s 内没有 turn/end（本地模型回合可能很长），继续按 tick 监控')
+    await checkpoint('start')
   }
-  if (!(await startLab({ fresh: true }))) throw new Error('lab 启动失败')
-
-  // 初始指令：让她自己安排这一夜
-  const baseline = await sendPrompt(initialInstruction(), { timeoutSec: 600 })
-  state.phase = 'running'
-  writeStatus()
-  const firstTurn = await waitTurnEnd(baseline, 60)
-  if (!firstTurn) log('初始指令 60s 内没有 turn/end（本地模型回合可能很长），继续按 tick 监控')
-  await checkpoint('start')
+  state.modeStart = nowIso()
+  state.lastModeTickAt = nowIso()
+  state.lastMilestoneLogAt = nowIso()
 
   let lastCheckpoint = Date.now()
   let lastNudge = Date.now()
@@ -814,12 +884,48 @@ async function main() {
     const events = readEvents()
     const stats = turnStats(events)
     state.lastSeenEventAt = stats.lastEventAt ? new Date(stats.lastEventAt).toISOString() : null
+    const sleep = sleepPhaseNow()
+    const sleeping = sleep.phase === 'sleeping'
+    // 模式切换（task / survival / rest / sleep）：睡眠期只做健康监控，不 cancel、不催、不打搅
+    const progressed = hasProgress(events)
+    if (progressed && state.loopBreakers > 0) {
+      state.loopBreakers = 0
+      state.degradeSignals = 0
+      if (state.survivalMode || state.restMode) {
+        state.survivalMode = false
+        state.restMode = false
+        recordStrategy('mode-recover', '检测到新的成功动作，退出降级模式，恢复任务模式')
+      }
+    }
+    if (sleeping) {
+      state.survivalMode = false
+    } else if (!state.survivalMode && state.degradeSignals >= 3 && !progressed) {
+      state.survivalMode = true
+      state.loopBreakersSinceMode = 0
+      recordStrategy('survival-mode', `30 分钟内 ${state.degradeSignals} 次熔断/重启且无推进：切生存模式（只许单步 op，目标=保持存活+到点睡觉/做梦）`)
+    } else if (state.survivalMode && state.loopBreakersSinceMode >= 3) {
+      state.restMode = true
+      recordStrategy('rest-mode', '生存模式下单步仍连续失败 3 次：切休息/整理/聊天模式，不再逼任务')
+    }
+    const desiredMode = sleeping ? 'sleep' : state.restMode ? 'rest' : state.survivalMode ? 'survival' : 'task'
+    if (desiredMode !== state.mode) {
+      const nowMsMode = Date.now()
+      if (state.lastModeTickAt) state.modeSeconds[state.mode] = (state.modeSeconds[state.mode] ?? 0) + Math.round((nowMsMode - Date.parse(state.lastModeTickAt)) / 1000)
+      state.mode = desiredMode
+      state.modeStart = nowIso()
+      state.lastModeTickAt = nowIso()
+      log(`MODE → ${desiredMode}`)
+      recordStrategy('mode', `切到 ${desiredMode} 模式（sleep=${sleep.phase} survival=${state.survivalMode} rest=${state.restMode} degrade=${state.degradeSignals}）`)
+    } else if (state.lastModeTickAt) {
+      state.modeSeconds[state.mode] = (state.modeSeconds[state.mode] ?? 0) + Math.round((Date.now() - Date.parse(state.lastModeTickAt)) / 1000)
+      state.lastModeTickAt = nowIso()
+    }
 
-    // turn 超时 / 卡住
+    // turn 超时 / 卡住（睡眠期不 cancel：让她睡，安全由 body 自身兜底）
     const nowMs = Date.now()
     const turnAgeSec = stats.inTurn && stats.turnStartAt ? Math.round((nowMs - stats.turnStartAt) / 1000) : 0
     const lastEventAgeSec = stats.lastEventAt ? Math.round((nowMs - stats.lastEventAt) / 1000) : null
-    if (stats.inTurn && (turnAgeSec > cfg.turnTimeoutMin * 60 || (lastEventAgeSec != null && lastEventAgeSec > cfg.stallSec))) {
+    if (!sleeping && stats.inTurn && (turnAgeSec > cfg.turnTimeoutMin * 60 || (lastEventAgeSec != null && lastEventAgeSec > cfg.stallSec))) {
       const meta = labMeta()
       recordStrategy('turn-timeout', `turn ${turnAgeSec}s / 最后事件 ${lastEventAgeSec}s 未动（阈值 ${cfg.turnTimeoutMin}min / ${cfg.stallSec}s），session/cancel 并重提示`, { turnAgeSec, lastEventAgeSec })
       try {
@@ -833,7 +939,7 @@ async function main() {
 
     // paused 单步特判：body 暂停时只许先 resume；连续 2 次无效由 supervisor 代发 resume
     const bodyNow = await bodyStatus()
-    if (bodyNow.paused) {
+    if (!sleeping && bodyNow.paused) {
       const lastPauseAt = state.lastPausedAt ? Date.parse(state.lastPausedAt) : 0
       if (nowMs - lastPauseAt > 90_000) {
         state.lastPausedAt = nowIso()
@@ -854,18 +960,25 @@ async function main() {
 
     // 硬循环断路器：同一 tool+args 或同一条错误连续 ≥3 次 → 立刻打断并给一条确切下一步
     const loop = detectRepeatedFailure(events)
-    if (loop) {
+    if (!sleeping && loop) {
       state.loopBreakers += 1
-      const nextStep = PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
+      state.loopBreakersSinceMode += 1
+      state.degradeSignals += 1
+      const nextStep = state.survivalMode || state.restMode
+        ? SINGLE_STEPS[state.playbookIndex % SINGLE_STEPS.length]
+        : PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
       recordStrategy('loop-breaker', `${loop.kind} 连续 ${loop.count} 次：${loop.name} ${loop.args.slice(0, 120)}；错误：${String(loop.error).slice(0, 100)}`, { kind: loop.kind, count: loop.count, name: loop.name })
       try {
         const api = apiFor(cfg.port)
         await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
       } catch (error) { log(`loop-breaker cancel 失败：${String(error?.message ?? error)}`) }
       await sleep(2500)
-      try {
-        await sendPrompt(`你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`, { timeoutSec: 300 })
-      } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
+      // dig 特定 steer：她爱用 goto+dig 旧坐标；改成"scan 拿新坐标 → 只用 mine task"
+      const digStuck = /dig|方块没有变化|没有变化/.test(`${loop.name} ${loop.error}`)
+      const steer = digStuck
+        ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
+        : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
+      try { await sendPrompt(steer, { timeoutSec: 300 }) } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
       if (state.loopBreakers >= 2) {
         log('循环熔断升级：重启 lab 会话清上下文并降级 op 集')
         state.forceLabRestart = true
@@ -873,15 +986,28 @@ async function main() {
       await checkpoint('loop-breaker')
     }
 
-    // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步）
+    // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步；睡眠/休息期不催）
     const sinceStartMin = (nowMs - startedAt) / 60000
     const lastStepAt = state.lastStepAt ? Date.parse(state.lastStepAt) : 0
-    if (sinceStartMin < 90 && !stats.inTurn && lastEventAgeSec != null && lastEventAgeSec > 120 && nowMs - lastStepAt > 150_000) {
-      const step = PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
+    const stepAllowed = !sleeping && !state.restMode && sinceStartMin < 90 && !stats.inTurn && lastEventAgeSec != null && lastEventAgeSec > 120 && nowMs - lastStepAt > 150_000
+    if (stepAllowed) {
+      const useSingle = state.survivalMode || state.playbookIndex >= PLAYBOOK.length
+      const step = useSingle ? SINGLE_STEPS[state.playbookIndex % SINGLE_STEPS.length] : PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
       state.lastStepAt = nowIso()
-      state.playbookIndex = Math.min(state.playbookIndex + 1, PLAYBOOK.length - 1)
-      recordStrategy('playbook-step', `前 90 分钟单步推进：${step.id}（第 ${state.playbookIndex} 步）`)
-      try { await sendPrompt(`继续，下一步只做这一件事：${step.text}`, { timeoutSec: 300 }) } catch (error) { log(`playbook 提示失败：${String(error?.message ?? error)}`) }
+      state.playbookIndex += 1
+      recordStrategy('playbook-step', `单步推进（${state.survivalMode ? '生存模式单步' : '任务链'}）：${step.id}（第 ${state.playbookIndex} 步）`)
+      try { await sendPrompt(`现在只做这一件事：${step.text}`, { timeoutSec: 300 }) } catch (error) { log(`playbook 提示失败：${String(error?.message ?? error)}`) }
+    }
+
+    // 每 30 分钟一条 MILESTONE 行（早报/命中率统计用；睡眠期也记）
+    if (!state.lastMilestoneLogAt || nowMs - Date.parse(state.lastMilestoneLogAt) > 30 * 60_000) {
+      state.lastMilestoneLogAt = nowIso()
+      try {
+        const snapshot = await milestoneSnapshot()
+        log(`MILESTONE ${JSON.stringify(snapshot)}`)
+        appendRow(path.join(runDir, 'milestones.jsonl'), snapshot)
+        fs.appendFileSync(path.join(runDir, 'night-notes.md'), `\n## MILESTONE ${snapshot.at}\n- ${JSON.stringify(snapshot)}\n`, 'utf8')
+      } catch (error) { log(`MILESTONE 采集失败：${String(error?.message ?? error)}`) }
     }
 
     // 10 分钟窗口早停：连续 3 个窗口工具错误率 >70% 且无实质推进 → 停跑（不空转）
@@ -908,21 +1034,24 @@ async function main() {
     // 死亡探测：body 的 death 事件（不再让她在"我是不是死了"上打转）
     const bodyEvents = readBodyEvents()
     const deaths = bodyEvents.filter((row) => row.type === 'death').length
-    if (deaths > state.lastDeaths) {
+    const deathIncreased = deaths > state.lastDeaths
+    if (deathIncreased) {
       const lastDeath = [...bodyEvents].reverse().find((row) => row.type === 'death')
       const position = lastDeath?.data?.position ? `${Math.round(lastDeath.data.position.x)},${Math.round(lastDeath.data.position.y)},${Math.round(lastDeath.data.position.z)}` : '?'
       state.lastDeaths = deaths
       state.lastDeathNoticeAt = nowIso()
       recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
-      try {
-        await sendPrompt(`你刚死了一次（死亡位置 ${position}）。先 mcb_status 看现在在哪、能不能回去捡掉落；捡不到就别硬找，换个安全的目标继续。别在同一个危险点反复送死。`, { timeoutSec: 300 })
-      } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
+      if (!sleeping) {
+        try {
+          await sendPrompt(`你刚死了一次（死亡位置 ${position}）。先 mcb_status 看现在在哪、能不能回去捡掉落；捡不到就别硬找，换个安全的目标继续。别在同一个危险点反复送死。`, { timeoutSec: 300 })
+        } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
+      }
     }
 
     // 错误打转：当前 turn 内工具错误 ≥12 且已跑 2 分钟 → 取消这一轮、注入"换策略"提示（不重启）
     const turnErrors = currentTurnErrorCount(events)
     const canInterrupt = !state.lastErrorInterruptAt || nowMs - Date.parse(state.lastErrorInterruptAt) > 10 * 60_000
-    if (stats.inTurn && turnErrors >= 12 && turnAgeSec > 120 && canInterrupt) {
+    if (!sleeping && stats.inTurn && turnErrors >= 12 && turnAgeSec > 120 && canInterrupt) {
       state.lastErrorInterruptAt = nowIso()
       const meta = labMeta()
       recordStrategy('error-loop-interrupt', `当前 turn ${turnErrors} 次工具错误（${turnAgeSec}s），session/cancel + 换策略提示`, { turnErrors, turnAgeSec })
@@ -946,14 +1075,17 @@ async function main() {
       if (action) { try { await sendPrompt(nudgeText(), { timeoutSec: 300 }) } catch { /* ignore */ } }
     }
 
-    // 空闲 nudge：超过 nudgeMin 没有新 turn/end 就催一下
+    // 空闲 nudge：超过 nudgeMin 没有新事件就催一下（睡眠/休息期不催）
     const idleMs = nowMs - (stats.lastEventAt ?? nowMs)
-    if (nowMs - lastNudge > cfg.nudgeMin * 60_000 && idleMs > cfg.nudgeMin * 60_000) {
+    if (!sleeping && !state.restMode && nowMs - lastNudge > cfg.nudgeMin * 60_000 && idleMs > cfg.nudgeMin * 60_000) {
       state.nudges += 1
       log(`空闲 ${Math.round(idleMs / 60000)}min，nudge #${state.nudges}`)
-      try { await sendPrompt(nudgeText(), { timeoutSec: 300 }) } catch (error) { log(`nudge 失败：${String(error?.message ?? error)}`) }
+      const idleText = state.survivalMode
+        ? '继续生存模式：先 mcb_status 看位置和血量；附近安全就只做一件简单的事（砍一块木头 / 整理背包 / 回安全点），别跑远。'
+        : nudgeText()
+      try { await sendPrompt(idleText, { timeoutSec: 300 }) } catch (error) { log(`nudge 失败：${String(error?.message ?? error)}`) }
       lastNudge = Date.now()
-      recordStrategy('idle-nudge', `空闲 ${Math.round(idleMs / 60000)}min 没有新事件，投递"继续安排"提示`)
+      recordStrategy('idle-nudge', `空闲 ${Math.round(idleMs / 60000)}min 没有新事件，投递提示（mode=${state.mode}）`)
     }
 
     // 心跳状态（每 2 分钟；mc-body/lead 靠它判活）
@@ -977,6 +1109,13 @@ async function main() {
         playbookIndex: state.playbookIndex,
         badWindows: state.badWindows,
         paused: bodyNow.paused,
+        mode: state.mode,
+        sleeping: sleeping,
+        sleepQueue: sleep.queue,
+        degradeSignals: state.degradeSignals,
+        survivalMode: state.survivalMode,
+        restMode: state.restMode,
+        modeSeconds: state.modeSeconds,
         labStarts: state.labStarts,
         serverStarts: state.serverStarts,
       })
