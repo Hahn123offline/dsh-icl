@@ -562,15 +562,31 @@ export function apply(ctx) {
 
   /* ── 积压：有界、不丢、过期有计数 ── */
 
+  const protectTags = (Array.isArray(ctx.config.protectTags) ? ctx.config.protectTags : ['mention', 'at', 'private', 'direct', 'admin']).map(String)
+
+  /** 条目优先级：有 @/私聊等标签的比 ambient 群消息更值得留。 */
+  function queuePriority(item) {
+    const tags = Array.isArray(item?.tags) ? item.tags : []
+    return tags.some((tag) => protectTags.includes(tag)) ? 1 : 0
+  }
+
   function enqueue(signal, reason) {
+    // 同一个信号 id 被重复 offer（blocked 不占 id，调用方可能重试）时不要重复入队。
+    if (signal.id != null && state.queue.some((item) => item.signalId === signal.id)) return
     if (state.queue.length >= maxQueue) {
-      const dropped = state.queue.shift()
+      // 溢出丢"最不重要的最旧一条"：先保 mention/私聊，再保普通消息。
+      let victim = 0
+      for (let i = 0; i < state.queue.length; i += 1) {
+        if (queuePriority(state.queue[i]) < queuePriority(state.queue[victim])) { victim = i; break }
+      }
+      const dropped = state.queue.splice(victim, 1)[0]
       state.stats.dropped += 1
       state.stats.overflow += 1
-      log('warn', 'time.queue.overflow', { max: maxQueue, dropped: dropped?.id ?? null, from: dropped?.from?.plugin ?? null })
+      log('warn', 'time.queue.overflow', { max: maxQueue, dropped: dropped?.id ?? null, from: dropped?.from?.plugin ?? null, protected: queuePriority(dropped) === 1 })
     }
     state.queue.push({
       id: `q-${++queueSeq}-${Date.now().toString(36)}`,
+      signalId: signal.id == null ? null : String(signal.id),
       from: { plugin: signal.from?.plugin ?? '?', activity: signal.from?.activity ?? null },
       kind: signal.kind ?? 'notice',
       text: String(signal.text ?? '').slice(0, 500),
@@ -578,6 +594,7 @@ export function apply(ctx) {
       focus: signal.focus ?? null,
       reason,
       at: ctx.now(),
+      createdAt: signal.createdAt ?? null,
       expiresAt: signal.expiresAt ?? null,
     })
     persist()
@@ -1285,6 +1302,7 @@ export function apply(ctx) {
       goals: state.goals.map((g) => ({ ...g })),
       missed: state.stats.missed,
       dropped: state.stats.dropped,
+      overflow: state.stats.overflow,
       expired: state.stats.expired,
       lastTickError: state.lastTickError,
       lastPersistError: state.lastPersistError,
@@ -1309,7 +1327,9 @@ export function apply(ctx) {
       lines.push(`目标：${state.goals.map((g) => `${g.id} ${g.theme}${g.turnLimit != null ? `（剩 ${g.turnLimit} 轮）` : ''}${g.until != null ? `（到 ${stampAt(g.until, timeZone)}）` : ''}`).join('；')}。`)
     }
     if (state.queue.length) lines.push(`积压：${state.queue.length} 条（${reasonCounts()}）。`)
-    if (state.stats.missed) lines.push(`漏掉：累计 ${state.stats.missed} 条安排（见 tick-error/日志）。`)
+    if (state.stats.missed || state.stats.dropped || state.stats.expired) {
+      lines.push(`丢弃：漏响 ${state.stats.missed}、溢出 ${state.stats.overflow}、过期 ${state.stats.expired}（累计丢弃 ${state.stats.dropped}）。`)
+    }
     return lines.join('\n')
   }
 
@@ -1342,7 +1362,9 @@ export function apply(ctx) {
     if (state.queue.length) {
       lines.push(`积压（${state.queue.length}）：`)
       for (const item of state.queue.slice(0, listLimit)) {
-        lines.push(`· [${item.from?.plugin ?? '?'}${item.from?.activity ? `/${item.from.activity}` : ''}] ${String(item.text ?? '')}（${item.reason ?? '?'}）`)
+        const source = `${item.from?.plugin ?? '?'}${item.from?.activity ? `/${item.from.activity}` : ''}`
+        const sig = item.signalId ? `，sig=${item.signalId}` : ''
+        lines.push(`· [${source}] ${String(item.text ?? '')}（${item.reason ?? '?'}，id=${item.id}${sig}）`)
       }
       if (state.queue.length > listLimit) lines.push(`· …还有 ${state.queue.length - listLimit} 条`)
     }

@@ -270,6 +270,71 @@ export async function runPreflight({ home = DEFAULT_HOME, homeDir = os.homedir()
   return { ...classifyPreflight(data), data }
 }
 
+/** 给用户看的一页说明（申请时间窗时直接贴；由 preflight 的真实数据填写）。 */
+export function renderUserBrief(report, { windowMinutes = 15 } = {}) {
+  const { verdict, checks, data } = report
+  const blocked = checks.filter((c) => c.level === 'block')
+  const warns = checks.filter((c) => c.level === 'warn')
+  const oldApps = (data.processes?.rows ?? []).filter((row) => /apps[\\/]+dsh-icl[\\/]+src[\\/]+main\.js/i.test(row.cmd))
+  const lines = [
+    '# 申请一次 QQ 只读影子（给用户看的一页说明）',
+    '',
+    `> 这是 ICL 的"只读影子"：${windowMinutes} 分钟窗口里，她**只收你的 QQ 私聊**，不发送任何 QQ 消息、不接群。`,
+    `> 生成时间：${new Date(data.at).toISOString()}；\`preflight\` 结论：**${verdict}**。`,
+    '',
+    '## 这是什么、为什么值得做',
+    '验证 ICL 能"接收到真实的你"，同时保证不打扰任何人：她能看到你发的一条私聊并进入她的上下文，但没有回复工具，群消息整类忽略。',
+    '',
+    '## 现在为什么不能直接开始',
+  ]
+  if (verdict === 'CLEAR') {
+    lines.push('- preflight 全绿：没有会抢连接的进程、端口空闲、desktop 配置干净。可以按下面步骤开始。')
+  } else {
+    if (blocked.length) {
+      lines.push('preflight 发现**会抢 QQ 连接的旧消费者**，必须先处理：')
+      for (const check of blocked) lines.push(`- ⛔ ${check.title}：${check.detail}`)
+    } else {
+      lines.push('- 没有阻断项，但有需要确认的警告（见下）。')
+    }
+    if (oldApps.length) {
+      lines.push('', '**其中 focus-core 旧应用（下面这些进程）具体会做什么：**')
+      for (const app of oldApps) lines.push(`- pid ${app.pid}：\`${String(app.cmd).slice(0, 120)}\``)
+      lines.push(
+        '- 它一旦发现 SnowLuma 在跑，会**自动连上**，用**旧人格**处理消息，并且它的代码里存在主动给你发私聊的路径。',
+        '- 也就是说：如果不先停它，这次窗口就不是"干净影子"——你可能会收到旧人格的意外消息，我们的观测也会被污染。',
+      )
+    }
+    if (warns.length) {
+      lines.push('', '其它需要你知道的：')
+      for (const check of warns) lines.push(`- ⚠️ ${check.title}：${check.detail}`)
+    }
+  }
+  lines.push(
+    '',
+    '## 需要你做的三件事',
+    '1. **同意一次短窗口**（建议 15 分钟）——只在窗口内运行，结束立即停。',
+    '2. **同意停掉上面的旧消费者**（不是我们静默 kill：停之前会再确认一次；不批准也能跑，但那就不是干净影子，见上）。',
+    '3. **由你手动启动 SnowLuma**（我们不程序化启停它），然后在窗口内**给机器人发一条私聊**（随便一句即可）。',
+    '',
+    '## 窗口内会发生什么（以及不会发生什么）',
+    '- 她**只收不发**：客户端零出站帧（连 `get_login_info` 这类动作都不发）；没有发送工具。',
+    '- 群消息**整类忽略**：连只读都不接，不解析、不记录文本（只计一个数字）。',
+    '- 她会看到你那一条私聊并进入她的上下文；可能"想回"，但没有能力回——这是设计，不是故障。',
+    '- 如果她正在睡觉/静音：消息会进她自己的积压，醒来后作为摘要看到（不会丢）。',
+    '',
+    '## 出问题怎么办 / 怎么回滚（三步）',
+    '1. 停掉只读影子实例（lab 自动停或 `lab.mjs down`）；2. 你手动关闭 SnowLuma；3. 需要的话重新启动旧消费者（启动文件夹里有快捷方式）。',
+    '全程证据留在 `.state/lab/<runId>/`（报告、原始事件、私聊记录），可复盘。',
+    '',
+    '## 我们不会做的事',
+    '- 不启动/停止 SnowLuma 进程，不写它的任何文件；不连接 3000/3120；不发任何 QQ 消息；不接群；不改 desktop profile。',
+    '',
+    '> 说明由 `node packages/plugins/qq/tools/preflight.mjs --brief` 生成；同一份结论的完整证据见 `preflight-latest.md`。',
+    '',
+  )
+  return lines.join('\n')
+}
+
 function renderMarkdown(report) {
   const { verdict, checks, data } = report
   const icon = { ok: '✅', warn: '⚠️', block: '⛔', unknown: '❔' }
@@ -295,6 +360,7 @@ function renderMarkdown(report) {
 
 export async function runPreflightMain(args = [], deps = {}) {
   const json = args.includes('--json')
+  const brief = args.includes('--brief')
   const home = (() => {
     const i = args.indexOf('--home')
     return i >= 0 && args[i + 1] ? args[i + 1] : (process.env.ICL_SNOWLUMA_HOME ?? DEFAULT_HOME)
@@ -309,17 +375,23 @@ export async function runPreflightMain(args = [], deps = {}) {
   const latestMd = path.join(outDir, 'preflight-latest.md')
   const latestJson = path.join(outDir, 'preflight-latest.json')
   const markdown = renderMarkdown(report)
+  const userBrief = renderUserBrief(report)
   fs.writeFileSync(jsonFile, JSON.stringify(report, null, 1), 'utf8')
   fs.writeFileSync(mdFile, markdown, 'utf8')
   fs.writeFileSync(latestMd, markdown, 'utf8')
   fs.writeFileSync(latestJson, JSON.stringify(report, null, 1), 'utf8')
+  fs.writeFileSync(path.join(outDir, 'user-brief-latest.md'), userBrief, 'utf8')
 
   if (json) {
-    console.log(JSON.stringify({ verdict: report.verdict, blocks: report.blocks, warns: report.warns, checks: report.checks, report: { json: jsonFile, md: mdFile } }, null, 2))
+    console.log(JSON.stringify({ verdict: report.verdict, blocks: report.blocks, warns: report.warns, checks: report.checks, report: { json: jsonFile, md: mdFile, brief: path.join(outDir, 'user-brief-latest.md') } }, null, 2))
+  } else if (brief) {
+    console.log(userBrief)
+    console.log(`报告：${mdFile}`)
   } else {
     console.log(markdown)
     console.log(`报告：${mdFile}`)
     console.log(`机器可读：${jsonFile}`)
+    console.log(`给用户的一页说明：--brief（或 .state/qq-shadow/preflight/user-brief-latest.md）`)
   }
   const unknown = report.checks.some((c) => c.level === 'unknown')
   return report.verdict === 'BLOCK' ? 1 : unknown ? 2 : 0

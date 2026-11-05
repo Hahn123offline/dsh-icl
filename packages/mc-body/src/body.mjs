@@ -103,7 +103,7 @@ export function createBody({
   function saveLedger() {
     if (!stateFile) return
     try {
-      const rows = [...tasks.values()].map(({ controller, timer, ...task }) => task)
+      const rows = [...tasks.values()].map(({ controller, timer, abandonTimer, ...task }) => task)
       fs.mkdirSync(path.dirname(stateFile), { recursive: true })
       const tmp = `${stateFile}.tmp`
       fs.writeFileSync(tmp, JSON.stringify({ version: 2, savedAt: stamp(), tasks: rows }, null, 2), 'utf8')
@@ -220,14 +220,19 @@ export function createBody({
           push('task_progress', { taskId: next.id, progress })
         },
       })
+      // 断线/取消已经同步改写过状态：这里只清现场，不回写结果。
+      if (TERMINAL.has(next.state) || (next.state === 'paused' && next.pausedByDisconnect)) {
+        // nothing
       // adapter 可能无视 abort 直接返回：先按中断/超时/断线归类，再谈成功。
-      if (next.cancelReason) setTask(next, 'cancelled', { error: next.cancelReason })
+      } else if (next.cancelReason) setTask(next, 'cancelled', { error: next.cancelReason })
       else if (next.interruptReason) setTask(next, 'interrupted', { error: next.interruptReason })
       else if (next.pausedByDisconnect) setTask(next, 'paused', { pausedReason: 'disconnect' })
       else if (next.timedOut) setTask(next, 'unknown', { error: 'timeout', outcomeUnknown: true })
       else setTask(next, 'done', { result: result ?? null })
     } catch (error) {
-      if (next.cancelReason) setTask(next, 'cancelled', { error: next.cancelReason })
+      if (TERMINAL.has(next.state) || (next.state === 'paused' && next.pausedByDisconnect)) {
+        push('task_settle_ignored', { taskId: next.id, message: String(error?.message ?? error) })
+      } else if (next.cancelReason) setTask(next, 'cancelled', { error: next.cancelReason })
       else if (next.interruptReason) setTask(next, 'interrupted', { error: next.interruptReason })
       else if (next.pausedByDisconnect) setTask(next, 'paused', { pausedReason: 'disconnect' })
       else if (next.timedOut) setTask(next, 'unknown', { error: 'timeout', outcomeUnknown: true })
@@ -235,9 +240,13 @@ export function createBody({
       else setTask(next, 'failed', { error: String(error?.message ?? error), result: error?.result ?? null })
     } finally {
       clearTaskTimers(next)
+      if (next.abandonTimer) { clearTimeout(next.abandonTimer); next.abandonTimer = null }
       next.controller = null
-      current = null
-      pumping = false
+      // 只在仍是当前任务时清现场：被断线兜底摘掉后，新任务可能已经接管。
+      if (current === next) {
+        current = null
+        pumping = false
+      }
       if (movementTaskId === next.id) { movementTaskId = null; movement.reset() }
       if (!paused && connectionState !== false && queue.length === 0 && !returning && !closed && typeof adapter.returnToSafe === 'function') {
         returning = true
@@ -320,13 +329,25 @@ export function createBody({
   }
 
   // 把当前 running 任务挂起（断线用）：保留进度/剩余 deadline，等显式 resumeTask。
+  // 立刻置 paused（不能等 adapter 从 bot.dig 等挂起调用里退出来——断线时它可能永远不退）。
   function pauseCurrentTask(reason) {
     const task = current
     if (!task || TERMINAL.has(task.state) || task.state === 'paused') return null
     task.pausedByDisconnect = true
     task.remainingMs = Math.max(1000, (Number(task.deadlineAt) || stamp()) - stamp())
     clearTaskTimers(task)
+    setTask(task, 'paused', { pausedReason: 'disconnect' })
     task.controller?.abort(abortError(reason))
+    // 兜底：adapter 无视 abort 吊死时，把 current 摘掉，别让身体永远发不出下一条任务。
+    if (task.abandonTimer) clearTimeout(task.abandonTimer)
+    task.abandonTimer = setTimeout(() => {
+      if (current !== task || task.state !== 'paused') return
+      current = null
+      pumping = false
+      push('task_detached', { taskId: task.id, reason: 'adapter-did-not-unwind' })
+      void pump()
+    }, 8000)
+    if (typeof task.abandonTimer.unref === 'function') task.abandonTimer.unref()
     return task
   }
 
@@ -755,6 +776,7 @@ export function createBody({
     if (current) {
       current.interruptReason = 'body-stopped'
       clearTaskTimers(current)
+      if (current.abandonTimer) { clearTimeout(current.abandonTimer); current.abandonTimer = null }
       current.controller?.abort(abortError('body stopped'))
     }
     try { await adapter.disconnect?.() } catch { /* ignore */ }
@@ -782,6 +804,7 @@ export function createBody({
       safety: { paused, reason: pausedReason, offline: connected === false, offlineReason, everOnline },
       task: taskView(current),
       queue: queue.map(taskView),
+      pausedTasks: [...tasks.values()].filter((task) => task.state === 'paused').map(taskView),
       eventsSeq: seq,
       reconnect: adapterState.reconnect ?? null,
       watchdog: watchdogSummary(),
