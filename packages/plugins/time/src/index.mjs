@@ -412,6 +412,14 @@ export function apply(ctx) {
   const emergencyTags = (Array.isArray(ctx.config.emergencyTags) ? ctx.config.emergencyTags : ['alarm', 'safety', 'emergency']).map(String)
   const emergencyFrom = Array.isArray(ctx.config.emergencyFrom) ? ctx.config.emergencyFrom.map(String) : null
   const listLimit = Math.max(1, Number(ctx.config.listLimit ?? 20))
+  // 清醒节拍（awake heartbeat）：awake 且没有 sleep/mute/pause 时，turn-end 后如果
+  // 没有目标续推就安排下一次自检，避免"无事可做就静默等事件"的分钟级假死。
+  const awakeCfg = ctx.config.awakeTick && typeof ctx.config.awakeTick === 'object' ? ctx.config.awakeTick : {}
+  const awakeTickEnabled = awakeCfg.enabled !== false
+  const awakeIdleSec = Math.max(15, Number(awakeCfg.idleSec ?? 120))
+  const awakeMaxPerHour = Math.max(1, Number(awakeCfg.maxPerHour ?? 60))
+  const awakeRetrySec = Math.max(5, Number(awakeCfg.retrySec ?? 30))
+  const awakeDuringFocus = awakeCfg.duringFocus !== false
   const dir = path.dirname(stateFile)
 
   // 测试时钟（config.testClock:true 时才允许 inbox clock 命令）：只在 time 自己的时间视图上
@@ -446,6 +454,15 @@ export function apply(ctx) {
     lock: null,
     pausedAt: null,
     inboxOffset: 0,
+    // 清醒节拍/心跳：最后一次 turn-end、下一次自检、最近一小时的节拍时间戳
+    lastTurnEndAt: null,
+    lastTurnStartAt: null,
+    lastAwakeTickAt: null,
+    awakeTickDueAt: null,
+    awakeTickSentAt: [],
+    awakeTickCappedAt: null,
+    turnEnds: 0,
+    heartbeatOverdueLoggedAt: null,
     stats: { dropped: 0, missed: 0, expired: 0, overflow: 0, failed: 0, inboxBad: 0 },
     lastPersistError: null,
     lastTickError: null,
@@ -469,6 +486,11 @@ export function apply(ctx) {
       state.fired = saved.fired && typeof saved.fired === 'object' ? saved.fired : {}
       state.inboxOffset = Number(saved.inboxOffset) > 0 ? Number(saved.inboxOffset) : 0
       state.stats = { ...blank().stats, ...(saved.stats && typeof saved.stats === 'object' ? saved.stats : {}) }
+      state.awakeTickSentAt = Array.isArray(saved.awakeTickSentAt) ? saved.awakeTickSentAt.map(Number).filter(Number.isFinite).slice(-120) : []
+      for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt']) {
+        state[key] = Number(saved[key]) > 0 ? Number(saved[key]) : null
+      }
+      state.turnEnds = Number(saved.turnEnds) > 0 ? Number(saved.turnEnds) : 0
       state.lock = saved.lock && typeof saved.lock === 'object' ? saved.lock : null
       state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
       state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
@@ -597,6 +619,75 @@ export function apply(ctx) {
 
   function send({ kind = 'notice', text, focus: target = null, tags = [] }) {
     return signals.offer({ from: { plugin: 'time', activity: 'schedule' }, kind, text, focus: target, tags })
+  }
+
+  /* ── 清醒节拍（awake heartbeat） ──
+   *
+   * 问题：turn-end 之后如果没有任何目标/事件，会话就静止了——模型只在被投递消息时存在，
+   * 于是"无事可做"表现为分钟级没有模型调用（像卡死/延迟）。
+   * 修法：awake 且没有 sleep/mute/pause 时，turn-end 后若本轮没有目标续推，
+   * 就在 idleSec 后发一条"清醒节拍"自检消息，逼出下一次模型调用；每轮 turn-end 重置计时，
+   * 所以正常做事时不会叠加。睡眠/静音/暂停是显式静止状态，不发自检。
+   */
+
+  function awakeSuppressed() {
+    if (state.phase !== 'awake') return true
+    if (state.lock) return true
+    if (!awakeDuringFocus && focusApi?.current?.()) return true
+    return false
+  }
+
+  /** 安排/重置一次清醒节拍；delayMs 默认 idleSec。 */
+  function armAwakeTick(delayMs = awakeIdleSec * 1000) {
+    if (!awakeTickEnabled) { state.awakeTickDueAt = null; return }
+    if (awakeSuppressed()) { state.awakeTickDueAt = null; return }
+    state.awakeTickDueAt = nowTime() + Math.max(1000, Number(delayMs) || awakeIdleSec * 1000)
+  }
+
+  function clearAwakeTick() {
+    if (state.awakeTickDueAt != null) { state.awakeTickDueAt = null; dirty = true }
+  }
+
+  function awakeTickText(at) {
+    const idleSec = state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null
+    const bits = [`清醒节拍：距上次回合结束 ${idleSec ?? '?'} 秒`]
+    bits.push(`现在 ${stampAt(at, timeZone)}，醒着`)
+    const focusLease = focusApi?.current?.()
+    if (focusLease) bits.push(`专注：${focusLease.title ?? focusLease.label ?? '?'}`)
+    if (state.queue.length) bits.push(`积压 ${state.queue.length} 条`)
+    return `${bits.join('；')}。手上有事就继续做；没事就查一下状态（time_status / world_status / focus_status）再决定下一步——不要空转，也不要重复同一个工具调用。`
+  }
+
+  /** tick 里调用：到点就发一次清醒节拍（每轮 turn-end 会重置 dueAt）。 */
+  function maybeAwakeTick(at) {
+    if (!awakeTickEnabled) return false
+    if (awakeSuppressed()) { state.awakeTickDueAt = null; return false }
+    if (state.awakeTickDueAt == null) return false
+    if (at < Number(state.awakeTickDueAt)) return false
+    // 上限：最近一小时的节拍次数
+    const hourAgo = at - 3_600_000
+    state.awakeTickSentAt = (Array.isArray(state.awakeTickSentAt) ? state.awakeTickSentAt : []).filter((ts) => Number(ts) > hourAgo)
+    if (state.awakeTickSentAt.length >= awakeMaxPerHour) {
+      state.awakeTickDueAt = at + awakeIdleSec * 1000
+      if (!state.awakeTickCappedAt || at - state.awakeTickCappedAt > 3_600_000) {
+        state.awakeTickCappedAt = at
+        log('warn', 'time.awake-tick.capped', { maxPerHour: awakeMaxPerHour })
+      }
+      return false
+    }
+    const outcome = send({ kind: 'notice', text: awakeTickText(at), tags: ['awake-tick', 'heartbeat'] })
+    if (outcome && outcome.accepted === false) {
+      // 投递失败（会话忙）：短重试，不静默放弃
+      state.awakeTickDueAt = at + awakeRetrySec * 1000
+      log('warn', 'time.awake-tick.failed', { reason: outcome.reason ?? outcome.error ?? 'unknown' })
+      return false
+    }
+    state.lastAwakeTickAt = at
+    state.awakeTickSentAt = [...state.awakeTickSentAt, at].slice(-120)
+    state.awakeTickDueAt = at + awakeIdleSec * 1000
+    dirty = true
+    log('info', 'time.awake-tick', { idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+    return true
   }
 
   /* ── 积压：有界、不丢、过期有计数 ── */
@@ -770,6 +861,7 @@ export function apply(ctx) {
       },
     }
     persist()
+    clearAwakeTick()
     emitEvent({ from: { plugin: 'time', activity: 'lock' }, kind: 'event', text: 'mute-start', tags: ['mute'], meta: { until: capped, reason: state.lock.reason, replaced: Boolean(before) } })
     log('info', 'time.mute', { until: stampAt(capped, timeZone), minutes: Math.round((capped - now) / 60_000), reason: state.lock.reason })
     return { muted: true, until: capped, allow: state.lock.allow, emergencyQuota: state.lock.emergency.quota }
@@ -783,6 +875,8 @@ export function apply(ctx) {
     emitEvent({ from: { plugin: 'time', activity: 'lock' }, kind: 'event', text: 'mute-end', tags: ['mute'], meta: { reason } })
     log('info', 'time.unmute', { reason, durationMin: Math.round((nowTime() - before.since) / 60_000) })
     const released = flushQueue(reason === 'timeout' ? '静音到点' : '静音结束')
+    // 恢复出声后，如果接下来没有 turn，清醒节拍负责叫起一次自检。
+    armAwakeTick()
     return { muted: false, released, since: before.since, until: before.until }
   }
 
@@ -890,6 +984,28 @@ export function apply(ctx) {
     }
     persist()
     return sent
+  }
+
+  /**
+   * 每个 turn-end：记心跳、续推目标；本轮没有目标续推时安排清醒节拍。
+   * 这样"没有 goal / 没有外部事件"不再是静默等待，而是 idleSec 后的一次自检。
+   */
+  function onTurnEnd(signal) {
+    const at = nowTime()
+    state.lastTurnEndAt = at
+    state.turnEnds = Number(state.turnEnds ?? 0) + 1
+    const seq = Number(signal?.meta?.seq)
+    if (Number.isFinite(seq)) state.lastTurnSeq = seq
+    let resumed = 0
+    try { resumed = resumeGoals() } catch (error) { log('warn', 'time.resume-goals', { error: String(error?.message ?? error) }) }
+    if (resumed > 0) {
+      // 目标续推本身就是下一次模型调用，不需要叠加清醒节拍。
+      state.awakeTickDueAt = null
+    } else {
+      armAwakeTick()
+    }
+    persist()
+    return resumed
   }
 
   /* ── 安排（时间轴） ── */
@@ -1017,6 +1133,7 @@ export function apply(ctx) {
           state.sleepingId = schedule.id
           state.since = now
           state.sleepUntil = endAt
+          clearAwakeTick()
           if (focusApi?.enter && !sleepLease) {
             try {
               sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
@@ -1070,6 +1187,8 @@ export function apply(ctx) {
       const released = flushQueue('你睡觉时')
       // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+      // 醒来后如果没有新的 turn 触发，清醒节拍负责在 idleSec 内叫起一次自检。
+      armAwakeTick()
       persist()
       return { ended: true, released }
     }
@@ -1084,6 +1203,7 @@ export function apply(ctx) {
     if (state.phase === 'paused') return { paused: true, already: true, since: state.pausedAt }
     state.pausedAt = nowTime()
     state.phase = 'paused'
+    clearAwakeTick()
     persist()
     log('info', 'time.pause', { at: state.pausedAt })
     return { paused: true, since: state.pausedAt }
@@ -1110,6 +1230,7 @@ export function apply(ctx) {
     persist()
     // 恢复后如果还在睡眠，积压应该留到醒来一起放；不要在睡着时倒给模型。
     const released = sleeping ? 0 : flushQueue('暂停期间')
+    if (!sleeping) armAwakeTick()
     log('info', 'time.resume', { deltaMs: delta, phase: state.phase, released })
     return { resumed: true, released, phase: state.phase, deltaMs: delta }
   }
@@ -1124,6 +1245,7 @@ export function apply(ctx) {
       state.since = nowTime()
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
+      armAwakeTick()
       return { ended: true, released: flushQueue('你睡觉时') }
     }
     return { ended: false }
@@ -1193,7 +1315,19 @@ export function apply(ctx) {
       }
 
       pruneFired(at)
-      if (dirty || state.queue.length || state.spans.length || state.goals.length) persist()
+      maybeAwakeTick(at)
+      // 醒着长时间没有 turn 活动 = 可观测异常（自检本该在 idleSec 内把它救回来）。
+      if (awakeTickEnabled && !awakeSuppressed() && state.lastTurnEndAt != null) {
+        const idleSec = (at - Number(state.lastTurnEndAt)) / 1000
+        if (idleSec > awakeIdleSec * 1.5) {
+          if (!state.heartbeatOverdueLoggedAt || at - Number(state.heartbeatOverdueLoggedAt) > 10 * 60_000) {
+            state.heartbeatOverdueLoggedAt = at
+            dirty = true
+            log('warn', 'time.heartbeat.overdue', { idleSec: Math.round(idleSec), thresholdSec: awakeIdleSec, queued: state.queue.length })
+          }
+        }
+      }
+      if (dirty || state.queue.length || state.spans.length || state.goals.length || state.awakeTickDueAt != null) persist()
       return { at }
     } catch (error) {
       state.lastTickError = { at, error: String(error?.stack ?? error) }
@@ -1326,6 +1460,36 @@ export function apply(ctx) {
     return `${schedule.id}：${bits.join('，')}${label ? ` —— ${label}` : ''}`
   }
 
+  /** 心跳可观测面：给 time_status / status() / 外部监督者用。 */
+  function heartbeatStatus() {
+    const now = nowTime()
+    const suppressed = awakeSuppressed()
+    const lastTurnEndAt = state.lastTurnEndAt == null ? null : Number(state.lastTurnEndAt)
+    const idleSec = state.phase === 'awake' && lastTurnEndAt != null ? Math.max(0, Math.round((now - lastTurnEndAt) / 1000)) : null
+    const lastHour = (Array.isArray(state.awakeTickSentAt) ? state.awakeTickSentAt : []).filter((ts) => now - Number(ts) <= 3_600_000)
+    let heartbeatState = 'awake'
+    if (state.phase === 'sleeping') heartbeatState = 'sleeping'
+    else if (state.phase === 'paused') heartbeatState = 'paused'
+    else if (state.lock) heartbeatState = 'muted'
+    else if (suppressed) heartbeatState = 'suppressed'
+    else if (idleSec != null && idleSec > awakeIdleSec * 1.5) heartbeatState = 'overdue'
+    return {
+      enabled: awakeTickEnabled,
+      state: heartbeatState,
+      thresholdSec: awakeIdleSec,
+      lastTurnEndAt,
+      lastTurnStartAt: state.lastTurnStartAt ?? null,
+      idleSec,
+      nextTickAt: state.awakeTickDueAt ?? null,
+      lastAwakeTickAt: state.lastAwakeTickAt ?? null,
+      ticksLastHour: lastHour.length,
+      maxPerHour: awakeMaxPerHour,
+      capped: Boolean(state.awakeTickCappedAt && now - Number(state.awakeTickCappedAt) < 3_600_000),
+      pendingBacklog: state.queue.length,
+      turnEnds: Number(state.turnEnds ?? 0),
+    }
+  }
+
   function status() {
     const now = nowTime()
     return {
@@ -1340,6 +1504,7 @@ export function apply(ctx) {
       backlog: state.queue.length,
       queueByPlugin: reasonCounts(),
       goals: state.goals.map((g) => ({ ...g })),
+      heartbeat: heartbeatStatus(),
       missed: state.stats.missed,
       dropped: state.stats.dropped,
       overflow: state.stats.overflow,
@@ -1364,6 +1529,17 @@ export function apply(ctx) {
     }
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
     lines.push(`状态：${bits.join('；')}。`)
+    const hb = heartbeatStatus()
+    if (hb.enabled && state.phase === 'awake') {
+      if (hb.state === 'overdue') {
+        lines.push(`⚠ 心跳：醒着 ${hb.idleSec} 秒没有回合（阈值 ${hb.thresholdSec} 秒 ×1.5），清醒节拍本应已介入。`)
+      } else if (hb.idleSec != null) {
+        const nextAt = hb.nextTickAt ? `${fmtRelative(Number(hb.nextTickAt), now)}自检` : '自检未排'
+        lines.push(`心跳：上次回合结束 ${hb.idleSec} 秒前；${nextAt}（近一小时自检 ${hb.ticksLastHour} 次）。`)
+      } else {
+        lines.push('心跳：还没收到过 turn-end（清醒节拍照常待命）。')
+      }
+    }
     const next = nextUpcoming(now)
     if (next) lines.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${fmtRelative(next.point, now)}）。`)
     if (state.spans.length) {
@@ -1475,6 +1651,8 @@ export function apply(ctx) {
     removeGoal,
     goals: () => state.goals.map((g) => ({ ...g })),
     resumeGoals,
+    onTurnEnd,
+    heartbeat: heartbeatStatus,
     status,
     statusText,
     listText,
@@ -1672,8 +1850,10 @@ export function apply(ctx) {
     } catch (error) { log('warn', 'time.delivery-gate', { error: String(error?.message ?? error) }) }
   }
 
-  // turn-end 续推目标（会话轴）；time 自己的信号不受 gate 限制。
-  ctx.signals.on({ tags: ['turn-end'] }, () => { try { resumeGoals() } catch (error) { log('warn', 'time.resume-goals', { error: String(error?.message ?? error) }) } })
+  // turn-end：目标续推 + 心跳；没有目标时安排清醒节拍（见 onTurnEnd）。
+  ctx.signals.on({ tags: ['turn-end'] }, (signal) => {
+    try { onTurnEnd(signal) } catch (error) { log('warn', 'time.turn-end', { error: String(error?.message ?? error) }) }
+  })
 
   // 重启后恢复 focus 租约：睡眠租约、目标绑定的 focus（否则状态在、租约丢了）。
   try {
@@ -1686,6 +1866,11 @@ export function apply(ctx) {
       goalLeases.set(goal.id, focusApi.enter({ label: goal.focus, owner: 'time', reason: `goal:${goal.id}`, title: goal.theme, goal: goal.theme, interruptible: true, kind: 'goal' }))
     }
   } catch (error) { log('warn', 'time.leases.restore', { error: String(error?.message ?? error) }) }
+
+  // 重启后如果醒着且之前有过回合，恢复清醒节拍（不然会一直等到下一个外部事件）。
+  if (awakeTickEnabled && state.phase === 'awake' && state.lastTurnEndAt != null) {
+    try { armAwakeTick() } catch { /* 时间视图异常不影响启动 */ }
+  }
 
   ctx.services.provide('time', api)
   persist()

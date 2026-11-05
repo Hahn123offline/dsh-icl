@@ -8,9 +8,9 @@
 
 ---
 
-## 0. 契约：四个问题
+## 0. 契约：四个问题 + 一个底线
 
-时间模块回答且只回答四件事（用户原话）：
+时间模块回答且只回答四件事（用户原话），外加一条底线：
 
 | 问题 | 谁回答 | 事实源 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | **醒了要干什么？** | 唤醒消息、备注、标签、silent；睡眠/静音期间的积压 | `queue` + `spans` |
 | **接下来如何行动？** | `goals`（会话轴）：到点建目标、turn-end 续推、上限、取消 | `goals` + focus 租约 |
 | **更长期的日程？** | 每天/每周重复、编辑、取消、清单可读性 | 同 `schedules` |
+| **底线：醒着不允许静默等待** | `awakeTick` 清醒节拍：没有 goal/事件时，turn-end 后 `idleSec` 内自检一次，让模型持续有调用；sleep/mute/pause 是显式静止 | `heartbeat`（§13） |
 
 时间必须是**进程外持久状态 + 定时器**：模型只在被投递消息时存在，两次唤醒之间没有执行体。
 
@@ -200,7 +201,7 @@ CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。
 
 | 工具 | 一句话 |
 |---|---|
-| `time_status` | 现在/阶段/睡到/静音到/下一个安排/进行中/目标 id/积压/漏响 |
+| `time_status` | 现在/阶段/睡到/静音到/下一个安排/进行中/目标 id/积压/漏响；以及心跳：上次 turn-end、醒着空闲秒数、下次自检（§13） |
 | `time_arrange` | 新建安排（§2 语法；工具 description 是参数契约的家） |
 | `time_list` | 安排（按下一次触发排序）+ 目标 + 积压，带相对时间 |
 | `time_edit` | 改时间/消息/模式/时长/silent/tags；进行中 span 同步结束时间 |
@@ -397,3 +398,100 @@ node tools/lab.mjs down --run "$RUN"
 | 消息没到 | `signals.stats()`（blocked/gates）、`delivery.pendingCount()/blockedCount()`、`queue[].reason` |
 | 状态不对/卡住 | `time_status` 的"状态："行；`lastTickError`/`lastPersistError`；`phase` 是否 paused |
 | 前缀每轮变 | `time` 段是否又混进分钟级时间；world「日程」段是否相对时间抖动 |
+
+---
+
+## 13. 清醒节拍（awake heartbeat，2026-11-06 新增）
+
+### 13.1 问题
+
+模型没有连续时间体验：它只在被投递消息时存在。旧实现的 `turn-end` 处理**只对 goal 生效**
+（`resumeGoals()`；没有 goal 时返回 0，会话就静止），于是"她在醒着但没事做"表现为
+**分钟级没有模型调用**——用户视角是卡死/延迟，而不是"在休息"。
+
+底线：**醒着不允许静默等待**。静止必须是显式状态（sleep / mute / pause），不是默认。
+
+### 13.2 规则
+
+每个 `turn-end`（`signals.on({tags:['turn-end']})`，bridge 在真实 DSH 的 `turn/end` 发出）：
+
+1. 记录 `lastTurnEndAt`、`turnEnds`；
+2. 先跑 `resumeGoals()`（原有行为）；**如果本轮有目标续推，清醒节拍不叠加**（goal 本身就会拉起下一轮）；
+3. 否则 `armAwakeTick()`：若 `phase==='awake'` 且没有 `lock`（静音），把 `awakeTickDueAt = now + idleSec`；
+4. tick（默认 15s 一次）里 `maybeAwakeTick()`：到点且仍然醒着、仍不抑制时，发一条 `awake-tick` notice：
+   - 正文带事实：`距上次回合结束 N 秒；现在 HH:mm，醒着[；专注：X][；积压 N 条]`，
+     再给下一步选择（查 `time_status/world_status/focus_status`，或继续手上的事；不要空转/重复同一个工具调用）；
+   - 发送成功 → 记 `lastAwakeTickAt`、`awakeTickSentAt`，下一次 due = 再 `idleSec`（如果模型因此起了一轮，turn-end 会重置）；
+   - 发送失败（会话忙）→ `retrySec` 后重试，不静默放弃；
+   - 超过 `maxPerHour` → 暂停自检、`awakeTickCappedAt` 留痕 + log warn（防跑飞；状态里可查）。
+5. 抑制条件（不发自检）：`phase !== 'awake'`（sleeping/paused）、`lock`（静音）；
+   focus 默认**不**抑制（专注是"正在做事"，不是沉默；`awakeTick.duringFocus:false` 可改）。
+6. 状态切换会重新 `armAwakeTick()`：醒来、`resume`（且已醒）、`unmute`、重启后若睡着已恢复。
+   `pause`/`mute`/入睡会清掉 due。
+7. 可观测异常：醒着但 `now - lastTurnEndAt > idleSec * 1.5` 时 `heartbeat.state='overdue'`，
+   `time_status` 显示 `⚠ 心跳：…`，log warn 每 10 分钟最多一次。
+
+### 13.3 配置（`config.awakeTick`）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | **true** | 关掉则完全回到旧行为（长跑/成本敏感场景可关） |
+| `idleSec` | **120** | turn-end 后多久没有新回合就自检；下限 15 |
+| `maxPerHour` | **60** | 每小时自检上限（软上限，超限停发并可观测） |
+| `retrySec` | **30** | 自检投递失败后的重试间隔 |
+| `duringFocus` | **true** | 有 focus 租约时是否也自检（焦点≠静止；改 false 则专注时不打扰） |
+
+测试/长跑 preset 可以显式 `awakeTick: { enabled: false }`（`tools/loop-host.mjs` 已关，保持确定性）。
+
+### 13.4 可观测（`status().heartbeat` 与 `time_status`）
+
+```json
+"heartbeat": {
+  "enabled": true, "state": "awake|overdue|sleeping|paused|muted|suppressed",
+  "thresholdSec": 120, "idleSec": 37,
+  "lastTurnEndAt": 1793…, "lastTurnStartAt": null,
+  "nextTickAt": 1793…, "lastAwakeTickAt": null,
+  "ticksLastHour": 0, "maxPerHour": 60, "capped": false,
+  "pendingBacklog": 0, "turnEnds": 12
+}
+```
+
+- `lastTurnEndAt` 是精确的"上次模型活动结束"；`lastTurnStartAt` 目前为 null：**bridge 只 emit
+  `turn-end`，没有 `turn-start`**。要做精确的 `lastModelCallAt`，下一步需要在 `dsh-icl/src/bridge.mjs`
+  的 `onEvent` 里同样 emit `turn-start`（小改动，owner cache/mc-lab），time 记录后即可填这个字段。
+- `time_status` 文本在醒着时多一行：`心跳：上次回合结束 N 秒前；还有 M 秒自检（近一小时自检 K 次）。`
+  超时则显示 `⚠ 心跳：…`。
+
+### 13.5 与 driver / 报警的分工
+
+- **time 负责节奏**：turn-end 后 ≤ `idleSec`+tick 粒度（默认 ≤135s）必有一次自检；自检走
+  `signals.offer → delivery → bridge.steer`（bridge pump 默认 500ms），空闲时自检约 1s 内变成新回合——
+  所以"长时间没有模型调用"应等价于异常，而不是正常等待。
+- **静止/重复工具调用报警属于 observer 层**（time 看不到 tool/call）：
+  - `tools/loop.mjs`（driver）：断言相邻 `turn/end` 间隔 ≤ `idleSec*1.5+tick`；连续两次同名同参
+    `tool/call` 记为 `stuck-repeat`，连续空 turn 计数；
+  - `dsh-icl/bridge.mjs` 可把 `turn/start` 也 emit 给插件（见 13.4）；
+  - lab 的 supervisor 在 `phase=sleeping` 时应静默（night-1 已按此执行），清醒时才做健康监控。
+- **不要**用 driver 的 sleep/轮询等 turn 来替代节拍：等待在成功/失败时都浪费时间；节拍让"没有事件"
+  也产生可预期的工作循环。
+
+### 13.6 测试
+
+`packages/core/test/time-lock.test.mjs`：
+
+- 无 goal：turn-end 后 59s 不自检、61s 自检一次，正文含 `time_status`，`heartbeat` 字段正确；
+- 有 goal：只发 goal 续推，不叠加自检（`nextTickAt=null`）；
+- 睡眠/静音：期间不自检，醒来/解除后恢复；暂停同样抑制；
+- 每小时上限：`maxPerHour:2` 时只发 2 次，`heartbeat.capped=true`；
+- `enabled:false` 完全不自检（长跑/测试确定性）。
+
+### 13.7 风险与边界
+
+- **成本**：`enabled:true` 意味着醒着时至少每 2 分钟一次模型调用（本地模型长跑会持续占 GPU）。
+  night-1 这类 8h soak 应在 preset 里 `awakeTick.enabled:false` 或把 `idleSec` 调大；
+  桌面日常用默认值。
+- **自检循环**：`maxPerHour` 是软上限；如果模型每轮都秒回，turn-end 会不断重置，实际调用频率由模型速度决定，
+  不再有节拍叠加。
+- **投递失败**：自检依赖 delivery；bridge 不在线时信号会 nack 重试，time 每 `retrySec` 再排一次（不会丢，
+  但也意味着没有模型调用时日志会持续出现 retry）。
+- **lastModelCallAt**：目前只有 turn-end 时间，精确 start 需要 bridge 增发 `turn-start`（见 13.4/13.5）。
