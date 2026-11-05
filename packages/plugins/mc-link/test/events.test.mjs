@@ -1,7 +1,7 @@
 // mc-link 事件闸门：分级/合并/限流/去重（纯函数，不连 body）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createEventGate, eventLine, taskEventText, OPS, TASK_KINDS } from '../src/events.mjs'
+import { createEventGate, eventLine, taskEventText, OPS, TASK_KINDS, MACRO_KINDS } from '../src/events.mjs'
 
 function collect(events, { status = { paused: true, pausedReason: 'health-drop', adapter: { health: 14, food: 18, inventoryCount: 3, position: { x: 1, y: 64, z: 2 } } }, at = 0 } = {}) {
   const clock = { t: at }
@@ -167,6 +167,51 @@ test('事件闸门：eventLine 把事件写成台账行（含 quiet 事件细节
 test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与 body 漂移）', () => {
   for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade', 'sleep']) assert.ok(OPS.includes(op), op)
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
+  for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm']) {
+    assert.ok(TASK_KINDS.includes(kind), `宏 kind 缺失：${kind}`)
+    assert.ok(MACRO_KINDS.includes(kind), `MACRO_KINDS 缺失：${kind}`)
+  }
+})
+
+test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把）', () => {
+  const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
+  assert.match(collected, /宏完成/)
+  assert.match(collected, /收集到 8 个 oak_log/, '优先用 net（背包净增）')
+  assert.match(collected, /目标 8/)
+  const tunnel = taskEventText('task_done', { task: { id: 't-2', kind: 'tunnel', params: { direction: 'east', length: 8 }, result: { done: 8, total: 8, direction: 'east', height: 2, torches: 1 } } })
+  assert.match(tunnel, /宏完成/)
+  assert.match(tunnel, /往east挖了 8 格/)
+  assert.match(tunnel, /放火把 1/)
+})
+
+test('宏：失败码都有可操作提示（needs-tool/inventory-full/needs-material/blocked/unsafe/partial）', () => {
+  const cases = [
+    ['collect: needs-tool', /工具不对|换对应工具/],
+    ['collect: inventory-full', /背包满/],
+    ['bridge: needs-material', /材料不够/],
+    ['tunnel: blocked', /水\/岩浆\/基岩|绕开/],
+    ['tunnel: unsafe', /安全护栏/],
+    ['build: partial', /只完成了一部分/],
+    ['unsupported task: bridge', /还没实现|先用 collect/],
+  ]
+  for (const [error, pattern] of cases) {
+    const text = taskEventText('task_failed', { task: { id: 't-3', kind: error.split(':')[0], error } })
+    assert.match(text, /任务失败/, error)
+    assert.match(text, pattern, error)
+  }
+})
+
+test('宏信息事件（macro_step/macro_blocked/macro_done/auto_tool/needs_tool）不叫醒', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const out = gate.take([
+    { seq: 1, type: 'macro_step', data: { kind: 'tunnel', step: 3 } },
+    { seq: 2, type: 'macro_blocked', data: { kind: 'tunnel', block: 'water' } },
+    { seq: 3, type: 'macro_done', data: { kind: 'collect' } },
+    { seq: 4, type: 'auto_tool', data: { equipped: 'stone_pickaxe' } },
+    { seq: 5, type: 'needs_tool', data: { reason: 'needs-tool' } },
+  ], { status: null })
+  assert.equal(out.signals.length, 0)
 })
 
 test('事件闸门：path_stuck 单次不投递，连续第 2 次才说；任务开始重置计数', () => {
@@ -192,19 +237,17 @@ test('事件闸门：task_done 的成功 reason 白名单（net-target/duration/
   assert.match(legacy, /没达成/)
 })
 
-test('事件闸门：dig_fallback 可读且合并；path_approximate/心跳类不叫醒', () => {
+test('事件闸门：dig_fallback/path_approximate/心跳/auto_eat/craft_no_product 不叫醒（观测事件）', () => {
   const gate = createEventGate({ now: () => clock.t })
   const clock = { t: 0 }
   const out = gate.take([
     { seq: 1, type: 'dig_fallback', data: { block: 'oak_log', reason: 'no-path' } },
     { seq: 2, type: 'path_approximate', data: { target: { x: 1, y: 2, z: 3 } } },
     { seq: 3, type: 'heartbeat', data: {} },
+    { seq: 4, type: 'auto_eat', data: { food: 18 } },
+    { seq: 5, type: 'craft_no_product', data: { item: 'stick' } },
   ], { status: null })
-  assert.equal(out.signals.length, 1)
-  assert.match(out.signals[0].text, /就地挖附近的 oak_log/)
-  assert.match(out.signals[0].text, /no-path/)
-  const second = gate.take([{ seq: 4, type: 'dig_fallback', data: { block: 'dirt' } }], { status: null })
-  assert.equal(second.signals.length, 0, 'dig_fallback 在窗口内应合并')
+  assert.equal(out.signals.length, 0)
 })
 
 test('事件闸门：kicked 的 reason 是对象时显示真实原因，同名/重复登录要指出来', () => {

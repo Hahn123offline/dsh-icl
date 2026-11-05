@@ -32,6 +32,16 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 - 不再有 `mc:play`/`mc:interaction` 教学段：操作流程在 `mcb_*` 的 description 与 `skills/play.md`，
   全局层（`prompts/sim.md`）只说"这些工具怎么配合"，不写参数。
 
+## 宏操作（docs/MC-MACRO.md，body de1acfe/bb8402a）
+
+- 宏 = 一个 body task（`collect`/`tunnel`/`bridge`/`build`/`sort`/`shelter`/`farm`），一条调用完成重复劳动；
+  `TASK_KINDS` 已放行全部 7 个（body 已实现 collect/tunnel，其余按契约陆续实现）。
+- progress 限频（每 5–10% 或 10s）；观测事件只记台账不叫醒：`macro_step`/`macro_blocked`/`macro_done`/`macro_tool_auto`/`auto_tool`/`auto_eat`/`needs_tool`/`tunnel_clear`/`path_approximate`/`path_recovered`/`dig_fallback`/`craft_no_product`；
+  终态走 `task_done`/`task_failed`/`task_interrupted`/`task_paused`/`task_unknown`。
+- `collect` 的 `task_done.result` 带 `net`（背包净增）优先显示；`tunnel` 的成功判据是水平 length 格、每格 height 高，`stairs` 目前仅契约预留。
+- 失败码统一翻成下一步：`no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial`。
+- 教学在 `mcb_do` description + `skills/play.md`（"重复劳动用宏"）+ `mcb_help collect/tunnel`。
+
 ## body 事件 → 会话信号（outcome 对齐 mc-body e6fee4c）
 
 | body 事件 | 信号 | 说明 |

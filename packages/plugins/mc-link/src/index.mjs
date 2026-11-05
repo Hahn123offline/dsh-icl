@@ -32,6 +32,8 @@ const SKILLS = [
   { id: 'furnace', title: '熔炼', when: (s) => Number(s?.adapter?.nearby?.furnace ?? 0) > 0, summary: '附近有熔炉' },
   { id: 'chest', title: '箱子', when: (s) => Number(s?.adapter?.nearby?.chest ?? 0) > 0, summary: '附近有箱子' },
   { id: 'craft', title: '合成', when: (s) => Number(s?.adapter?.inventoryCount ?? 0) > 0, summary: '背包有材料' },
+  { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
+  { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
   { id: 'endgame', title: '通关参考', when: () => false, summary: '长期主线' },
 ]
@@ -868,10 +870,13 @@ export function apply(ctx) {
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId；**提交后不要用 wait 轮询**，完成/失败/暂停会作为事件回来，单个 wait 最多 30s，想趁等待做事就 mcb_inventory/mcb_scan 规划）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态；sleep 只在夜里/雷暴且附近有床时可用）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。attack/use 不会替你走过去：先 goto 到 3-4 格内再打/用。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
-      when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
-      avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
-      safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],
+      description: `steps 按顺序执行，任一 op 失败即停。
+宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（每 5–10% 或 10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；提交后不要用 wait 轮询。重复劳动优先用宏（别逐方块 mine/goto）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery}（直线通道；stairs 契约预留暂未实现）；bridge/build/sort/shelter/farm 同族（build 用 blueprint，明早）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码换目标/补工具/清背包/换方向）。参数示例用 mcb_help collect/tunnel。`,
+      when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
+      avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
+      safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -886,7 +891,7 @@ export function apply(ctx) {
               required: ['op'],
               properties: {
                 op: { type: 'string', description: '动作名；task=下长任务，events/tasks/cancel/resume/say=查询与控制，其余是单步动作。' },
-                kind: { type: 'string', description: 'task 的任务类型：mine/goto/patrol/explore/follow/routine/chat。' },
+                kind: { type: 'string', description: 'task 的任务类型：原语 mine/goto/patrol/explore/follow/routine/chat；宏 collect/tunnel/bridge/build/sort/shelter/farm（重复劳动用宏）。' },
                 params: { type: 'object', additionalProperties: true, description: '动作参数：task 的 mine 用 {block,count,radius}（block 也可以写成 name 或 kind，body 三选一都认）；goto 用 {x,y,z,range}；routine 用 {durationMs}；dig/place/use/equip/toss/craft 等用 {item/name/pos/target}。' },
                 text: { type: 'string', description: 'say 的内容（≤200 字，不能以 / 开头）。' },
                 taskId: { type: 'string', description: 'cancel 的任务 id，如 t-1。' },
