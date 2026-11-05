@@ -1018,7 +1018,13 @@ async function main() {
     const nowMs = Date.now()
     const turnAgeSec = stats.inTurn && stats.turnStartAt ? Math.round((nowMs - stats.turnStartAt) / 1000) : 0
     const lastEventAgeSec = stats.lastEventAt ? Math.round((nowMs - stats.lastEventAt) / 1000) : null
-    if (!sleeping && stats.inTurn && (turnAgeSec > cfg.turnTimeoutMin * 60 || (lastEventAgeSec != null && lastEventAgeSec > cfg.stallSec))) {
+    // 活跃的长回合不 cancel（本地模型一个回合可跑 10+ 分钟仍在推进）；只在"停住/无事件"或超绝对上限时打断。
+    const hardCapSec = cfg.turnTimeoutMin * 60
+    const absoluteCapSec = hardCapSec * 2
+    const stalled = lastEventAgeSec != null && lastEventAgeSec > cfg.stallSec
+    const slowIdle = turnAgeSec > hardCapSec && (lastEventAgeSec ?? 0) > 120
+    const tooLong = turnAgeSec > absoluteCapSec
+    if (!sleeping && stats.inTurn && (stalled || slowIdle || tooLong)) {
       const meta = labMeta()
       recordStrategy('turn-timeout', `turn ${turnAgeSec}s / 最后事件 ${lastEventAgeSec}s 未动（阈值 ${cfg.turnTimeoutMin}min / ${cfg.stallSec}s），session/cancel 并重提示`, { turnAgeSec, lastEventAgeSec })
       try {
