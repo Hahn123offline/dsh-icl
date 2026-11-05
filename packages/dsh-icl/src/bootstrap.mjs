@@ -41,6 +41,15 @@ export async function loadPlugin(id, { root = REPO_ROOT } = {}) {
  */
 export async function bootstrapHost(host, cfg, { log = () => {}, root = REPO_ROOT, loadPlugin: loader = loadPlugin } = {}) {
   fs.mkdirSync(cfg.stateDir, { recursive: true })
+  // 仿真纪律段：全局、几乎不变，排在人格段之后（order 25）。
+  // 它不属于任何一个能力域，所以不挂在插件里；工具的具体用法仍归各工具 description。
+  if (cfg.simulation) {
+    try {
+      host.services?.prompt?.section?.({ name: 'icl:simulation', order: 25, text: () => cfg.simulation })
+    } catch (error) {
+      log({ msg: 'icl.simulation-fail', error: String(error?.message ?? error) })
+    }
+  }
   const enabled = []
   const failed = []
   const skipped = []

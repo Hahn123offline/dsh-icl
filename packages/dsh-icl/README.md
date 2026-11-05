@@ -49,7 +49,8 @@ preset 里的 `config` 全部可选：
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `stateDir` | `$DSH_HOME/icl/state` | 记忆库、`time.json`、原文 JSONL |
-| `personaFile` | 仓库 `prompts/live.md` | 人格卡 |
+| `personaFile` | 仓库 `prompts/persona.md` | 人格卡（她是谁、怎么说话；不含工具教学） |
+| `simulationFile` | 仓库 `prompts/sim.md` | 仿真纪律（怎么生活、这些工具如何配合；见 `docs/PROMPT-CONTRACT.md`） |
 | `dreamPersonaFile` | 仓库 `prompts/dream.md` | 做梦提示词 |
 | `providersFile` | 仓库 `config/icl.local.json` | 只读其中的 `providers` |
 | `providers` | 读 `providersFile` | 覆盖 provider 列表 |
