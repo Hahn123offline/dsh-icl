@@ -223,6 +223,16 @@ function evaluateAssertion(predicate, window, state) {
   const checks = []
   const add = (kind, ok, detail) => checks.push({ kind, ok, detail })
 
+  if (predicate.signalLogged) {
+    // 不依赖 DSH 投递时延：直接查 mc-link 自己的台账有没有产生这条 crash/safety 信号。
+    const needles = Array.isArray(predicate.signalLogged) ? predicate.signalLogged : [predicate.signalLogged]
+    const file = path.join(state?.meta?.runDir ?? '', 'state', String(state?.meta?.preset ?? ''), 'mc-link.jsonl')
+    const rows = readJsonl(file).slice(-80)
+    const hit = rows.find((row) => needles.some((needle) => JSON.stringify(row).includes(needle)))
+    add('signalLogged', Boolean(hit), hit
+      ? `mc-link.jsonl ${hit.type ?? hit.kind ?? '?'} @${hit.at ? new Date(hit.at).toISOString() : '?'} 含「${needles.find((n) => JSON.stringify(hit).includes(n))}」`
+      : `mc-link.jsonl 最近 80 行无匹配（${needles.join('/')}）`)
+  }
   if (predicate.toolAny) {
     const hit = tools.find((row) => predicate.toolAny.includes(row.name))
     add('toolAny', Boolean(hit), hit ? `${hit.name} @${hit.seq}` : `未调用任何：${predicate.toolAny.join('/')}`)
@@ -376,7 +386,7 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         // windowFrom:'kill' 用于"kill 之后发生的一切"（notice + 自主 turn + 后续 prompt 回合都算）。
         const windowStart = step.windowFrom === 'kill' && killBoundarySeq != null ? killBoundarySeq : assertBoundarySeq
         const windowForStep = eventWindow(eventsFile, windowStart)
-        const results = evaluateAssertion(step, windowForStep, bodyState)
+        const results = evaluateAssertion(step, windowForStep, { ...bodyState, meta })
         const required = step.required !== false
         const ok = results.every((row) => row.ok)
         for (const row of results) checks.push({ id, required, ok: row.ok, kind: row.kind, detail: row.detail })
