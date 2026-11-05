@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { classifyPreflight, findRunningShadows } from '../../plugins/qq/tools/preflight.mjs'
+import { classifyPreflight, findRunningShadows, renderUserBrief } from '../../plugins/qq/tools/preflight.mjs'
 
 const NOW = 1_800_000_000_000
 
@@ -101,4 +101,27 @@ test('findRunningShadows：只认进程还活着的；被 kill 的陈旧状态�
   const found = findRunningShadows(dir, NOW, (pid) => pid === process.pid)
   assert.deepEqual(found.map((row) => row.runId), ['live'])
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('给用户的一页说明：BLOCK 时讲清是谁、会做什么、怎么回滚', () => {
+  const data = cleanData({
+    processes: { ok: true, rows: [{ pid: 12232, name: 'node.exe', cmd: 'node  apps\\dsh-icl\\src\\main.js' }] },
+  })
+  const report = { ...classifyPreflight(data), data }
+  const brief = renderUserBrief(report)
+  assert.match(brief, /BLOCK/)
+  assert.match(brief, /pid 12232/)
+  assert.match(brief, /旧人格/)
+  assert.match(brief, /回滚/)
+  assert.match(brief, /只收不发|零出站/)
+  assert.match(brief, /只收你的 QQ 私聊/)
+})
+
+test('给用户的一页说明：CLEAR 时直接给可开始的结论', () => {
+  const data = cleanData()
+  const report = { ...classifyPreflight(data), data }
+  const brief = renderUserBrief(report)
+  assert.match(brief, /CLEAR/)
+  assert.match(brief, /可以按下面步骤开始/)
+  assert.doesNotMatch(brief, /旧人格/)
 })
