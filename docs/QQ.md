@@ -4,7 +4,7 @@
 > 结论先说：**QQ 不进核心，只做一个入站插件**——接 OneBot WS，把私聊规范化成 ICL signal，交给现有的
 > `signals → time gate → focus.admit → delivery → bridge.steer` 链路。入站默认只读：`enabled:false`、群消息整类忽略、
 > 不发任何动作。**phase 1（用户 2026-11-05 批准）新增唯一出站入口 `qq_send`**：只有三把钥匙全开时注册，只回 owner 私聊、
-> 纯文本、每轮≤1 条、限速/去重/敏感拦截/回执三态/审计；群发送代码不存在。真实 SnowLuma 验证按 [§10](#10-shadow-runbook可执行清单)。
+> 纯文本（可多气泡）、每轮≤1 次发送调用、限速/去重/敏感拦截/回执三态/审计；群发送代码不存在。真实 SnowLuma 验证按 [§10](#10-shadow-runbook可执行清单)。
 >
 > 代码：`packages/plugins/qq/`（默认 `enabled:false`）；测试：`packages/core/test/qq*.test.mjs`（19 + 3 + 10 + 11 条）；
 > 演练/取证：`packages/plugins/qq/tools/{fake-onebot,qq-shadow-host,lab-shadow,preflight}.mjs`。
@@ -23,8 +23,9 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 468 pass | `npm test` |
+| 全量测试 | ✅ 480 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
+| **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **完整性差距研究（旧项目 vs 我们，P0/P1/P2 路线）** | ✅ 已完成 | [QQ-GAP.md](QQ-GAP.md) |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
@@ -33,7 +34,7 @@
 ### 0.1 时间线（2026-11-05）
 
 - **phase 0 只读影子**：✅ 实现 + fake/lab 验证完成；真实 SnowLuma 影子因用户不在电脑前选 B 暂缓（当时唯一阻断 pid 12232）。
-- **phase 1 私聊回**：用户回来后**批准**；lead 已把旧启动项 `dsh-icl.lnk` 移到 `.state/backup-startup/`（可回滚），旧 focus-core 应用已停/退役不再恢复，SnowLuma 目前由用户手动开着。代码 + fake 测试已完成（`qq_send`、三把钥匙、限速/去重/内容边界/三态回执/审计/kill switch）；**真实 QQ 验证等 lead 给窗口**（只发 owner 私聊、每轮≤1 条）。
+- **phase 1 私聊回**：用户回来后**批准**；lead 已把旧启动项 `dsh-icl.lnk` 移到 `.state/backup-startup/`（可回滚），旧 focus-core 应用已停/退役不再恢复，SnowLuma 目前由用户手动开着。代码 + fake 测试已完成（`qq_send`、三把钥匙、限速/去重/内容边界/三态回执/审计/kill switch）；**真实 QQ 验证等 lead 给窗口**（只发 owner 私聊、每轮≤1 次调用；P0-3 起一次调用内可拆 1–8 个气泡）。
 - **保持不变**：产品默认仍 `enabled:false` 且三把钥匙全关；真实发送只在 lab/受控窗口打开；群发送代码不存在。
 - 已经验证过的替代证据：假上游进程内演练 14/14、真实 lab（57108，假 OneBot）10/10、QQ×MC 并发 T1–T3、preflight 单测 13 条、phase 1 出站 fake 11 条。
 
@@ -345,6 +346,33 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 真实 shadow 的"只收"边界（只读模式仍适用）：
 不启动 SnowLuma、不连接 3000/3120、不调 OneBot 动作、不写 SnowLuma 文件，收到私聊只落 `.state/lab/<run>/qq-shadow/inbound.jsonl` 并进 signals。
 
+### 7.3 账本与断线补课（P0-1，已实现；契约 fake 已验证、真机待验证）
+
+```text
+WS 断线（connector 记下 disconnectedAt/downtime）
+  └─ 重连 open ──► onOpen（first? start : reconnect）
+        ├─ 账本：SQLite（node:sqlite；未配置 ledgerFile 且无 state 文件时退化内存并明确标出）
+        ├─ 补课：HTTP OneBot（独立于入站 WS；入站仍 framesSent=0）
+        │     get_friend_msg_history {user_id, count}  ← fake 已定契约，真机待验
+        │     过滤：账本已有 qq_id / 自己发的 / 早于水位 2s 以上 / 超 maxBackfillAgeMs
+        │     命中 → 同一 signal.id 走 gate（backfilled:true）→ signals.offer
+        ├─ 水位：只在 signals.offer 被接受（或 signals 幂等去重）后前进；
+        │         被 time/focus 拦下不前进（等重放，signal id 复用）
+        └─ gap 可见：reconnects / lastDowntimeMs / backfillRuns / filled / dropped / failed / unsupported
+             qq_status 文本 + status.json 的 `gap`、`ledger` 字段
+```
+
+关键约定：
+
+- **账本字段**（`src/ledger.mjs`）：`activity,seq,qq_id,signal_id,at,sent_at,received_at,sender,text(≤1000),mention,media,delivered_at`；`(activity,seq)` 主键、`(activity,qq_id)` 唯一；每活动 `next_seq/attended_seq/last_qq_id/last_at`。
+- **seq 是插件内部单调序号**（不是 QQ `message_seq`；私聊历史接口不一定给 `message_seq`）。signal id 仍由 `message_id` 决定：`qq:private:<qq>:<message_id>`。
+- **水位边界**：插件能看到的"投递成功" = `signals.offer` 接受（进入 delivery 队列且未被 time/focus 拦下）。bridge 的 ack 在 `dsh-icl`，插件拿不到回调；因此 `ledger.delivered` 不能说成"用户已看到"。
+- **补课标记**：signal 的 `tags` 加 `backfill`、`meta.qq.backfilled=true`、正文前缀 `[补课] `，模型能知道"这条不是刚发生的"。
+- **已读策略**：P0 **不调用** `mark_msg_as_read` / `mark_private_msg_as_read`（会把已读同步到用户自己的 QQ，属产品决定）；P1 的 `qq_mark_read` 再显式做。
+- **私聊历史语义待真机**：SnowLuma 文档只说 `get_friend_msg_history` "无锚点时从服务器获取最新双向记录"，不一定支持任意锚点；实现用本地水位 + id 双判兜底，真机若确认不支持 → 只保留 gap 可见性，不假装连续。
+- **群**：本轮仍不补（phase 2）；群游标用 `message_seq` 的接口在旧项目已成熟，届时复用。
+- 配置：`ledgerFile`、`httpUrl`/`httpToken`（不填则用 SnowLuma 发现的 `httpServers[0]`）、`backfillEnabled`、`backfillCount`、`maxBackfillAgeMs`、`backfillMaxPeers`。
+
 ## 8. 权限与开关
 
 插件全部配置（`host.registerPlugin(... config)` / preset 的 `pluginConfig.qq`）：
@@ -380,6 +408,9 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 | `burstIntervalMinMs` / `burstIntervalMaxMs` / `longGapProbability` / `longGapMinMs` / `longGapMaxMs` | `1000` / `3000` / `0.2` / `5000` / `10000` | 气泡间隔与长停顿 | `gapMode=auto` 时生效；fixed/typing/byLength 另有参数 |
 | `gapMode` | `auto` | 间隔模式 | `auto｜fixed｜typing｜byLength`；typing 用 1.4 字/秒 |
 | `sleepImpl` / `randomImpl` | `null` | 测试注入 | 生产不填 |
+| `ledgerFile` | `''` | 入站账本（SQLite） | 空：有 state 文件时用同目录 `qq-ledger.db`；否则内存模式（重启不保留，状态里会写明） |
+| `httpUrl` / `httpToken` | `''` / `''` | OneBot HTTP 动作端（补课/已读） | 空：用 SnowLuma 发现的 `httpServers[0]`；补课不可用时 gap 记 `unsupported` |
+| `backfillEnabled` / `backfillCount` / `maxBackfillAgeMs` / `backfillMaxPeers` | `true` / `50` / `21600000` / `5` | 补课开关/条数/最大年龄/会话数 | 补课失败只让 gap 可见，不影响实时入站；`mark_*_as_read` 不在 P0 调用 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -639,10 +670,11 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 468 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 480 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
+node --test packages/core/test/qq-backfill.test.mjs    # 6 pass（账本/补课契约/断线补回/gap）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -760,6 +792,21 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 真实 QQ 窗口按 §10.1 等 lead 指令，证据要求：SnowLuma 日志 `send_private_msg` 次数=气泡数、`send_group_msg` 0 次、
 用户收到对应条数、`status.json` 的 `send.recent.outcome=ok` 且 sent/total 正确、审计行数=气泡数且无正文。
 
+### 13.7 P0-1 账本/断线补课（fake 契约已验证；真机待验证）
+
+`node --test packages/core/test/qq-backfill.test.mjs` → **6 pass**：
+- 账本（SQLite）：活动内 seq 单调、同 qq_id 不重复、水位只进不退、未知 seq 不推进、重开文件后消息/水位仍在。
+- 闸门补课：窗口内收（`[补课]` 前缀 + `backfill` tag + `meta.qq.backfilled`）；超 `maxBackfillAgeMs` 记
+  `stale-backfill`；实时消息仍按 `maxStaleMs` 判，不混用。
+- 补课器：只补未见过的；跳过自己发的/超龄的；fetch 失败只记 `failed`、不抛。
+- **插件集成**：先收一条实时消息 → `dropConnections()` 模拟断线 → 历史里塞两条（`get_friend_msg_history`
+  契约）→ 重连后补回、delivery 里带 `[补课]`、账本 3 条、不重复、gap 的 `reconnects/backfillRuns/filled` 可见；
+  **没有调用 `mark_*_as_read`**；再断一次不会重复补。
+- HTTP 失败：补课 `failed` 计数、连接与实时入站不受影响。
+- HTTP 客户端：返回 data 解析正确；retcode 非 0 抛错。
+- 真机验证（用户在场时）：`get_friend_msg_history` 的锚点/返回字段/是否含自己消息/双向语义；
+  `mark_private_msg_as_read` 对用户其它客户端已读的影响（P0 不调用，只记录契约）。
+
 ## 14. 参考文件（只读；**不修改旧仓库**）
 
 | 仓库 | 路径 | 用途 |
@@ -814,4 +861,4 @@ node tools/lab.mjs down --run <runId>
 - 服务端核对：SnowLuma 日志 `send_private_msg` **恰 1 次**（"在。这么晚还没睡？"，user_id=3429502459）、`send_group_msg` **0 次**。
 - 审计：`send-audit.jsonl` 1 行，只有 `textHash/chars/outcome/messageId`，**不存正文**。
 - 结果报告：`.state/lab/qq-send-20261105-2310/report.md`（13/13 全过）；影子已自动停止，57108 无监听。
-- 产品默认仍关闭：只有 lab patch 打开三钥匙；phase 1 只允许 owner 私聊、每轮最多 1 条、失败不自动重试。
+- 产品默认仍关闭：只有 lab patch 打开三钥匙；phase 1 只允许 owner 私聊、每轮最多 1 次发送调用（一次调用内 P0-3 可拆 1–8 气泡）、失败不自动重试。

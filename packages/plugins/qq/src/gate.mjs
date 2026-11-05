@@ -15,7 +15,7 @@ import { buildPrivateSignal, messageIdOf, normalizeSegments, senderIdOf, senderN
 
 export const DROP_CODES = Object.freeze([
   'invalid', 'not-message', 'meta', 'group', 'unsupported-message-type',
-  'self', 'not-allowlisted', 'empty', 'stale', 'duplicate', 'rate',
+  'self', 'not-allowlisted', 'empty', 'stale', 'stale-backfill', 'duplicate', 'rate',
 ])
 
 /** 有界去重表：id -> 首次见到的时间。可选落盘，重启后仍认旧消息。 */
@@ -144,8 +144,12 @@ export function createInboundGate({
   }
 
   return {
-    /** 判断一条原始 OneBot 事件。返回 {accept:true, signal, ...} 或 {accept:false, code}。 */
-    admit(event, { receivedAt = now() } = {}) {
+    /**
+     * 判断一条原始 OneBot 事件。返回 {accept:true, signal, ...} 或 {accept:false, code}。
+     * backfilled=true 时：用 maxBackfillAgeMs 单独判旧（补课消息本来就会晚到，不能用实时 maxStaleMs 丢），
+     * 并在 signal 上打 `[补课]` / tag / meta 标记，让模型知道这条不是刚发生的。
+     */
+    admit(event, { receivedAt = now(), backfilled = false, maxBackfillAgeMs = 0 } = {}) {
       counters.received += 1
       if (!event || typeof event !== 'object') return drop('invalid')
 
@@ -168,9 +172,14 @@ export function createInboundGate({
       if (!text.trim()) return drop('empty')
 
       const sentAt = sentAtOf(event)
-      // 消息自己的时间才算数：WS 实时消息 ≈ 现在；重连/补课之后才到的旧消息默认不进模型
-      if (sentAt != null && !deliverBackfill && maxStaleMs > 0 && receivedAt - sentAt > maxStaleMs) {
-        return { ...drop('stale'), ageMs: receivedAt - sentAt }
+      // 消息自己的时间才算数：WS 实时消息 ≈ 现在；补课消息按自己的补课窗口判旧。
+      if (sentAt != null && maxStaleMs > 0) {
+        const age = receivedAt - sentAt
+        if (backfilled) {
+          if (Number(maxBackfillAgeMs) > 0 && age > Number(maxBackfillAgeMs)) return { ...drop('stale-backfill'), ageMs: age }
+        } else if (!deliverBackfill && age > maxStaleMs) {
+          return { ...drop('stale'), ageMs: age }
+        }
       }
 
       const messageId = messageIdOf(event)
@@ -188,6 +197,11 @@ export function createInboundGate({
         selfId,
         maxTextChars,
       })
+      if (backfilled) {
+        signal.tags = [...signal.tags, 'backfill']
+        signal.meta.qq.backfilled = true
+        signal.text = `[补课] ${signal.text}`
+      }
 
       // 先查重（重复不计限流额度），再限流
       if (store.has(signal.id)) return drop('duplicate')
@@ -198,12 +212,14 @@ export function createInboundGate({
         accept: true,
         code: 'ok',
         signal,
+        text,
         peerId,
         senderId,
         senderName,
         messageId,
         messageAt: sentAt ?? receivedAt,
         receivedAt,
+        backfilled: backfilled === true,
       }
     },
 
