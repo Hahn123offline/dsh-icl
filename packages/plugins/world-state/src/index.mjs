@@ -137,7 +137,17 @@ export function apply(ctx) {
   const world = { registerSource, read, renderBrief, owners, itemsOf, sources: () => [...sources.values()].map((s) => ({ id: s.id, owner: s.owner, title: s.title, order: s.order, cap: s.cap })) }
   ctx.services.provide('world', world)
 
-  ctx.prompt.section({ name: 'world', order: 890, text: () => renderBrief() })
+  // 事实状态段：order 890（在人格/仿真之后）。契约要求每段 ≤1–2 行且实现里必须截断，
+  // 来源会随插件增长（时间/待办/MC…），所以这里给一个硬上限。
+  const sectionMaxChars = Math.max(80, Number(ctx.config.maxChars ?? 240))
+  ctx.prompt.section({
+    name: 'world',
+    order: 890,
+    text: () => {
+      const text = renderBrief()
+      return text.length > sectionMaxChars ? `${text.slice(0, sectionMaxChars - 1)}…` : text
+    },
+  })
 
   ctx.tools.register({
     name: 'world_status',

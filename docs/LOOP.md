@@ -256,7 +256,17 @@ node tools/lab.mjs down            # 停进程、落最终 transcript
 末尾附 ICL 原文 `session-events.jsonl`、`time.json`、`focus.json`、`mc-link.jsonl` 作为状态侧证。
 
 **纪律**（与 TEAM-PLAN §3 一致）：一条 lab 进程只绑一条会话（`dsh-icl` 单会话锁）；换场景 `down` 再 `up`，
-不并行建会话；不 kill 用户 MC 客户端/llama-swap；`--model local` 会先拿 `.state/locks/llama.lock`（全局串行，找 lead 协调）。
+不并行建会话；不 kill 用户 MC 客户端/llama-swap。
+
+**模型钉死（2026-11-05 18:21 事故后加）**：lab **不再信任 web profile 的 `agent-default-model`**。
+2026-11-05 18:21 那份 profile 默认被临时改成 `ninfer/coder390-27b-q3-df2-4x500`，新起的实例全部跟着吃本地 GPU。
+现在 `up` 无论 `--model flash`（默认，云端 `deepseek-account/deepseek-flash`）还是 `--model local`
+（`ninfer/coder390-27b-q3-df2-4x500`）都在建会话后**显式 `session/selectModel`**；selectModel 失败就 `up` 失败，
+绝不回退到未知的 profile 默认。`lab.json` 记 `commit`，transcript 开头同时显示「目标模型」和
+「实际请求模型（最后一个 request/header）」，不一致会标 ⚠️。
+`--model local` 先写**根仓库** `.state/locks/llama.lock`（`ICL_LOCK_FILE` 可覆盖；与 cache/lead 同一把锁），
+完成/失败/`down` 时释放；锁被别的 owner 占着就拒绝启动。
+
 
 **多人共用这台测试床的规矩**（2026-11-05 lead 确认）：
 
@@ -278,4 +288,18 @@ node tools/lab.mjs down            # 停进程、落最终 transcript
 
 首轮实测（2026-11-05，session `session-84f2ac28…`）：`tools=32`（31 个 ICL 工具 + `todo_write`）、
 系统提示词 5115 字符（persona + sim 两段都在）、`turn 1` 1.3s 完成、回复 `ok`、transcript 可读。
+
+**2026-11-05 晚基线（master `9f91d3e` 之后）**：提示词分层契约落地，`lab.patch.yml` 每个 preset 都带
+`tool-persona` 行（`@deepseek-ai/dsh-persona`，`prefix:''`、`suffix:'Your working directory is {{cwd}}.'`），
+覆盖 DSH 全局的 “You are a coding agent powered by … model.”；lab 里**移除 compaction**。期望系统提示词：
+第 1 行 `You are an AI agent powered by DeepSeek Harness.`、第 3 行 `你是小千`、最后一行 cwd 后缀；
+`mc:play` / `mc:interaction` 两个教学段随 mc-link 收进工具 description，不再出现在系统提示词。
+cache 的方案 B（动态事实段改走 `ctx.systemPrompt.context` 的 runtime 快照）合并后，`system/message` 会只剩静态
+persona+sim 段（**systemChars 变小是预期**），时间/focus/MC 状态会以 `user/message`+`source.kind=runtime-context`
+出现；transcript 已把「系统 / 运行时上下文快照（带 `source.sections` 名）/ ICL `<icl-context>` 注入」分开计数。
+
+**MC lab 会话固定项**：preset `icl-mc-lab`，body HTTP 54900，`pluginConfig.mc-link.username: ICL-mclab-1`
+（同服同名会被踢：mc-link 自己的 bot 叫 ICL/ICL-mclink-1），`stateDir` 指向本 run 的 `state/mc-body`。
+A/C/E 场景只连 flat 测试服（54837），survival 54838 是用户在玩的服，不加进 lab 场景。
+
 

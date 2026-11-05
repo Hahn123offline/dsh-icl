@@ -7,7 +7,7 @@
     {
       "op": "prompt",
       "id": "call-to-play",
-      "text": "去 MC 里玩会儿吧，用名字 ICL-mclab-1（别用 Hahn123_，那是用户在玩的号）。你自己看看怎么过去。",
+      "text": "去 MC 里玩会儿吧，去 flat 测试服，用名字 ICL-mclab-1（别用 Hahn123_，那是用户在玩的号）。你自己看看怎么过去。",
       "timeoutSec": 420
     },
     { "op": "assert", "id": "found-server", "toolAny": ["mcb_servers", "mcb_lan"], "required": true },

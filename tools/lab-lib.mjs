@@ -7,7 +7,7 @@
 //   · 所有状态落在 `.state/lab/<runId>/`，`.state/lab/current.json` 只存指针。
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { NodeApiClient, unwrap } from '../packages/adapters/dsh-client.mjs'
@@ -142,22 +142,30 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT }) {
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
-  // lab 自己的服务器清单：只列 flat 测试服（54837），不列用户在玩的 survival。
-  const mcServersFile = path.join(runDir, 'mc-servers.json')
-  fs.writeFileSync(mcServersFile, `${JSON.stringify([
-    { name: 'local-flat', host: '127.0.0.1', port: 54837 },
-  ], null, 2)}\n`, 'utf8')
   const output = template
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
-    .replaceAll('__LAB_MC_SERVERS__', posix(mcServersFile))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')
   return file
+}
+
+/** 当前 worktree 的 commit（lab.json / transcript 证据里要记，便于复现）。 */
+export function gitCommit(short = true) {
+  try {
+    const out = execFileSync('git', ['rev-parse', ...(short ? ['--short'] : []), 'HEAD'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      windowsHide: true,
+    }).trim()
+    return out
+  } catch {
+    return null
+  }
 }
 
 /* ── dsh 进程 ─────────────────────────────────────────── */
@@ -506,7 +514,17 @@ export function renderTranscript({ meta, envelopes, sidecars }) {
 
   push(`# ICL lab transcript — ${meta.runId}`)
   push()
-  push(`- 端口：${meta.port} · preset：\`${meta.preset}\` · 模型：${meta.model?.provider ?? '?'} / ${meta.model?.model ?? '?'}（${meta.model?.source ?? '?'}）`)
+  push(`- 端口：${meta.port} · preset：\`${meta.preset}\` · worktree commit：\`${meta.commit ?? '?'}\``)
+  push(`- 目标模型：${meta.model?.provider ?? '?'} / ${meta.model?.model ?? '?'}（${meta.model?.source ?? '?'}）`)
+  const actualHeader = events.filter((event) => event.type === 'request/header').at(-1)?.data?.header ?? null
+  if (actualHeader) {
+    const actual = `${actualHeader.config?.provider ?? '?'} / ${actualHeader.config?.model ?? '?'}`
+    const target = `${meta.model?.provider ?? '?'} / ${meta.model?.model ?? '?'}`
+    const drift = actual !== target
+    push(`- 实际请求模型（最后一个 request/header）：${actual}${drift ? `⚠️ 与目标不一致（目标 ${target}）` : '（与目标一致）'}`)
+  } else {
+    push('- 实际请求模型：还没有 request/header（还没发过话）')
+  }
   push(`- 会话：\`${meta.sessionId ?? '(未创建)'}\` · workspace：\`${meta.workspaceId ?? '?'}\``)
   push(`- 启动：${meta.startedAt ?? '?'}${meta.endedAt ? ` · 结束：${meta.endedAt}` : ' · 状态：运行中'}`)
   push(`- 目录：\`${meta.runDir ?? ''}\``)

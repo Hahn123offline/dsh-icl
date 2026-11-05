@@ -1,217 +1,275 @@
-# 时间与信号
+# 时间与信号（契约版）
 
-> 读者：要改时间/节律逻辑，或要用控制通道手工驱动一轮测试的人 / 范围：`packages/plugins/time/src/index.mjs`（618 行）、`packages/core/src/signals.mjs`、`packages/core/src/session.mjs`、`packages/adapters/delivery-pump.mjs` / 最后核对：2026-11-03
->
-> **状态机、`arrange` 语法、inbox 命令、tick 循环只在本文件写**，别处只引用这一份。全部结论对着代码核过。
->
-> 本文件合并了五份旧设计稿（`TIME-MODULE` / `TIME-CONTROL` / `IMPL-TIME` / `MESSAGE-MODEL` / `MESSAGE-CHANNELS`，均已删除）。
-> 下文凡说"旧文档写 Y"，指的就是这批设计稿：它们记录的是当时的意图，代码从未那样实现。
+> 读者：要改时间/节律逻辑、要验证"她什么时候醒、醒来算什么、静音能不能挡住"的人。
+> 范围：`packages/plugins/time/src/index.mjs`、`packages/core/src/{signals,services,host}.mjs` 的拦截/投递段、
+> `tools/loop-host.mjs`、`tools/scenarios/loop-s2-time.json` / `loop-s4-sleep.json` / `loop-s5-mute.json`。
+> 状态机、`arrange` 语法、inbox 命令、静音锁语义**只在本文件写**，别处只引用这一份。
+> 最后核对：2026-11-05（与代码同步；上一版 2026-11-03 的"已知问题"大部分已修，见 §10）。
 
-## 1. 它要解决什么
+---
 
-1. **她需要知道现在几点**——`ctx.now()` 是唯一时间源（`index.mjs:445`），time 启用后由 `clock` 服务接管，其它插件不得自己读系统时间。
-2. **什么时候睡、睡多久**——那是一条 `mode:'wake' + kind:'span' + sleep:true` 的安排：到点把 `phase` 切成 `sleeping`、发一句"该睡了"、把结束时刻记进 `spans[].until`；睡眠期间非白名单信号全部进 `queue`。
-3. **醒来时积压了什么**——`endSpan` 把 `queue` 一次性成批放出去，正文以"（你睡觉时）积压了 N 条消息"开头，逐行带来源与原文（`index.mjs:174-184`、`291-305`）。
+## 0. 契约：四个问题
 
-为什么不能靠模型自己记时间：模型只在被投递消息的那一刻存在，两次唤醒之间没有执行体，也没有"到某刻把自己叫醒"的能力；`turn-end` 之后会话就静止了。所以时间必须是**进程外的持久状态 + 定时器**（`state/time.json` + `setInterval(tick, tickMs)`），由插件判定"到没到点"，模型只负责读状态和写安排。
+时间模块回答且只回答四件事（用户原话）：
 
-## 2. 状态机与两个轴
+| 问题 | 谁回答 | 事实源 |
+|---|---|---|
+| **我什么时候被唤醒？** | `schedules`（时间轴）：single / daily / weekly / 倒计时 | `state/time.json` 的 `schedules` + `fired` |
+| **醒了要干什么？** | 唤醒消息、备注、标签、silent；睡眠/静音期间的积压 | `queue` + `spans` |
+| **接下来如何行动？** | `goals`（会话轴）：到点建目标、turn-end 续推、上限、取消 | `goals` + focus 租约 |
+| **更长期的日程？** | 每天/每周重复、编辑、取消、清单可读性 | 同 `schedules` |
+
+时间必须是**进程外持久状态 + 定时器**：模型只在被投递消息时存在，两次唤醒之间没有执行体。
+
+不变式（可机器判定，对应 `docs/SURVIVAL.md` §1）：
+
+1. 同一条安排在同一个触发日只响一次，跨重启也不重复（`fired` 落盘）。
+2. 被拦下的消息最终是 `delivered | backlogged | dropped(explicit)` 之一；`queue` 有界（默认 500，超出丢最旧并计数）。
+3. 积压释放失败（会话忙）时**不清空**队列，下个 tick/下次释放再试。
+4. 状态文件坏掉先备份 `.corrupt-<ts>` 再回落空状态；落盘是临时文件 + rename。
+5. tick 有重入保护；每次漏响/丢弃/过期/溢出都有计数与 `ctx.log`。
+6. 静音/睡眠不能把系统卡死：静音有硬上限（默认 8h）且到点自动解除。
+
+---
+
+## 1. 状态机
 
 ```js
-const PHASES = ['awake', 'sleeping', 'paused']   // index.mjs:21
+const PHASES = ['awake', 'sleeping', 'paused']
 ```
 
-**没有 `asleep`**。`role:'sleep'` 也不是字段：旧 `IMPL-TIME` 设计稿的 M2 把日程写成 `at/role/message/durationMin/allow[]`，代码里没有 `role`，传进来会被 `normalizeSchedule`（72-97）直接丢掉（`packages/core/test/time.test.mjs:55` 仍在传这个字段）。
-
-| 字段 | 含义 | 代码 |
-|---|---|---|
-| `phase` | `awake` / `sleeping` / `paused`，启动时非法值回落 `awake` | 21, 113, 118 |
-| `since` | 最近一次"阶段意义变化"的时间戳：入睡、醒来、resume 时更新；`pause()` **不**更新 | 263, 297, 345 |
-| `schedules` | 全部安排，持久；响过的一次性安排不会自动删除 | 309, 371 |
-| `spans` | 进行中的长日程 `{id, until, endMessage, sleep}`；只有 `wake+span` 产生，`goal` 不进这里 | 274-279 |
-| `queue` | 被 gate 拦下的积压 `{id, from, kind, text, tags, focus, reason, at, expiresAt}`，`reason` ∈ `paused`/`sleeping` | 153-160 |
-| `goals` | `{id, theme, until, turnLimit, focus, resumeOnStop, createdAt}` | 201-208 |
-| `fired` | 幂等键 `"<id>@<YYYY-MM-DD>" → ms`，按天，只增不删 | 286, 375 |
-| `sleepingId` | 正在生效的睡眠日程 id；gate 用它找回白名单 | 166-167, 259, 293 |
-| `sleepUntil` | 睡眠结束时间戳，只用于展示与暂停后移；判定用 `spans[].until` | 264, 342, 355-357 |
-
-安排只有两个正交轴（`index.mjs:5-14`）：`mode = wake | goal`（叫她一声 / 让她持续做），`kind = single | span`（一条消息 / 有始有终）。四种组合的实际行为：
-
-| mode | kind | 代码行为 | 发出几条消息 |
-|---|---|---|---|
-| `wake` | `single` | 到点 `send({kind:'wake'})`，不记 span | 1 |
-| `wake` | `span` | 开始时一条 + 记 `spans`；到点 `endSpan` 再一条 | 2 |
-| `goal` | `single` | 建 goal，上限只有 `turnLimit`；每次 `turn-end` 重发一条 | 1 + 每次 turn-end |
-| `goal` | `span` | 建 goal 且带 `until`；到期发"目标结束"并卸载 | 1 + 到期 1 条 |
-
-`schedules` 与 `goals` 是两条独立的轴，别混：`schedules` 是**时间轴**，只由 tick 到点推进（`startSchedule`，248-289）；`goals` 是**会话轴**，靠 `turn-end` 续推（`resumeGoals`，228-246）。一条 `mode:'goal'` 的安排到点后会往 `goals` 里多出一条（它自己仍留在 `schedules`）；而 `goal_add` 直接建的 goal 完全不在 `schedules` 里——所以 `time_list` 看不见它，只有 `time_status`/`status` 看得见。同理 `spans` 是"正在跑的那一份副本"：`time_edit` 改 `schedules` 不动它（见 §8）。
-
-状态转移（全部转移点都在 `index.mjs`）：
+三个相位，外加一个**正交的静音锁**（`lock`，不改变相位）：
 
 ```
   awake ──①──▶ sleeping          ① 到点触发 arrange{mode:'wake',kind:'span',sleep:true}
     ▲             │
     └──────②──────┘               ② span.until 到点 endSpan()；或 api.wake() / time_cancel(span.id)
 
-  awake ──③──▶ paused            ③ pause() / time_pause 工具 / inbox pause
+  awake ──③──▶ paused            ③ pause() / time_pause / inbox pause
   sleeping ─③─▶ paused
-  paused ──④──▶ sleeping | awake  ④ resume()：看 sleepingId 还在不在（344）
-  任意 ───⑤──▶ awake             ⑤ inbox reset（427）／启动读到非法 phase（118）
+  paused ──④──▶ sleeping | awake  ④ resume()：看 sleepingId 还在不在
+  任意 ───⑤──▶ awake             ⑤ inbox reset / 启动读到非法 phase（自愈）
 ```
 
-`sleeping` 下 gate 的判定：先看 `from.plugin === 'time'`（自己的消息永远放行，163），否则取 `sleepingId` 对应日程的 `allow`，空则用默认 `[{from:'admin'}]`（20, 167）。拦截结果只有两种：放行，或入队 + `{accept:false, reason}`。
+`state` 字段（`state/time.json`，键名即契约）：
 
-## 3. `time_arrange` 的语法
+| 字段 | 含义 |
+|---|---|
+| `phase` | `awake` / `sleeping` / `paused`；启动时非法值回落 `awake` |
+| `since` | 最近一次阶段意义变化的时间戳（入睡/醒来/resume） |
+| `schedules` | 全部安排，持久；一次性安排响过即删，daily/weekly 保留 |
+| `spans` | 进行中的长日程 `{id, until, endMessage, sleep, silent, allow}` |
+| `queue` | 被拦下的积压 `{id, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota` |
+| `goals` | `{id, theme, until, turnLimit, resumeLimit, resumes, focus, resumeOnStop, createdAt, lastResumeAt}` |
+| `fired` | 幂等键 `"<id>@<YYYY-MM-DD>" → ms`；负值表示"这天已处理但漏响" |
+| `sleepingId` / `sleepUntil` | 当前睡眠安排 id / 结束时刻（展示与后移用；判定读 `spans[].until`） |
+| `lock` | 静音锁 `{muted, since, until, reason, allow, emergency:{quota, used, log}}`，可为 null |
+| `pausedAt` | 暂停开始时刻；落盘，重启后 resume 仍能正确后移 |
+| `inboxOffset` | 控制后门游标；落盘，**重启不重放历史命令** |
+| `stats` | `{dropped, missed, expired, overflow, failed, inboxBad}` 可观测计数 |
+| `lastTickError` / `lastPersistError` | 最近一次失败，控制后门可查 |
 
-工具 schema 在 `index.mjs:532-546`（`additionalProperties:false`，`required:['mode']`），落地函数是 `normalizeSchedule`（72-97）。
+安排只有两个正交轴：`mode = wake | goal`（叫她一声 / 让她持续做），`kind = single | span`（一条消息 / 有始有终）。
 
-| 参数 | 类型 | 代码里的真实语义 |
+| mode | kind | 行为 |
 |---|---|---|
-| `mode` | `'wake'\|'goal'` | 唯一必填；非 `'goal'` 一律按 `'wake'`（73） |
-| `kind` | `'single'\|'span'` | 可省。`sleep:true` 或给了 `duration`/`until` 时**强制** `span`（81） |
-| `at` | 字符串 | `HH:mm`（每天）／ISO／`'now'`；解析见 `parseAt`（28-37） |
-| `in` | `'10m'`／`'2h'`／分钟数字 | 起点 = now + in（`parseIn` 39-46）。**同时给 `at` 时 `at` 赢**（75） |
-| `duration` | `'8h'`／`'30m'` | span 时长，落成 `durationMin`（整数分钟，87） |
-| `message` | 字符串 | `wake` 的正文；`goal` 的 theme 兜底（89-90） |
-| `theme` | 字符串 | `goal` 主题，缺省回落 `message` |
-| `focus` | 字符串 | `goal` 绑定的注意力空间，`addGoal` 里 `focus.enter()`（210-212） |
-| `turnLimit` | 数字 | `goal` 轮次上限，每次 resume 减一（239） |
-| `sleep` | 布尔 | 睡眠标记：切 `phase`、进白名单模式、发 `sleep-start` 事件（260-282） |
-| `allow` | 对象数组 | 睡眠白名单，规则字段 `from`/`kinds`/`tags`/`any`（`allowMatch` 57-69） |
+| `wake` | `single` | 到点发一条 `wake`；一次性安排响后删除 |
+| `wake` | `span` | 开始一条 + 记 `spans`；结束时一条（`silent:true` 时两条都不发，只发事件） |
+| `goal` | `single` | 到点建 goal；之后每个 `turn-end` 续推，直到 until/turnLimit/resumeLimit |
+| `goal` | `span` | 同上，带时间上限（`until` 或 `duration`） |
 
-schema 之外、代码支持但**只能走 inbox** 的参数：`until`（ISO，79-80）、`id`（83）、`inMinutes`、`durationMin`。工具面因 `additionalProperties:false` 传不进来。
+`schedules` 是时间轴（tick 推进），`goals` 是会话轴（turn-end 推进）。一条 `mode:'goal'` 的安排到点后往 `goals` 里多一条，它自己仍留在 `schedules`（daily/weekly 会再次建目标）；`goal_add` 直接建的 goal 不在 `schedules` 里——`time_list` 现在**两部分都列**。
+
+---
+
+## 2. `time_arrange` 语法与语义
+
+`normalizeSchedule(input, now, {timeZone})` 是唯一落地函数；工具 schema `additionalProperties:false`。
+
+| 参数 | 真实语义 |
+|---|---|
+| `mode` | 必填；只有 `'goal'` 是 goal，其余一律 wake |
+| `kind` | `single/span`；`sleep:true` 或给 `duration`/`until` 时强制 span |
+| `at` | `HH:mm`（每天）／`周一 07:30`、`mon,wed 07:30`、`一、三 07:30`（每周）／`YYYY-MM-DD`（那天 00:00）／ISO／`now` |
+| `in` | 倒计时：`10m`/`2h`/`1d`/`1h30m`/纯数字=分钟；与 `at` 同给时 **at 优先** |
+| `duration` | span 时长（同上语法）；`sleep:true` 无时长默认 3 分钟 |
+| `weekdays` | `[1..7]`（1=周一）配 `HH:mm`，等价于 `at:'周一 07:30'` 多天写法 |
+| `message` / `theme` | wake 正文 / goal 主题（缺省回落 message） |
+| `silent` | 只发 `schedule-start` 事件、不发消息；span 的结束语也不发 |
+| `tags` | 打进 `schedule-start` 事件，插件按标签订阅（dream 的 `tags:['dream']`） |
+| `focus` | goal 绑定的注意力空间（`addGoal` 时 `focus.enter`，结束/取消释放） |
+| `turnLimit` / `resumeLimit` | goal 的回合上限 / 连续唤醒上限（默认 50） |
+| `sleep` / `allow` | 进入睡眠 / 睡眠白名单规则 `{from,kinds,tags,any}`（默认 `[{from:'admin'}]`） |
+| `id` | 同名覆盖并重新计时（fired 清理） |
+
+**daily/weekly 的"下一次"语义（本轮改）**：重复安排的新建/改期，如果**今天的触发点已经过去超过补发窗口**，把它记成"本轮已过"，从下一次开始——20:00 建 `at:'07:30'` 不会再立刻响一次。补发窗口：
+
+- 重复安排 `catchUpMs` 默认 **15 分钟**：事件循环卡住 ≤15 分钟仍会补响，超过记 `missed`（计数 + log，不补响）。
+- 一次性安排 `onceCatchUpMs` 默认 **24 小时**：超过显式丢弃并 log（不再永久留在表里）。
+- `fired` 键用**触发点所在日**，跨午夜补响不会吃掉第二天的触发。
+
+**编辑**：`time_edit({id, ...})` 重新 normalize；给 `in` 时不再被旧 `at` 吃掉；只有触发点真变了才清 `fired`（改 message 不会造成同一天重复响）；进行中的 span 会同步改结束时间（含睡眠的 `sleepUntil`）。
+
+**取消**：`time_cancel(id)` 统一收尾——命中长日程就结束、命中安排就删、命中目标就删并释放 focus，同 id 一次全清；返回命中了哪几类。
+
+---
+
+## 3. pause / resume 语义（只停计时）
+
+- `pause()`：`phase='paused'`，记 `pausedAt`（落盘）。tick 除处理 inbox 外不推进任何计时。
+- `resume()`：把**暂停时长**整体后移 `spans[].until`、`sleepUntil`、`goals[].until`、一次性 `schedules[].parsed.at`、`lock.until`；daily/weekly 的墙钟时刻不后移（它们不是倒计时）。
+- 恢复后如果仍在 sleeping，**不释放积压**（留到醒来一起放，避免睡着时把消息倒给模型）。
+- 暂停只冻结时间，不冻结相位；重启后 `pausedAt` 仍有效。
+
+---
+
+## 4. 拦截层：sleep / mute / 事件
+
+`time` 是 `signals` 的唯一纵向拦截层（`signals.addGate`），并在 delivery 上再装一层 push-time gate。判定顺序：
+
+1. `to === 'plugin'`（事件总线）→ **放行**，不进积压。`emit()` 就是 `offer({to:'plugin'})`；core 现在只对 `to:'model'` 调用 gate，time 的 gate 也做同样防御。睡眠时 `turn-end` 之类的事件不会再变成"积压的用户消息"。
+2. `from.plugin === 'time'` → 放行（自己的闹钟/结束语/目标续推；FOCUS.md §1.6：静音不关自己的闹钟）。
+3. `phase === 'paused'` → 入队 `reason:'paused'`。
+4. `lock` 生效（静音）→ `lock.allow` 命中放行；紧急事件在独立配额内放行（每次放行记 `lock.emergency.log`），超配额入队 `reason:'muted-quota'`；其余入队 `reason:'muted'`。**静音优先于睡眠白名单。**
+5. `phase === 'sleeping'` → 活动 span 的 `allow` 命中放行；其余入队 `reason:'sleeping'`。白名单默认 `[{from:'admin'}]`（`from/kinds/tags/any` 任一规则全字段匹配即放行）。
+
+补充：
+- `allow: []` 表示**没有**白名单（除 time 自己和静音锁规则外全拦）；`allow:null` 才回落默认。
+- 积压有界：`maxQueue` 默认 500，超出丢最旧、`stats.dropped/overflow` 计数并 log。
+- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字）；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
+- 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
+
+### 4.1 静音锁（新）
+
+`mute({minutes, until, reason, allow, emergencyQuota})`：
+
+- 默认 30 分钟，最长 `maxMuteMs`（默认 8h）——超时到点**自动解除**并释放有界积压摘要，不会把系统永久卡死；解除时发 `mute-end` 事件。
+- 紧急事件 = 带 `tags` 里的 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 配置可把来源收敛成显式插件白名单（默认 null=不限制）。
+- 可查：`time_status` / `status().lock` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
+- 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason`、`time_list` 显示 `（sleeping）/（muted）/（muted-quota）`。
+- 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
+
+### 4.2 穿透与伪造：风险边界
+
+- `from.plugin === 'time'` 是**身份字段**，同进程插件理论上可伪造；本轮靠"进程内插件都是自家代码"兜底，不把它当安全边界。
+- `tags:['alarm']` 同理：任何插件都能给自己的信号打紧急标签。已做：`emergencyFrom` 显式白名单可收敛来源；`focus.admit` 的 `alarm` 特权是 core 现有行为（本轮不改，见 §9）。
+- **已堵的结构洞**：插件直接 `ctx.delivery.push` 会绕过 signals gate。现在 delivery 有 push-time gate（`delivery.setGate`），time 在 delivery 上再装一层：`channel==='signal'` 视为"已过 signals gate"放行，其余按当前相位/静音锁裁决，被拦的进 time 积压（不丢）。focus 的积压摘要也从 `delivery.push` 改为 `signals.offer`（gate + focus.admit 双重裁决）。
+- 多 gate：`signals.addGate` / `delivery.addGate` 组合裁决（全部 accept 才放行），卸载只摘自己那层；旧 `setGate` 仍是替换语义。time 在 tick 里自愈：发现自己的 gate 被整体替换会重新安装并 log。
+
+---
+
+## 5. 目标（会话轴）
+
+- 来源：`time_arrange {mode:'goal', ...}`（到点建）、`goal_add`（立即建）。`addGoal` 接受 `until`（ISO/HH:mm/in 式）、`afterMin`、`durationMin`、`in`、`turnLimit`、`resumeLimit`、`focus`、`resumeOnStop`。
+- 目标消息带 **id / theme / 剩余轮次 / 到期时间**：`你在目标内：<theme>（还剩 N 轮，到 …）。id=g-xxx，不用时用 time_cancel 取消，别留着空跑。`
+- 每个 `turn-end`（`signals.on({tags:['turn-end']})`，只在 awake 时）续推一次；在 `until` 到期、`turnLimit` 用完、`resumeLimit`（默认 50）或 `goalMaxAgeMs`（默认 8h）到上限时发**明确的"目标结束：…（原因）"**并释放 focus——不是静默停止。
+- `time_cancel(id)` 取消目标、释放绑定 focus；`time_list`/`time_status` 都能看到 id（旧版看不到 id 导致无法取消）。
+- 与 focus 的配合：goal 用 `owner:'time'` 的租约进入 `focus`（`interruptible:true`），换目标/结束/取消都会释放；模型自己的 `focus_leave` 不会替她取消 goal（由 `time_cancel` 或上限收尾）；time 发的目标消息在 `focus.admit` 里因 `from.plugin==='time'` 始终可达，并带 `focus` 字段以便归并到同一个 batchKey。
+
+---
+
+## 6. 提示词与世界状态（cache 契约）
+
+- 提示词段 `time`（order **880**）：`时间：YYYY-MM-DD 周X 时段；相位[（睡到 HH:mm）][（静音到 HH:mm）]。` 第二行仅在有内容时出现：`下一个安排：<id>（每天 07:30，<绝对时间>）；积压 N 条（来源）`。
+- **不写精确到分钟的时间**：DSH 每步已注入精确时间；分钟级抖动会每 60 秒作废一次前缀。时段 + 日期只在跨小时/跨天时变。
+- 每段 ≤2 行，无内容整段消失；`order ≥800` 放动态段尾部（`docs/PROMPT-CONTRACT.md`）。
+- world source：`owner:'time', title:'日程'`，只列"进行中/目标"（"现在几点/下一个安排/积压"的唯一家是 time 段）；它的存在同时抑制 world-state 的兜底"时间"行，系统提示里只有一处 `时间：`。
+
+---
+
+## 7. 控制后门：文件邮箱
+
+CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。协议：CLI 往 `time.inbox.jsonl` 追加一行 JSON，time 在 tick 里读、写 `time.outbox.jsonl` 回执（CLI 按 `id` 配对）。
+
+命令全集（`runCommand`）：`status/pause/resume/arrange/cancel/edit/skip/queue/mute/unmute/lock/wake/reset/goal_add/goal_remove/goal_list`。未列出的返回 `{ok:false,error:'未知命令：X'}`。
+
+- `cancel` 是 §2 的统一收尾（不再只删 schedules）。
+- `reset`：释放全部 focus 租约、清空 schedules/queue/goals/spans/fired/lock/pausedAt，**保留 inboxOffset**（重启不重放旧命令）。
+- 回执：`{"id":..., "at":..., "ok":true, "result":{...}}` 或 `{"ok":false,"error":"..."}`。
+- 游标落盘（`state.inboxOffset`），文件被截断时自动归零并 log。
+- 启动时若 `queue` 非空，按"（重启后发现的）积压了 N 条消息"显式释放（失败会保留）。
+
+**正确顺序：先起会话，再下命令；不要预写 `time.json`**（启动会清理过期一次性安排并释放已有积压）。
+
+---
+
+## 8. 工具面（9 个）
+
+| 工具 | 一句话 |
+|---|---|
+| `time_status` | 现在/阶段/睡到/静音到/下一个安排/进行中/目标 id/积压/漏响 |
+| `time_arrange` | 新建安排（§2 语法；工具 description 是参数契约的家） |
+| `time_list` | 安排（按下一次触发排序）+ 目标 + 积压，带相对时间 |
+| `time_edit` | 改时间/消息/模式/时长/silent/tags；进行中 span 同步结束时间 |
+| `time_cancel` | 同 id 一次收尾（长日程/安排/目标），释放 focus |
+| `time_pause` / `time_resume` | 冻结/恢复全部计时（§3） |
+| `time_mute` / `time_unmute` | 静音锁（§4.1）：可查/可恢复/自动到期/紧急配额 |
+
+七个旧工具名不变；新增两个静音工具后 `manifest.json` 的 `tools` 同步（9 个），tool index 字节变化属预期（cache 需要知道）。
+
+---
+
+## 9. 已知风险（本轮不修，写清楚不装死）
+
+| 风险 | 后果 | 现状/缓解 |
+|---|---|---|
+| `from.plugin` / `tags:['alarm']` 可被同进程插件伪造 | 伪造者可绕过睡眠/静音 | 进程内信任模型；`emergencyFrom` 可收敛来源；真正的安全边界要 principal/签名，未做 |
+| `focus.admit` 把 `tags:['alarm']` 与 `from.plugin==='time'` 当特权 | 任意插件可给自己发通行证 | 本轮不改 core 语义（focus owner 是 misc）；已把时间侧放行收敛成显式 allow + 配额 |
+| 多 gate 只有 time 在用 | 其它插件若用旧 `setGate` 会整体替换 | `addGate` 组合 + time tick 自愈重装 + log |
+| 时区 | `timeZone` 配置当前只影响 time 自己的 HH:mm/daily/weekly/dayKey；dream 有独立时区配置 | 默认宿主时区；换机器/改时区后 `fired` 日期键会错一天，需 reset 或等自然跨天 |
+| delivery 重试与 signal 幂等 | signals 的 `exactlyOnce:false`；批 ack 丢失时同一批可能重发 | delivery 层 nack 退避；时间侧 `fired` 保证"安排不重复响"，但已投递文本的重复由 delivery 决定 |
+| `time-accept.mjs` 是旧 host 验收脚本 | 仍可跑，但不是契约验收（见 §11） | 契约验收走单测 + `loop-host.mjs` |
+
+---
+
+## 10. 本轮修掉的（对照 2026-11-03 版"已知问题"）
+
+- 空 `catch` 吞错 → persist/state/inbox/outbox/tick 都有 log + side file + `last*Error`；状态文件坏先 `.corrupt-` 备份；原子写（tmp + rename，失败退回直写并 log）。
+- `inboxOffset` 重启归零 → 游标落盘，不再重放；坏行计数。
+- daily "今天"语义 → 下一次触发 + 补发窗口 + `missed` 计数；once 漏 >24h 显式丢弃；一次性安排响后删除；`fired` 只保留 8 天。
+- `time_edit({id,in})` 静默无效 → 修好；只在触发点真变时清 fired；进行中 span 同步结束时间。
+- goal 停不下来 / `afterMin` 不生效 / 状态无 id → 续推上限 + `afterMin` 支持 + 状态带 id + 明确结束消息 + 取消释放 focus。
+- 嵌套 sleep 提前醒 / 重启后 sleeping 无租约 / 编辑取消丢失睡眠白名单 → 单层睡眠守卫、启动恢复租约、白名单存进 span。
+- pause 只冻结 span → 一次性时刻、goal.until、lock.until 一起后移；resume 到 sleeping 不释放积压。
+- 事件总线被当用户消息积压、`to:'plugin'` 进 queue → gate 只作用于 `to:'model'`。
+- `delivery.push` 绕过 gate → core push-time gate + focus 摘要改走 signals。
+- 积压静默丢失（先清队列后发送）→ 发送成功才清；有界摘要；溢出/过期计数。
+- 静默失败 → tick 重入保护、`stats`/`lastTickError`、失焦 gate 自愈。
+- 提示词两行"时间："、world source 分钟级抖动 → `time` 段（order 880）+ world `日程` 段；时间只到日期+时段。
+
+---
+
+## 11. 验收场景
+
+### 单测（`node --test packages/core/test packages/mc-body/test`）
+
+| 文件 | 覆盖 |
+|---|---|
+| `time.test.mjs` | 基本触发/睡眠拦截/白名单/醒来释放/暂停积压/inbox/silent 日历/fired 幂等/默认睡眠时长 |
+| `time-goal.test.mjs` | goal 创建、释放 focus、到期、turn-end 续推、turnLimit、时钟接管、取消睡眠 |
+| `time-lock.test.mjs` | **静音锁**（拦截/紧急配额/自动到期/手动解除/与 sleep 区分）、**防穿透**（delivery 直投/事件总线/focus 摘要）、积压有界/失败不丢/过期、一次性删除、daily 下一次、weekly、倒计时语法、pause 冻结、漏响计数、silent span、嵌套睡眠、goal 上限、统一取消、坏状态备份、inbox 游标、暂停中重启 |
+| `signals.test.mjs` | gate 只拦 to:model、addGate 组合、setGate 替换语义 |
+| `delivery-gate.test.mjs` | delivery push-time gate：拦/放/fail-open/卸载恢复/组合 |
+| `focus-semantics.test.mjs` | focus 闸门与积压摘要（本轮改走 signals.offer 后仍绿） |
+
+### 虚拟时钟闭环（`node tools/loop-host.mjs --long`，24/24）
+
+S0 工具面/系统提示、S1 外部投递、S2 focus 积压与摘要、S3 time wake、S4 睡眠积压释放，外加本轮 S5：
+
+- 静音：外部消息不投递、自己的闹钟照常响、紧急配额（1 条放行/1 条积压）、解除后积压一次释放
+- 防穿透：睡眠中 `host.services.delivery.push` 直投被拦且醒来释放
+- 暂停：倒计时冻结、恢复后按剩余时间响
+- goal：续推到上限后明确结束、id 可查
+- 提示词：只有一处 `时间：`、时间不精确到分钟
+
+### 真实会话（lab，最终手感确认；不重启 desktop）
 
 ```bash
-# 起床闹钟：每天 07:30 一条消息（HH:mm 即「每天」）
-node tools/time.mjs arrange '{"id":"morning","mode":"wake","kind":"single","at":"07:30","message":"早上了，起来吧"}'
-
-# 睡一段：3 分钟后开始，睡 3 分钟；只有 admin 和带关键词的 qq 能穿透
-node tools/time.mjs arrange '{"id":"nap","mode":"wake","kind":"span","sleep":true,"in":"3m","duration":"3m","message":"你困了，去睡吧","allow":[{"from":"admin"},{"from":"qq","any":["着火了","醒醒"]}]}'
-
-# 每天 23:00 睡 8 小时：daily + span，endMessage 是醒来那句
-node tools/time.mjs arrange '{"id":"night","mode":"wake","kind":"span","sleep":true,"at":"23:00","duration":"8h","message":"你困了。接下来 8 小时不会有人打扰你。"}'
+node tools/lab.mjs up --preset icl-lab --port 57107 --run time-1
+node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s2-time.json
+node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s4-sleep.json
+node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s5-mute.json
+node tools/lab.mjs down --run time-1
 ```
 
-模型侧同一个调用是 `time_arrange({mode:'wake', kind:'span', in:'10m', duration:'30m', message:'…'})`。注意 **arrange 只写 `schedules`，不立即发送**：`at:'now'` 也要等下一个 tick（≤ `tickMs`）才真正 `startSchedule`。
-
-## 4. 七个工具
-
-| 工具 | 参数 | 返回 | 副作用 |
-|---|---|---|---|
-| `time_status` | — | `{text}`：现在／阶段／进行中／目标／积压 | 无（纯读 `api.status()`） |
-| `time_arrange` | §3 的参数表 | `{text: '安排好了：<id>（mode/kind，at…）'}` | 写 `schedules` + `persist()`；不发送 |
-| `time_list` | — | `{text}`：进行中的 span + 全部安排；空则"还没有安排。" | 无（`schedules()` 会剥掉 `__parsed`） |
-| `time_edit` | `id`（必填）, `at`, `in`, `message`, `mode`, `duration` | `{text: '改好了：<id>' / '没有这个安排：<id>'}` | 整条重新 `normalizeSchedule` 后替换；**改不动已开始的 span** |
-| `time_cancel` | `id`（必填） | `{text: '结束了／取消了／目标已取消／没有这个安排'}` | 命中 span → `endSpan`（发结束语、释放 sleep 租约、醒来的话 flushQueue）；否则删安排；否则删 goal 并释放它的 focus 租约 |
-| `time_pause` | — | `{text:'已暂停计时。'}` | `phase='paused'`、内存记 `pausedAt`、`persist()`；此后 tick 直接 return |
-| `time_resume` | — | `{text:'恢复了，释放了 N 条。' / '当前不是暂停状态：<phase>'}` | `spans[].until` 与 `sleepUntil` 整体后移暂停时长，`flushQueue('暂停期间')`、`persist()` |
-
-七个工具名与 `manifest.json` 的 `tools` 完全一致（无多无少）；`goal` 没有独立工具，全部走 `time_arrange {mode:'goal'}`。
-
-## 5. tick 循环与落盘
-
-- **`tickMs` 默认 15000**，下限 1000（`index.mjs:103`）；`setInterval` + `void tick()`，`unref()`（605-610），`onDispose` 时 `clearInterval`。
-- **tick 顺序**（351-381）：`processInbox()` → `phase==='paused'` 直接 return → 结束到期 span → 清理到期 goal → 触发到点 schedule → `persist()`。
-- **状态文件**：`config.stateFile`，缺省 `<config.root ?? '.'>/state/time.json`（100-102）。仓库里**没有** `state.json` 这个文件——状态文件就叫 `time.json`。
-- **inbox / outbox**：与状态文件同目录，`time.inbox.jsonl`（只读）／`time.outbox.jsonl`（只追加）（104-105）。
-- **读 inbox**：整文件读入 → `text.length < inboxOffset` 时把游标归零（387）→ 只解析 `slice(inboxOffset)` → 逐行 `JSON.parse`，坏行静默跳过（396）→ 先推进游标再执行（390），所以执行抛错不会重读。**游标只在内存里**（106），重启从 0 开始（后果见 §8）。
-- **写 outbox**：每条命令追加一行 `JSON.stringify({id, at, ...runCommand结果})`（404-407），即 `{id,at,ok,result}` 或 `{id,at,ok:false,error}`。
-- **persist**：`mkdirSync -p` + `writeFileSync(stateFile, JSON.stringify(state,null,1))`（142-147）；**原地覆盖，无临时文件、无 rename、无锁**。
-- **异常落盘**：tick 抛错 → `tick-error.json`（607）；命令执行抛错 → `inbox-error.json`（401）。两个文件都在状态文件同目录、都是 `writeFileSync` 覆盖写（只留最后一次）。注意文件名是 `inbox-error.json`，不带 `time.` 前缀（`code-groundtruth.md` §5.2 写成 `time.inbox-error.json`，与代码不符）。
-- 启动时还有一次特殊动作：`if (state.queue.length) flushQueue('日程因重启发生错误')`（439），即重启先把上次的积压当"出错"放掉，再装 gate（441）。
-
-## 6. 控制通道（文件邮箱 + CLI）
-
-CLI 只做三件事：`fs.appendFileSync(inbox, JSON.stringify({id, cmd, args, at}))`（`tools/time.mjs:45`）、轮询 outbox 找同 `id` 的回执、打印。参数：`--state <time.json>`（也认 `ICL_TIME_STATE`，25 行）、`--wait <ms>`（默认 20000）、`--no-wait`。
-
-```bash
-node tools/time.mjs status
-node tools/time.mjs resume
-node tools/time.mjs pause --no-wait
-node tools/time.mjs arrange '{"mode":"wake","kind":"single","in":"10m","message":"该出门了"}'
-node tools/time.mjs status --state C:/DSH/qwenstuff/icl/state/time.json --wait 5000
-```
-
-inbox 命令全集（`runCommand`，`index.mjs:413-437`，未列出的返回 `{ok:false,error:'未知命令：X'}`）：
-
-| cmd | args | 一句话 |
-|---|---|---|
-| `status` | — | 返回 `api.status()`：phase/since/sleepUntil/spans/schedules/backlog/goals |
-| `pause` | — | 暂停计时；此后 tick 只处理 inbox |
-| `resume` | — | 进行中的 span 与 `sleepUntil` 后移暂停时长，按 `sleepingId` 回到 sleeping 或 awake，并放出"暂停期间"的积压 |
-| `arrange` | 同 `normalizeSchedule`（含 `id`/`until`，不校验字段） | 新建/覆盖一条安排，等 tick 到点才发 |
-| `cancel` | `{id}` | 只删 `schedules` 里的安排；进行中的 span 与 goal 都不动 |
-| `edit` | `{id, ...patch}` | 用 patch 覆盖旧安排后重新 normalize（`in` 会被旧 `at` 吃掉，见 §8） |
-| `skip` | `{id}` | 从 `queue` 里删一条积压（仅本次） |
-| `queue` | — | 返回积压数组的副本 |
-| `reset` | — | `state = blank()`：phase→awake，清空 schedules/queue/goals/spans/fired |
-| `goal_add` | `{theme, until\|durationMin, focus?, turnLimit?, resumeOnStop?}` | 建 goal + 发一条 goal 消息；带 focus 则进入该空间 |
-| `goal_remove` | `{id}` | 删 goal 并释放绑定的 focus 租约 |
-| `goal_list` | — | 返回 goals 数组副本 |
-
-回执格式（`index.mjs:406`，`tools/time.mjs:51-57` 按 `id` 精确配对）：
-
-```json
-{"id":"c-1793772-412","at":1793772400000,"ok":true,"result":{"phase":"awake","backlog":1}}
-{"id":"c-1793772-412","at":1793772400000,"ok":false,"error":"未知命令：arm"}
-```
-
-**正确顺序：先起会话，再下命令。不要预写 `time.json`。** 因为插件 `apply` 会先读状态文件、对 `schedules` 做一次清理（删掉 10 分钟前的一次性安排，124-134），并在装好 gate 之前把已有 `queue` 当"重启错误"释放（439）；预写进去的内容会被这套启动逻辑改写或丢弃，而 CLI 的 `--state` 若没指向会话真正用的那个文件，命令只会写进另一个目录、永远等不到回执（20 秒后 `exit 1`）。
-
-`tools/time.mjs` 头注释（1-14 行）列的 `arm` / `sleep` / `wake` **不是命令**：`runCommand` 里没有这三个分支，会得到 `未知命令` 与退出码 1。旧 `TIME-CONTROL` 设计稿 §4 的命令表漏了 `reset`，§7 说"`sleep`/`wake` 是异步的，返回 `started/waking`"——代码里没有这两个命令。
-
-## 7. 信号层怎么把 wake 送进会话
-
-全链路（每一步都可单测）：
-
-```
-time.send()  index.mjs:149-151
-  └─ signals.offer({from:{plugin:'time',activity:'schedule'}, kind, text, focus, tags})
-       signals.mjs:91-118
-       ├─ validateSignal：from.plugin 必填、kind ∈ wake|goal|notice|content|event、text 或 meta 二选一
-       ├─ id 幂等（自动 id s-1、窗口 24h、进程内 Map）
-       ├─ gate → time 的 gate（index.mjs:162-172）：放行 / 入队并返回 {accepted:false,blocked:true}
-       └─ to==='model' 且 deliver 存在 → deliver(signal)
-             host.mjs:36-45
-             └─ delivery.push({to:'session', channel:'signal', source:{plugin, activity:'signal', seq:null},
-                               content:{text}, batchKey:`signal:<plugin>:<focus>`, exactlyOnce:false})
-                   services.mjs:448-471
-                   └─ drain('session') 按 `to|batchKey` 合并，text 用 '\n' 拼接（474-499）
-                         delivery-pump.mjs:18-42
-                         └─ prompt({sessionId, text, urgent}) → 成功 ack / 失败 nack 并 break 本轮
-                               外层薄壳（仓库外 icl-live）把它映射成 DSH 的
-                               api.sessions.prompt({sessionId, mode:'queue', content:[{type:'text',text}]})
-```
-
-- `batchKey` 形如 `signal:time:`（focus 为空时末尾是空串）、`signal:qq:qq:group:123`。同一 `(plugin, focus)` 的多条信号若在同一次 drain 里被取走，会**合并成一条消息**（正文按换行拼接）——所以"结束语 + 积压释放"常常作为一封消息同时到达。
-- 信号投递是 `exactlyOnce:false`、`seq:null`，因此不做水位去重；失败按 delivery 的退避重试，5 次后静默丢弃并计入 `droppedCount()`（services.mjs:516-529）。
-- 另一条送达路径是 `session.drainOnce()`（`session.mjs:43-73`，drain → push → ack/nack，末尾 `emit turn-end`），只用于测试与 `tools/time-accept.mjs`，产品里不跑。
-- `to:'plugin'` 的事件也走 `offer` → 同一个 gate（`emit()` 只是把 `to` 改成 `plugin`，signals.mjs:122）。time 自己发 `sleep-start`/`sleep-end`（281、299），dream 用 `signals.on({kind:'event', tags:['sleep']})` 订阅（`tools/time-accept.mjs:22-24`）。
-- gate 只在 time 启用期间存在；没启用时 `gate === null`，全部放行（signals.mjs:100）。卸载时 `ctx.onDispose(() => signals.setGate(null))`（612）。
-
-旧 `MESSAGE-CHANNELS` 设计稿（已删除）的两种模式，与代码的对应关系：
-
-| 模式 | 文档说的用途 | 代码里谁用 |
-|---|---|---|
-| `mode:'queue'`（不打断，本轮结束后作为下一轮进入，`placement: next-turn`） | 叫起床、到点提醒、例行通知 | 时间模块的**全部**输出（wake/goal/notice）——`delivery-pump` 发出去的就只有这一种 |
-| `mode:'steer'`（插话，`placement: next-step`，GUI 显示为"插话"） | 真紧急（着火、断电） | **仓库内没有实现者**：`delivery-pump.mjs:29` 只透传 `urgent: Boolean(batch.urgent ?? batch.content?.urgent)`，而 `createDeliveryService` 从不写 `urgent` 字段（services.mjs:458-468），所以 `urgent` 恒为 `false`；真正的 queue/steer 分支在外层薄壳里 |
-
-## 8. 已知问题
-
-| 严重度 | 代码位置 | 缺陷 |
-|---|---|---|
-| 高 | `index.mjs:108` | `const signals = ctx.signals ?? ctx.services.require('signals')` 的兜底分支**必然抛错**：`services.require` 只查插件共享能力表（host.mjs:154-158），而 `signals` 只挂在 `ctx.signals`（116-122）与 `host.services.signals`（175-183），不在表里 → 抛"缺少依赖能力：signals"，不是降级。同文件 281/299 行又直接用 `ctx.signals.emit`，两套写法自相矛盾。 |
-| 高 | `index.mjs:106, 387-390`；`tools/time.mjs:45` | `inboxOffset` 只在内存里，重启归零 → 整个 inbox 历史被**重放一遍**（`pause`、`arrange`、`reset` 全都再执行一次）；CLI 只 append 从不截断，文件无限增长。 |
-| 高 | `index.mjs:497-509`；`world-state:127` | time 注册 `owner:'time'` + `title:'时间'`（order 5, cap 3），world-state 注册 `owner:'clock'` + `title:'时间'`（order 10）→ `renderBrief` 按 owner 分组、用 title 当行首（world-state:83-96），系统提示里出现**两行都以「时间：」开头**，其中一行只有"现在是…"没有阶段与日程。 |
-| 高 | `index.mjs:142-147, 115-136` | JSON 状态无文件锁、无原子写：全量 `writeFileSync` 覆盖，两个进程（或 `plan-test.mjs` 这类外部写入者）会互相覆盖；写到一半崩溃后下次启动 `JSON.parse` 抛错被 `catch` 当作"第一次运行"，**schedules/queue 静默全丢**。另外 `setInterval` 里 `void tick()`（605-609）不 await，`tick` 内部有 `await endSpan`（356）→ 两次 tick 可重入，persist 交错。 |
-| 中 | `index.mjs:248-289, 286, 371-379` | 一次性安排响过之后**不从 `schedules` 删除**，只写 `fired`；只有重启时那 10 分钟宽限清理（124-134）会删。`fired` 本身只增不删，daily 日程每天一行 → `time.json` 单调变大，每次 persist 全量重写。 |
-| 中 | `index.mjs:75, 321-328` | `normalizeSchedule` 里 `input.at != null` 优先于 `in`，而 `editSchedule` 用 `{...current, ...patch}` 展开、`current` 必带 `at` → `time_edit({id, in:'30m'})` 与 inbox `edit {id, in}` **静默无效**，不报错、不延后。 |
-| 中 | `index.mjs:48-54, 371-379` | `HH:mm`（daily）日程取的是**今天**那个时刻，没有"下一个未来时刻"逻辑：20:00 建一条 `at:'08:00'` 的日程，下一个 tick 就会先响一次（今天 08:00 已过），然后明天再响。`time.test.mjs:31-33` 正是靠这个行为测试"到点触发"。 |
-| 中 | `index.mjs:191-200, 228-246, 186-189, 524` | goal 停不下来：`resumeOnStop !== false && turnLimit == null` 的 goal 在每个 `turn-end` 都重发，没有任何次数或空闲上限；`goalMessage` 提示"若退出，请取消这个安排"，但 `time_status` 只显示 theme、不显示 id → 模型没有 id 可传给 `time_cancel`。另外 `addGoal` 只认 `until`/`durationMin`，**不认 `afterMin`**，而 `tools/time.mjs:10`、`time-accept.mjs:68`、`time-goal.test.mjs:29` 都在传 `afterMin` → goal 实际既无时限也无轮次上限。 |
-| 中 | `index.mjs:274-279, 321-328, 355-357` | `time_edit` 只改 `state.schedules`；判定结束读的是 `state.spans[].until` → **已在进行的 span 改 `duration`/`at` 不生效**，只能 cancel 掉重开。 |
-| 低 | `signals.mjs:100` | gate 在路由判断（105-115）**之前**执行，所以 `to:'plugin'` 的事件也被拦：睡/暂停期间其它插件的 `event` 会进 time 的 `queue`，醒来被当成"积压的用户消息"发出去。`docs/MESSAGE-MODEL.md` §3 写的是"拦截只作用于 `to:'model'`"。 |
-| 低 | `index.mjs:439` | 重启释放的文案与文档不符：实际是「（日程因重启发生错误）积压了 N 条消息：」，`docs/TIME-MODULE.md` §8 写"日程因重启发生错误，已释放所有积压的消息"。 |
-| 低 | `index.mjs:174-184` | 积压过期是**静默丢弃**：全部过期时 `flushQueue` 直接清空队列、persist、返回 0，无日志无计数。`docs/MESSAGE-MODEL.md` §5 承诺的 `droppedCount` 是 delivery 重试耗尽那个计数（services.mjs:524），与 time 的 `queue` 无关。 |
-| 低 | `index.mjs:579-591` | `time_cancel` 的 summary 承诺"进行中的长日程会立刻结束，绑定的目标与注意力空间一起释放"，但代码只在 id 命中 `spans` 时 `endSpan`（只会释放 sleep 租约）；`goals` 和 goal 绑的 focus 一动不动——只有 id 恰好等于某个 goal 的 id 时才走 `removeGoal`。模型按 summary 理解会以为目标被一起取消了。 |
-| 低 | `index.mjs:499-507`；`world-state:90` | world source 声明 `cap:3`，但 `items()` 最多返回 4 行（现在+阶段／下一个安排／进行中的目标／积压），`renderBrief` 按 cap 截断 → 有下一个安排且有 goal 时，「积压：N 条」永远显示不出来。 |
-| 低 | `index.mjs:23-26, 48-54` | 时区：`dayKey` 与 `HH:mm` 都按宿主本地时区算，没有配置项（`dream` 的 `timezone` 配置管不到 time）。换机器或改系统时区后，`fired` 的日期键与新时区不对应，同一天可能重复触发或整次漏触发。 |
+S2 = 到点唤醒一次 + 同 id 改期再响 + 暂停/恢复积压；S4 = 睡眠拦截 + 醒来释放；S5 = 静音拦截 + 闹钟穿透 + 解除释放。断言只认 `events.jsonl`/`time.outbox.jsonl`/状态快照，不拿模型自述当证据。

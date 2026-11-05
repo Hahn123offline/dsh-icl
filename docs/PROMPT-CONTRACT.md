@@ -56,3 +56,20 @@
 - 新建 lab 会话，`system/message` 里顺序为：人格 → 仿真 → 事实状态；人格段逐轮完全一致。
 - 工具面里不再有"先 focus 再 join"这类与全局提示词重复整段。
 - 新增内容时用 §2 的四问自检；review 清单里检查"是否引入第三处重复"。
+
+## 7. 2026-11-05 追加：DSH 自带身份的覆盖
+
+DSH 全局 `@deepseek-ai/dsh-system-prompt` 默认带 `personaPrefix: You are a coding agent powered by the {{model}} model.`，
+它排在 ICL 人格段之前，与"你不是一个助手"直接冲突（misc 审计 P1-14）。ICL 的每个 preset 现在插入一行
+scoped `@deepseek-ai/dsh-persona`：
+
+```yaml
+- id: tool-persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: ''                                  # 空段会被 DSH 丢弃，等于去掉 coding-agent 身份
+    suffix: 'Your working directory is {{cwd}}.' # 保留工作目录事实
+```
+
+实测（lab，2026-11-05）：系统提示词首行只剩 `You are an AI agent powered by DeepSeek Harness.`，
+第 3 行是人格段；工作目录仍在末尾。改 preset 后**必须重启/新起进程**才生效（DSH 无热重载）。

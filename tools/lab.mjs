@@ -24,7 +24,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   DEFAULT_MC_PORT, DEFAULT_PORT, PRESETS, REPO_ROOT, STATE_ROOT, apiFor,
-  clearCurrent, countTurnEnds, createLabSession, discoverDshBin, ensureDir,
+  clearCurrent, countTurnEnds, createLabSession, discoverDshBin, ensureDir, gitCommit,
   isPidAlive, killPidTree, lastTurnWindow, loadCurrent, materializePatch, nowIso,
   orderedEvents, portBusy, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, saveCurrent, selectModel, sleep, spawnDsh,
@@ -56,8 +56,10 @@ function positionals(from = 1) {
   return out
 }
 
+// 模型一律**显式 selectModel**，不信任 web profile 的 agent-default-model：
+// 2026-11-05 18:21 那次 profile 默认被改成 ninfer，导致 lab 意外吃本地 GPU（见 lead 通知）。
 const MODEL_ROUTES = {
-  flash: { provider: 'deepseek-account', model: 'deepseek-flash', source: 'profile-default', label: '云端 deepseek-flash（web profile 的 agent-default-model）' },
+  flash: { provider: 'deepseek-account', model: 'deepseek-flash', source: 'selectModel', label: '云端 deepseek-flash' },
   local: { provider: 'ninfer', model: 'coder390-27b-q3-df2-4x500', source: 'selectModel', label: '本地 coder390-27b-q3-df2-4x500（GPU 串行）' },
 }
 
@@ -187,6 +189,7 @@ async function up() {
     mcPort,
     preset,
     worktree: REPO_ROOT,
+    commit: gitCommit(),
     dshBin,
     patch,
     workspace,
@@ -215,9 +218,13 @@ async function up() {
     const { workspaceId, sessionId } = await createLabSession(api, { preset, workspace, title })
     meta.workspaceId = workspaceId
     meta.sessionId = sessionId
-    if (route.source === 'selectModel' || route.source === 'explicit') {
+    // 显式钉住模型：忽略 profile 默认值的漂移（2026-11-05 18:21 事故）。
+    // 失败就 up 失败：不知道 profile 默认会落到哪个模型（可能是本地 GPU），不能冒险跑。
+    try {
       await selectModel(api, sessionId, { provider: route.provider, model: route.model })
       info(`已 selectModel → ${route.provider}/${route.model}`)
+    } catch (error) {
+      throw new Error(`selectModel 失败，拒绝在这个 session 上跑（避免跟随 profile 默认模型意外吃本地 GPU）：${String(error?.message ?? error)}`)
     }
     meta.status = 'running'
     writeRunMeta(runId, meta)
