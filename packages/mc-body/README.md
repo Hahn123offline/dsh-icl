@@ -16,8 +16,8 @@ node --test packages/mc-body/test
 
 `done | failed | cancelled | interrupted | unknown | paused`
 
-- `done`：真正达成（mine **背包净增达标即 done**，不会 count=1 还继续追下一个目标；routine `reason=duration|target`）。
-- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect|drops-missing`、`routine: stuck|no-target|...`、`goto: no-path...`），`task.result` 带进度与建议。
+- `done`：真正达成。**成功原因固定写在 `task.result.reason`：`net-target`（mine 背包净增达标）/ `duration` / `target`（routine 时间到/数量到）**；`task_done` 里不会出现 failed 类原因。
+- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect|drops-missing|inventory-full`、`routine: stuck|no-target|...`、`goto: no-path...`、`craft: ...`），`task.result` 带进度/材料快照与建议；失败原因只出现在 `task_failed`。
 - `unknown`：deadline 超时等**结果未知**（可能已生效），不能当失败也不能当成功；`outcomeUnknown=true`。
 - `paused`：断线时正在跑的任务被挂起（`pausedReason='disconnect'`）。重连**不自动续跑**：先 `POST /v1/safety/resume`，再 `POST /v1/tasks/:id/resume`。`status.pausedTasks[]` 可查。
 - 身体暂停（`paused=true`）时 **createTask 会 409**（出生不安全/低血/断线后不接任务）。
@@ -32,7 +32,17 @@ node --test packages/mc-body/test
 
 `/v1/status` 关键字段：`connected/online`（连接事件为权威，不假在线）、`paused/pausedReason`、`safety{offline,...}`、
 `task/queue/pausedTasks`、`watchdog{ticks,alerts,suppressed,suppressedBy,healthDropSuppressed}`、`reconnect{attempts,max,exhausted,...}`、
-`adapter.pathfinder`、`adapter.environment{resources,summary}`（进服 preflight 一句话）、`adapter.danger{blocks,inDanger}`、`adapter.pathStats{resets,recoveries,stuck,carves}`。
+`adapter.pathfinder`、`adapter.environment{resources,summary}`（进服 preflight 一句话）、`adapter.danger{blocks,inDanger}`、`adapter.pathStats{resets,recoveries,stuck,carves}`、
+`adapter.inventory{emptySlots,full,used}`、`adapter.equipment{hand,armor{head,torso,legs,feet},keeps}`（含耐久 used/max/left）、
+`adapter.time{timeOfDay,day,isNight,clock,isDay}`（昼夜判断）、`adapter.lastDeath{position,at,dimension,inventoryCount}`（死亡回收线索）、`adapter.sleeping`。
+
+### 任务 op / 组合补充（2026-11-06）
+
+- `furnace`：`{input, fuel, count, fuelCount?, waitMs?}` —— `count` 个产物、按需放燃料（默认 `ceil(count/8)`），轮询取产物并在 `total<count` 时返回 `partial:true`；0 产物报明确原因（燃料不足/输入错）。
+- `chest`：`{action:"put"|"take"|"list", all:true}` 整包存取（工具/装备/食物默认不存，返回 `moved/kept/container`）；单件仍用 `items[]`。
+- `sleep`：`{}` —— 找附近床走过去睡；附近没床但背包有床 → 报“先 place 床”；夜里/雷暴以外会报明确原因。**注意 mc-link 的 `OPS` 白名单要加 `sleep` 才能在 `mcb_do` 里用**。
+- `mine`：背包满返回 `mine: inventory-full`（不再挖半天 no-effect）；开始/循环内 `food<=14` 自动吃；掉落未进包继续挖/再收。
+
 
 ## 退出归因（crash vs 主动停）
 

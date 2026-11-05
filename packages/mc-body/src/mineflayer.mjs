@@ -85,6 +85,7 @@ export function createMineflayerAdapter({
   let reconnectExhausted = false
   let lastError = null
   let lastPacketAt = 0
+  let lastDeath = null
   let safePoint = null
   let spawnSafety = null
   let movements = null
@@ -197,6 +198,11 @@ export function createMineflayerAdapter({
       }, {}),
       nearbyHostiles: nearbyThreats(8),
       inventoryCount: (bot?.inventory?.items?.() ?? []).reduce((n, item) => n + (Number(item.count) || 0), 0),
+      inventory: inventorySummary(),
+      equipment: equipmentSummary(),
+      time: timeSummary(),
+      sleeping: bot?.isSleeping === true,
+      lastDeath,
       reconnecting: Boolean(reconnectTimer),
       reconnect: reconnectSummary(),
       lastError,
@@ -207,6 +213,56 @@ export function createMineflayerAdapter({
       safePoint,
       spawnSafety,
       pathStats: { ...pathStats },
+    }
+  }
+
+  // ---- 环境事实（供“该干什么”判断；缺这些她会两眼一抹黑）----------------------
+  function inventorySummary() {
+    if (!bot?.inventory) return null
+    try {
+      const emptySlots = Number(bot.inventory.emptySlotCount?.() ?? NaN)
+      const total = Number(bot.inventory.slots?.length ?? 0) || 36
+      return {
+        emptySlots: Number.isFinite(emptySlots) ? emptySlots : null,
+        full: Number.isFinite(emptySlots) ? emptySlots <= 1 : null,
+        used: Number.isFinite(emptySlots) ? Math.max(0, total - emptySlots) : null,
+      }
+    } catch { return null }
+  }
+
+  const TOOL_OR_ARMOR = /(_pickaxe|_axe|_shovel|_hoe|_sword|_helmet|_chestplate|_leggings|_boots|shield|bow|crossbow|arrow|fishing_rod|flint_and_steel|bucket|torch)$/
+
+  function equipmentSummary() {
+    if (!bot) return null
+    const describe = (item) => {
+      if (!item) return null
+      const max = Number(item.maxDurability)
+      const used = Number(item.durabilityUsed)
+      const durability = Number.isFinite(max) && Number.isFinite(used) ? { used, max, left: max - used } : null
+      return { name: item.name, count: item.count ?? 1, durability }
+    }
+    try {
+      const slots = bot.inventory?.slots ?? []
+      return {
+        hand: describe(bot.heldItem),
+        armor: { head: describe(slots[5]), torso: describe(slots[6]), legs: describe(slots[7]), feet: describe(slots[8]) },
+        keeps: (bot.inventory?.items?.() ?? []).filter((item) => TOOL_OR_ARMOR.test(item.name)).map((item) => item.name),
+      }
+    } catch { return null }
+  }
+
+  function timeSummary() {
+    if (!bot?.time) return null
+    const timeOfDay = Number(bot.time.timeOfDay)
+    const day = Number(bot.time.day)
+    const isNight = Number.isFinite(timeOfDay) ? (timeOfDay >= 13000 && timeOfDay <= 23000) : null
+    const hours = Number.isFinite(timeOfDay) ? Math.floor(((timeOfDay / 1000) + 6) % 24) : null
+    return {
+      timeOfDay: Number.isFinite(timeOfDay) ? timeOfDay : null,
+      day: Number.isFinite(day) ? day : null,
+      isNight,
+      clock: Number.isFinite(hours) ? `${String(hours).padStart(2, '0')}:00` : null,
+      isDay: bot.time.isDay ?? (isNight == null ? null : !isNight),
     }
   }
 
@@ -377,7 +433,16 @@ export function createMineflayerAdapter({
       b.on('chat', (name, message) => { if (name !== b.username) emit('chat', { username: name, message }) })
       b.on('playerJoined', (player) => { if (player?.username !== b.username) emit('join', { username: player.username }) })
       b.on('playerLeft', (player) => emit('leave', { username: player?.username }))
-      b.on('death', () => emit('death', { position: currentPosition() }))
+      b.on('death', () => {
+        // 死亡坐标是“回收掉落”的唯一线索：记下来给上层（status + 事件），别只发一条死亡事件。
+        lastDeath = {
+          position: currentPosition(),
+          at: Date.now(),
+          dimension: bot?.game?.dimension ?? null,
+          inventoryCount: (bot?.inventory?.items?.() ?? []).reduce((n, item) => n + (Number(item.count) || 0), 0),
+        }
+        emit('death', { position: lastDeath.position, lastDeath })
+      })
       b.on('health', () => emit('health', { health: b.health, food: b.food }))
     })
   }
@@ -873,10 +938,11 @@ export function createMineflayerAdapter({
       await sleep(180)
     }
     if (collected >= targetCount) reason = 'target'
-    const result = { collected, trips, eaten, reason, durationMs }
+    const base = { collected, trips, eaten, durationMs }
     // routine 正常结束只有两种：时间到 / 达到目标数；stuck/no-target 等是失败（带进度）。
-    if (reason !== 'duration' && reason !== 'target') throw taskFailure(`routine: ${reason}`, result)
-    return result
+    // 成功时不要把 "reason" 放进 result：旧链路把 task_done.result.reason 当“没达成”的兼容标记。
+    if (reason !== 'duration' && reason !== 'target') throw taskFailure(`routine: ${reason}`, { ...base, reason })
+    return { ...base, reason }
   }
 
   // ---- 反射：有界保命（≤2s/动作，不追击、不生成目标） --------------------------
@@ -957,10 +1023,24 @@ export function createMineflayerAdapter({
     }
   }
 
+  function inventoryFull() {
+    try { return Number(bot?.inventory?.emptySlotCount?.() ?? 99) <= 1 } catch { return false }
+  }
+
+  // 长任务/长途前自动吃：饿到不能跑是真实局里最常见的“莫名其妙走不动”。
+  async function autoEat(signal, progress) {
+    if (!bot?.player || Number(bot.food) > 14) return false
+    const ate = await eatIfNeeded(signal, progress).catch(() => false)
+    if (ate) emit('auto_eat', { food: bot.food })
+    return ate
+  }
+
   async function runTask(task, { signal, progress } = {}) {
     checkAbort(signal)
     if (!bot?.player) throw new Error('not connected')
     const params = task.params ?? {}
+    // 出发前先吃一口（mine/goto/routine 都适用；chat 不需要）。
+    if (task.kind !== 'chat') await autoEat(signal, progress)
     if (task.kind === 'mine') {
       const blockName = String(params.block ?? 'oak_log')
       const def = bot.registry.blocksByName[blockName]
@@ -992,6 +1072,13 @@ export function createMineflayerAdapter({
       const baseline = countItem()
       const net = () => countItem() - baseline
       const completed = () => net() >= count
+      // 背包满：挖了也捡不到，直接给可操作原因（而不是挖半天 no-effect）。
+      if (inventoryFull() && !completed()) {
+        throw taskFailure('mine: inventory-full', {
+          mined, net: net(), requested: count,
+          suggestion: '背包满了：先 chest put 或 toss 腾格子，再继续',
+        })
+      }
 
       // 任务开始的可达性预检（只做诊断，不因一次判定直接 failed —— 决策交给后面的实际行走）：
       // 找不到目标 → no-target；A* 明确无路也先降级尝试（可能只是算不完/树挡住落点）。
@@ -1018,6 +1105,13 @@ export function createMineflayerAdapter({
       while (!completed()) {
         checkAbort(signal)
         if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
+        if (inventoryFull()) {
+          throw taskFailure('mine: inventory-full', {
+            mined, net: net(), requested: count,
+            suggestion: '背包满了，掉落捡不进来：先 chest put 或 toss 腾格子',
+          })
+        }
+        await autoEat(signal, progress)
         // 已经挖够 count 个但掉落还没进包：等最多 3s 并再收一次（树叶/树上/坡地掉落会飘）。
         if (mined >= count) {
           for (let i = 0; i < 6 && !completed(); i += 1) {
@@ -1400,18 +1494,35 @@ export function createMineflayerAdapter({
       // 木板/木棍等一次产 4 个：老代码把 count 直接当次数，要 5 个木板会真合成 5 次（吞 5 根木头）。
       const perCraft = Math.max(1, Number(recipe.result?.count) || 1)
       const craftTimes = Math.max(1, Math.ceil(count / perCraft))
-      // 材料快照：合成窗口异常时，材料可能已经进窗口/被消耗，产物却没到背包（当事人反馈“吞材料”）。
-      const inputs = [recipe.requires?.[0], recipe.requires?.[1], recipe.requires?.[2]].filter(Boolean)
-        .map((entry) => ({ name: entry.name ?? null, count: Number(entry.count) || 1 }))
-      const inputsBefore = inputs.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null }))
+      // 材料快照从 recipe.delta 取（负数是消耗）；crafting 配方没有 recipe.requires，别再报空数组误导。
+      const inputs = (Array.isArray(recipe.delta) ? recipe.delta : [])
+        .filter((entry) => Number(entry?.count) < 0)
+        .map((entry) => ({ name: bot.registry.items?.[entry.id]?.name ?? null, count: Math.abs(Number(entry.count)) }))
+        .filter((entry) => entry.name)
+      const inputsBefore = inputs.map((entry) => ({ ...entry, have: countOf(entry.name) }))
+      const batches = []
       let craftError = null
-      try {
-        await bot.craft(recipe, craftTimes, table)
-      } catch (error) {
-        craftError = error
+      // 逐批合成并逐批验证：一批失败/产物没到不会把前面成功的批次算丢（旧实现只等一次）。
+      for (let index = 0; index < craftTimes; index += 1) {
+        const batchBefore = countOf(name)
+        let batchError = null
+        try {
+          await bot.craft(recipe, 1, table)
+        } catch (error) {
+          batchError = String(error?.message ?? error)
+          craftError = error
+        }
+        // 产物进背包有网络延迟：每批轮询最多 2s。
+        const batchDeadline = Date.now() + 2000
+        let batchProduced = countOf(name) - batchBefore
+        while (batchProduced < perCraft && Date.now() < batchDeadline) {
+          await sleep(100)
+          batchProduced = countOf(name) - batchBefore
+        }
+        batches.push({ index: index + 1, produced: batchProduced, error: batchError })
+        if (batchError) break
       }
-      await sleep(120)
-      // 产物进背包有网络延迟：轮询最多 ~2.5s 再判定，避免“物品其实到了”被误报成吞材料。
+      // 逐批之后再做一次总轮询（防止最后一批入包慢）。
       let after = countOf(name)
       let produced = after - before
       const verifyDeadline = Date.now() + 2500
@@ -1427,30 +1538,87 @@ export function createMineflayerAdapter({
           perCraft,
           expectedAtLeast: count,
           produced,
+          batches,
           before,
           after,
           inputsBefore,
-          inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null })),
+          inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: countOf(entry.name) })),
           craftError: craftError ? String(craftError?.message ?? craftError) : null,
         }
-        const error = new Error(`craft: 产物没进背包（想要 +${count}，实际 +${produced}，合成 ${craftTimes} 次×${perCraft}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
+        const reason = produced > 0
+          ? `craft: 只做出 ${produced}/${count}（合成 ${batches.length}/${craftTimes} 批成功${detail.craftError ? `，失败：${String(detail.craftError).slice(0, 120)}` : ''}）；已消耗材料，先 mcb_inventory 复核，补料后再做剩下的 ${count - produced} 个`
+          : `craft: 产物没进背包（想要 +${count}，实际 +0）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`
+        const error = new Error(reason)
         error.name = 'TaskFailedError'
         error.result = detail
         emit('craft_no_product', detail)
         throw error
       }
-      return { crafted: name, requested: count, craftTimes, perCraft, produced, inInventory: after }
+      return { crafted: name, requested: count, craftTimes, perCraft, produced, batches, inInventory: after }
+    }
+    if (op === 'sleep') {
+      if (bot.isSleeping) return { sleeping: true, already: true }
+      const radius = Math.max(2, Math.min(32, Number(params.radius) || 8))
+      let bed = null
+      try {
+        for (const def of Object.values(bot.registry.blocksByName ?? {})) {
+          if (!def || !/_bed$/.test(String(def.name))) continue
+          bed = bot.findBlock({ matching: def.id, maxDistance: radius })
+          if (bed) break
+        }
+      } catch { /* ignore */ }
+      if (!bed) {
+        const bedItem = (bot.inventory?.items?.() ?? []).find((item) => /_bed$/.test(item.name))
+        if (bedItem) throw new Error('sleep: 背包里有床但附近没有放下的床；先用 place 放床（需要两格空间）再 sleep')
+        throw new Error('sleep: 附近没有床；先 craft bed（3 羊毛+3 木板）并 place，或挖洞/回安全点过夜')
+      }
+      const signal = new AbortController().signal
+      await gotoWithRecovery({ x: bed.position.x, y: bed.position.y, z: bed.position.z, range: 2, timeoutMs: 15_000, stallMs: 2500 }, signal, null)
+      try {
+        await bot.sleep(bed)
+      } catch (error) {
+        throw new Error(`sleep: ${String(error?.message ?? error)}（只能夜里/雷暴睡；确认没有怪在附近）`)
+      }
+      return { sleeping: true, bed: bed.name, position: bed.position }
     }
     if (op === 'furnace') {
       const block = blockAtTarget(params.target ?? { block: 'furnace', radius: 4 }) || bot.findBlock({ matching: bot.registry.blocksByName.furnace?.id, maxDistance: 4 })
       if (!block) throw new Error('附近没有熔炉')
+      const count = Math.max(1, Math.min(64, Number(params.count) || 1))
       const furnace = await bot.openFurnace(block)
       try {
-        if (params.input) await furnace.putInput(bot.registry.itemsByName[String(params.input)]?.id, null, Math.max(1, Number(params.count) || 1))
-        if (params.fuel) await furnace.putFuel(bot.registry.itemsByName[String(params.fuel)]?.id, null, 1)
-        await sleep(Math.max(1000, Number(params.waitMs) || 5000))
-        const out = await furnace.takeOutput()
-        return { output: out?.name ?? null }
+        if (params.input) {
+          const def = bot.registry.itemsByName[String(params.input)]
+          if (!def) throw new Error(`未知物品：${params.input}`)
+          await furnace.putInput(def.id, null, count)
+        }
+        if (params.fuel) {
+          const fuelDef = bot.registry.itemsByName[String(params.fuel)]
+          if (!fuelDef) throw new Error(`未知燃料：${params.fuel}`)
+          // 煤 1 个烧 8 个；不传 fuelCount 时按需放（至少 1）。
+          const fuelCount = Math.max(1, Number(params.fuelCount) || Math.ceil(count / 8))
+          await furnace.putFuel(fuelDef.id, null, fuelCount)
+        }
+        const startedAt = Date.now()
+        const maxWaitMs = Math.max(3000, Number(params.waitMs) || (count * 12_000 + 3000))
+        const outputs = []
+        let fuelRanOut = false
+        while (outputs.reduce((sum, row) => sum + row.count, 0) < count && Date.now() - startedAt < maxWaitMs) {
+          await sleep(500)
+          const output = furnace.outputItem()
+          if (!output) {
+            if (furnace.fuelSeconds === 0 && furnace.fuel === 0 && Date.now() - startedAt > 3000) { fuelRanOut = true; break }
+            continue
+          }
+          const taken = await furnace.takeOutput()
+          if (taken) outputs.push({ name: taken.name, count: Number(taken.count) || 1 })
+        }
+        const total = outputs.reduce((sum, row) => sum + row.count, 0)
+        if (total <= 0) {
+          throw new Error(`furnace: ${Math.round((Date.now() - startedAt) / 1000)}s 内没有产物${fuelRanOut ? '（燃料不足/没点着）' : '（检查输入/燃料是否正确）'}`)
+        }
+        if (total < count) emit('furnace_partial', { count, total, outputs })
+        return { outputs, taken: total, requested: count, waitedMs: Date.now() - startedAt, partial: total < count }
       } finally { try { await furnace.close() } catch { /* ignore */ } }
     }
     if (op === 'chest') {
@@ -1458,14 +1626,40 @@ export function createMineflayerAdapter({
       if (!block) throw new Error('附近没有箱子')
       const container = await bot.openContainer(block)
       try {
-        if (params.action === 'list') return { items: container.containerItems().map((item) => ({ name: item.name, count: item.count })) }
+        const containerList = () => container.containerItems().map((item) => ({ name: item.name, count: item.count }))
+        if (params.action === 'list') return { items: containerList() }
+        // all:true 与 skill 文档对齐：整包装/整包取（工具/装备/食物默认不存，避免把吃饭家伙存走）。
+        if (params.all === true) {
+          if (params.action === 'put') {
+            const movable = (bot.inventory?.items?.() ?? []).filter((item) => !TOOL_OR_ARMOR.test(item.name))
+            const kept = (bot.inventory?.items?.() ?? []).filter((item) => TOOL_OR_ARMOR.test(item.name)).map((item) => item.name)
+            const moved = []
+            for (const item of movable) {
+              try {
+                await container.deposit(item.type, null, item.count)
+                moved.push({ name: item.name, count: item.count })
+              } catch { /* 单件失败继续，不吞整趟 */ }
+            }
+            return { action: 'put-all', moved, kept, container: containerList() }
+          }
+          if (params.action === 'take') {
+            const moved = []
+            for (const item of container.containerItems()) {
+              try {
+                await container.withdraw(item.type, null, item.count)
+                moved.push({ name: item.name, count: item.count })
+              } catch { /* 单件失败继续 */ }
+            }
+            return { action: 'take-all', moved, container: containerList() }
+          }
+        }
         for (const item of Array.isArray(params.items) ? params.items : []) {
           const def = bot.registry.itemsByName[String(item.name)]
           if (!def) continue
           if (params.action === 'put') await container.deposit(def.id, null, Number(item.count) || 1)
           if (params.action === 'take') await container.withdraw(def.id, null, Number(item.count) || 1)
         }
-        return { action: params.action, done: true }
+        return { action: params.action, done: true, container: containerList() }
       } finally { try { await container.close() } catch { /* ignore */ } }
     }
     if (op === 'trade') {
@@ -1549,3 +1743,5 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+

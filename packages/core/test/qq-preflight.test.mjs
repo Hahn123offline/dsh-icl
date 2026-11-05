@@ -12,6 +12,7 @@ const NOW = 1_800_000_000_000
 function cleanData(overrides = {}) {
   return {
     at: NOW,
+    mode: 'shadow',
     processes: { ok: true, rows: [] },
     tasks: { ok: true, rows: [] },
     established: { ok: true, rows: [] },
@@ -124,4 +125,43 @@ test('给用户的一页说明：CLEAR 时直接给可开始的结论', () => {
   assert.match(brief, /CLEAR/)
   assert.match(brief, /可以按下面步骤开始/)
   assert.doesNotMatch(brief, /旧人格/)
+})
+
+test('shadow 模式：用户自己的 QQ.exe 只是提示，不是阻断', () => {
+  const out = classifyPreflight(cleanData({
+    processes: { ok: true, rows: [{ pid: 23320, name: 'QQ.exe', cmd: '"C:/Program Files/QQ/QQ.exe"' }] },
+  }))
+  assert.equal(out.verdict, 'CLEAR')
+  assert.equal(out.checks.find((c) => c.id === 'processes').level, 'ok')
+  assert.equal(out.checks.find((c) => c.id === 'qq-client').level, 'ok')
+})
+
+test('phase 1 模式：SnowLuma 在跑 + 没有旧消费者 = CLEAR', () => {
+  const out = classifyPreflight(cleanData({
+    mode: 'phase1',
+    ports: [{ port: 3000, listening: true }, { port: 3001, listening: true }, { port: 5099, listening: true }],
+    processes: {
+      ok: true,
+      rows: [
+        { pid: 4000, name: 'node.exe', cmd: 'node "C:/Users/x/Downloads/SnowLuma-v2.1.1-win-x64-lite/index.mjs"' },
+        { pid: 23320, name: 'QQ.exe', cmd: '"C:/Program Files/QQ/QQ.exe"' },
+      ],
+    },
+  }))
+  assert.equal(out.verdict, 'CLEAR')
+  assert.equal(out.checks.find((c) => c.id === 'processes').level, 'ok')
+})
+
+test('phase 1 模式：SnowLuma 没起来 → BLOCK；有旧消费者 → BLOCK', () => {
+  const down = classifyPreflight(cleanData({ mode: 'phase1', ports: [{ port: 3000, listening: false }, { port: 3001, listening: false }] }))
+  assert.equal(down.verdict, 'BLOCK')
+  assert.equal(down.checks.find((c) => c.id === 'ports').level, 'block')
+
+  const oldApp = classifyPreflight(cleanData({
+    mode: 'phase1',
+    ports: [{ port: 3000, listening: true }, { port: 3001, listening: true }],
+    processes: { ok: true, rows: [{ pid: 12232, name: 'node.exe', cmd: 'node apps\\dsh-icl\\src\\main.js' }] },
+  }))
+  assert.equal(oldApp.verdict, 'BLOCK')
+  assert.equal(oldApp.checks.find((c) => c.id === 'processes').level, 'block')
 })

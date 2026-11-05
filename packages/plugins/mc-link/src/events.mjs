@@ -183,12 +183,21 @@ export function taskEventText(type, data = {}, status = null) {
   if (type === 'task_done') {
     const result = task.result ?? {}
     const reason = result?.reason ?? null
-    // 旧 body 曾用 task_done + result.reason 表示"没达成"；新 body 改发 task_failed，这里只做兼容。
-    if (reason) {
+    // 新 body 用 reason 标记"怎么达成的"（net-target/duration/target-count），不是失败；
+    // 旧 body 曾用 task_done + result.reason(no-target 等) 表示没达成，这里只对旧失败原因做兼容。
+    const SUCCESS_REASONS = new Set(['net-target', 'duration', 'target-count', 'completed', 'done'])
+    const successReason = reason == null || SUCCESS_REASONS.has(String(reason))
+    if (!successReason) {
       const why = reasonHint(reason)?.hint ?? valueText(reason, '原因未知', 60)
       return `[MC] 任务结束但没达成：${label}${params ? `（${params}）` : ''} — ${valueText(reason, '原因未知', 40)}：${why}${suffix}`
     }
-    if (result?.mined != null) return `[MC] 任务完成：${label} 挖了 ${result.mined} 个${result.block ? ` ${result.block}` : ''}${suffix}`
+    const net = result?.net ?? result?.mined
+    if (net != null) {
+      const what = result.item ?? result.block
+      // mine 用"挖了 N 个"（她/测试都习惯这个说法），其它任务用"净增 N"。
+      if (task.kind === 'mine') return `[MC] 任务完成：${label} 挖了 ${net} 个${what ? ` ${what}` : ''}${result.requested != null && result.requested !== net ? `（目标 ${result.requested}）` : ''}${suffix}`
+      return `[MC] 任务完成：${label} 净增 ${net}${what ? ` ${what}` : ''}${suffix}`
+    }
     if (result?.arrived) return `[MC] 任务完成：${label} 到达目标${result.distance != null ? `（距目标 ${Math.round(result.distance * 10) / 10} 格）` : ''}${suffix}`
     const detail = result && Object.keys(result).length ? ` result=${cut(JSON.stringify(result), 80)}` : ''
     return `[MC] 任务完成：${label}${detail}${suffix}`

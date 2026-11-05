@@ -63,3 +63,28 @@
 | 任务失败 `no-target` | `mcb_scan` 换块名/调大 radius，或换任务 |
 | 任务失败 `no-path`/卡住 | `mcb_map`/`mcb_look` 看地形；goto 到开阔处，或换目标 |
 | 一直死 | 别硬拼：暂停→goto 安全点/挖掩体/等天亮，或 `mcb_leave` 收尾 |
+
+## 夜晚与过夜（长测常卡）
+
+- 天黑前：先看 `mcb_status` 的血/饱食/位置；离家远就 `goto` 回出生点/洞。
+- 有床：`mcb_do {"steps":[{"op":"place","item":"bed","pos":{...}}]}`（床要 2 格空间+下方实心）→ `{"op":"sleep"}`。
+- 没床：找一个 3 格坑/山洞，`dig` 进去用 `place` 堵口；**不要**在开阔地硬站。
+- 睡觉只能在夜里/雷暴；`sleep` 报"只能夜里"说明现在是白天（别重复试）。
+
+## 死亡回收
+
+- 死亡事件会带 `lastDeath.position`（status 里也有 `adapter.lastDeath`）。**先别急着重跑**：
+  1. `mcb_status` 确认已复活、血/饱食；
+  2. 清掉死亡点附近怪（`mcb_look` 看附近），再 `mcb_do {"steps":[{"op":"goto","params":{"x":..,"y":..,"z":..,"range":2}}]}`；
+  3. 到点后 `mcb_inventory` 对比，`{"op":"events"}` 看有没有捡到；5 分钟后掉落会消失。
+- 死太多次（body 连续 3 次死亡会隔离/断开）：先停下，别硬送。
+
+## 背包满
+
+- `mcb_status` 的 `adapter.inventory.full=true` 或 mine 报 `mine: inventory-full`：先 `{"op":"chest","action":"put","all":true}` 存整包（工具/装备/食物默认不存），或 `toss` 掉没用的。
+- 存完 `mcb_inventory` 确认有空格再继续挖。
+
+## 出发前吃
+
+- 长任务（挖矿/跑图）出发前先 `{"op":"eat"}` 吃到饱食 >14；包里常备食物（面包/熟肉/苹果）。
+- body 会在 mine/goto 前和 mine 循环里自动吃，但**包里没食物时吃不了**——先补食物。
