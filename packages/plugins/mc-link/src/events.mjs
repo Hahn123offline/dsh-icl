@@ -95,7 +95,7 @@ function reasonHint(raw) {
 }
 
 
-const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'attack', 'wait', 'eat', 'face', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
+const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
 const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat'])
 
 function cut(value, max = 80) {
@@ -183,9 +183,10 @@ export function taskEventText(type, data = {}, status = null) {
   if (type === 'task_done') {
     const result = task.result ?? {}
     const reason = result?.reason ?? null
-    // 新 body 用 reason 标记"怎么达成的"（net-target/duration/target-count），不是失败；
+    // 新 body 用 reason 标记"怎么达成的"（net-target/duration/target），不是失败；
     // 旧 body 曾用 task_done + result.reason(no-target 等) 表示没达成，这里只对旧失败原因做兼容。
-    const SUCCESS_REASONS = new Set(['net-target', 'duration', 'target-count', 'completed', 'done'])
+    // 契约（mc-body）：task_done.result.reason 只会出现 net-target|duration|target；失败原因只在 task_failed.task.error。
+    const SUCCESS_REASONS = new Set(['net-target', 'duration', 'target', 'target-count', 'completed', 'done'])
     const successReason = reason == null || SUCCESS_REASONS.has(String(reason))
     if (!successReason) {
       const why = reasonHint(reason)?.hint ?? valueText(reason, '原因未知', 60)
@@ -197,7 +198,7 @@ export function taskEventText(type, data = {}, status = null) {
       // mine 用"挖了 N 个"（她/测试都习惯这个说法），其它任务用"净增 N"。
       if (task.kind === 'mine') return `[MC] 任务完成：${label} 挖了 ${net} 个${what ? ` ${what}` : ''}${result.requested != null && result.requested !== net ? `（目标 ${result.requested}）` : ''}${suffix}`
       return `[MC] 任务完成：${label} 净增 ${net}${what ? ` ${what}` : ''}${suffix}`
-    }
+   }
     if (result?.arrived) return `[MC] 任务完成：${label} 到达目标${result.distance != null ? `（距目标 ${Math.round(result.distance * 10) / 10} 格）` : ''}${suffix}`
     const detail = result && Object.keys(result).length ? ` result=${cut(JSON.stringify(result), 80)}` : ''
     return `[MC] 任务完成：${label}${detail}${suffix}`
@@ -390,6 +391,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
     chatTimes: [],
     deaths: [],
     lastEscalationAt: null,
+    pathStuck: { count: 0, at: 0 },  // 连续 path_stuck 计数：单次不投递，≥2 才说
     suppressed: new Map(),   // 原因 -> 次数
     counters: { seen: 0, signals: 0, suppressed: 0, quiet: 0, alarm: 0 },
   }
@@ -448,6 +450,18 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
       if (QUIET_EVENTS.includes(type)) { state.counters.quiet += 1; continue }
       const d = describe(event, status, cfg)
       if (!d) { state.counters.quiet += 1; continue }
+
+      // path_stuck：单次只是"重算了路线"，任务常常随后就成功；连续 ≥2 次才值得说一句。
+      // 任务终态/新任务开始都重置计数（body 事件本身仍留在 mc-link.jsonl 台账里）。
+      if (type === 'task_started' || type === 'task_queued' || /^task_(done|failed|interrupted|cancelled|unknown)$/.test(type)) {
+        state.pathStuck = { count: 0, at: 0 }
+      }
+      if (type === 'path_stuck') {
+        state.pathStuck.count += 1
+        state.pathStuck.at = atNow
+        if (state.pathStuck.count < 2) { state.counters.quiet += 1; continue }
+        d.text = d.text.replace('[MC] 走不过去', `[MC] 连续 ${state.pathStuck.count} 次走不过去`)
+      }
 
       // 聊天：一次 poll 的聊天合并成一条信号（一轮最多叫醒一次），并受分钟限额约束。
       if (type === 'chat') {
@@ -523,6 +537,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
     reset() {
       state.merged.clear(); state.alarmTimes = []; state.chatTimes = []
       state.deaths = []; state.lastEscalationAt = null; state.suppressed.clear()
+      state.pathStuck = { count: 0, at: 0 }
     },
     stats: () => ({
       ...state.counters,

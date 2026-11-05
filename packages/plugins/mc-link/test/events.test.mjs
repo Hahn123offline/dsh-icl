@@ -165,8 +165,31 @@ test('事件闸门：eventLine 把事件写成台账行（含 quiet 事件细节
 })
 
 test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与 body 漂移）', () => {
-  for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade']) assert.ok(OPS.includes(op), op)
+  for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade', 'sleep']) assert.ok(OPS.includes(op), op)
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
+})
+
+test('事件闸门：path_stuck 单次不投递，连续第 2 次才说；任务开始重置计数', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const first = gate.take([{ seq: 1, type: 'path_stuck', data: { attempts: 1 } }], { status: null })
+  assert.equal(first.signals.length, 0, '单次 path_stuck 只是重算路线，不叫醒')
+  const second = gate.take([{ seq: 2, type: 'path_stuck', data: { attempts: 2 } }], { status: null })
+  assert.equal(second.signals.length, 1)
+  assert.match(second.signals[0].text, /连续 2 次走不过去/)
+  gate.take([{ seq: 3, type: 'task_started', data: { task: { id: 't-9', kind: 'mine' } } }], { status: null })
+  const again = gate.take([{ seq: 4, type: 'path_stuck', data: { attempts: 1 } }], { status: null })
+  assert.equal(again.signals.length, 0)
+})
+
+test('事件闸门：task_done 的成功 reason 白名单（net-target/duration/target）不算"没达成"', () => {
+  for (const reason of ['net-target', 'duration', 'target']) {
+    const text = taskEventText('task_done', { task: { id: 't-1', kind: 'routine', result: { reason, net: 3, item: 'dirt' } } })
+    assert.match(text, /任务完成/, reason)
+    assert.doesNotMatch(text, /没达成/, reason)
+  }
+  const legacy = taskEventText('task_done', { task: { id: 't-2', kind: 'mine', result: { mined: 0, reason: 'no-target' } } })
+  assert.match(legacy, /没达成/)
 })
 
 test('事件闸门：dig_fallback 可读且合并；path_approximate/心跳类不叫醒', () => {

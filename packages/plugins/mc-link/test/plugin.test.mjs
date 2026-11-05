@@ -38,6 +38,7 @@ function statusBody(state) {
       position: { x: 12.5, y: 64, z: -8.5 },
       health: state.health,
       food: 18,
+      oxygen: state.oxygen === undefined ? null : state.oxygen,
       inventoryCount: 4,
       nearby: { villager: 1 },
       dimension: 'overworld',
@@ -395,6 +396,34 @@ test('mcb_status：body 活着但没连上（重连中）时显示离线原因�
     assert.doesNotMatch(out.text, /MC 身体：已连接/)
     assert.match(out.text, /离线原因/)
     assert.match(out.text, /重连：第 2\/3 次/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：陆地上 body 的 oxygen=null 显示 ?（不是 0）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const dry = await link.tools.mcb_status.execute({})
+    assert.match(dry.text, /生命\/饥饿\/氧气：20\/20，18\/20，\?/)
+    body.state.oxygen = 7
+    const wet = await link.tools.mcb_status.execute({})
+    assert.match(wet.text, /生命\/饥饿\/氧气：20\/20，18\/20，7/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：sleep 在 OPS 白名单里，能传到 body', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'sleep' }] })
+    assert.match(out.text, /\[sleep\]/)
+    assert.equal(body.state.requests.at(-1).steps[0].op, 'sleep')
   } finally {
     await link.cleanup()
     await body.close()
