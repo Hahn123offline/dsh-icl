@@ -104,6 +104,16 @@ const state = {
   lastDeaths: 0,
   lastDeathNoticeAt: null,
   lastErrorInterruptAt: null,
+  lastPausedAt: null,
+  pausedPokes: 0,
+  lastStepAt: null,
+  playbookIndex: 0,
+  loopBreakers: 0,
+  forceLabRestart: false,
+  windowStart: null,
+  windowCalls: 0,
+  windowErrors: 0,
+  badWindows: 0,
   lastSeenEventAt: null,
   sessionId: null,
   pendingPromptAt: null,
@@ -319,6 +329,8 @@ async function bodyStatus() {
   return {
     alive: true,
     connected: Boolean(adapter.connected),
+    paused: Boolean(status.paused ?? adapter.paused),
+    pausedReason: status.pausedReason ?? adapter.pausedReason ?? null,
     position: adapter.position ? `${Math.round(adapter.position.x)},${Math.round(adapter.position.y)},${Math.round(adapter.position.z)}` : null,
     health: adapter.health ?? null,
     food: adapter.food ?? null,
@@ -327,6 +339,22 @@ async function bodyStatus() {
     environment: adapter.environment?.summary ?? null,
     task: status.task ? `${status.task.kind}/${status.task.state}` : null,
     queue: status.queue?.length ?? null,
+  }
+}
+
+/** 让 supervisor 代发 body 的一个单步操作（paused 时用 resume）。 */
+async function bodyDo(steps, timeoutMs = 15_000) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${cfg.mcPort}/v1/do`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ steps }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const json = await response.json().catch(() => null)
+    return { ok: response.ok, json }
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) }
   }
 }
 
@@ -344,6 +372,83 @@ function currentTurnErrorCount(events) {
   }
   return errors
 }
+
+/** 把 tool/call 和对应 tool/result 配成行（失败行带 error 文本）。 */
+function toolCallRows(events) {
+  const results = events.filter((event) => event.type === 'tool/result')
+  const rows = []
+  for (const call of events) {
+    if (call.type !== 'tool/call') continue
+    const callId = String(call.data?.callId ?? '')
+    const result = results.find((row) => {
+      const id = String(row.data?.toolCallId ?? row.data?.message?.toolCallId ?? '')
+      return id && callId && id === callId
+    })
+    const isError = Boolean(result?.data?.message?.isError ?? result?.data?.isError)
+    rows.push({
+      seq: call.seq,
+      name: String(call.data?.name ?? ''),
+      args: typeof call.data?.arguments === 'string' ? call.data.arguments : JSON.stringify(call.data?.arguments ?? {}),
+      error: isError ? textOfMessage(result.data?.message ?? result.data) : null,
+      result: result ? textOfMessage(result.data?.message ?? result.data) : null,
+    })
+  }
+  return rows
+}
+
+/**
+ * 硬循环断路器：当前 turn 里"同一 tool+args 连续失败"或"同一条错误连续出现"≥3 次。
+ * @returns {{kind:string,count:number,name:string,args:string,error:string}|null}
+ */
+function detectRepeatedFailure(events) {
+  const rows = toolCallRows(events)
+  let lastStart = 0
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (events.find((event) => event.type === 'turn/start' && event.seq === rows[i].seq)) { lastStart = i; break }
+  }
+  const turnRows = rows.slice(lastStart)
+  if (turnRows.length < 3) return null
+  // 同 signature 连续失败
+  let signatureStreak = 0
+  let signature = null
+  for (let i = turnRows.length - 1; i >= 0; i -= 1) {
+    const row = turnRows[i]
+    if (!row.error) break
+    const key = `${row.name}|${row.args}`
+    if (signature == null) { signature = { key, row }; signatureStreak = 1; continue }
+    if (signature.key !== key) break
+    signatureStreak += 1
+  }
+  if (signatureStreak >= 3) return { kind: 'same-call', count: signatureStreak, name: signature.row.name, args: signature.row.args, error: signature.row.error }
+  // 同一条错误连续出现（不同参数也算）
+  let errorStreak = 0
+  let errorRow = null
+  for (let i = turnRows.length - 1; i >= 0; i -= 1) {
+    const row = turnRows[i]
+    if (!row.error) break
+    const text = String(row.error).slice(0, 120)
+    if (!errorRow) { errorRow = { text, row }; errorStreak = 1; continue }
+    if (String(row.error).slice(0, 120) !== errorRow.text) break
+    errorStreak += 1
+  }
+  if (errorStreak >= 3) return { kind: 'same-error', count: errorStreak, name: errorRow.row.name, args: errorRow.row.args, error: errorRow.row.error }
+  return null
+}
+
+/** 从 body 事件里判断"有没有实质推进"（mine/craft/place/task_done）。 */
+function hasProgress(events) {
+  const rows = toolCallRows(events).slice(-80)
+  return rows.some((row) => row.result && /mined|crafted|produced|placed|task_done|已挖|已放|已合/.test(String(row.result)))
+}
+
+/** 前 90 分钟的"照抄式 playbook"（弱模型需要确切调用，不要原则）。 */
+const PLAYBOOK = [
+  { id: 'join', text: '第一步：先 mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。' },
+  { id: 'logs', text: '第二步：就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。' },
+  { id: 'planks', text: '第三步：把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}。若报没有配方，先 mcb_inventory，别用原参数重试。' },
+  { id: 'table', text: '第四步：做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。' },
+  { id: 'explore', text: '第五步：在出生点 30 格内看看周围（mcb_map / mcb_scan 附近方块），把看到的东西 remember 记一笔；天黑了就回安全点。' },
+]
 
 function readBodyEvents() {
   return readJsonl(path.join(runDir, 'state', 'mc-body', 'body.jsonl'), { limit: 5000 })
@@ -463,17 +568,22 @@ function nightPhase() {
 
 function initialInstruction() {
   return [
-    '今晚这段时间你自己安排，不用等我吩咐。',
-    '像平常一样过这一夜就行：先在出生点附近做低风险的事——采点木头、造工作台、整理背包、看看周围；',
-    '天黑了就回安全的地方，或者先搭个能睡的庇护所。下矿、长途、打架这些等白天或你手上有家伙了再说。',
+    '今晚这段时间你自己安排，不用等我吩咐。先按下面这条链一步步来（每一步做成了再做下一步；报错就先 mcb_status/换简单动作，别用原参数重试）：',
+    '① mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。',
+    '② 就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。',
+    '③ 把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}；报没有配方就先 mcb_inventory。',
+    '④ 做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后再 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。',
+    '⑤ 在出生点 30 格内看看周围（mcb_map/mcb_scan），把看到的东西 remember 记一笔。',
     '',
-    '开跑后先排一下作息（用 time_arrange）：',
+    '规矩：**同一个动作连续失败 3 次就换做法**（先 mcb_status、换目标、或回安全点），禁止原参数硬撞；',
+    '前 90 分钟只做低风险的事（就近采集/整理/探索/看时间），不下矿、不长途、不打架；',
+    '**别在玩家（Hahn123_）脚下或身边挖/放，别拿玩家东西**；天黑就回安全点，或者先搭个能睡的庇护所。',
+    '',
+    '作息也先排上（用 time_arrange）：',
     '- 90 分钟后入睡、睡 4.5 小时：time_arrange {id:"night:main-sleep", mode:"wake", kind:"span", sleep:true, in:"90m", duration:"4h30m", message:"夜深了，把手里这轮收个尾，去睡吧。"}',
     '- 6 小时 10 分后叫醒：time_arrange {id:"night:dawn", mode:"wake", kind:"single", in:"6h10m", message:"天亮了，该起了。"}',
     '',
-    '然后进 MC 生存服（mcb_servers 里的 survival），进去后自己决定今晚做什么。',
-    '有个规矩：**同一个动作连续失败 3 次就换做法**（先 mcb_status 看状态、换目标、或先回安全点），别硬撞。',
-    '做完一段可以 remember 记一笔（写具体细节）。我这边只记录，不打断你。',
+    '我这边只记录、不打断你；卡住了我会提醒你换简单动作。',
   ].join('\n')
 }
 
@@ -677,9 +787,11 @@ async function main() {
     }
 
     // lab
-    if (!(await labAlive())) {
-      log('lab 不在运行，尝试重启')
-      recordStrategy('lab-restart', 'dsh 进程/端口不可用，重启 lab 并开新会话')
+    if (!(await labAlive()) || state.forceLabRestart) {
+      state.forceLabRestart = false
+      log(state.loopBreakers > 0 ? 'lab 需要重启（循环熔断升级）' : 'lab 不在运行，尝试重启')
+      recordStrategy('lab-restart', state.loopBreakers > 0 ? '同一动作/错误循环熔断 2 次，重启会话并降级 op 集（前 90 分钟只做低风险动作）' : 'dsh 进程/端口不可用，重启 lab 并开新会话')
+      state.loopBreakers = 0
       await stopLab()
       const ok = await startLab({ fresh: true })
       if (!ok) {
@@ -717,6 +829,80 @@ async function main() {
       await sleep(3000)
       try { await sendPrompt(nudgeText(), { timeoutSec: 300 }) } catch (error) { log(`超时后提示失败：${String(error?.message ?? error)}`) }
       await checkpoint('turn-timeout')
+    }
+
+    // paused 单步特判：body 暂停时只许先 resume；连续 2 次无效由 supervisor 代发 resume
+    const bodyNow = await bodyStatus()
+    if (bodyNow.paused) {
+      const lastPauseAt = state.lastPausedAt ? Date.parse(state.lastPausedAt) : 0
+      if (nowMs - lastPauseAt > 90_000) {
+        state.lastPausedAt = nowIso()
+        state.pausedPokes = (state.pausedPokes ?? 0) + 1
+        recordStrategy('paused-resume', `body 处于暂停（${bodyNow.pausedReason ?? '?'}），第 ${state.pausedPokes} 次处理`)
+        if (state.pausedPokes >= 2) {
+          const result = await bodyDo([{ op: 'resume' }])
+          log(`body 暂停持续不恢复，supervisor 代发 resume ok=${result.ok}`)
+        } else {
+          try {
+            await sendPrompt('你现在处于"暂停"状态，身体不会动。第一步只做一个动作：mcb_do {"steps":[{"op":"resume"}]}；resume 成功后再继续原来的事。', { timeoutSec: 240 })
+          } catch (error) { log(`paused 提示投递失败：${String(error?.message ?? error)}`) }
+        }
+      }
+    } else {
+      state.pausedPokes = 0
+    }
+
+    // 硬循环断路器：同一 tool+args 或同一条错误连续 ≥3 次 → 立刻打断并给一条确切下一步
+    const loop = detectRepeatedFailure(events)
+    if (loop) {
+      state.loopBreakers += 1
+      const nextStep = PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
+      recordStrategy('loop-breaker', `${loop.kind} 连续 ${loop.count} 次：${loop.name} ${loop.args.slice(0, 120)}；错误：${String(loop.error).slice(0, 100)}`, { kind: loop.kind, count: loop.count, name: loop.name })
+      try {
+        const api = apiFor(cfg.port)
+        await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
+      } catch (error) { log(`loop-breaker cancel 失败：${String(error?.message ?? error)}`) }
+      await sleep(2500)
+      try {
+        await sendPrompt(`你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`, { timeoutSec: 300 })
+      } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
+      if (state.loopBreakers >= 2) {
+        log('循环熔断升级：重启 lab 会话清上下文并降级 op 集')
+        state.forceLabRestart = true
+      }
+      await checkpoint('loop-breaker')
+    }
+
+    // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步）
+    const sinceStartMin = (nowMs - startedAt) / 60000
+    const lastStepAt = state.lastStepAt ? Date.parse(state.lastStepAt) : 0
+    if (sinceStartMin < 90 && !stats.inTurn && lastEventAgeSec != null && lastEventAgeSec > 120 && nowMs - lastStepAt > 150_000) {
+      const step = PLAYBOOK[Math.min(state.playbookIndex, PLAYBOOK.length - 1)]
+      state.lastStepAt = nowIso()
+      state.playbookIndex = Math.min(state.playbookIndex + 1, PLAYBOOK.length - 1)
+      recordStrategy('playbook-step', `前 90 分钟单步推进：${step.id}（第 ${state.playbookIndex} 步）`)
+      try { await sendPrompt(`继续，下一步只做这一件事：${step.text}`, { timeoutSec: 300 }) } catch (error) { log(`playbook 提示失败：${String(error?.message ?? error)}`) }
+    }
+
+    // 10 分钟窗口早停：连续 3 个窗口工具错误率 >70% 且无实质推进 → 停跑（不空转）
+    if (!state.windowStart) state.windowStart = nowIso()
+    if (nowMs - Date.parse(state.windowStart) >= 10 * 60_000) {
+      const totalCalls = stats.tools
+      const totalErrors = stats.toolErrors
+      const dCalls = totalCalls - state.windowCalls
+      const dErrors = totalErrors - state.windowErrors
+      const rate = dCalls > 0 ? dErrors / dCalls : 0
+      const progressed = hasProgress(events)
+      state.windowCalls = totalCalls
+      state.windowErrors = totalErrors
+      state.windowStart = nowIso()
+      if (dCalls >= 10 && rate > 0.7 && !progressed) {
+        state.badWindows += 1
+        recordStrategy('bad-window', `10 分钟窗口错误率 ${(rate * 100).toFixed(0)}%（${dErrors}/${dCalls}）且无推进，累计 ${state.badWindows}/3`, { rate, dCalls, dErrors })
+      } else {
+        state.badWindows = 0
+      }
+      if (state.badWindows >= 3) { await shutdown('连续 3 个 10 分钟窗口错误率 >70% 且无里程碑推进，判定空转'); break }
     }
 
     // 死亡探测：body 的 death 事件（不再让她在"我是不是死了"上打转）
@@ -787,6 +973,10 @@ async function main() {
         lastEventAgeSec,
         lastTurnEnds: stats.turns,
         deaths,
+        loopBreakers: state.loopBreakers,
+        playbookIndex: state.playbookIndex,
+        badWindows: state.badWindows,
+        paused: bodyNow.paused,
         labStarts: state.labStarts,
         serverStarts: state.serverStarts,
       })
