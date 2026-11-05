@@ -84,3 +84,18 @@
 - dream consume/index 0 需一次"有内容可消费"的梦境验证（下次长测）。
 - 三问未采集（06:51 崩溃在访谈前），下轮补。
 - 第一屏净化（红队 P0-1）尚未实施；等用户拍板。
+
+## 9. 清醒验收跑（mc-lab，2026-11-06 07:19–07:27）
+
+**终稿 PASS 15 / FAIL 0 / SKIP 0**（初跑 12/1/1 的两条均为断言/配置问题，已复验覆盖）。证据 `.state/lab/acc-0705/`（含"复验（最终）"节）、`acc-verify-0718/`、`acc-cancel-0730/`；脚本 `tools/acc-{awake,verify,cancel}.mjs`；commit `04decd4`。
+
+| 项 | 结果 | 关键证据 |
+|---|---|---|
+| first-screen（icl-mc-lab 补 purify 后） | PASS | `context/system-8.txt` **2294 字符**、首行 **"你是小千。"**、tools=41（净化前 5005/工程首行） |
+| collect oak_log 8（等 task_done） | PASS | `{collected:8, net:8}`、42 条 progress（初跑 FAIL 是断言抢跑） |
+| tunnel 严格 cancel（body task） | PASS | `POST /v1/tasks/t-1/cancel` → 200，**停止延迟 2ms**、cancel 后 0 progress |
+| 装备 | PASS | inventory 新格式、equip 200、空手挖 stone 立即 needsTool+craft 链（未走路未重试） |
+| sleep-safe | PASS | 入睡 → 外部 /v1/shutdown → `exitClass={expected:true,source:"clean:api-shutdown"}` → 无 body-spawn → 醒来 join 正常 |
+| awake-tick | 观测 PASS | 无 goal turn-end 后 150s 内自检 turn/start 1 次 |
+
+未覆盖：pickup/toss 真服（单测有，标 beta）；awake-tick 仅 1 次观测；首屏 purify 仍只在 lab preset（产品 preset 等用户批准）。
