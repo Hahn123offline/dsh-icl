@@ -4,11 +4,13 @@
 
 本文是「核心契约与数据形状」的唯一归属地：服务方法签名、装配顺序、预算常量、SQLite 表结构只在这里写一遍。其它文档引用这些事实时只链接到本文对应小节。
 
+> **2026-11-03 晚变更（P0）**：新增 `packages/core/src/dsh-contract.mjs` 与 `packages/dsh-icl/`，这是仓库内唯一的 DSH 接线。`adapter-dsh` 现在也按同一契约补上 `output`。`signals` 删掉未实现的 `to:'focus'` 路由（`focus` 仍是信号字段）；工具注册/注销会触发 `surface.notify()`；prompt/context/raw/slots/surface 的失败经 `core.service-error` 上报。细节见 [CORE-AUDIT.md](CORE-AUDIT.md) 与 [STATUS.md §9](STATUS.md#9-2026-11-03-晚dsh-接线重建p0)。
+
 ## 1. 分层
 
 ```text
               ┌──────────────────────────────────────────┐
-              │ DSH Web / 会话（真正接线的 icl-live 在仓库外）│
+              │ DSH Web / 会话（真正接线的是仓库内 dsh-icl）  │
               └───────────────────┬──────────────────────┘
         DSH 只给两条入口：tools.register / systemPrompt.section
               ┌───────────────────▼──────────────────────┐
@@ -32,7 +34,8 @@
 
 | 层 | 文件 | 行数 | 职责 |
 |---|---|---|---|
-| core | `packages/core/src/*.mjs` | 9 个 / 1468 | 宿主、8 个服务工厂、模型客户端、信号、视觉、清单契约、DSH 适配器、会话适配器 |
+| core | `packages/core/src/*.mjs` | 10 个 | 宿主、8 个服务工厂、模型客户端、信号、视觉、清单契约、DSH 契约、DSH 适配器、会话适配器 |
+| bridge | `packages/dsh-icl/` | 7 个 `.mjs` | 仓库内唯一的 DSH 接线：工具面、提示词、投递、`session/event`、`agent/pre-step`、单会话、原文来源 |
 | adapters | `packages/adapters/*.mjs` | 2 个 / 1064 | DSH Web API 的 Node 客户端（`dsh-client.mjs` 1008 行）与投递泵（`delivery-pump.mjs` 56 行） |
 | plugins | `packages/plugins/*/src/index.mjs` | 16 个 / 3766 | 每个插件导出 `apply(ctx)`；`manifest.tools` 声明它占用的工具名 |
 | tools | `tools/*.mjs` | 13 个 / 1979 | 评测、回放、验收、运维；不在 `workspaces` 内，不进 `npm test` |
@@ -86,7 +89,7 @@
 | `context` | `provideHistory(fn)` `history({ sessionId, limit = 50 })` `onAssemble({ name, order = 50, apply })` `assemble({ sessionId, message, history, maxChars = 1200 })` `onCompact({ id, compact })` `compactors()` `compact(input)` | `compact` 只调第一个注册者，无实现时返回 `{ ok: false, error: 'no-compactor' }`；`compactors()` 无调用方 | compaction（`onCompact` + `onAssemble`）、`attachDshAdapter.turn`、`session.drainOnce` |
 | `surface` | `owners()` `list({ preset })` `names(opts)` `summary()` `onChange(fn)` `notify()` | 只输出「`manifest.tools` 声明过 + 插件已启用 + 预设允许」的交集；`owners()` 只认 manifest，未声明的工具静默隐形 | `attachDshAdapter.sync`、`session.*`、测试 |
 | `presets` | `list()` `active()` `use(id)` `define({ id, label, allow })` `allowed()` | 初始只有 `default`（`allow: null` = 全部）；`use`/`define` 无产品代码调用方，只在测试里用 | `surface` 构造参数、`attachDshAdapter.sync` |
-| `signals` | `offer(signal)` `emit(signal)` `on(filter, fn)` `setGate(fn)` `setDeliver(fn)` `kinds()` `stats()` `peekGate()` | kind 固定 5 种 `wake/goal/notice/content/event`；路由 3 种 `model/plugin/focus`；同 id 幂等 24h；`emit` 强制 `to = 'plugin'` | `time`（emit/on）、`dream`（on）；`host` 用 `setDeliver` 接 delivery。旧技术说明未收录此服务 |
+| `signals` | `offer(signal)` `emit(signal)` `on(filter, fn)` `setGate(fn)` `setDeliver(fn)` `kinds()` `routes()` `stats()` `peekGate()` | kind 固定 5 种 `wake/goal/notice/content/event`；路由 2 种 `model/plugin`；同 id 幂等 24h；`emit` 强制 `to = 'plugin'`；过期信号拒绝；blocked/deliver 失败不占 id | `time`（emit/on）、`dream`（on）、`dsh-plugin`（turn-end emit）；`host` 用 `setDeliver` 接 delivery |
 | `vision` | `describe({ path, image, prompt, system, config, maxTokens = 700, timeoutMs = 120000 })` | 默认 base `http://127.0.0.1:8088/v1`、默认模型 `coder390-27b-q3-df2-4x500`，都被 `ICL_VISION_BASE` / `ICL_VISION_MODEL` 覆盖；必须给 `path` 或 `image` | 只有 `bili`（`describeSheet`）。旧技术说明未收录此服务 |
 | `clock` | `set(fn)→恢复函数` `reset()` `owns()` | 覆盖 `host` 里的 `now()`；`now()` 有 `Number(value) || systemNow()` 兜底，非数字返回值被忽略 | 只有 `time`。旧技术说明未收录此服务 |
 
@@ -197,10 +200,10 @@
 
 | 位置 | 吞掉什么 | 调用方看到什么 |
 |---|---|---|
-| `prompt.assemble` 每段 `try/catch` | 段求值抛错或 `when()` 抛错 | 段直接消失，无日志、无占位 |
-| `prompt.turnText` 每个 provider | provider 抛错 | 该段消失，其余照常；总长仍按 800 截 |
-| `context.assemble` 每个策略 | 策略抛错 | 同上，段间连接符也不留 |
-| `raw.search` / `raw.list` 单源 | 来源抛错（空 catch） | 少几行结果，`source` 字段缺失；调用方无法区分「没查到」和「来源坏了」 |
+| `prompt.assemble` 每段 `try/catch` | 段求值抛错或 `when()` 抛错 | 段消失，**但记 `core.service-error`**（2026-11-03 晚起） |
+| `prompt.turnText` 每个 provider | provider 抛错 | 该段消失，其余照常；总长仍按 800 截，错误上报 |
+| `context.assemble` 每个策略 | 策略抛错 | 同上，段间连接符也不留，错误上报 |
+| `raw.search` / `raw.list` 单源 | 来源抛错 | 少几行结果，`source` 字段缺失；错误上报，调用方仍无法区分「没查到」和「来源坏了」 |
 | `surface.notify()` / `slots.changed()` | 监听器抛错 | 适配器漏一次同步；下一次 notify 才补 |
 | `host.disable` | 单个注销器抛错 | 只完成部分卸载，其余继续；插件仍标记为已停用 |
 | `enable` 的 apply 失败回滚 | 注销器自身的抛错 | 已注册的东西可能残留，异常照常抛给调用方 |
@@ -231,7 +234,7 @@
 
 - `state/memory.db`：两个进程同时写只能靠 SQLite 自身的文件锁，冲突路径没有配置超时，具体报错未核实。`ux_mem_key` 的唯一索引能挡住重复 key，但 `weight` 的读改写会互相覆盖。
 - `state/time.json`：全量 `JSON.stringify` + `writeFileSync`，无临时文件、无 rename。后写者覆盖先写者；读到半截 JSON 时走 `catch` 回落空状态，等于静默丢状态。
-- `state/rhythm.json`：`lastFiredDay` 是跨进程去重字段，但读-改-写无锁，两个进程同一天可以各 fire 一次。
+- `state/rhythm.json`：只在 `rhythm` **单独**启用（旧配置）时存在；默认 nightly 是 `time.json` 里的每日安排，不再写 `rhythm.json`。两者都无文件锁。
 - `state/time.inbox.jsonl`：单进程 `offset` 游标；文件被截断时靠 `text.length < inboxOffset` 归零兜底。
 
 结论：设计前提是「一个会话、一个进程」。多进程共写没有任何保证。

@@ -1,0 +1,98 @@
+# ICL 的 DSH agent preset。
+#
+# 这个文件随 bundle 安装；插件 code 在 ../../index.mjs，默认值由仓库推出。
+# 只把 agent 选到这个 preset，ICL 才会接管工具面、人格与投递。
+- insert:
+    - id: dsh-icl-host
+      name: ../host.mjs
+    - id: preset-icl
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl
+        name: ICL
+        description: 带记忆、时间与作息的会话：工具面与人格由 dsh-icl 在进程内注入。
+        order: 11
+        plugins:
+          - id: icl-core
+            name: dsh-icl/index.mjs
+            config:
+              presetId: icl
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+    # 闭环测试专用：独立 stateDir，不碰用户 ICL 的记忆/时间/focus。
+    - id: preset-icl-loop
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-loop
+        name: ICL Loop
+        description: 闭环测试会话：独立状态、短 tick、loop-probe 外部信号注入。
+        order: 12
+        plugins:
+          - id: icl-loop-core
+            name: dsh-icl/index.mjs
+            config:
+              presetId: icl-loop
+              stateDir: C:/DSH/icl/.state/loop-state
+              personaFile: C:/DSH/icl/prompts/live.md
+              tickMs: 200
+              timeTickMs: 1000
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - dream
+                - compaction
+                - editor
+                - bili
+                - loop-probe
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+    - id: preset-icl-mc
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-mc
+        name: ICL MC
+        description: ICL + MC 只读观察接缝：真实局域网事件进 signals，默认只读、限速发言。
+        order: 13
+        plugins:
+          - id: icl-mc-core
+            name: dsh-icl/index.mjs
+            config:
+              presetId: icl-mc
+              stateDir: C:/DSH/icl/.state/mc-state
+              personaFile: C:/DSH/icl/prompts/live.md
+              tickMs: 500
+              timeTickMs: 1000
+              mcBaseUrl: http://127.0.0.1:54836
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - dream
+                - compaction
+                - editor
+                - mc-link
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true

@@ -23,6 +23,46 @@ async function setup() {
   return { host, tools, note: host.shared.get('note') }
 }
 
+test('同一个未知词重复学，只留一条待办', async () => {
+  const { tools, note } = await setup()
+  await tools.lexicon_learn.execute({ term: '重复词' })
+  await tools.lexicon_learn.execute({ term: '重复词' })
+  assert.equal(note.count(), 1)
+})
+
+test('conv=web 能查到默认 web 来源的词（存的是 null）', async () => {
+  const { tools } = await setup()
+  await tools.lexicon_learn.execute({ term: '网页词', meaning: '网页上的说法' })
+  const out = await tools.lexicon.execute({ term: '网页词', conv: 'web' })
+  assert.match(out.text, /网页词/)
+})
+
+test('老词在 500 条窗口之外时，重学不能丢掉旧 origins/tags/decay', async () => {
+  const { host, tools } = await setup()
+  const mem = host.shared.get('memory')
+  mem.put({
+    namespace: 'lexicon', kind: 'term', key: 'lexicon:web:老词', text: '老词：旧义',
+    data: {
+      term: '老词',
+      origins: [{ conv: null, url: null, meaning: '旧义', status: 'confirmed' }],
+      tags: ['旧标签'],
+      usage: '旧用法',
+      status: 'confirmed',
+      decay: { weight: 2, lastSeen: Date.now() - 10_000 },
+    },
+    now: 1000,
+  })
+  for (let i = 0; i < 500; i += 1) {
+    mem.put({ namespace: 'lexicon', kind: 'term', key: `lexicon:web:填充${i}`, text: `填充${i}`, now: 2000 + i })
+  }
+  await tools.lexicon_learn.execute({ term: '老词', url: 'http://example.com/x' })
+  const row = mem.query({ namespace: 'lexicon', kind: 'term', key: 'lexicon:web:老词', limit: 1 })[0]
+  assert.equal(row.data.origins[0].meaning, '旧义')
+  assert.ok(row.data.tags.includes('旧标签'))
+  assert.equal(row.data.decay.weight, 2)
+  assert.ok(row.data.origins.some((o) => o.url === 'http://example.com/x'))
+})
+
 test('没有释义时：记成候选，并在 note 里留一条待办', async () => {
   const { tools, note } = await setup()
   const out = await tools.lexicon_learn.execute({ term: '难绷', conv: 'group:1' })

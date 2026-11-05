@@ -6,6 +6,59 @@
 
 ---
 
+## 0. 现行接线（2026-11-03 晚起，先读这一节）
+
+**只有一条路**：本仓库的 `packages/dsh-icl`（包名 `dsh-icl`）。它按 DSH 官方契约工作：
+
+| ICL | DSH |
+|---|---|
+| 工具面 | `ctx.tools.register({name, description, parameters, output, execute})` |
+| 提示词 | `ctx.systemPrompt.section({text: () => …})` |
+| 投递 | `agent.followup(message)` |
+| 每轮上下文 | `agent/pre-step` |
+| 回合 / 原文 | `ctx.on('session/event', (session, event) => …)` |
+| 单会话 | `session/created` 同步 throw |
+
+没有 HTTP、没有端口发现、没有 token、没有 `session_projcache` 扫描。
+
+**已实测**（headless profile，未改用户 profile）：
+
+```bash
+dsh --profile headless --patch C:/DSH/icl/packages/dsh-icl/cordis.patch.yml "只回复两个字：ok"
+```
+
+- session `b26031a9`：`request/header` 里 51 个工具（当时含 27 个 ICL 工具；focus 插件后为 31），人格段进入 `system/message`；
+- session `46a5633b`：`time_arrange` 真实调用成功，`tool/result` 进入原文层；
+- session `1f855bc3`：wake 到点 → `signals` → `delivery` → `agent.followup` → DSH 第 2 轮（user `醒醒`）→ 回复；
+- session `4de2a564`：`agent/pre-step` 把 eager-recall 结果作为 `<icl-context>`（source `runtime-context`）追加进本轮，模型引用后回答；
+- `.state/headless` 里生成了 `time.json`、`session-events.jsonl`、`memory.db`（11 个命名空间）。
+
+装进 desktop profile：desktop 由 Electron 独占管理，CLI 的 `dsh plugin --profile desktop add` 会报
+`profile "desktop" is managed exclusively by the Electron application`。**合法路径是 Desktop shell 自己的
+Plugin Manager**：GUI 侧栏 **Plugins** 页，或它与 GUI 共用的 `pluginManager/installBundle` Remote
+（`@deepseek-ai/dsh-plugin-manager` 的 `installBundle`）。
+
+2026-11-03 实测（通过 `pluginManager` Remote，与 GUI 同一个服务）：
+
+1. `pluginManager/removeBundle({name:'dsh-icl'})` 移除了旧的第二代 `dsh-icl`（focus-core，3201）；
+2. `pluginManager/installBundle({spec:'C:/DSH/icl/packages/dsh-icl', options:{enabled:true}})` →
+   `application: applied`，包 `dsh-icl@0.2.0` 已链接进 profile；
+3. 新包的模块要**重启一次应用**才会被 Loader 加载：重启前 `preset icl` 显示
+   `never started`，`dsh-icl-host` 的 `fiberPhase` 是 null。这是 DSH 的模块代际约束，
+   不是接线错误。
+
+重启后新建会话选 preset **ICL**（id `icl`）。
+
+> 本插件是 preset 作用域的：工具与提示词只对选用 `icl` 的 agent 可见。
+
+`dsh plugin --profile headless add …` 仍会因 DSH 安装缺 `execa` 报
+`ERR_MODULE_NOT_FOUND`；headless 的桥验证走 `--patch`（不经过 installer），不受影响。
+
+**下面 §1–§8 是旧 `icl-live`（仓库外、HTTP 投递）的记录，保留作历史对照，不要再照它接线。**
+
+
+---
+
 ## 1. 两条路，不要混用
 
 | 路径 | 怎么走 | 在仓库里吗 | 现状 |

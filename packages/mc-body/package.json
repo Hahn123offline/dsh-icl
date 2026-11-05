@@ -1,0 +1,19 @@
+{
+  "name": "dsh-mc-body",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ICL 的 MC 身体：独立进程、任务状态机、事件、安全停止；不依赖 ICL。",
+  "main": "src/index.mjs",
+  "bin": {
+    "mc-body": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test test"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}

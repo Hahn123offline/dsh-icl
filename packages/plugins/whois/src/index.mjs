@@ -10,9 +10,9 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
 
   function recentEventsFor(qq, limit = 3) {
-    return memory.query({ namespace: 'event', kind: 'block', limit: 500 })
+    return memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
       .filter((b) => Array.isArray(b.data?.people) && b.data.people.map(String).includes(String(qq)))
-      .slice(-Math.max(1, Number(limit) || 3))
+      .slice(0, Math.max(1, Number(limit) || 3))
   }
 
   function line(person) {
@@ -54,7 +54,7 @@ export function apply(ctx) {
       const claims = Array.isArray(person.data?.claims) ? person.data.claims : []
       if (claims.length) {
         const noteText = (id) => {
-          const n = memory.query({ namespace: 'person', kind: 'note', limit: 500 }).find((x) => Number(x.id) === Number(id))
+          const n = memory.query({ namespace: 'person', kind: 'note', id, limit: 1 })[0]
           return n ? String(n.text).slice(0, 60) : null
         }
         parts.push('逐句依据：')
@@ -68,7 +68,7 @@ export function apply(ctx) {
       const evidenceIds = (person.data?.evidence ?? []).map((e) => Number(e.id)).filter(Boolean)
       if (evidenceIds.length) {
         const notes = evidenceIds
-          .map((id) => memory.query({ namespace: 'person', kind: 'note', limit: 500 }).find((n) => Number(n.id) === id))
+          .map((id) => memory.query({ namespace: 'person', kind: 'note', id, limit: 1 })[0])
           .filter(Boolean)
           .slice(0, 5)
         if (notes.length) {

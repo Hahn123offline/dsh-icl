@@ -32,6 +32,7 @@ test('备忘：写一条、看得到、可结掉', async () => {
   assert.equal(note.count(), 1)
   const list = await tools.memos.execute()
   assert.match(list.text, /男的女的/)
+  assert.match(list.text, /#\d+/, 'memos 必须露出 id，memo_commit/append 才能用')
   const id = note.open()[0].id
   note.resolve(id, { answer: '男的' })
   assert.equal(note.count(), 0)
@@ -67,4 +68,14 @@ test('没有世界状态时也能用', async () => {
   const { tools, note } = await setup({ withWorld: false })
   await tools.memo.execute({ text: '独立运行' })
   assert.equal(note.count(), 1)
+})
+
+test('note_status 的计数不受 500 行读取窗口限制', async () => {
+  const { tools, note } = await setup({ withWorld: false })
+  for (let i = 0; i < 501; i += 1) note.add({ text: `待办 ${i}` })
+  const done = note.add({ text: '已完成的' })
+  note.commit(done.id, { result: '做完了' })
+  const out = await tools.note_status.execute()
+  assert.match(out.text, /待办 501 条/)
+  assert.match(out.text, /已完成待回收 1 条/)
 })

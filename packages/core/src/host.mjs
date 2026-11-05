@@ -16,30 +16,58 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     const value = clockOverride ? clockOverride() : systemNow()
     return Number(value) || systemNow()
   }
+  const report = (where, error) => {
+    try { log({ msg: 'core.service-error', where, error: String(error?.message ?? error) }) } catch { /* 日志坏了不影响服务 */ }
+  }
   const tools = createToolRegistry({
     stampTime: process.env.ICL_TOOL_TIME === '1' ? () => new Date().toLocaleTimeString('zh-CN', { hour12: false }) : null, onChange: (event) => log({ msg: 'tools.change', ...event }) })
-  const prompt = createPromptService()
+  const prompt = createPromptService({ onError: report })
   const focus = createFocusService({ now })
   const delivery = createDeliveryService({ now })
-  const raw = createRawSourceRegistry()
-  const context = createContextService()
+  const raw = createRawSourceRegistry({ onError: report })
+  const context = createContextService({ onError: report })
   const presets = createPresetService({ plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: r.enabled })) })
   const surface = createToolSurface({
     tools,
     plugins: () => [...plugins.values()].map((r) => ({ id: r.manifest.id, manifest: r.manifest, enabled: Boolean(r.enabled) })),
     presets,
+    onError: report,
   })
   const signals = createSignalService({ now })
   const vision = createVisionService({ fetchImpl })
   const slots = createSlotRegistry()
   const model = createModelClient({ fetchImpl, now })
   signals.setDeliver((signal) => {
+    // 注意力闸门：别处的事先问 focus，能不能现在进来。
+    const decision = focus.admit(signal)
+    if (!decision.deliver) {
+      focus.defer(signal)
+      return { queued: true, reason: decision.reason, focus: decision.focus }
+    }
     delivery.push({
       to: 'session',
       channel: 'signal',
       source: { plugin: signal.from.plugin, activity: signal.from.activity ?? 'signal', seq: null },
       content: { text: signal.text },
       batchKey: `signal:${signal.from.plugin}:${signal.focus ?? ''}`,
+      exactlyOnce: false,
+    })
+    return { delivered: true, reason: decision.reason }
+  })
+  // 焦点释放/切换：把积压一次性交给她（不是逐条推送）。
+  focus.onChange(() => {
+    const rows = focus.drainBacklog()
+    if (!rows.length) return
+    const total = rows.reduce((sum, row) => sum + row.count, 0)
+    const body = rows
+      .map((row) => `· [${row.focus}] +${row.count}${row.lastText ? `：${row.lastText}` : ''}`)
+      .join('\n')
+    delivery.push({
+      to: 'session',
+      channel: 'focus-backlog',
+      source: { plugin: 'focus', activity: 'backlog', seq: null },
+      content: { text: `你离开焦点期间，别处积压了 ${total} 条：\n${body}` },
+      batchKey: 'focus:backlog',
       exactlyOnce: false,
     })
   })
@@ -68,8 +96,13 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       tools: {
         register(definition) {
           const dispose = tools.register({ ...definition, plugin: pluginId })
-          record.dispose.push(dispose)
-          return dispose
+          // 注册/注销都要让适配器看到：旧的实现只写日志，运行中新增的工具不会推给 DSH。
+          const off = () => {
+            try { dispose() } finally { surface.notify() }
+          }
+          record.dispose.push(off)
+          surface.notify()
+          return off
         },
       },
       prompt: {
@@ -92,9 +125,19 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
         },
         canPierce: (label, opts) => focus.canPierce(label, opts),
         current: () => focus.current(),
+        list: () => focus.list(),
+        clear: () => {
+          for (const lease of focus.list()) { try { lease.release?.() } catch { /* ignore */ } }
+          focus.drainBacklog()
+        },
+        admit: (signal) => focus.admit(signal),
+        backlog: () => focus.backlog(),
+        defer: (signal) => focus.defer(signal),
+        onChange: (fn) => { const off = focus.onChange(fn); record.dispose.push(off); return off },
       },
       delivery: {
         push: (input) => delivery.push({ ...input, source: { plugin: pluginId, ...(input?.source ?? {}) } }),
+        clear: () => delivery.clear(),
       },
       slots: {
         declare(slot) {
@@ -215,7 +258,6 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       }
       record.dispose = []
       record.enabled = true
-      surface.notify()
       const ctx = makeContext(record.manifest, record)
       // 清单里声明的插槽由宿主代为注册：插件只写"需要什么形状"，
       // 不自己去 declare，也就不可能写死模型名。
@@ -224,7 +266,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
           for (const dispose of record.dispose.reverse()) { try { dispose() } catch { /* 忽略 */ } }
           record.dispose = []
           record.enabled = false
-    surface.notify()
+          surface.notify()
           throw error
         }
       }
@@ -233,9 +275,10 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
         if (typeof extra === 'function') record.dispose.push(extra)
       } catch (error) {
         record.enabled = false
-        // apply 失败要把它已经注册的东西收回去，不能留半套
+        // apply 失败要把它已经注册的东西收回去，不能留半套；同时让适配器看到回滚后的工具面
         for (const dispose of record.dispose.reverse()) { try { dispose() } catch { /* 忽略 */ } }
         record.dispose = []
+        surface.notify()
         throw error
       }
       surface.notify()

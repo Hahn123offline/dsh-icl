@@ -1,0 +1,20 @@
+[
+  {
+    "id": "join",
+    "op": "prompt",
+    "text": "做一次连接测试：先调用 mcb_servers；然后调用 mcb_join 参数 {server:'local-survival'}；然后调用 mcb_status。先不要做别的，完成这三步后只回复结果。"
+  },
+  { "id": "wait-join", "op": "wait", "seconds": 5 },
+  {
+    "id": "inspect",
+    "op": "prompt",
+    "text": "调用 time_status 看当前目标；然后只回复一行。"
+  },
+  { "id": "wait-inspect", "op": "wait", "seconds": 3 },
+  {
+    "id": "leave",
+    "op": "prompt",
+    "text": "调用 mcb_leave；再调用 time_status 确认目标已移除。只回复结果。"
+  },
+  { "id": "wait-leave", "op": "wait", "seconds": 3 }
+]

@@ -72,7 +72,8 @@ export function apply(ctx) {
   const bind = () => ctx.slots.autoBind()
   const first = bind()
   // 之后有新插件声明插槽，也要自动接上
-  ctx.slots.onChange(() => { const bound = bind(); if (bound.length) ctx.log({ msg: 'slots.bound', bound }) })
+  const offSlots = ctx.slots.onChange(() => { const bound = bind(); if (bound.length) ctx.log({ msg: 'slots.bound', bound }) })
+  ctx.onDispose(offSlots)
   ctx.services.provide('model-manager', {
     providers: () => registered,
     skipped: () => skipped,

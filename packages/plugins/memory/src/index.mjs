@@ -167,7 +167,7 @@ export function apply(ctx) {
       return row ? { id: row.id, label: row.label, recallable: Boolean(row.recallable), halfLifeDays: Number(row.half_life_days), retention: row.retention } : null
     },
 
-    put({ namespace, kind = 'note', key = null, text = '', data = null, weight = null, now = ctx.now() } = {}) {
+    put({ namespace, kind = 'note', key = null, text = '', data = null, weight = null, reweight = false, now = ctx.now() } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.put 需要 namespace')
       if (!db.prepare('SELECT 1 FROM mem_ns WHERE id = ?').get(ns)) throw new Error(`命名空间没有注册：${ns}`)
@@ -177,8 +177,8 @@ export function apply(ctx) {
       if (key != null) {
         const hit = db.prepare('SELECT id, text, weight FROM mem_items WHERE namespace = ? AND key = ?').get(ns, String(key))
         if (hit) {
-          // 不传 weight 就保留原权重；文本变了旧向量失效，删掉等补
-          const nextWeight = weight == null ? Number(hit.weight ?? 1) : Number(weight) || 1
+          // 更新默认保留原权重（包括 boost 攒起来的）；只有显式 reweight 才覆盖。
+          const nextWeight = reweight && weight != null ? (Number(weight) || 1) : Number(hit.weight ?? 1)
           db.prepare('UPDATE mem_items SET kind = ?, text = ?, data = ?, weight = ?, updated_at = ? WHERE id = ?')
             .run(String(kind), body, data == null ? null : JSON.stringify(data), nextWeight, at, hit.id)
           if (String(hit.text) !== body) db.prepare('DELETE FROM mem_vec WHERE item_id = ?').run(hit.id)
@@ -224,17 +224,33 @@ export function apply(ctx) {
     },
 
     /** 原始列表（不做排序/评分）。 */
-    query({ namespace, kind = null, key = null, since = null, until = null, limit = 50 } = {}) {
+    query({ namespace, kind = null, key = null, id = null, since = null, until = null, limit = 50, order = 'asc' } = {}) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.query 需要 namespace')
       const where = ['namespace = ?']
       const args = [ns]
+      if (id != null) { where.push('id = ?'); args.push(Number(id)) }
       if (kind != null) { where.push('kind = ?'); args.push(String(kind)) }
       if (key != null) { where.push('key = ?'); args.push(String(key)) }
       if (since != null) { where.push('created_at >= ?'); args.push(Number(since)) }
       if (until != null) { where.push('created_at <= ?'); args.push(Number(until)) }
       args.push(Math.max(1, Math.min(500, Number(limit) || 50)))
-      return db.prepare(`SELECT * FROM mem_items WHERE ${where.join(' AND ')} ORDER BY created_at ASC LIMIT ?`).all(...args).map(rowToItem)
+      const direction = String(order).toLowerCase() === 'desc' ? 'DESC' : 'ASC'
+      return db.prepare(`SELECT * FROM mem_items WHERE ${where.join(' AND ')} ORDER BY created_at ${direction}, id ${direction} LIMIT ?`).all(...args).map(rowToItem)
+    },
+
+    /** 只数行数，不受 500 行读取窗口限制。 */
+    count({ namespace, kind = null, status = null } = {}) {
+      const ns = String(namespace ?? '')
+      if (!ns) throw new Error('memory.count 需要 namespace')
+      const where = ['namespace = ?']
+      const args = [ns]
+      if (kind != null) { where.push('kind = ?'); args.push(String(kind)) }
+      if (status != null) {
+        where.push("(json_extract(data, '$.status') = ? OR (? = 'open' AND json_extract(data, '$.status') IS NULL))")
+        args.push(String(status), String(status))
+      }
+      return Number(db.prepare(`SELECT COUNT(*) AS n FROM mem_items WHERE ${where.join(' AND ')}`).get(...args)?.n ?? 0)
     },
 
     /**
@@ -250,7 +266,9 @@ export function apply(ctx) {
       const nsIds = nsRows.map((row) => row.id)
       if (!nsIds.length) return []
       const placeholders = nsIds.map(() => '?').join(',')
-      let rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`).all(...nsIds)
+      // 500 条只够几个月的事件块；默认放到 5000（个人库约数年），避免老记忆直接从检索里消失。
+      const scanLimit = Math.max(100, Number(ctx.config.scanLimit ?? 5000))
+      let rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT ?`).all(...nsIds, scanLimit)
       // 被整理轮合并掉的块不再被回忆（软删：行还在，可追溯）。
       rows = rows.filter((row) => {
         if (!row.data) return true
@@ -333,6 +351,8 @@ export function apply(ctx) {
       const nextText = text == null ? row.text : String(text)
       const nextData = data == null ? row.data : JSON.stringify(data)
       db.prepare('UPDATE mem_items SET text = ?, data = ?, updated_at = ? WHERE id = ?').run(nextText, nextData, ctx.now(), Number(id))
+      // 正文改了，旧向量已经对不上；删掉等 index 补。
+      if (text != null && String(row.text) !== nextText) db.prepare('DELETE FROM mem_vec WHERE item_id = ?').run(Number(id))
       return { updated: true }
     },
 
@@ -385,10 +405,13 @@ export function apply(ctx) {
       const ns = String(namespace ?? '')
       if (!ns) throw new Error('memory.remove 需要 namespace')
       if (id != null) {
+        db.prepare('DELETE FROM mem_vec WHERE item_id = ?').run(Number(id))
         const info = db.prepare('DELETE FROM mem_items WHERE namespace = ? AND id = ?').run(ns, Number(id))
         return { removed: Number(info.changes ?? 0) }
       }
       if (key == null) throw new Error('memory.remove 需要 key 或 id')
+      const ids = db.prepare('SELECT id FROM mem_items WHERE namespace = ? AND key = ?').all(ns, String(key)).map((row) => Number(row.id))
+      for (const itemId of ids) db.prepare('DELETE FROM mem_vec WHERE item_id = ?').run(itemId)
       const info = db.prepare('DELETE FROM mem_items WHERE namespace = ? AND key = ?').run(ns, String(key))
       return { removed: Number(info.changes ?? 0) }
     },
@@ -411,7 +434,7 @@ export function apply(ctx) {
         JOIN mem_ns n ON n.id = i.namespace
         LEFT JOIN mem_vec v ON v.item_id = i.id
         WHERE v.item_id IS NULL AND i.text <> '' AND n.recallable = 1
-        ORDER BY i.created_at ASC LIMIT ?
+        ORDER BY i.created_at DESC LIMIT ?
       `).all(Math.max(1, Math.min(500, Number(limit) || 100)))
       return rows.map((r) => ({ id: Number(r.id), namespace: r.namespace, kind: r.kind, text: r.text }))
     },

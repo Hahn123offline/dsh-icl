@@ -7,3 +7,12 @@ export { createSignalService, validateSignal, SIGNAL_KINDS, SIGNAL_ROUTES, SIGNA
 export { attachDshAdapter } from './adapter-dsh.mjs'
 export { createHost } from './host.mjs'
 export { createSessionAdapter } from './session.mjs'
+export {
+  TEXT_OUTPUT_SCHEMA,
+  normalizeParameters,
+  normalizeToolResult,
+  toDshToolDefinition,
+  toDshUserMessage,
+  toDshPromptSection,
+  textOfSessionEvent,
+} from './dsh-contract.mjs'

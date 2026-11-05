@@ -1,0 +1,8 @@
+[
+  {
+    "id": "join",
+    "op": "prompt",
+    "text": "做一次真实连接+挖掘验证：1) mcb_servers；2) mcb_join {server:'local-survival'}；3) mcb_scan {name:'oak_log', radius:16, count:5}；4) 取扫描结果第一个 oak_log 坐标，用 mcb_do 组合：goto 到它旁边 range 2，然后 dig {name:'oak_log', radius:5}；5) mcb_inventory。不要做别的，最后只回复结果。"
+  },
+  { "id": "wait", "op": "wait", "seconds": 20 }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "mc-status",
+    "op": "prompt",
+    "text": "先调用 mcb_status 看身体状态；再调用 mcb_do，steps=[{op:'task', kind:'mine', params:{block:'dirt', count:1, radius:6}}]，然后只回复 ok。"
+  },
+  { "id": "mc-wait", "op": "wait", "seconds": 8 },
+  {
+    "id": "mc-assert",
+    "op": "assert",
+    "toolCalled": ["mcb_status", "mcb_do"]
+  },
+  {
+    "id": "mc-events",
+    "op": "prompt",
+    "text": "调用 mcb_do，steps=[{op:'events', since:0}]，把结果原样回复。"
+  },
+  {
+    "id": "mc-events-assert",
+    "op": "assert",
+    "toolCalled": ["mcb_do"]
+  }
+]

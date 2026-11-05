@@ -1,0 +1,38 @@
+[
+  {
+    "id": "continue-1",
+    "op": "prompt",
+    "text": "继续长期生存。先看 mcb_status / mcb_inventory / 周围；把熔炉做出来，然后找铁。决定下矿/远行/建家前先用 mcb_do say 说一句；任务完成或失败也说一句。"
+  },
+  { "id": "wait-1", "op": "wait", "seconds": 45 },
+  {
+    "id": "continue-2",
+    "op": "prompt",
+    "text": "继续推进主线：看当前阶段和背包，做下一件最值当的小事。缺圆石就补，缺煤就找煤，缺食物就说。"
+  },
+  { "id": "wait-2", "op": "wait", "seconds": 45 },
+  {
+    "id": "continue-3",
+    "op": "prompt",
+    "text": "继续。如果有人说话先回应；有危险先保命；卡住用 mcb_scan/mcb_map 手动脱困。"
+  },
+  { "id": "wait-3", "op": "wait", "seconds": 45 },
+  {
+    "id": "continue-4",
+    "op": "prompt",
+    "text": "继续生存。优先熔炉和铁器；有煤就烧铁，没有煤就先挖煤。不要空手站着。"
+  },
+  { "id": "wait-4", "op": "wait", "seconds": 45 },
+  {
+    "id": "continue-5",
+    "op": "prompt",
+    "text": "继续。检查熔炉/铁器/家；决定一件大事前先说一句，然后做。"
+  },
+  { "id": "wait-5", "op": "wait", "seconds": 45 },
+  {
+    "id": "continue-6",
+    "op": "prompt",
+    "text": "继续长期生存。如果天黑了，先做安全位/火把，不要硬挖。"
+  },
+  { "id": "wait-6", "op": "wait", "seconds": 45 }
+]

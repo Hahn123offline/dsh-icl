@@ -28,6 +28,23 @@ export function apply(ctx) {
     ? String(ctx.config.stateFile)
     : path.join(String(ctx.config.root ?? '.'), 'state', 'rhythm.json')
 
+  // 作息已并入 time：同时启用时不再起第二个定时器。nightly 现在是 time 日历里
+  // 一条 tags:['dream'] 的 silent 安排，dream 自己订阅；rhythm 只保留空接口兼容旧引用。
+  const clockService = ctx.services.get('time')
+  if (typeof clockService?.add === 'function') {
+    const disabled = {
+      onNightly() { return () => {} },
+      isDue: () => false,
+      nextAt: () => null,
+      fire: () => ({ fired: false, reason: 'legacy-disabled' }),
+      lastFiredDay: () => null,
+      at,
+    }
+    ctx.services.provide('rhythm', disabled)
+    ctx.log({ msg: 'rhythm.disabled-time-present', at })
+    return disabled
+  }
+
   const listeners = new Set()
   let lastFiredDay = null
 
@@ -80,7 +97,9 @@ export function apply(ctx) {
     at,
     nextAt(now = ctx.now()) {
       const today = todayPoint(now)
-      return now < today ? today : today + 24 * 3600_000
+      // 今天已经错过/到点但还没触发，下一次就是今天这一刻；已经触发过才是明天。
+      if (lastFiredDay === dayKey(now)) return today + 24 * 3600_000
+      return today
     },
     lastFiredDay: () => lastFiredDay,
     /** 今天到点了吗、还没发过？（给晚启动的消费者自查用） */

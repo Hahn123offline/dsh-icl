@@ -1,0 +1,36 @@
+[
+  {
+    "id": "sleep",
+    "op": "time",
+    "cmd": "arrange",
+    "args": {
+      "id": "loop-sleep-1",
+      "mode": "wake",
+      "kind": "span",
+      "sleep": true,
+      "at": "now",
+      "duration": "1m",
+      "message": "闭环睡眠"
+    }
+  },
+  { "id": "sleep-settle", "op": "wait", "seconds": 4 },
+  {
+    "id": "sleep-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "睡眠期间的消息"
+  },
+  { "id": "sleep-wait", "op": "wait", "seconds": 65 },
+  { "id": "sleep-settle2", "op": "wait", "seconds": 8 },
+  {
+    "id": "wake-assert",
+    "op": "assert",
+    "userContains": ["整理完了"]
+  },
+  {
+    "id": "backlog-assert",
+    "op": "assert",
+    "userContains": ["睡眠期间的消息"]
+  }
+]

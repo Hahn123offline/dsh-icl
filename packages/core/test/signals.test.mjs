@@ -90,3 +90,72 @@ test('host 把信号接到 delivery，会话能 drain 到文本', async () => {
   assert.ok(batch, '应有一批投递')
   assert.equal(batch.text, '在吗')
 })
+
+test('过期信号直接拒绝，不进入 deliver', () => {
+  const { signals, delivered } = service()
+  const out = signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '旧消息', expiresAt: 999 })
+  assert.equal(out.accepted, false)
+  assert.equal(out.expired, true)
+  assert.equal(delivered.length, 0)
+  assert.equal(signals.stats().expired, 1)
+})
+
+test('没有 deliver 的 to:model 报错，不假装 accepted', () => {
+  const signals = createSignalService({ now: () => 1000 })
+  const out = signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'hi' })
+  assert.equal(out.accepted, false)
+  assert.match(out.error, /投递器/)
+  assert.equal(signals.stats().failed, 1)
+})
+
+test('deliver 抛错时不占用 id，可以原样重试', () => {
+  const signals = createSignalService({ now: () => 1000 })
+  let attempt = 0
+  signals.setDeliver(() => { attempt += 1; if (attempt === 1) throw new Error('busy') })
+  const sig = { id: 'retry-1', from: { plugin: 'qq' }, kind: 'content', text: 'hi' }
+  const first = signals.offer(sig)
+  assert.equal(first.accepted, false)
+  assert.match(first.error, /busy/)
+  const second = signals.offer(sig)
+  assert.equal(second.accepted, true)
+  assert.equal(attempt, 2)
+})
+
+test('gate 拦下的信号不占用 id：放行后可以重新 offer', () => {
+  const signals = createSignalService({ now: () => 1000 })
+  const delivered = []
+  signals.setDeliver((s) => delivered.push(s))
+  let allow = false
+  signals.setGate(() => ({ accept: allow }))
+  const sig = { id: 'wake-1', from: { plugin: 'time' }, kind: 'wake', text: '醒醒' }
+  assert.equal(signals.offer(sig).blocked, true)
+  allow = true
+  assert.equal(signals.offer(sig).accepted, true)
+  assert.equal(delivered.length, 1)
+})
+
+test('gate 自己抛错时 fail-open，并留下计数', () => {
+  const { signals, delivered } = service()
+  signals.setGate(() => { throw new Error('gate broke') })
+  const out = signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'hi' })
+  assert.equal(out.accepted, true)
+  assert.equal(delivered.length, 1)
+  assert.equal(signals.stats().gateErrors, 1)
+})
+
+test('订阅者抛错不拖垮其它订阅者，并计数', () => {
+  const { signals } = service()
+  const got = []
+  signals.on({}, () => { throw new Error('bad listener') })
+  signals.on({}, (s) => got.push(s.text))
+  signals.emit({ from: { plugin: 'qq' }, kind: 'event', text: 'still here' })
+  assert.deepEqual(got, ['still here'])
+  assert.equal(signals.stats().listenerErrors, 1)
+})
+
+test('focus 是字段不是路由：to:focus 被明确拒绝', () => {
+  const { signals } = service()
+  const out = signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'hi', to: 'focus' })
+  assert.equal(out.accepted, false)
+  assert.match(out.error, /未知的 to/)
+})

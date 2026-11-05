@@ -8,11 +8,11 @@ import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import * as memory from '../../plugins/memory/src/index.mjs'
 import * as recall from '../../plugins/recall/src/index.mjs'
-import * as rhythm from '../../plugins/rhythm/src/index.mjs'
+import * as time from '../../plugins/time/src/index.mjs'
 import * as dream from '../../plugins/dream/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
-import rhythmManifest from '../../plugins/rhythm/manifest.json' with { type: 'json' }
+import timeManifest from '../../plugins/time/manifest.json' with { type: 'json' }
 import dreamManifest from '../../plugins/dream/manifest.json' with { type: 'json' }
 
 function fakeChat(script) {
@@ -26,22 +26,33 @@ function fakeChat(script) {
   return { call, calls }
 }
 
-async function setup({ script = [] } = {}) {
+async function setup({ script = [], timezone = 'Asia/Hong_Kong' } = {}) {
   const host = createHost({ log: () => {} })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-dream2-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
-  host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '23:59', stateFile: path.join(root, 'r.json') } })
-  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', persona: '你是她夜里的记忆沉淀器。' } })
+  host.registerPlugin(timeManifest, time, { config: { dreamAt: '23:59', stateFile: path.join(root, 'time.json') } })
+  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。' } })
   await host.enable('memory')
   await host.enable('recall')
-  await host.enable('rhythm')
+  await host.enable('time')
   await host.enable('dream')
   const chat = fakeChat(script)
   host.services.slots.bind('dream-chat', { provider: 'fake', call: chat.call })
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
   return { host, tools, chat, memory: host.shared.get('memory'), dream: host.shared.get('dream') }
 }
+
+test('dream 在 time 日历里注册一条 silent 每日安排', async () => {
+  const { host } = await setup()
+  const schedule = host.shared.get('time').schedules().find((s) => s.id === 'dream:nightly')
+  assert.ok(schedule, 'time 里应该有 dream:nightly 安排')
+  assert.equal(schedule.at, '23:00')
+  assert.deepEqual(schedule.tags, ['dream'])
+  assert.equal(schedule.silent, true)
+  assert.equal(schedule.mode, 'wake')
+  assert.equal(schedule.kind, 'single')
+})
 
 test('事件 job：按话题切块、写进 event、note 被标为已消化', async () => {
   const { tools, memory, dream } = await setup({
@@ -152,4 +163,80 @@ test('事件块可以只输出纯文本 JSON（带 ``` 包裹也能解析）', a
   await tools.remember.execute({ text: '包裹测试', kind: 'event' })
   await dream.run({ now: Date.now(), jobs: ['events'] })
   assert.equal(memory.query({ namespace: 'event', kind: 'block' })[0].text, '包裹也能解析')
+})
+
+test('事件证据带行号与正文快照：重洗 log 后还能知道指哪句', async () => {
+  const now = Date.now()
+  const { host, memory, dream } = await setup({
+    script: [['事件块', JSON.stringify([{ summary: '看了视频', body: '正文', evidence: [1] }])]],
+  })
+  host.services.raw.register({
+    id: 'test-raw',
+    list: () => [{ text: '第一句原话', time: now, role: 'user' }],
+    search: () => [],
+  })
+  const out = await dream.run({ now, jobs: ['wash', 'events'] })
+  assert.equal(out.ok, true)
+  const block = memory.query({ namespace: 'event', kind: 'block' })[0]
+  assert.equal(block.data.evidence[0].type, 'day')
+  assert.equal(block.data.evidence[0].line, '第一句原话')
+  assert.ok(block.data.evidence[0].at > 0)
+})
+
+test('日界按 config.timezone，而不是本机时区', async () => {
+  const now = Date.UTC(2026, 0, 1, 23, 30) // 香港 2026-01-02 07:30 / UTC 2026-01-01 23:30
+  const hk = await setup({ timezone: 'Asia/Hong_Kong' })
+  const utc = await setup({ timezone: 'UTC' })
+  assert.equal((await hk.dream.run({ now, jobs: [] })).day, '2026-01-02')
+  assert.equal((await utc.dream.run({ now, jobs: [] })).day, '2026-01-01')
+})
+
+test('同一 summary 重跑：新证据优先，旧证据也不丢', async () => {
+  const now = Date.now()
+  const { host, memory, dream } = await setup({
+    script: [['事件块', JSON.stringify([{ summary: '同一天的事', body: '第一版', evidence: [1] }])]],
+  })
+  host.services.raw.register({
+    id: 'test-raw',
+    list: () => [
+      { text: '第一句', time: now, role: 'user' },
+      { text: '第二句', time: now + 1000, role: 'user' },
+    ],
+    search: () => [],
+  })
+  await dream.run({ now, jobs: ['wash', 'events'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'seq',
+    call: async () => JSON.stringify([{ summary: '同一天的事', body: '第二版', evidence: [2] }]),
+  })
+  await dream.run({ now, jobs: ['events'], force: true })
+  const block = memory.query({ namespace: 'event', kind: 'block', limit: 1 })[0]
+  assert.equal(block.data.body, '第二版')
+  assert.deepEqual(block.data.evidence.map((e) => e.id), [2, 1])
+  assert.deepEqual(block.data.evidence.map((e) => e.line), ['第二句', '第一句'])
+})
+
+test('做梦账本只保留 90 天', async () => {
+  const now = Date.now()
+  const { memory, dream } = await setup()
+  memory.put({ namespace: 'dream-run', kind: 'run', key: 'run:old:wash', text: 'old', now: now - 100 * 86_400_000 })
+  memory.put({ namespace: 'dream-run', kind: 'run', key: 'run:new:wash', text: 'new', now })
+  const out = await dream.run({ now, jobs: [] })
+  assert.equal(out.pruned, 1)
+  assert.equal(memory.query({ namespace: 'dream-run', kind: 'run', limit: 10 }).length, 1)
+})
+
+test('cleanup 改写同时保留 body 与 evidence（不能后写覆盖前写）', async () => {  const { memory, dream } = await setup({
+    script: [['整理已有的记忆块', JSON.stringify({
+      rewrites: [{ key: 'event:a', text: '新摘要', body: '新正文' }],
+    })]],
+  })
+  memory.put({ namespace: 'event', kind: 'block', key: 'event:a', text: '旧摘要', data: { body: '旧正文', evidence: [{ type: 'note', id: 7 }] }, now: 1000 })
+  memory.put({ namespace: 'event', kind: 'block', key: 'event:b', text: '另一块', data: { body: '另一正文' }, now: 2000 })
+  const out = await dream.run({ now: Date.now(), jobs: ['cleanup'] })
+  assert.equal(out.ok, true)
+  const block = memory.query({ namespace: 'event', kind: 'block', key: 'event:a', limit: 1 })[0]
+  assert.equal(block.text, '新摘要')
+  assert.equal(block.data.body, '新正文')
+  assert.equal(block.data.evidence[0].id, 7, '改写正文不能丢掉原有 evidence')
 })

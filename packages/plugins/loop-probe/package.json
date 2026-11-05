@@ -1,0 +1,6 @@
+{
+  "name": "@icl/plugin-loop-probe",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.mjs"
+}

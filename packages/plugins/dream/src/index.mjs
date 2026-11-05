@@ -19,15 +19,29 @@ export const name = 'dream'
 
 const DEFAULT_JOBS = ['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
 
-function dayRange(now) {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  const start = d.getTime()
+function ymdOf(now, timezone = 'Asia/Hong_Kong') {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(now))
+}
+function offsetMinutes(instant, timezone) {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'longOffset' })
+    .formatToParts(new Date(instant))
+    .find((part) => part.type === 'timeZoneName')?.value ?? 'GMT+00:00'
+  const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name)
+  if (!match) return 0
+  const sign = match[1] === '-' ? -1 : 1
+  return sign * (Number(match[2]) * 60 + Number(match[3]))
+}
+function dayRange(now, timezone = 'Asia/Hong_Kong') {
+  const date = ymdOf(now, timezone)
+  const utcMidnight = Date.parse(`${date}T00:00:00Z`)
+  const first = utcMidnight - offsetMinutes(utcMidnight, timezone) * 60_000
+  const start = utcMidnight - offsetMinutes(first, timezone) * 60_000
   return { start, end: start + 24 * 3600_000 }
 }
-function dayKey(now) {
-  const d = new Date(now)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+function dayKey(now, timezone = 'Asia/Hong_Kong') {
+  return ymdOf(now, timezone)
 }
 
 /** 从模型输出里抠出 JSON（容忍 ```json 包裹与前后废话）。 */
@@ -113,9 +127,10 @@ export function stripStructured(input) {
 
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
-  const rhythm = ctx.services.get('rhythm')
   const slot = ctx.manifest.slots?.[0]?.id ?? 'dream-chat'
   const session = String(ctx.config.sessionId ?? 'default')
+  const dreamAt = String(ctx.config.dreamAt ?? '23:00')
+  if (!/^\d{1,2}:\d{2}$/.test(dreamAt)) throw new Error(`dreamAt 格式应为 HH:mm：${dreamAt}`)
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
   try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
@@ -137,6 +152,38 @@ export function apply(ctx) {
     return notes.filter((n) => n.data?.consolidated !== true)
   }
 
+  /**
+   * 把 day log 的 `[i] HH:MM 说话人：正文` 拆成按编号索引的行。
+   * 证据里同时存 line/at：重洗 log 后行号会位移，但正文快照仍在。
+   */
+  function dayLogIndex(dayLog) {
+    const times = Array.isArray(dayLog?.data?.times) ? dayLog.data.times : []
+    const lines = new Map()
+    for (const raw of String(dayLog?.text ?? '').split('\n')) {
+      const match = /^\[(\d+)\]\s*(?:(\d{1,2}:\d{2})\s*)?(.*)$/.exec(raw)
+      if (!match) continue
+      const id = Number(match[1])
+      const rest = String(match[3] ?? '')
+      const cut = rest.indexOf('：')
+      lines.set(id, {
+        id,
+        at: Number(times[id - 1]) || 0,
+        text: (cut >= 0 ? rest.slice(cut + 1) : rest).trim(),
+      })
+    }
+    return lines
+  }
+
+  function dayEvidence(lines, id) {
+    const line = lines.get(Number(id))
+    return {
+      type: 'day',
+      id: Number(id),
+      ...(line?.text ? { line: line.text.slice(0, 160) } : {}),
+      ...(line?.at ? { at: line.at } : {}),
+    }
+  }
+
   function markNotes(notes, now) {
     for (const note of notes) {
       const data = { ...(note.data ?? {}), consolidated: true, consolidatedAt: now }
@@ -153,6 +200,15 @@ export function apply(ctx) {
     memory.put({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: `${day} ${job}`, data: detail, now })
   }
 
+  /** 只保留最近 90 天的做梦账本；否则每天 5–7 行会无界增长。 */
+  function pruneRuns(now, keepDays = 90) {
+    const cutoff = Number(now) - Math.max(1, keepDays) * 86_400_000
+    const old = memory.query({ namespace: 'dream-run', kind: 'run', limit: 500, order: 'asc' })
+      .filter((row) => Number(row.createdAt) < cutoff)
+    for (const row of old) memory.remove({ namespace: 'dream-run', id: row.id })
+    return old.length
+  }
+
   /* ── events：按话题切块 ───────────────────────────────────────── */
 
   /* ── wash：从当天原话里先洗出笔记 ───────── */
@@ -163,7 +219,7 @@ export function apply(ctx) {
    * remember 仍然是"主观想记住"的强参考，但不是唯一入口。
    */
   async function jobWash({ now, force = false }) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'wash')) return { job: 'wash', skipped: 'already-ran' }
     let rows = []
     try {
@@ -199,11 +255,11 @@ export function apply(ctx) {
   }
 
   async function jobEvents({ now, force = false }) {
-    const { start, end } = dayRange(now)
-    const day = dayKey(now)
+    const { start, end } = dayRange(now, tzOf())
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'events')) return { job: 'events', skipped: 'already-ran' }
     // 事件笔记也要跨天：太短没写成块的片段，明天要跟新材料一起重试。
-    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500 }))
+    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500, order: 'desc' }))
     let dayLogGate = null
     try { dayLogGate = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLogGate = null }
     if (!notes.length && !dayLogGate) return { job: 'events', skipped: 'no-notes' }
@@ -245,14 +301,22 @@ export function apply(ctx) {
       if (!summary) continue
       const key = `evt:${day}:${hash(summary)}`
       const evidence = dayLog
-        ? (Array.isArray(block?.evidence) ? block.evidence : [])
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id) && id >= 1 && id <= Number(dayLog.data?.lines ?? 0))
-          .map((id) => ({ type: 'day', id }))
+        ? (() => {
+          const lines = dayLogIndex(dayLog)
+          return (Array.isArray(block?.evidence) ? block.evidence : [])
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && lines.has(id))
+            .map((id) => dayEvidence(lines, id))
+        })()
         : validEvidence(block?.evidence, notes)
       const previous = memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
       // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
       if (!evidence.length && previous) continue
+      // 同一 summary 重跑：新证据优先，但旧证据不丢（旧行号/正文快照仍可追）。
+      const mergedEvidence = [...evidence]
+      for (const old of previous?.data?.evidence ?? []) {
+        if (!mergedEvidence.some((e) => e.type === old.type && Number(e.id) === Number(old.id))) mergedEvidence.push(old)
+      }
       const created = memory.put({
         namespace: 'event',
         kind: 'block',
@@ -262,20 +326,24 @@ export function apply(ctx) {
         ...(evidence.length ? {} : {}),
         data: {
           body: String(block?.body ?? '').slice(0, 4000),
-          evidence,
-          provisional: evidence.length === 0,
+          evidence: mergedEvidence,
+          provisional: mergedEvidence.length === 0,
           day,
           people: (block?.people ?? []).map(String),
           tags: normalizeTags(block?.tags),
-          sources: notes.map((n) => n.key).filter(Boolean),
+          sources: [...new Set([
+            ...notes.map((n) => n.key).filter(Boolean),
+            ...(previous?.data?.sources ?? []),
+          ])],
           ...(() => {
             if (dayLog) {
-              const times = (evidence ?? [])
-                .map((e) => Number(dayLog.data?.times?.[Number(e.id) - 1] ?? 0))
+              const lines = dayLogIndex(dayLog)
+              const times = mergedEvidence
+                .map((e) => Number(e.at) || Number(lines.get(Number(e.id))?.at) || 0)
                 .filter(Boolean)
               return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
             }
-            const cited = evidence.map((e) => notes.find((n) => Number(n.id) === Number(e.id))).filter(Boolean)
+            const cited = mergedEvidence.map((e) => notes.find((n) => Number(n.id) === Number(e.id))).filter(Boolean)
             const times = cited.map((n) => Number(n.data?.at ?? n.createdAt ?? 0)).filter(Boolean)
             return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
           })(),
@@ -283,7 +351,7 @@ export function apply(ctx) {
         now,
       })
       if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${block?.body ?? ''}`)
-      if (!evidence.length) {
+      if (!mergedEvidence.length) {
         raiseQuestion({
           text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
           about: { namespace: 'event', key },
@@ -295,7 +363,7 @@ export function apply(ctx) {
     // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
     const cited = new Set()
     for (const id of written) {
-      const block = memory.query({ namespace: 'event', kind: 'block', limit: 200 }).find((b) => Number(b.id) === Number(id))
+      const block = memory.query({ namespace: 'event', kind: 'block', id, limit: 1 })[0]
       for (const e of block?.data?.evidence ?? []) cited.add(Number(e.id))
     }
     const covered = notes.filter((n) => cited.has(Number(n.id)))
@@ -310,8 +378,8 @@ export function apply(ctx) {
   /* ── people：逐人整块重写 ─────────────────────────────────────── */
 
   async function jobPeople({ now, force = false }) {
-    const { start, end } = dayRange(now)
-    const day = dayKey(now)
+    const { start, end } = dayRange(now, tzOf())
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'people')) return { job: 'people', skipped: 'already-ran' }
     // 先看当天原话：人物不应该依赖 wash 恰好抽到了谁
     let dayLog = null
@@ -331,15 +399,16 @@ export function apply(ctx) {
           const who = String(item?.who ?? '').trim()
           const fact = String(item?.fact ?? '').trim()
           if (!who || !fact) continue
-          const dup = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
+          const dup = memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' })
             .some((n) => String(n.data?.subject?.value ?? '') === who && String(n.text).includes(fact.slice(0, 20)))
           if (dup) continue
           const idx = Number(item?.source_id)
+          const lines = dayLogIndex(dayLog)
           memory.put({
             namespace: 'person', kind: 'note', text: fact, now,
             data: {
               subject: { kind: 'name', value: who },
-              evidence: Number.isFinite(idx) ? [{ type: 'day', id: idx }] : [],
+              evidence: Number.isFinite(idx) && lines.has(idx) ? [dayEvidence(lines, idx)] : [],
               at: Number(dayLog.createdAt) || now,
             },
           })
@@ -347,7 +416,7 @@ export function apply(ctx) {
       } catch { /* 抽取失败就退回笔记路径 */ }
     }
     // 人物档案跨天：只要还没被消化，不管哪天的笔记都带上。
-    const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500 }))
+    const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' }))
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
 
     // 按"通用身份"分组：qq 只是其中一种
@@ -364,7 +433,7 @@ export function apply(ctx) {
     for (const [qq, list] of byQq) {
       const [subjectKind, subjectValue] = (() => { const s = list[0]?.__subject ?? { kind: 'qq', value: qq }; return [s.kind, s.value] })()
       const key = subjectKind === 'qq' ? `person:${subjectValue}` : `person:${subjectKind}:${subjectValue}`
-      const existing = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).find((r) => r.key === key)
+      const existing = memory.query({ namespace: 'person', kind: 'block', key, limit: 1 })[0]
       // 人物档案要有"全局认识"：把过去提到过这个人的事件块也带上，
       // 否则每天只能拿到一句话，写出来的档案永远认不出是谁。
       const matchesSubject = (entry) => {
@@ -372,10 +441,10 @@ export function apply(ctx) {
         return Boolean(subject?.value) && String(subject.value) === String(subjectValue)
           && String(subject.kind ?? 'qq') === String(subjectKind)
       }
-      const relatedEvents = memory.query({ namespace: 'event', kind: 'block', limit: 500 })
+      const relatedEvents = memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
         .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => String(p) === String(subjectValue)))
         .slice(-20)
-      const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500 })
+      const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' })
         .filter((n) => matchesSubject(n.data) && !list.some((x) => x.id === n.id))
         .slice(-20)
 
@@ -432,7 +501,7 @@ export function apply(ctx) {
       if (!profile) {
         profile = `目前知道的：${list.map((n) => n.text.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 3).join('；')}。`
       }
-      if (!profile) { skippedPeople.push(qq); continue }
+      if (!profile) { skippedPeople.push(key); continue }
       const thin = list.length < 3 || profile.length < 60
       let evidence = validEvidence(parsed?.evidence, [...list, ...pastNotes])
       // 模型偶尔会漏掉 evidence：问一次"你用了哪几条"，而不是直接认为没有出处。
@@ -499,7 +568,7 @@ export function apply(ctx) {
     )
     for (const key of blockKeys) {
       if (skippedPeople.includes(key)) continue
-      const block = memory.query({ namespace: 'person', kind: 'block', limit: 200 }).find((b) => b.key === key)
+      const block = memory.query({ namespace: 'person', kind: 'block', key, limit: 1 })[0]
       if (!block) continue
       for (const e of block.data?.evidence ?? []) citedPeople.add(Number(e.id))
       for (const c of block.data?.claims ?? []) for (const e of c.evidence ?? []) citedPeople.add(Number(e.id))
@@ -513,10 +582,10 @@ export function apply(ctx) {
   /* ── slang：新增/更新梗块 ───────────────────────────────────── */
 
   async function jobSlang({ now, force = false }) {
-    const { start, end } = dayRange(now)
-    const day = dayKey(now)
+    const { start, end } = dayRange(now, tzOf())
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'slang')) return { job: 'slang', skipped: 'already-ran' }
-    const notes = consolidated(memory.query({ namespace: 'slang', kind: 'note', since: start, until: end, limit: 500 }))
+    const notes = consolidated(memory.query({ namespace: 'slang', kind: 'note', since: start, until: end, limit: 500, order: 'desc' }))
     if (!notes.length) return { job: 'slang', skipped: 'no-notes' }
 
     let parsed = []
@@ -596,22 +665,22 @@ export function apply(ctx) {
     const wanted = String(key ?? '')
     if (!wanted) return null
     for (const ns of ['event', 'person', 'slang']) {
-      const hit = memory.query({ namespace: ns, kind: 'block', limit: 500 }).find((b) => b.key === wanted)
+      const hit = memory.query({ namespace: ns, kind: 'block', key: wanted, limit: 1 })[0]
       if (hit) return hit
     }
     return null
   }
 
   async function jobCleanup({ now, force = false }) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'cleanup')) return { job: 'cleanup', skipped: 'already-ran' }
 
-    const pendingResolves = memory.query({ namespace: 'resolve', kind: 'note', limit: 100 })
+    const pendingResolves = memory.query({ namespace: 'resolve', kind: 'note', limit: 100, order: 'desc' })
       .filter((n) => n.data?.consumed !== true)
 
     const blocks = []
     for (const ns of ['event', 'person', 'slang']) {
-      for (const b of memory.query({ namespace: ns, kind: 'block', limit: 500 })) {
+      for (const b of memory.query({ namespace: ns, kind: 'block', limit: 500, order: 'desc' })) {
         if (b.data?.superseded === true) continue
         blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
       }
@@ -730,12 +799,18 @@ export function apply(ctx) {
       if (!key) continue
       const existing = findBlockByKey(key)
       if (!existing) continue
-      if (op?.text) memory.patch(existing.id, { text: String(op.text).slice(0, 400) })
-      if (op?.body) memory.patch(existing.id, { data: { ...(existing.data ?? {}), body: String(op.body).slice(0, 4000) } })
+      // 一次算出完整的 nextData / nextText，再只 patch 一次。
+      // 旧写法连打三次 patch，后两次都基于改写前的 existing.data，会把 body 写回旧值。
+      const nextData = { ...(existing.data ?? {}) }
+      let changed = false
+      const nextText = op?.text ? String(op.text).slice(0, 400) : null
+      if (nextText != null) changed = true
+      if (op?.body) { nextData.body = String(op.body).slice(0, 4000); changed = true }
       if (Array.isArray(op?.evidence) && op.evidence.length) {
         const ev = op.evidence.map((x) => ({ type: 'block', id: Number(x) })).filter((x) => Number.isFinite(x.id))
-        if (ev.length) memory.patch(existing.id, { data: { ...(existing.data ?? {}), evidence: [...(existing.data?.evidence ?? []), ...ev] } })
+        if (ev.length) { nextData.evidence = [...(nextData.evidence ?? []), ...ev]; changed = true }
       }
+      if (changed) memory.patch(existing.id, { ...(nextText == null ? {} : { text: nextText }), data: nextData })
       rewriteCount += 1
     }
 
@@ -766,7 +841,7 @@ export function apply(ctx) {
    * 手动接口：`dream.run({ jobs: ['index'] })`。
    */
   async function jobIndex({ now, force = false }) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'index')) return { job: 'index', skipped: 'already-ran' }
     const missing = memory.missingVectors({ limit: 200 })
     if (!missing.length) return { job: 'index', skipped: 'nothing-missing' }
@@ -799,23 +874,21 @@ export function apply(ctx) {
     return faded
   }
 
-  // 按配置时区算当天
-  function ymdInTz(now) {
-    const tz = String(ctx.config.timezone ?? 'Asia/Hong_Kong')
-    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now))
-  }
-  function dayStartOf(now) { return Date.parse(`${ymdInTz(now)}T00:00:00+08:00`) }
-  function dayEndOf(now) { return dayStartOf(now) + 86400000 }
+  function tzOf() { return String(ctx.config.timezone ?? 'Asia/Hong_Kong') }
+  // 按配置时区算当天；dayRange/dayKey 是同一套算法，不再各用各的。
+  function ymdInTz(now) { return ymdOf(now, tzOf()) }
+  function dayStartOf(now) { return dayRange(now, tzOf()).start }
+  function dayEndOf(now) { return dayRange(now, tzOf()).end }
 
   async function jobLexicon({ now, force = false }) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
     // slang 已并入 lexicon：采集范围包括旧的 slang 笔记
     // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
     let sourceLines = []
     try {
       // 优先用当天洗好的干净原话；没有才退回原文来源
-      const dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${dayKey(now)}`, limit: 1 })[0]
+      const dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${dayKey(now, tzOf())}`, limit: 1 })[0]
       if (dayLog?.text) sourceLines = dayLog.text.split('\n')
       else {
         const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
@@ -907,11 +980,11 @@ export function apply(ctx) {
    * 防“为了写而写”：没有 result 且没有追加内容的，不写，也不归档。
    */
   async function jobConsume({ now, force = false }) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'consume')) return { job: 'consume', skipped: 'already-ran' }
     const noteSvc = ctx.services.get('note')
     if (!noteSvc) return { job: 'consume', skipped: 'no-note-plugin' }
-    const done = memory.query({ namespace: 'note', kind: 'note', limit: 200 })
+    const done = memory.query({ namespace: 'note', kind: 'note', limit: 200, order: 'desc' })
       .filter((n) => n.data?.status === 'done')
 
     let written = 0
@@ -924,7 +997,7 @@ export function apply(ctx) {
       try {
         if (about.namespace === 'lexicon') {
           const key = String(about.key ?? '')
-          const existing = memory.query({ namespace: 'lexicon', kind: 'term', limit: 200 }).find((x) => x.key === key)
+          const existing = memory.query({ namespace: 'lexicon', kind: 'term', key, limit: 1 })[0]
           // about 里已经带了显式字段，不再依赖从键里拆
           const term = about.term ?? existing?.data?.term ?? key.split(':').pop()
           const conv = about.conv ?? existing?.data?.origins?.find((o) => o.conv)?.conv ?? 'web'
@@ -955,7 +1028,7 @@ export function apply(ctx) {
    * @returns {{ok:boolean, day:string, results:object[]}}
    */
   async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false } = {}) {
-    const day = dayKey(now)
+    const day = dayKey(now, tzOf())
     const results = []
     for (const name of jobs) {
       const job = JOBS[name]
@@ -963,7 +1036,8 @@ export function apply(ctx) {
       try { results.push(await job({ now, force })) } catch (error) { results.push({ job: name, ok: false, error: String(error?.message ?? error) }) }
     }
     const ok = results.every((r) => r.ok !== false)
-    return { ok, day, results }
+    const pruned = pruneRuns(now)
+    return { ok, day, results, pruned }
   }
 
   // 与时间模块的轻耦合：睡觉开始时收到事件就跑一轮（rhythm 是旧兼容，可以没有）
@@ -973,11 +1047,27 @@ export function apply(ctx) {
     })
     ctx.onDispose(off)
   } catch { /* 没有信号服务时退化为纯手动 */ }
-  if (typeof rhythm?.onNightly === 'function') {
-    const off = rhythm.onNightly((event) => { void run({ now: event?.at ?? ctx.now() }) })
+
+  // 每晚做梦不是 time 里的硬编码分支：它只是 time 日历里的一条 silent 安排，
+  // 到点由 time 发 schedule-start（tags 含 dream），dream 订阅后并行跑自己的流水线。
+  try {
+    const time = ctx.services.get('time')
+    if (time?.add) {
+      const existing = time.schedules?.().find((s) => s.id === 'dream:nightly')
+      if (!existing) {
+        time.add({ id: 'dream:nightly', at: dreamAt, mode: 'wake', kind: 'single', silent: true, tags: ['dream'], message: '' })
+      } else if (existing.at !== dreamAt) {
+        time.edit('dream:nightly', { at: dreamAt })
+      }
+    }
+  } catch (error) { ctx.log({ level: 'warn', msg: 'dream.schedule', error: String(error?.message ?? error) }) }
+
+  try {
+    const off = ctx.signals.on({ kind: 'event', tags: ['dream'] }, (signal) => {
+      void run({ now: signal.createdAt ?? ctx.now() })
+    })
     ctx.onDispose(off)
-    if (typeof rhythm.isDue === 'function' && rhythm.isDue()) void run()
-  }
+  } catch { /* 没有信号服务时退化为纯手动 */ }
 
   ctx.services.provide('dream', { run, jobs: Object.keys(JOBS), slot, persona })
   ctx.log({ msg: 'dream.ready', slot, jobs: Object.keys(JOBS), hasPersona: Boolean(persona) })

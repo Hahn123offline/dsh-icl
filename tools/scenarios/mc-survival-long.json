@@ -1,0 +1,38 @@
+[
+  {
+    "id": "survival-boot",
+    "op": "prompt",
+    "text": "长期生存测试开始。你在 normal 世界，角色名 ICL-Survival，空背包。目标按阶段推进：先确认环境安全，砍树→工作台→木镐→石具→熔炉→铁器→家；不要重复采集，不要站在出生点等指令。有人进服说话要回应。决定做一件大事（下矿、远行、合成一批、建家、战斗）前先用 mcb_do 的 say op 说一句你要做什么；任务完成/失败也说一句，普通一步不用说。每轮做一小步，用 mcb_status/mcb_look/mcb_scan/mcb_inventory 和 mcb_do 取证。先检查环境并做第一件该做的事。"
+  },
+  { "id": "w1", "op": "wait", "seconds": 30 },
+  {
+    "id": "c1",
+    "op": "prompt",
+    "text": "继续推进主线：先看 mcb_status / mcb_inventory / 周围，如果有正在跑的任务就等它；没有就做当前最值当的一小步。不要等我。"
+  },
+  { "id": "w2", "op": "wait", "seconds": 45 },
+  {
+    "id": "c2",
+    "op": "prompt",
+    "text": "继续。检查背包和工具进度；如果卡住，用 mcb_scan/mcb_map 手动脱困，或换目标。血/饥饿/天黑优先保命。"
+  },
+  { "id": "w3", "op": "wait", "seconds": 45 },
+  {
+    "id": "c3",
+    "op": "prompt",
+    "text": "继续生存主线。优先把木头变成工作台和木镐，再考虑石具；不要空手站着。"
+  },
+  { "id": "w4", "op": "wait", "seconds": 45 },
+  {
+    "id": "c4",
+    "op": "prompt",
+    "text": "继续。看 mcb_inventory；如果已有材料就合成/放置，缺什么就采什么。有人说话先回应。"
+  },
+  { "id": "w5", "op": "wait", "seconds": 45 },
+  {
+    "id": "c5",
+    "op": "prompt",
+    "text": "继续。总结当前阶段（石具/铁器/家）和你手上正在做的事，然后推进下一步。"
+  },
+  { "id": "w6", "op": "wait", "seconds": 30 }
+]

@@ -48,7 +48,7 @@ test('停用后提示词段也一起消失，重新启用又回来', async () =>
   assert.match(session.systemPrompt(), /现在是 /)
 })
 
-test('两个插件的段按 order 排：时间在前，人格在后', async () => {
+test('两个插件的段按 order 排：稳定人格在前，动态 world 在后', async () => {
   const { host, session } = setup()
   host.registerPlugin(personaManifest, persona, { config: { card: '我是大肥鱼' } })
   host.registerPlugin(worldManifest, worldState)
@@ -56,7 +56,7 @@ test('两个插件的段按 order 排：时间在前，人格在后', async () =
   await host.enable('world-state')
   const text = session.systemPrompt()
   assert.ok(text.includes('我是大肥鱼'), '人格正文要在')
-  assert.ok(text.indexOf('现在是 ') < text.indexOf('我是大肥鱼'), 'world(order 10) 在 persona(order 20) 前面')
+  assert.ok(text.indexOf('我是大肥鱼') < text.indexOf('现在是 '), 'persona 稳定前缀在 world 动态段之前')
   assert.doesNotMatch(text, /\n\n\n/, '段之间只留一个空行')
 })
 

@@ -1,0 +1,31 @@
+{
+  "name": "dsh-icl",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "ICL 的 DSH 接线：工具面、提示词、投递、回合事件、原文来源、单会话",
+  "exports": {
+    ".": "./index.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
+  "files": [
+    "index.mjs",
+    "src/*.mjs",
+    "presets/*.patch.yml",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./presets/icl.patch.yml"
+      ]
+    }
+  },
+  "license": "MIT"
+}

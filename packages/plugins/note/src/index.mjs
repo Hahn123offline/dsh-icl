@@ -13,7 +13,7 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   memory.registerNamespace({ id: 'note', label: '备忘', recallable: false, owner: 'note' })
 
-  const rows = () => memory.query({ namespace: 'note', kind: 'note', limit: 500 })
+  const rows = () => memory.query({ namespace: 'note', kind: 'note', limit: 500, order: 'desc' })
   const isOpen = (n) => (n.data?.status ?? 'open') === 'open'
   const openNotes = () => rows().filter(isOpen)
 
@@ -29,8 +29,7 @@ export function apply(ctx) {
   }
 
   function resolve(id, { answer = null } = {}) {
-    const rows = memory.query({ namespace: 'note', kind: 'note', limit: 200 })
-    const row = rows.find((r) => Number(r.id) === Number(id))
+    const row = memory.query({ namespace: 'note', kind: 'note', id, limit: 1 })[0]
     if (!row) return { ok: false, error: 'not-found' }
     memory.patch(row.id, { data: { ...(row.data ?? {}), status: 'resolved', answer, resolvedAt: ctx.now() } })
     return { ok: true, id: row.id }
@@ -41,13 +40,15 @@ export function apply(ctx) {
     return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
   }
 
-  function count() { return openNotes().length }
+  function count() {
+    return memory.count({ namespace: 'note', kind: 'note', status: 'open' })
+  }
 
   /** 往一条备忘里追加内容：状态不变，问题仍然可见可继续补。 */
   function append(id, text) {
     const body = String(text ?? '').trim()
     if (!body) return { ok: false, error: 'empty' }
-    const row = rows().find((r) => Number(r.id) === Number(id))
+    const row = memory.query({ namespace: 'note', kind: 'note', id, limit: 1 })[0]
     if (!row) return { ok: false, error: 'not-found' }
     const updates = [...(row.data?.updates ?? []), { text: body, at: ctx.now() }]
     memory.patch(row.id, { data: { ...(row.data ?? {}), updates } })
@@ -56,7 +57,7 @@ export function apply(ctx) {
 
   /** 标记完成：把追加内容冻成"新消息"，等做梦回收后归档。 */
   function commit(id, { result = null, source = null } = {}) {
-    const row = rows().find((r) => Number(r.id) === Number(id))
+    const row = memory.query({ namespace: 'note', kind: 'note', id, limit: 1 })[0]
     if (!row) return { ok: false, error: 'not-found' }
     memory.patch(row.id, {
       data: { ...(row.data ?? {}), status: 'done', result: result == null ? null : String(result), source: source == null ? null : String(source), doneAt: ctx.now() },
@@ -112,7 +113,8 @@ export function apply(ctx) {
       if (!picked.length) return { text: '没有待办。' }
       return { text: picked.map((r) => {
         const upd = (r.data?.updates ?? []).map((u) => `\n  + ${u.text}`).join('')
-        return `· ${r.text}${upd}`
+        // 没有 id 时模型只能猜 memo_commit/append 的参数；把 id 露出来。
+        return `· #${r.id} ${r.text}${upd}`
       }).join('\n') }
     },
   })
@@ -154,10 +156,9 @@ export function apply(ctx) {
     avoid: ['when you need the actual text (use memos)'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() {
-      const all = rows()
-      const open = all.filter(isOpen).length
-      const done = all.filter((r) => r.data?.status === 'done').length
-      const archived = all.filter((r) => r.data?.status === 'archived').length
+      const open = memory.count({ namespace: 'note', kind: 'note', status: 'open' })
+      const done = memory.count({ namespace: 'note', kind: 'note', status: 'done' })
+      const archived = memory.count({ namespace: 'note', kind: 'note', status: 'archived' })
       return { text: `待办 ${open} 条，已完成待回收 ${done} 条，已归档 ${archived} 条。` }
     },
   })

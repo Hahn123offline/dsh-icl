@@ -30,17 +30,23 @@ export function apply(ctx) {
     } catch { /* 读不到就从空开始 */ }
   }
 
+  function versionKey(at) {
+    // 秒级时间 + 进程内序号 + 随机后缀：跨进程同一秒、同序号也不会覆盖旧版本。
+    return `v:${stamp(at)}-${++versionSeq}-${Math.random().toString(36).slice(2, 6)}`
+  }
+
   function versions(limit = 20) {
     if (!memory) return []
-    const rows = memory.query({ namespace, kind: 'persona-version', limit: Math.max(1, Number(limit) || 20) })
-    return rows.map((row) => ({ id: row.key, text: row.text, at: row.createdAt })).reverse()
+    // 最新在前；rollback(1) = 上一个版本，不能拿窗口里最老的一版。
+    const rows = memory.query({ namespace, kind: 'persona-version', limit: Math.max(1, Number(limit) || 20), order: 'desc' })
+    return rows.map((row) => ({ id: row.key, text: row.text, at: row.createdAt }))
   }
 
   function persist() {
     if (!memory) return
     memory.put({ namespace, kind: 'persona-current', key: 'current', text: current, now: ctx.now() })
-    const all = memory.query({ namespace, kind: 'persona-version', limit: 500 })
-    for (const old of all.slice(0, Math.max(0, all.length - maxVersions))) {
+    const all = memory.query({ namespace, kind: 'persona-version', limit: 500, order: 'desc' })
+    for (const old of all.slice(maxVersions)) {
       memory.remove({ namespace, id: old.id })
     }
   }
@@ -53,7 +59,7 @@ export function apply(ctx) {
       if (next === current) return { changed: false, chars: current.length }
       const at = ctx.now()
       if (memory && current) {
-        memory.put({ namespace, kind: 'persona-version', key: `v:${stamp(at)}-${++versionSeq}`, text: current, data: { by }, now: at })
+        memory.put({ namespace, kind: 'persona-version', key: versionKey(at), text: current, data: { by }, now: at })
       }
       current = next
       persist()
@@ -69,7 +75,7 @@ export function apply(ctx) {
       else if (Number.isFinite(Number(target))) pick = list[Number(target) - 1] ?? null
       if (!pick) throw new Error('找不到这一版')
       const at = ctx.now()
-      if (memory) memory.put({ namespace, kind: 'persona-version', key: `v:${stamp(at)}-${++versionSeq}`, text: current, data: { by: 'rollback' }, now: at })
+      if (memory) memory.put({ namespace, kind: 'persona-version', key: versionKey(at), text: current, data: { by: 'rollback' }, now: at })
       current = pick.text
       persist()
       ctx.log({ msg: 'persona.rollback', to: pick.id })

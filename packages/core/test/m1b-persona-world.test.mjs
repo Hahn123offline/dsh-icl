@@ -13,7 +13,7 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import personaManifest from '../../plugins/persona/manifest.json' with { type: 'json' }
 import worldManifest from '../../plugins/world-state/manifest.json' with { type: 'json' }
 
-async function setup({ withMemory = true, card = '' } = {}) {
+async function setup({ withMemory = true, card = '', personaConfig = {} } = {}) {
   const host = createHost({ log: () => {} })
   const session = createSessionAdapter({ sessionId: 's1', host, push: async () => {} })
   if (withMemory) {
@@ -21,7 +21,7 @@ async function setup({ withMemory = true, card = '' } = {}) {
     host.registerPlugin(memoryManifest, memory, { config: { root } })
     await host.enable('memory')
   }
-  host.registerPlugin(personaManifest, persona, { config: { card } })
+  host.registerPlugin(personaManifest, persona, { config: { card, ...personaConfig } })
   host.registerPlugin(worldManifest, world)
   return { host, session }
 }
@@ -46,6 +46,19 @@ test('人格：回滚到上一版，且当前值也跟着变', async () => {
   assert.match(session.systemPrompt(), /第二版/)
 })
 
+test('人格：版本只保留最新 maxVersions，rollback(1) 是上一个版本', async () => {
+  const { host } = await setup({ card: 'v1', personaConfig: { maxVersions: 2 } })
+  await host.enable('persona')
+  const api = host.shared.get('persona')
+  api.set('v2')
+  api.set('v3')
+  api.set('v4')
+  const list = api.versions()
+  assert.deepEqual(list.map((v) => v.text), ['v3', 'v2'])
+  api.rollback(1)
+  assert.equal(api.current(), 'v3')
+})
+
 test('人格：没有 memory 时也能用，只是没有历史（不假装持久化）', async () => {
   const { host } = await setup({ withMemory: false })
   await host.enable('persona')
@@ -62,6 +75,22 @@ test('人格：持久化在 memory 的 persona 命名空间，不是第二个库
   const rows = host.shared.get('memory').query({ namespace: 'persona', kind: 'persona-current' })
   assert.equal(rows.length, 1)
   assert.match(rows[0].text, /落盘的卡/)
+})
+
+test('世界：time 在时不重复默认 clock 行；同一 owner 按 source order 取 title/cap', async () => {
+  const { host } = await setup({ withMemory: false })
+  await host.enable('world-state')
+  const w = host.shared.get('world')
+  w.registerSource({
+    id: 'time', owner: 'time', title: '时间', order: 5, cap: 2,
+    items: () => [{ key: 'now', brief: '现在是 2026-11-04 00:47' }, { key: 'phase', brief: '阶段：醒着' }],
+  })
+  w.registerSource({ id: 'z', owner: 'x', title: '后', order: 30, cap: 1, items: () => [{ key: 'a', brief: '后出现的' }] })
+  w.registerSource({ id: 'a', owner: 'x', title: '先', order: 10, cap: 2, items: () => [{ key: 'b', brief: '先出现的' }, { key: 'c', brief: '第二条' }] })
+  const brief = w.renderBrief()
+  assert.equal((brief.match(/时间：/g) ?? []).length, 1, '不应同时有 clock 和 time 两行时间')
+  assert.match(brief, /先：先出现的；第二条/)
+  assert.doesNotMatch(brief, /后：后出现的/)
 })
 
 test('世界：默认只露 brief，且每个注册者受 cap 限制', async () => {

@@ -1,0 +1,17 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "plain-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "外部直投测试"
+  },
+  { "id": "wait-delivery", "op": "wait", "seconds": 4 },
+  {
+    "id": "delivery-assert",
+    "op": "assert",
+    "userContains": ["外部直投测试"],
+    "minTurns": 2
+  }
+]

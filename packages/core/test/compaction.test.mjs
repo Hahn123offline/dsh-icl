@@ -76,3 +76,11 @@ test('超过阈值才自动压缩', async () => {
   assert.equal(long.ok, true)
   assert.ok(long.dropped > 0)
 })
+
+test('latest 取最新摘要，不受 500 行窗口限制', async () => {
+  const { host, memory } = await setup()
+  for (let i = 0; i < 501; i += 1) {
+    memory.put({ namespace: 'compaction', kind: 'summary', key: `s${i}`, text: `摘要 ${i}`, now: 1000 + i })
+  }
+  assert.equal(host.shared.get('compaction').latest().text, '摘要 500')
+})

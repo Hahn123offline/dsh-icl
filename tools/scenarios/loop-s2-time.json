@@ -1,0 +1,17 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "wake-arrange",
+    "op": "time",
+    "cmd": "arrange",
+    "args": { "id": "loop-wake-1", "in": "1m", "mode": "wake", "kind": "single", "message": "闭环唤醒" }
+  },
+  { "id": "wake-wait", "op": "wait", "seconds": 72 },
+  {
+    "id": "wake-arrived",
+    "op": "assert",
+    "userContains": ["闭环唤醒"],
+    "minTurns": 2,
+    "timeoutSec": 1
+  }
+]

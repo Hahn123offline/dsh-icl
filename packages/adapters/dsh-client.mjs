@@ -1,4 +1,10 @@
-// Node 环境的 DSH Web API 客户端。
+// Node 环境的 DSH Web API 客户端（旧路径，不在产品接线里）。
+//
+// 现行接线是 packages/dsh-icl：进程内 ctx.tools / ctx.systemPrompt / session/event /
+// agent.followup，不需要 HTTP、端口发现或 launch token。本文件只为 tools/dsh-session.mjs
+// 从外部建会话而保留；不要在新接线里 import。
+//
+// --- 以下是历史协议说明 ---
 // 兼容 DSH 0.1.2-alpha.1 引入、并在 0.1.5-rc.1 上复核通过的协议：
 // 1. RPC 方法从点号改为斜杠（host.describe -> host/describe 等）；
 // 2. payload 包装为 { args: { <参数名>: 原payload } }（session/list 用 _request，其余多为 request）；

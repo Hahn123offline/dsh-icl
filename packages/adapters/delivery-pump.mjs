@@ -1,7 +1,8 @@
-// 投递泵：把 delivery 队列里的批次真正送进 DSH 会话。
+// 投递泵（旧路径）：把 delivery 队列里的批次通过 DSH Web API 送进会话。
 //
-// 这是"时间模块的消息能到会话"的唯一通道。没有它，所有 wake/goal/notice
-// 都只是死信。
+// 现行接线是 packages/dsh-icl 的 agent.followup，不再经过 HTTP。
+// 保留原因：tools/dsh-session.mjs 与 delivery-pump.test.mjs；不要在新接线里 import。
+
 //
 // 设计：只依赖三个注入项，方便测试
 //   delivery   有 drain/ack/nack 的服务

@@ -45,8 +45,9 @@ export function composeToolDescription(definition, { maxChars = TOOL_TEXT_LIMITS
  * 原文层不是"再存一份"，而是"按需回原始日志里查"。
  * DSH 会话日志本身就是原文；插件只提供"按字面查一句话"的能力。
  */
-export function createRawSourceRegistry() {
+export function createRawSourceRegistry({ onError = null } = {}) {
   const sources = new Map()
+  const report = (where, error) => { try { onError?.(where, error) } catch { /* 上报者自己坏了 */ } }
   return {
     register({ id, search, list } = {}) {
       const key = String(id ?? '')
@@ -64,7 +65,7 @@ export function createRawSourceRegistry() {
         try {
           const rows = await source.list({ since, until, limit })
           for (const row of rows ?? []) out.push({ ...row, source: source.id })
-        } catch { /* ignore */ }
+        } catch (error) { report(`raw.list:${source.id}`, error) }
       }
       return out.slice(0, limit)
     },
@@ -76,7 +77,7 @@ export function createRawSourceRegistry() {
         try {
           const rows = await source.search({ query, limit })
           for (const row of rows ?? []) hits.push({ ...row, source: source.id })
-        } catch { /* 单个来源失败不影响其他 */ }
+        } catch (error) { report(`raw.search:${source.id}`, error) }
       }
       return hits.slice(0, Math.max(1, Number(limit) || 2))
     },
@@ -94,10 +95,11 @@ export function createRawSourceRegistry() {
  *   2. onAssemble —— 注册一个装配前策略（压缩、摘要、守卫都在这里）
  *   3. onCompact  —— 适配器支持替换历史时，注册压缩实现（旧实现可直接接）
  */
-export function createContextService() {
+export function createContextService({ onError = null } = {}) {
   let historySource = null
   const assemblers = new Map()
   const compactors = new Map()
+  const report = (where, error) => { try { onError?.(where, error) } catch { /* ignore */ } }
   return {
     provideHistory(fn) {
       if (typeof fn !== 'function') throw new Error('history source \u9700\u8981\u4e00\u4e2a\u51fd\u6570')
@@ -124,7 +126,7 @@ export function createContextService() {
           const value = await a.apply({ sessionId, message, history: h })
           const body = value == null ? '' : String(value).trim()
           if (body) pieces.push(body)
-        } catch { /* \u5355\u4e2a\u7b56\u7565\u574f\u4e86\u4e0d\u5f71\u54cd\u5176\u4ed6 */ }
+        } catch (error) { report(`context.assemble:${a.name}`, error) }
       }
       let text = pieces.join('\n')
       if (text.length > maxChars) text = maxChars <= 1 ? '\u2026'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '\u2026'
@@ -141,7 +143,10 @@ export function createContextService() {
     async compact(input = {}) {
       const first = [...compactors.values()][0]
       if (!first) return { ok: false, error: 'no-compactor' }
-      return first.compact(input)
+      try { return await first.compact(input) } catch (error) {
+        report(`context.compact:${first.id}`, error)
+        return { ok: false, error: String(error?.message ?? error) }
+      }
     },
   }
 }
@@ -153,9 +158,13 @@ export function createContextService() {
  * 工具面：把"已启用插件声明的工具"整理成可注入的集合。
  * 它不注册工具（那是 tools 的事），只回答"现在应该给模型看哪些"。
  */
-export function createToolSurface({ tools, plugins, presets = null }) {
+export function createToolSurface({ tools, plugins, presets = null, onError = null }) {
   const listeners = new Set()
-  const notify = () => { for (const fn of listeners) { try { fn() } catch { /* ignore */ } } }
+  const notify = () => {
+    for (const fn of listeners) {
+      try { fn() } catch (error) { try { onError?.(`surface.listener`, error) } catch { /* ignore */ } }
+    }
+  }
   return {
     /** 工具 → 所属插件。 */
     owners() {
@@ -170,10 +179,8 @@ export function createToolSurface({ tools, plugins, presets = null }) {
       const owners = this.owners()
       const enabled = new Set(plugins().filter((p) => p.enabled).map((p) => p.id))
       // 预设来自我们自己的服务；null 表示"全部插件"
-      const allowed = presets
-        ? (preset && preset !== presets.active() ? preset : presets.active())
-        : null
-      const presetDef = allowed && allowed !== 'default' ? presets.list().find((x) => x.id === allowed) : null
+      const allowed = preset ?? (presets ? presets.active() : null)
+      const presetDef = allowed && allowed !== 'default' ? presets?.list().find((x) => x.id === allowed) : null
       // 预设可用 allow 或 plugins 声明允许的插件；两者都为 null 表示"全部"
       const allowSpec = presetDef ? (presetDef.allow ?? presetDef.plugins ?? null) : null
       const allow = allowSpec == null ? null : new Set(allowSpec)
@@ -310,9 +317,10 @@ export function createToolRegistry({ onChange = () => {}, stampTime = null } = {
 
 /* ───────────────────────────── 提示词 ───────────────────────────── */
 
-export function createPromptService() {
+export function createPromptService({ onError = null } = {}) {
   const sections = new Map()
   const turnProviders = []
+  const report = (where, error) => { try { onError?.(where, error) } catch { /* ignore */ } }
   return {
     /**
      * 注册一个注入段。text 可以是字符串或函数（每次装配求值）。
@@ -350,7 +358,7 @@ export function createPromptService() {
           if (value == null) continue
           const body = String(value).trim()
           if (body) pieces.push(body)
-        } catch { /* 单个提供者坏了不影响对话 */ }
+        } catch (error) { report('prompt.turnText', error) }
       }
       let text = pieces.join('\n')
       if (text.length > maxChars) text = maxChars <= 1 ? '…'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '…'
@@ -367,7 +375,7 @@ export function createPromptService() {
           if (value == null) continue
           const body = String(value).trim()
           if (body) out.push(body)
-        } catch { /* 单个段坏了不影响整体 */ }
+        } catch (error) { report(`prompt.assemble:${section.name}`, error) }
       }
       return out.join('\n\n')
     },
@@ -378,14 +386,29 @@ export function createPromptService() {
 
 export function createFocusService({ now = () => Date.now() } = {}) {
   const leases = new Map()
+  const backlog = new Map()
+  const listeners = new Set()
+  const backlogListeners = new Set()
   let seq = 0
   function alive(lease, at) { return lease && (lease.expiresAt == null || lease.expiresAt > at) }
+  function changed() { for (const fn of listeners) { try { fn() } catch { /* 单个监听器坏了不影响焦点 */ } } }
+  function backlogChanged() { for (const fn of backlogListeners) { try { fn() } catch { /* ignore */ } } }
+  function withRelease(lease) {
+    return {
+      ...lease,
+      release: () => {
+        if (!leases.delete(lease.id)) return
+        changed()
+      },
+    }
+  }
+
   return {
     /**
      * 申请一个 focus。插件可以自己申请（进世界/进群），模型工具也能申请。
      * @returns {{id:string, label:string, release:() => void}}
      */
-    enter({ label, owner = null, reason = '', ttlMs = null, pierce = null, visible = true } = {}) {
+    enter({ label, owner = null, reason = '', ttlMs = null, pierce = null, visible = true, title = null, kind = 'task', interruptible = true, goal = null, exitCondition = null, expectedMinutes = null } = {}) {
       const key = String(label ?? '').trim()
       if (!key) throw new Error('focus.label 必填')
       const at = now()
@@ -399,9 +422,16 @@ export function createFocusService({ now = () => Date.now() } = {}) {
         expiresAt: ttlMs == null ? null : at + Math.max(1000, Number(ttlMs) || 0),
         pierce: pierce && typeof pierce === 'object' ? { ...pierce } : {},
         visible: visible !== false,
+        title: title == null ? key : String(title),
+        kind: String(kind ?? 'task'),
+        interruptible: interruptible !== false,
+        goal: goal == null ? null : String(goal),
+        exitCondition: exitCondition == null ? null : String(exitCondition),
+        expectedMinutes: Number.isFinite(Number(expectedMinutes)) ? Number(expectedMinutes) : null,
       }
       leases.set(id, lease)
-      return { ...lease, release: () => { leases.delete(id) } }
+      changed()
+      return withRelease(lease)
     },
     /** 当前 focus：最新且未过期的那个。 */
     current() {
@@ -411,7 +441,7 @@ export function createFocusService({ now = () => Date.now() } = {}) {
         if (!alive(lease, at)) continue
         if (!best || lease.since >= best.since) best = lease
       }
-      return best
+      return best ? withRelease(best) : null
     },
     /** 用来判断"别处的事能不能打断她"。 */
     canPierce(fromLabel, opts = {}) {
@@ -419,7 +449,98 @@ export function createFocusService({ now = () => Date.now() } = {}) {
       if (!cur) return { allowed: true, level: 'always', pattern: '(no-focus)' }
       return resolvePierce(cur.pierce, fromLabel, opts)
     },
-    list() { const at = now(); return [...leases.values()].filter((l) => alive(l, at)) },
+    /**
+     * 投递裁决：别处的事该不该现在进模型。
+     * 闹钟（time）与 admin 永远放行；当前 focus 不可打断时其余一律进积压。
+     */
+    admit(signal = {}) {
+      const cur = this.current()
+      if (!cur) return { deliver: true, reason: 'no-focus' }
+      const from = String(signal.from?.plugin ?? '')
+      const tags = Array.isArray(signal.tags) ? signal.tags.map(String) : []
+      const privileged = from === 'time' || tags.includes('admin') || tags.includes('alarm')
+      if (privileged) return { deliver: true, reason: 'privileged', focus: cur.label }
+      if (cur.interruptible === false) return { deliver: false, reason: 'focus-sacred', focus: cur.label }
+      const label = signal.focus == null ? '' : String(signal.focus)
+      if (label && label === cur.label) return { deliver: true, reason: 'same-focus', focus: cur.label }
+      const verdict = resolvePierce(cur.pierce, label, { mention: tags.includes('mention') || tags.includes('at') })
+      return verdict.allowed
+        ? { deliver: true, reason: verdict.level, focus: cur.label, pattern: verdict.pattern }
+        : { deliver: false, reason: 'focus-pierce', focus: cur.label, pattern: verdict.pattern }
+    },
+    /** 被 focus 拦下的信号进积压，按命名空间计数。 */
+    defer(signal = {}) {
+      const key = String(signal.focus ?? '(ambient)')
+      const at = now()
+      const row = backlog.get(key) ?? { focus: key, count: 0, oldestAt: at, lastAt: at, lastText: '', items: [] }
+      row.count += 1
+      row.lastAt = at
+      row.lastText = String(signal.text ?? '').slice(0, 200)
+      row.items.push({ plugin: String(signal.from?.plugin ?? ''), text: String(signal.text ?? '').slice(0, 200), at })
+      if (row.items.length > 20) row.items.shift()
+      backlog.set(key, row)
+      backlogChanged()
+      return { queued: true, focus: key, count: row.count }
+    },
+    /** 当前积压（按命名空间）。 */
+    backlog() { return [...backlog.values()].map((row) => ({ ...row, items: row.items.map((item) => ({ ...item })) })) },
+    /** 取走并清空积压；焦点释放时由宿主投递给模型。 */
+    drainBacklog() {
+      const rows = this.backlog()
+      backlog.clear()
+      return rows
+    },
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    /** 积压变化单独通知：宿主只关心"焦点变了"，持久化两边都要。 */
+    onBacklog(fn) { backlogListeners.add(fn); return () => backlogListeners.delete(fn) },
+    list() { const at = now(); return [...leases.values()].filter((l) => alive(l, at)).map(withRelease) },
+    /** 可落盘的快照：租约（不含 release 函数）+ 积压。 */
+    snapshot() {
+      return {
+        version: 1,
+        leases: [...leases.values()].map(({ release, ...rest }) => ({ ...rest })),
+        backlog: this.backlog(),
+      }
+    },
+    /** 从快照恢复；过期租约丢弃。恢复本身会触发一次 onChange。 */
+    restore(data = {}) {
+      leases.clear()
+      backlog.clear()
+      for (const row of Array.isArray(data.leases) ? data.leases : []) {
+        if (!row?.label || !alive(row, now())) continue
+        const id = String(row.id ?? `focus-${++seq}`)
+        const match = /^focus-(\d+)$/.exec(id)
+        if (match) seq = Math.max(seq, Number(match[1]))
+        leases.set(id, {
+          id,
+          label: String(row.label),
+          owner: row.owner == null ? null : String(row.owner),
+          reason: String(row.reason ?? ''),
+          since: Number(row.since) || now(),
+          expiresAt: row.expiresAt == null ? null : Number(row.expiresAt),
+          pierce: row.pierce && typeof row.pierce === 'object' ? { ...row.pierce } : {},
+          visible: row.visible !== false,
+          title: row.title == null ? String(row.label) : String(row.title),
+          kind: String(row.kind ?? 'task'),
+          interruptible: row.interruptible !== false,
+          goal: row.goal == null ? null : String(row.goal),
+          exitCondition: row.exitCondition == null ? null : String(row.exitCondition),
+          expectedMinutes: Number.isFinite(Number(row.expectedMinutes)) ? Number(row.expectedMinutes) : null,
+        })
+      }
+      for (const row of Array.isArray(data.backlog) ? data.backlog : []) {
+        if (!row?.focus) continue
+        backlog.set(String(row.focus), {
+          focus: String(row.focus),
+          count: Math.max(0, Number(row.count) || 0),
+          oldestAt: Number(row.oldestAt) || now(),
+          lastAt: Number(row.lastAt) || now(),
+          lastText: String(row.lastText ?? ''),
+          items: Array.isArray(row.items) ? row.items.slice(-20).map((item) => ({ ...item })) : [],
+        })
+      }
+      // 恢复是"加载"，不是"焦点变化"：不通知宿主，避免把刚恢复的积压立刻冲掉。
+    },
   }
 }
 
@@ -528,6 +649,14 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
       return { ok: true }
     },
 
+    /** 清空待投递与在飞条目（会话切换/归档时用，避免把旧会话的消息投给新会话）。 */
+    clear() {
+      const n = queue.length + inflight.size
+      queue.length = 0
+      inflight.clear()
+      return n
+    },
+
     watermarkOf(plugin, activity) { return watermark.get(`${plugin}|${activity}`) ?? 0 },
     pendingCount() { return queue.length },
     inflightCount() { return inflight.size },
@@ -543,12 +672,16 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
  * 模型插槽：插件只声明"我需要什么样的模型"，不写模型名、不写地址、不自己调服务。
  * 模型管理插件把符合形状的供应商接上（bind），调用一律走 slots.call。
  */
-export function createSlotRegistry() {
+export function createSlotRegistry({ onError = null } = {}) {
   const slots = new Map()
   const bindings = new Map()
   const providers = new Map()
   const listeners = new Set()
-  const changed = () => { for (const fn of listeners) { try { fn() } catch { /* 忽略 */ } } }
+  const changed = () => {
+    for (const fn of listeners) {
+      try { fn() } catch (error) { try { onError?.('slots.listener', error) } catch { /* ignore */ } }
+    }
+  }
 
   function shapeSatisfies(requires = {}, shape = {}) {
     for (const [key, value] of Object.entries(requires ?? {})) {

@@ -6,7 +6,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import * as rhythm from '../../plugins/rhythm/src/index.mjs'
+import * as time from '../../plugins/time/src/index.mjs'
 import rhythmManifest from '../../plugins/rhythm/manifest.json' with { type: 'json' }
+import timeManifest from '../../plugins/time/manifest.json' with { type: 'json' }
 
 function at(h, m, day = 1) {
   return new Date(2026, 10, day, h, m, 0, 0).getTime()
@@ -19,6 +21,20 @@ async function boot({ now, stateFile }) {
   await host.enable('rhythm')
   return { host, rhythm: host.services && host.shared.get('rhythm'), setNow: (t) => { clock = t } }
 }
+
+test('同时启用 time 时 rhythm 停用，不再起第二个时钟', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-rhythm-time-'))
+  const host = createHost({ log: () => {}, now: () => at(21, 0) })
+  host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(dir, 'time.json') } })
+  host.registerPlugin(rhythmManifest, rhythm, { config: { dreamAt: '22:30', stateFile: path.join(dir, 'rhythm.json') } })
+  await host.enable('time')
+  await host.enable('rhythm')
+  const disabled = host.shared.get('rhythm')
+  assert.equal(disabled.at, '22:30')
+  assert.equal(disabled.isDue(), false)
+  assert.equal(disabled.fire().fired, false)
+  assert.equal(fs.existsSync(path.join(dir, 'rhythm.json')), false, '停用后不写 rhythm.json')
+})
 
 test('到点触发一次，同一天再触发不会重复', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-rhythm-'))

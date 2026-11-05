@@ -12,11 +12,15 @@ export function apply(ctx) {
   const norm = (s) => String(s ?? '').trim()
 
   function all() {
-    return memory.query({ namespace: 'lexicon', kind: 'term', limit: 500 })
+    return memory.query({ namespace: 'lexicon', kind: 'term', limit: 500, order: 'desc' })
+  }
+
+  function byKey(key) {
+    return memory.query({ namespace: 'lexicon', kind: 'term', key, limit: 1 })[0] ?? null
   }
 
   function find(term, conv) {
-    return all().find((x) => x.key === `lexicon:${conv}:${term}`) ?? null
+    return byKey(`lexicon:${conv}:${term}`)
   }
 
   function originOf({ conv = null, platform = null, url = null, note = null, meaning = null, status = 'candidate', usageState = null } = {}) {
@@ -36,7 +40,9 @@ export function apply(ctx) {
     const word = norm(term)
     if (!word) return { ok: false, error: 'empty-term' }
     const key = `lexicon:${conv}:${word}`
-    const existing = all().find((x) => x.key === key)
+    // 用 key 精确取旧条目：all() 只有最新 500，老词会查不到，
+    // 于是 origins 被空数组覆盖（同 key 的 upsert 仍然会更新那一行）。
+    const existing = byKey(key)
     const origins = [...(existing?.data?.origins ?? [])]
     // 同一来源（conv+url）只更新，不重复追加
     const same = origins.findIndex((o) => (o.conv ?? null) === (conv === 'web' ? null : conv) && (o.url ?? null) === url)
@@ -56,21 +62,24 @@ export function apply(ctx) {
       decay: { weight: Number(existing?.data?.decay?.weight ?? 1), lastSeen: ctx.now() },
       evidence: evidence ?? existing?.data?.evidence ?? [],
     }
-    memory.put({ namespace: 'lexicon', kind: 'term', key, text: `${word}：${meaning || '（意思还不确定）'}`, data })
-    if (typeof memory.index === 'function') {
-      const row = all().find((x) => x.key === key)
-      if (row) void memory.index(row.id, `${word} ${meaning} ${usage}`)
+    const created = memory.put({ namespace: 'lexicon', kind: 'term', key, text: `${word}：${meaning || '（意思还不确定）'}`, data })
+    if (typeof memory.index === 'function' && created?.id) {
+      void memory.index(created.id, `${word} ${meaning} ${usage}`)
     }
 
-    // 缺释义 → 进 note 待办，等主会话自己上网查
+    // 缺释义 → 进 note 待办，等主会话自己上网查。
+    // 同一个词已经有未结的待办就不重复写，否则每次见到都会多一条。
     if (!confirmed) {
       const noteSvc = ctx.services.get('note')
-      noteSvc?.add?.({
-        text: `查一下「${word}」是什么意思、从哪来的。`,
-        about: { namespace: 'lexicon', key, term: word, conv: conv === 'web' ? null : conv },
-        raisedBy: 'lexicon',
-        kind: 'question',
-      })
+      const open = noteSvc?.open?.() ?? []
+      if (!open.some((n) => n.data?.about?.key === key)) {
+        noteSvc?.add?.({
+          text: `查一下「${word}」是什么意思、从哪来的。`,
+          about: { namespace: 'lexicon', key, term: word, conv: conv === 'web' ? null : conv },
+          raisedBy: 'lexicon',
+          kind: 'question',
+        })
+      }
     }
     return { ok: true, key, status: data.status, pending: data.pending }
   }
@@ -100,10 +109,11 @@ export function apply(ctx) {
       },
     },
     async execute({ term = null, conv = null, platform = null, tag = null, limit = 5 } = {}) {
+      const wantedConv = conv == null ? null : (conv === 'web' ? null : String(conv))
       const rows = all().filter((row) => {
         if (term && !row.data?.term?.includes(String(term))) return false
         const origins = row.data?.origins ?? []
-        if (conv && !origins.some((o) => o.conv === conv)) return false
+        if (wantedConv != null && !origins.some((o) => (o.conv ?? null) === wantedConv)) return false
         if (platform && !origins.some((o) => o.platform === platform)) return false
         if (tag && !(row.data?.tags ?? []).includes(String(tag))) return false
         return true

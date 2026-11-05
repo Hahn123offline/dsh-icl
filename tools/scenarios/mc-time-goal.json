@@ -1,0 +1,8 @@
+[
+  {
+    "id": "make-time-goal",
+    "op": "prompt",
+    "text": "现在开始，用 time_arrange 建立一个持续目标，不要只靠这条消息：{mode:'goal', kind:'single', at:'now', theme:'在 Minecraft 里长期生存：石具→铁器→家；自己决定下一步，做大事前先说一句，卡住先脱困；不要等我', focus:'mc', turnLimit:12}。建好后直接继续目标，先检查 mcb_status / mcb_inventory，然后做当前最值当的一步。"
+  },
+  { "id": "wait", "op": "wait", "seconds": 20 }
+]

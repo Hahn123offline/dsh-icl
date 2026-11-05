@@ -1,0 +1,47 @@
+[
+  {
+    "id": "reset-focus",
+    "op": "prompt",
+    "text": "请调用 focus_leave（如果当前不在专注空间也照样调用一次），然后只回复 ok。"
+  },
+  {
+    "id": "enter-focus",
+    "op": "prompt",
+    "text": "请调用 focus_enter，参数 title='写闭环测试'、reason='验证 focus'、interruptible=false；只回复 ok。"
+  },
+  {
+    "id": "enter-assert",
+    "op": "assert",
+    "toolCalled": ["focus_enter"],
+    "toolResultContains": ["进入了专注空间"]
+  },
+  {
+    "id": "other-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "别处来的一条消息",
+    "focus": "qq:group:1"
+  },
+  {
+    "id": "backlog-check",
+    "op": "prompt",
+    "text": "请调用 focus_backlog，原样回复工具结果。"
+  },
+  {
+    "id": "backlog-assert",
+    "op": "assert",
+    "toolCalled": ["focus_backlog"],
+    "toolResultContains": ["+1"]
+  },
+  {
+    "id": "leave-focus",
+    "op": "prompt",
+    "text": "请调用 focus_leave，然后只回复 ok。"
+  },
+  {
+    "id": "leave-assert",
+    "op": "assert",
+    "toolCalled": ["focus_leave"]
+  }
+]

@@ -1,6 +1,6 @@
 # 插件
 
-> 读者：要加一个插件、或要判断某个插件能不能依赖的开发者 / 范围：`packages/plugins/*` 的 16 个插件、它们声明的 28 个工具与全部外部依赖 / 最后核对：2026-11-03
+> 读者：要加一个插件、或要判断某个插件能不能依赖的开发者 / 范围：`packages/plugins/*` 的 19 个插件、它们声明的 43 个工具与全部外部依赖 / 最后核对：2026-11-04
 
 本文是插件事实的唯一归属地：工具名、参数、`ctx.config` 键、成熟度、外部依赖只在这里写。服务契约见 [ARCHITECTURE.md](ARCHITECTURE.md)，记忆的数据形状与检索算法见 [MEMORY.md](MEMORY.md)。
 
@@ -17,23 +17,26 @@
 | `whois` | 99 | 1 | `whois` | 可用待调 | 按身份查人物档案，按名字给候选 |
 | `eager-recall` | 39 | 0 | — | 可用待调 | 每轮自动检索一小段注入上下文 |
 | `dream` | 995 | 0 | — | 可用待调 | 7 个默认 job 的夜间整理流水线（另有废弃的 `slang`） |
-| `rhythm` | 109 | 0 | — | 可用待调 | 每晚固定时刻触发做梦 |
+| `rhythm` | 109 | 0 | — | 遗留兼容 | 旧 nightly 时钟；默认不启用，time 接管 |
+| `loop-probe` | 90 | 0 | — | 测试接缝 | 闭环外部信号注入；只在 `icl-loop` preset 启用 |
+| `mc-link` | 380 | 11 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → signals/world；默认不启用，`icl-mc` preset |
 | `time` | 618 | 7 | `time_status` `time_arrange` `time_list` `time_edit` `time_cancel` `time_pause` `time_resume` | 可用待调 | 日程、睡眠、目标的时钟 |
 | `compaction` | 77 | 0 | — | 可用待调 | 把早前对话压成摘要再注入 |
 | `persona` | 85 | 0 | — | 可用待调 | 人格卡与版本历史 |
+| `focus` | 124 | 4 | `focus_status` `focus_enter` `focus_leave` `focus_backlog` | 可用待调 | 注意力空间：投递闸门、积压、勿扰、焦点工具 |
 | `world-state` | 156 | 1 | `world_status` | 可用待调 | 世界状态总线（只读渲染） |
 | `dsh-raw` | 130 | 1 | `raw_export` | 成熟 | DSH 会话原文索引与导出 |
 | `model-manager` | 83 | 0 | — | 可用待调 | 供应商 → 插槽绑定 |
 | `editor` | 71 | 3 | `read_file` `write_file` `list_dir` | 遗留 | 工作区文件读写，路径逃逸拦截 |
 | `bili` | 151 | 4 | `bili_search` `bili_watch` `bili_comments` `bili_frames` | 临时接缝 | B 站搜索 / 视频 / 评论 / 宫格图 |
 
-合计：**16 个插件 / 3766 行 / 28 个工具**。manifest 的 `tools` 与 `ctx.tools.register` 的名字 **16/16 完全一致**，没有声明了不注册、也没有注册了不声明。
+合计：**19 个插件 / 43 个工具**。manifest 的 `tools` 与 `ctx.tools.register` 的名字 **19/19 完全一致**，没有声明了不注册、也没有注册了不声明。
 
-10 个插件有工具，6 个没有（`dream` `rhythm` `compaction` `persona` `model-manager` `eager-recall`）——它们注册的是提示词段、上下文策略、插槽、信号监听或共享服务。
+12 个插件有工具，7 个没有（`dream` `rhythm` `compaction` `persona` `model-manager` `eager-recall` `loop-probe`）——它们注册的是提示词段、上下文策略、插槽、信号监听或共享服务。
 
 成熟度口径：`成熟` = 主路径可直接依赖；`可用待调` = 已知缺陷会改变正常使用下的输出；`临时接缝` = 依赖本机绝对路径或外部进程；`遗留` = 仓库内只有脚手架脚本装配。
 
-另外两条对插件作者有用的事实：全部 16 个 manifest 的 `focus` 都是 `{}`，没有任何插件声明聚焦规则；也没有任何 manifest 写 `presets` 字段——而且即使写了也不生效，因为 `manifest.presets` 没有消费方（见 [ARCHITECTURE.md §8](ARCHITECTURE.md#manifest-校验保留与丢弃)）。
+另外两条对插件作者有用的事实：全部 19 个 manifest 的 `focus` 都是 `{}`，没有任何插件声明聚焦规则；也没有任何 manifest 写 `presets` 字段——而且即使写了也不生效，因为 `manifest.presets` 没有消费方（见 [ARCHITECTURE.md §8](ARCHITECTURE.md#manifest-校验保留与丢弃)）。
 
 ## 2. 记忆侧
 
@@ -84,23 +87,24 @@
 ### dream
 
 - **工具**：无。
-- **配置**：`sessionId`（`default`）、`persona`（默认落回 `personaFile` 的内容）、`personaFile`（默认 `<root>/prompts/dream.md`）、`timezone`（`Asia/Hong_Kong`）、`root`。
-- **依赖**：`requires.plugins` = `["memory"]`；`slots.call('dream-chat')`、`ctx.signals.on`（`sleep` 标签）；软依赖 `get('rhythm')` `get('note')` `get('lexicon')` `services.raw`；`provide('dream')`。
-- **状态**：可用待调 —— 幂等靠 `dream-run` 的前 200 行（按 7 job/天约 29 天后失效）；`cleanup` 的改写丢 `body`、重跑会清空已有块的 `evidence`。
+- **配置**：`sessionId`（`default`）、`persona`（默认落回 `personaFile` 的内容）、`personaFile`（默认 `<root>/prompts/dream.md`）、`timezone`（`Asia/Hong_Kong`）、`dreamAt`（默认 `23:00`，注册 daily 安排）、`root`。
+- **依赖**：`requires.plugins` = `["memory"]`；`slots.call('dream-chat')`、`ctx.signals.on`（`sleep` 与 `dream` 标签）；软依赖 `get('time')` `get('note')` `get('lexicon')` `services.raw`；`provide('dream')`。
+- **状态**：可用 —— 夜间由 `time` 里 `dream:nightly` 的 silent 安排发 `schedule-start` 触发；`sleep-start` 仍可提前触发；`cleanup` 改写与证据保留已修（2026-11-03 晚）。
 
-### rhythm
+### rhythm（遗留兼容，默认不启用）
 
 - **工具**：无。
-- **配置**：`dreamAt`（默认 `22:30`，校验 `HH:mm`）、`stateFile`（默认 `<root>/state/rhythm.json`）、`root`。
-- **依赖**：无 `requires.plugins`；软依赖 `get('world')`（挂 `作息` source，owner `clock`，`cap: 1`）；`provide('rhythm')`；`setInterval` 20 秒 + `unref()`。
-- **状态**：可用待调 —— `nextAt` 不看 `lastFiredDay`：当天提前手动 `fire()` 之后，世界状态里承诺的「下一次做梦」到点会被 `already-today` 拒绝。
+- **默认**：已从 `DEFAULT_PLUGINS` 移除；nightly 不再由它触发。
+- **同时启用 time 时**：直接停用（`isDue=false`、`fire` 返回 `legacy-disabled`），不起第二个 timer、不写 `rhythm.json`。
+- **配置**：`dreamAt`、`stateFile`（默认 `<root>/state/rhythm.json`），只在单独启用时使用。
+- **状态**：遗留兼容；保留给旧配置与旧测试。
 
 ### time
 
-- **工具**：`time_status`（无参）→ 现在/阶段/进行中/目标/积压；`time_arrange`（必填 `mode` enum `wake|goal`；`kind` enum `single|span`、`at`、`in`、`duration`、`message`、`theme`、`focus`、`turnLimit`、`sleep`、`allow`）→ `安排好了：…`；`time_list`（无参）；`time_edit`（必填 `id`；`at`、`in`、`message`、`mode`、`duration`）；`time_cancel`（必填 `id`）；`time_pause`、`time_resume`（无参）。
+- **工具**：`time_status`（无参）→ 现在/阶段/进行中/目标/积压；`time_arrange`（必填 `mode` enum `wake|goal`；`kind` enum `single|span`、`at`、`in`、`duration`、`message`、`theme`、`tags`、`focus`、`turnLimit`、`sleep`、`allow`）→ `安排好了：…`；`time_list`（无参）；`time_edit`（必填 `id`；`at`、`in`、`message`、`mode`、`duration`）；`time_cancel`（必填 `id`）；`time_pause`、`time_resume`（无参）。
 - **配置**：`stateFile`（默认 `<root>/state/time.json`）、`tickMs`（`15000`，下限 1000）、`inboxFile` / `outboxFile`（默认与 state 同目录的 `time.inbox.jsonl` / `time.outbox.jsonl`）、`root`。
 - **依赖**：无 `requires.plugins`；`ctx.signals`、`get('world')`、`ctx.focus`、`services.clock`（可空，`setClock` 退化为空函数）；`provide('time')`。
-- **状态**：可用待调 —— `ctx.signals ?? services.require('signals')` 的兜底分支必然抛错；多进程共写 `time.json` 没有文件锁。
+- **状态**：可用 —— 通用日历；每条安排到点发 `schedule-start` 事件（tags 带安排 tags），`silent` 安排不发模型消息；睡眠默认 3 分钟；取消/改期会清 `fired`。多进程共写 `time.json` 仍无文件锁。
 
 ### compaction
 
@@ -116,16 +120,30 @@
 - **工具**：无（注册 `prompt.section`，`name: 'persona'`、`order: 20`）。
 - **配置**：`namespace`（默认 `persona`）、`maxVersions`（`50`，下限 1）、`card`（默认 `''`）。
 - **依赖**：无 `requires.plugins`；软依赖 `get('memory')`（没有就只在进程内存里）；`provide('persona')`；对外 `current/set/rollback/versions`。
-- **状态**：可用待调 —— 版本键是 `v:<秒级时间>-<进程内序号>`，跨进程同秒会 upsert 覆盖旧版本。
+- **状态**：可用 —— `versions()` 最新在前；`maxVersions` 按最新保留；版本键加了随机后缀，跨进程同秒不再覆盖（2026-11-04）。
 
 ### world-state
 
-- **工具**：`world_status`（`owner`、`item`、`limit` 默认 20）→ 每源一行 / 展开该源的一项 / `（世界状态是空的）`。
+- **工具**：`world_status`（`owner`、`item`、`limit` 默认 20）→ 每 owner/feed 一行 / 展开该 owner 的一项 / `（世界状态是空的）`。
 - **配置**：无。
 - **依赖**：无 `requires.plugins`；`prompt.section`（`name: 'world'`、`order: 10`）、`provide('world')`；来源注册 API `registerSource({id, owner, title, order, cap, items})`。
-- **状态**：可用待调 —— 组标题与该 owner 的 `cap` 都取「第一个注册的 source」，所以 `rhythm` 的 `title: '作息'` 与 `cap: 1` 都不生效。
+- **状态**：可用 —— 2026-11-04 修了展示：默认 `clock` 在 `time` 存在时返回空（不再出现两行“时间”）；同 owner 的多个 source 按 `order` 排序取标题/cap；`world-state` 已在 `DEFAULT_PLUGINS` 里排到 `note`/`time` 之前，`note` 的“待办”来源不会再因为启用顺序而丢失。`rhythm` 旧 source 只在它单独启用时存在。
 
 ## 5. 接缝
+
+### loop-probe（只在 `icl-loop` preset）
+
+- **工具**：无。
+- **配置**：`inboxFile`（默认 `<stateDir>/loop.inbox.jsonl`）、`outboxFile`（默认同目录 `loop.outbox.jsonl`）、`tickMs`（`200`，下限 100）。
+- **依赖**：`ctx.signals.offer`；`provide('loop-probe')`；文件邮箱。
+- **状态**：测试接缝。driver 写 `{id,from,kind,text,focus,tags}`，插件把它当成 `qq` 的普通信号走真实 gate；结果写 outbox（accepted/blocked/reason）。不注册工具，模型看不到它。默认不启用，只在 `icl-loop` preset 里。
+
+### mc-link（实验接缝，默认不启用）
+
+- **工具**：`mcb_status`、`mcb_task`（异步，返回 taskId）、`mcb_cancel`、`mcb_resume`、`mcb_events`、`mcb_say`（纯文本、≤200 字符、1 秒限速、拒绝 `/` 命令）。
+- **配置**：`baseUrl`（默认 `http://127.0.0.1:54836`）、`pollMs`（1200）、`focus`（`mc`）、`logFile`。
+- **依赖**：`packages/mc-body` 的 `mc-body/v1` HTTP；`ctx.signals.offer`；`ctx.services.get('world')`。
+- **状态**：只懂契约，不 import mineflayer。任务完成/失败/安全停止通过 signals 回来；world 增加 MC 状态。只在 `icl-mc` preset 启用。`tools/mc-observer.mjs` 是更早的只读诊断探针，不是最终 body。
 
 ### dsh-raw
 

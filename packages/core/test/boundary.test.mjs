@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.join(import.meta.dirname, '..', '..', 'plugins')
-const ALLOWED_FETCH = new Set(['model-manager']) // 唯一允许直接发起 HTTP 的接线器
+const ALLOWED_FETCH = new Set(['model-manager', 'mc-link']) // 接线器允许直接发 HTTP
 
 function pluginSources() {
   const out = []

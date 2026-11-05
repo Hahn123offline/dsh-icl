@@ -1,0 +1,9 @@
+{
+  "id": "focus",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["focus_status", "focus_enter", "focus_leave", "focus_backlog"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}

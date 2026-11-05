@@ -25,10 +25,16 @@ function dayKey(at) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function parseAt(value) {
+function stampAt(at) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(at))
+}
+
+function parseAt(value, now = Date.now()) {
   const raw = String(value ?? '').trim()
   if (!raw) return null
-  if (raw === 'now') return { kind: 'once', at: Date.now() }
+  if (raw === 'now') return { kind: 'once', at: now }
   const hm = /^(\d{1,2}):(\d{2})$/.exec(raw)
   if (hm) return { kind: 'daily', hour: Number(hm[1]), minute: Number(hm[2]) }
   const iso = Date.parse(raw)
@@ -46,7 +52,7 @@ function parseIn(value) {
 }
 
 function pointOf(schedule, now) {
-  const parsed = schedule.__parsed ?? parseAt(schedule.at)
+  const parsed = schedule.__parsed ?? parseAt(schedule.at, now)
   if (parsed.kind === 'once') return parsed.at
   const d = new Date(now)
   d.setHours(parsed.hour, parsed.minute, 0, 0)
@@ -69,26 +75,32 @@ export function allowMatch(allow, signal) {
 }
 
 /** 把工具/API 的入参规整成一条安排。 */
-export function normalizeSchedule(input = {}) {
+export function normalizeSchedule(input = {}, now = Date.now()) {
   const mode = input.mode === 'goal' ? 'goal' : 'wake'
   const inMs = parseIn(input.in ?? input.inMinutes ?? null)
-  const startAt = input.at != null ? String(input.at) : (inMs != null ? new Date(Date.now() + inMs).toISOString() : null)
+  const startAt = input.at != null ? String(input.at) : (inMs != null ? new Date(now + inMs).toISOString() : null)
   if (!startAt) throw new Error('安排需要 at（HH:mm / ISO / now）或 in（如 10m）')
-  const parsed = parseAt(startAt)
+  const parsed = parseAt(startAt, now)
   const endMs = parseIn(input.duration ?? input.durationMin ?? null)
   const untilRaw = input.until ?? null
   const untilAt = untilRaw != null && Number.isFinite(Date.parse(String(untilRaw))) ? Date.parse(String(untilRaw)) : null
   const kind = input.sleep === true || input.kind === 'span' || endMs != null || untilAt != null ? 'span' : 'single'
+  // 睡眠必须有终点；只给 sleep:true 没给时长时默认 3 分钟，和提示词"三分钟后回来"一致。
+  const durationMin = endMs != null
+    ? Math.round(endMs / 60_000)
+    : (input.sleep === true && untilAt == null ? 3 : null)
   return {
     id: String(input.id ?? `s-${Date.now().toString(36)}`),
     mode,
     kind,
     at: startAt,
-    durationMin: endMs == null ? null : Math.round(endMs / 60_000),
+    durationMin,
     until: untilAt,
     message: String(input.message ?? ''),
     theme: String(input.theme ?? input.message ?? ''),
     sleep: input.sleep === true,
+    silent: input.silent === true,
+    tags: Array.isArray(input.tags) ? input.tags.map(String).slice(0, 8) : [],
     focus: input.focus == null ? null : String(input.focus),
     allow: Array.isArray(input.allow) ? input.allow : null,
     turnLimit: input.turnLimit == null ? null : Math.max(1, Number(input.turnLimit) || 1),
@@ -105,7 +117,9 @@ export function apply(ctx) {
   const outboxFile = ctx.config.outboxFile ? String(ctx.config.outboxFile) : path.join(path.dirname(stateFile), 'time.outbox.jsonl')
   let inboxOffset = 0
 
-  const signals = ctx.signals ?? ctx.services.require('signals')
+  // signals 是宿主 ctx 上的服务，不在 shared 能力表里；旧代码的回退分支必然抛错。
+  const signals = ctx.signals
+  if (!signals?.offer) throw new Error('time 需要 ctx.signals 服务')
   const world = ctx.services.get('world')
   const focusApi = ctx.focus ?? ctx.services.get('focus') ?? null
   const clock = ctx.services.clock ?? null
@@ -120,7 +134,7 @@ export function apply(ctx) {
       state.queue = Array.isArray(saved.queue) ? saved.queue : []
       state.goals = Array.isArray(saved.goals) ? saved.goals : []
       state.spans = Array.isArray(saved.spans) ? saved.spans : []
-      for (const schedule of state.schedules) { try { schedule.__parsed = parseAt(schedule.at) } catch { /* 坏数据跳过 */ } }
+      for (const schedule of state.schedules) { try { schedule.__parsed = parseAt(schedule.at, ctx.now()) } catch { /* 坏数据跳过 */ } }
       // 清理：过期的 one-time 日程、以及完全重复的日程（重启/多次测试最容易堆出来）
       const nowMs = ctx.now()
       const seen = new Set()
@@ -208,7 +222,16 @@ export function apply(ctx) {
     }
     state.goals = state.goals.filter((g) => g.id !== goal.id).concat(goal)
     if (goal.focus && focusApi?.enter) {
-      try { goalLeases.set(goal.id, focusApi.enter({ label: goal.focus, owner: 'time', reason: `goal:${goal.id}` })) } catch { /* ignore */ }
+      try {
+        goalLeases.set(goal.id, focusApi.enter({
+          label: goal.focus,
+          owner: 'time',
+          reason: `goal:${goal.id}`,
+          title: goal.theme,
+          goal: goal.theme,
+          interruptible: true,
+        }))
+      } catch { /* ignore */ }
     }
     send({ kind: 'goal', text: goalMessage(goal), tags: ['goal'], focus: goal.focus })
     persist()
@@ -247,6 +270,24 @@ export function apply(ctx) {
 
   async function startSchedule(schedule) {
     const now = ctx.now()
+    // 通用日历事件：time 不认识 dream/任何消费者，只把"哪条安排响了"发出去；
+    // 插件按 tags 订阅（dream 的每日安排就是 tags:['dream']）。
+    try {
+      ctx.signals.emit({
+        from: { plugin: 'time', activity: 'schedule' },
+        kind: 'event',
+        text: `schedule:${schedule.id}`,
+        tags: ['schedule-start', ...(Array.isArray(schedule.tags) ? schedule.tags : [])],
+        meta: {
+          scheduleId: schedule.id,
+          mode: schedule.mode,
+          kind: schedule.kind,
+          sleep: Boolean(schedule.sleep),
+          message: schedule.message ?? '',
+          at: now,
+        },
+      })
+    } catch { /* 没有信号服务时仍按本安排原有行为走 */ }
     if (schedule.mode === 'goal') {
       addGoal({
         theme: schedule.theme || schedule.message || schedule.id,
@@ -262,15 +303,17 @@ export function apply(ctx) {
         state.sleepingId = schedule.id
         state.since = now
         state.sleepUntil = endAt
-        if (focusApi?.enter) { try { sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping' }) } catch { sleepLease = null } }
+        if (focusApi?.enter) { try { sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false }) } catch { sleepLease = null } }
       }
-      send({
-        kind: 'wake',
-        text: schedule.message || (schedule.sleep
-        ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
-        : `开始了：${schedule.id}`),
-        tags: [schedule.sleep ? 'sleep' : 'span'],
-      })
+      if (!schedule.silent) {
+        send({
+          kind: 'wake',
+          text: schedule.message || (schedule.sleep
+          ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
+          : `开始了：${schedule.id}`),
+          tags: [schedule.sleep ? 'sleep' : 'span'],
+        })
+      }
       state.spans.push({
         id: schedule.id,
         until: endAt,
@@ -281,7 +324,7 @@ export function apply(ctx) {
         try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] }) } catch { /* ignore */ }
       }
     } else {
-      send({ kind: 'wake', text: schedule.message || `到点了：${schedule.id}`, tags: ['wake'] })
+      if (!schedule.silent) send({ kind: 'wake', text: schedule.message || `到点了：${schedule.id}`, tags: ['wake'] })
     }
     state.fired[`${schedule.id}@${dayKey(now)}`] = now
     persist()
@@ -304,9 +347,18 @@ export function apply(ctx) {
     return { ended: true, released: 0 }
   }
 
+  function clearFired(id) {
+    const prefix = `${id}@`
+    for (const key of Object.keys(state.fired)) {
+      if (key.startsWith(prefix)) delete state.fired[key]
+    }
+  }
+
   function addSchedule(input) {
-    const schedule = normalizeSchedule(input)
+    const schedule = normalizeSchedule(input, ctx.now())
     state.schedules = state.schedules.filter((s) => s.id !== schedule.id).concat(schedule)
+    // 同一个 id 取消/改期后今天还能再响；否则 fired 会把它永久挡在今天之外。
+    clearFired(schedule.id)
     persist()
     return schedule
   }
@@ -314,6 +366,7 @@ export function apply(ctx) {
   function removeSchedule(id) {
     const before = state.schedules.length
     state.schedules = state.schedules.filter((s) => s.id !== String(id))
+    clearFired(String(id))
     persist()
     return { removed: before !== state.schedules.length }
   }
@@ -321,8 +374,9 @@ export function apply(ctx) {
   function editSchedule(id, patch = {}) {
     const current = state.schedules.find((s) => s.id === String(id))
     if (!current) return { edited: false }
-    const next = normalizeSchedule({ ...current, ...patch, id: current.id })
+    const next = normalizeSchedule({ ...current, ...patch, id: current.id }, ctx.now())
     state.schedules = state.schedules.map((s) => (s.id === current.id ? next : s))
+    clearFired(current.id)
     persist()
     return { edited: true, schedule: next }
   }
@@ -455,7 +509,7 @@ export function apply(ctx) {
       persist()
       return { skipped: before !== state.queue.length }
     },
-    async sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = null } = {}) {
+    async sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = 3 } = {}) {
       const schedule = addSchedule({ id: `sleep-${Date.now()}`, at: 'now', mode: 'wake', sleep: true, message, durationMin })
       return startSchedule(schedule)
     },
@@ -496,11 +550,12 @@ export function apply(ctx) {
 
   if (world?.registerSource) {
     world.registerSource({
-      id: 'time', owner: 'time', title: '时间', order: 5, cap: 3,
+      id: 'time', owner: 'time', title: '时间', order: 1, cap: 3,
       items: () => {
-        const lines = [`现在是 ${new Date(ctx.now()).toLocaleString('zh-CN', { hour12: false }).slice(0, 16)}；阶段：${state.phase}。`]
+        const phaseText = ({ awake: '醒着', sleeping: '睡着', paused: '暂停' })[state.phase] ?? state.phase
+        const lines = [`现在是 ${stampAt(ctx.now())}；阶段：${phaseText}。`]
         const next = state.schedules.map((s) => ({ s, at: pointOf(s, ctx.now()) })).filter((x) => x.at > ctx.now()).sort((a, b) => a.at - b.at)[0]
-        if (next) lines.push(`下一个安排：${next.s.id}（${next.s.mode}/${next.s.kind}，${new Date(next.at).toLocaleString('zh-CN', { hour12: false }).slice(0, 16)}）。`)
+        if (next) lines.push(`下一个安排：${next.s.id}（${next.s.mode}/${next.s.kind}，${stampAt(next.at)}）。`)
         if (state.goals.length) lines.push(`进行中的目标：${state.goals.map((g) => g.theme).join('、')}。`)
         if (state.queue.length) lines.push(`积压：${state.queue.length} 条。`)
         return lines.map((brief, i) => ({ key: `l${i}`, brief }))
@@ -517,10 +572,10 @@ export function apply(ctx) {
     async execute() {
       const s = api.status()
       const lines = [
-        `现在：${new Date(ctx.now()).toLocaleString('zh-CN', { hour12: false }).slice(0, 16)}`,
+        `现在：${stampAt(ctx.now())}`,
         `阶段：${s.phase}`,
       ]
-      if (s.spans.length) lines.push(`进行中：${s.spans.map((x) => `${x.id}${x.sleep ? '（睡觉）' : ''} 到 ${new Date(x.until).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)}`).join('；')}`)
+      if (s.spans.length) lines.push(`进行中：${s.spans.map((x) => `${x.id}${x.sleep ? '（睡觉）' : ''} 到 ${stampAt(x.until)}`).join('；')}`)
       if (s.goals.length) lines.push(`目标：${s.goals.map((g) => `${g.theme}${g.turnLimit == null ? '' : `（剩 ${g.turnLimit} 轮）`}`).join('；')}`)
       if (s.backlog) lines.push(`积压：${s.backlog} 条`)
       return { text: lines.join('\n') }
@@ -528,7 +583,7 @@ export function apply(ctx) {
   })
   tool({
     name: 'time_arrange',
-    summary: '新建一条安排。mode 决定这次唤醒是"叫她一声"(wake)还是"让她持续做"(goal)；kind 决定单发(single)还是长日程(span)。',
+    summary: '新建一条安排。mode 决定这次唤醒是"叫她一声"(wake)还是"让她持续做"(goal)；kind 决定单发(single)还是长日程(span)。goal 会持续在 turn 末保底唤醒；不需要被持续唤醒时用 time_cancel 取消，别留着空跑。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal'], description: 'wake=发消息；goal=持续目标' },
@@ -538,6 +593,7 @@ export function apply(ctx) {
         duration: { type: 'string', description: 'span 持续多久，如 8h / 30m' },
         message: { type: 'string', description: '唤醒时说的话（wake）或目标主题（goal）' },
         theme: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' }, description: '给安排打标签；插件可按标签订阅 schedule-start 事件' },
         focus: { type: 'string', description: 'goal 绑定的注意力空间' },
         turnLimit: { type: 'number', description: 'goal+single 的轮次上限' },
         sleep: { type: 'boolean', description: 'wake+span 且要进入睡眠时设 true' },
@@ -557,7 +613,7 @@ export function apply(ctx) {
       const list = api.schedules()
       const spans = api.status().spans
       const lines = []
-      if (spans.length) lines.push(...spans.map((s) => `· 进行中 ${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${new Date(s.until).toLocaleString('zh-CN', { hour12: false }).slice(0, 16)}`))
+      if (spans.length) lines.push(...spans.map((s) => `· 进行中 ${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(s.until)}`))
       lines.push(...list.map((s) => `· ${s.id} ${s.mode}/${s.kind} ${s.at}${s.durationMin ? ` 持续 ${s.durationMin} 分` : ''}${s.sleep ? '（睡觉）' : ''}：${s.message || s.theme || ''}`))
       return { text: lines.length ? lines.join('\n') : '还没有安排。' }
     },

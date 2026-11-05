@@ -1,0 +1,79 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "world-info",
+    "op": "prompt",
+    "text": "请先调用 memo，text='闭环待办'；再调用 world_status（不带参数）；把 world_status 的结果原样回复。"
+  },
+  {
+    "id": "world-assert",
+    "op": "assert",
+    "systemContains": ["时间：", "待办："],
+    "toolCalled": ["memo", "world_status"],
+    "toolResultContains": ["待办"]
+  },
+  {
+    "id": "plain-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "外部直投测试"
+  },
+  { "id": "delivery-wait", "op": "wait", "seconds": 4 },
+  {
+    "id": "delivery-assert",
+    "op": "assert",
+    "userContains": ["外部直投测试"]
+  },
+  {
+    "id": "focus-reset",
+    "op": "prompt",
+    "text": "请调用 focus_leave（如果当前不在专注空间也照样调用一次），然后只回复 ok。"
+  },
+  {
+    "id": "focus-enter",
+    "op": "prompt",
+    "text": "请调用 focus_enter，参数 title='写闭环测试'、reason='验证 focus'、interruptible=false；只回复 ok。"
+  },
+  {
+    "id": "focus-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "别处来的一条消息",
+    "focus": "qq:group:1"
+  },
+  {
+    "id": "focus-backlog",
+    "op": "prompt",
+    "text": "请调用 focus_backlog，原样回复工具结果。"
+  },
+  {
+    "id": "focus-assert",
+    "op": "assert",
+    "toolCalled": ["focus_backlog"],
+    "toolResultContains": ["+1"]
+  },
+  {
+    "id": "focus-leave",
+    "op": "prompt",
+    "text": "请调用 focus_leave，然后只回复 ok。"
+  },
+  {
+    "id": "focus-leave-assert",
+    "op": "assert",
+    "toolCalled": ["focus_leave"]
+  },
+  {
+    "id": "wake-arrange",
+    "op": "time",
+    "cmd": "arrange",
+    "args": { "id": "loop-wake-1", "in": "1m", "mode": "wake", "kind": "single", "message": "闭环唤醒" }
+  },
+  { "id": "wake-wait", "op": "wait", "seconds": 72 },
+  {
+    "id": "wake-assert",
+    "op": "assert",
+    "userContains": ["闭环唤醒"]
+  }
+]

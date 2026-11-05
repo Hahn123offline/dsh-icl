@@ -59,9 +59,9 @@
 写入口径（`memory.put` 的实际行为，`packages/plugins/memory/src/index.mjs:170-191`）：
 
 - 唯一索引是 `ux_mem_key(namespace, key) WHERE key IS NOT NULL`：只有带 key 的写才是 upsert。`memo`、`consume` 回收的 note、`people` 从当天原话抽的 person note 都是 `key = null`，写几次就有几行。
-- 更新分支不改 `created_at`，只改 `updated_at`。`query` 是 `created_at ASC`，所以老行永远占着窗口（§8-4）。
-- 更新时 `weight` 不传就保留原值，传了就覆盖。`remember` 固定传 `1.5`（§8-6）。
-- 更新时 `text` 变了会删掉 `mem_vec` 旧行，等 `index` 补；`patch` 不做这件事（§8-7）。
+- 更新分支不改 `created_at`，只改 `updated_at`。`query` 默认 `created_at ASC`，并支持 `order:'desc'` / `id` 精确查；recall/dream/note/lexicon/compaction 的"看最新"调用已改用 DESC。
+- 更新时默认**保留**原权重（包括 boost 攒起来的）；只有 `reweight:true` 才覆盖。`remember` 仍以 `1.5` 新建，但重记不会把权重打回 1.5。
+- `put` 或 `patch` 改 `text` 都会删掉旧 `mem_vec`，`remove` 也清向量；等 `index` 补。
 - 写入不存在的命名空间直接抛 `命名空间没有注册：<ns>`；写空文本且无 `data` 抛 `memory.put 需要 text 或 data`。
 - `remember` 写完立刻异步 `memory.index`，不等结果。
 
@@ -84,7 +84,7 @@ score   = sim * weight * decay
 
 | 项 | 值 | 备注 |
 |---|---|---|
-| 取行上限 | 500 行 | `WHERE namespace IN (…) ORDER BY created_at DESC LIMIT 500`；多命名空间共享这一个 500，拿的是**最新** 500 |
+| 取行上限 | 5000 行（`config.scanLimit`） | `WHERE namespace IN (…) ORDER BY created_at DESC LIMIT ?`；多命名空间共享扫描窗口，拿的是**最新** 5000；5000 覆盖个人库数年，不再几个月就丢老记忆 |
 | 返回条数 | `max(1, limit \|\| 8)` | 调用方按需传；recall 传 50 / 200，eager-recall 传 `max(4, maxItems*3)` |
 | 半衰期 | `event` 30 / `person` 180 / `slang` 90 / `resolve` 1 / `lexicon` 180 / 其余 30 | 取行所属命名空间的 `half_life_days`，不在表里的按 30 |
 | 精确串加成 | `+0.5 * exact / terms.length`，封顶 1 | `ICL_NO_LITERAL=1` 关闭；抽 Windows 路径、`txt/md/json/mjs/js/py/log/db/png/jpg` 文件名、带单位数字（元/块/次/天/秒/分钟/小时/%/GB/MB）、≥4 字符英文词 |
@@ -152,7 +152,7 @@ score   = sim * weight * decay
 
 `DEFAULT_JOBS = ['wash','events','people','lexicon','consume','cleanup','index']`。按数组串行，逐 job 包 `try/catch`，只有一个 job 返回 `ok: false` 整体就不算成功。`slang` 仍在 `JOBS` 表里但**不在默认序列**（已并入 `lexicon`），只能手动 `run({ jobs: ['slang'] })`。
 
-触发三条：`ctx.signals.on({kind:'event', tags:['sleep']})` 收到 `sleep-start`；`rhythm.onNightly`；enable 时 `rhythm.isDue()` 补跑。三条之间**没有互斥**，手动 `dream.run` 与它们也不互斥。
+触发三条：`ctx.signals.on({kind:'event', tags:['sleep']})` 收到 `sleep-start`；`time` 里 `dream:nightly` 的 silent 安排到点发 `schedule-start`（tags 含 `dream`）；enable 时没有单独的补跑（daily 安排到点由 tick 触发，晚启动最多错过当天）。三条之间**没有互斥**，手动 `dream.run` 与它们也不互斥；同一天靠各 job 的 `alreadyRan` 去重。`rhythm` 已不是默认插件，也不再被 dream 订阅。
 
 | job | 读 | 写 | 幂等键 | 跳过条件 |
 |---|---|---|---|---|
@@ -209,7 +209,7 @@ score   = sim * weight * decay
 - `lexicon_learn` 的 `tags` 原样进（`tags.map(String)`），不规范化、大小写敏感；读侧用 `includes(String(tag))` 精确比较，大写写入、小写查不到。
 - 与 `event` 的 `tags` 不是一套：event 的过 `normalizeTags`（小写、去空白/逗号/顿号、>10 字丢弃、最多 5 个）。
 
-工具只有两个：`lexicon`（读，不改任何状态）和 `lexicon_learn`（写，走 `upsert`）。读写都封顶 500 条（`created_at ASC`，即只覆盖**最老**的 500 个词条）。`lexicon.query` 的 `conv` 过滤拿不到 `web` 来源（存的是 `null`，比的是 `'web'`）。
+工具只有两个：`lexicon`（读，不改任何状态）和 `lexicon_learn`（写，走 `upsert`）。读列表封顶最新 500 条（`order:'desc'`），写入按 `key` 精确找旧词，不受窗口限制。`lexicon.query` 的 `conv=web` 与存储的 `conv:null` 已对齐（2026-11-03 修）。
 
 ## 7. 质量控制与固定素材
 
@@ -243,19 +243,31 @@ score   = sim * weight * decay
 
 ## 8. 已知缺陷（记忆侧）
 
-| # | 严重度 | 现象（代码实际行为） | 代码位置 | 后果 |
-|---|---|---|---|---|
-| 1 | 高 | 传了 `cursor` 时 `includeArchive: true`，`resolve`（纠正队列）也会被搜到，未整理的纠正 note 被当候选渲染成 `[纠正 · 今天 · 随手记]` | `recall/src/index.mjs:205-219`、`:227-230` | 纠正原文混进回忆并占掉游标预算；她"想起"的是一条本该只给整理轮看的反馈 |
-| 2 | 高 | `cleanup` 的 `rewrites` 连打三次 `patch`，后两次的 `data` 都取改写**前**的 `existing.data` | `dream/src/index.mjs:733-738` | body 被旧值覆盖（text 新、body 旧），块越改越薄，evidence 与新正文不匹配 |
-| 3 | 高 | `events` 把当天 log 的行号（1..lines）当 `evidence.id` 存，`from`/`to` 也由这些行号的时间算出 | `dream/src/index.mjs:247-251`、`:271-281` | 同一天重洗 log 后行号位移，旧块证据指向别的句子；跨天不变，天内会错 |
-| 4 | 高 | 窗口都是"最老 N 条"：`query` 硬顶 500 且 `created_at ASC`；`events` 回查刚写的块用 `limit: 200`；`consume` 只扫 200 条 note；`lexicon` 读写封顶 500 | `memory/src/index.mjs:236-237`、`dream:298`、`dream:914`、`lexicon/src/index.mjs:15` | 库长大以后新行进不了窗口：note 永不消化、done 永不归档、新词查不到——表现为"她记不住最近的事" |
-| 5 | 高 | `raw.list` 只返回 `{text,time,role}`，`wash` 却读 `r.sender`；day log 每行都没有说话人 | `dsh-raw/src/index.mjs:100-103`、`dream:180-188` | 原话层丢掉"谁说的"，块和人物档案把别人的话记成她/我的事，是"记错人"的主因 |
-| 6 | 中高 | 【部分修】`put` 更新时不传 `weight` 才保留原值，传了仍覆盖；`remember` 每次都传 `1.5` | `memory:177-186`、`recall:127` | 用同一个 key 重记一条，`boost` 攒到 5 的权重被打回 1.5。旧文档说的"打回 1"已不成立 |
-| 7 | 中高 | 【部分修】改 `text` 删旧向量只在 `put` 里做了；`patch` 改 text 不删 `mem_vec`，`remove` 也不删 | `memory:184`、`:330-337`、`:384-394`、`dream:733` | 改写过的块继续被旧向量召回，语义检索与正文对不上；删行留孤儿向量 |
-| 8 | 中 | `person` note 只在被 `evidence`/`claims` 引用时才标 `consolidated`，无 evidence 的档案不标；`skippedPeople` 存 `kind:value`，比对用的是 `person:kind:value`，跳过判断永不命中 | `dream:490-508`、`:435`、`:498-501` | 同一批 person note 每晚重复进提示词、永远 `[未整理]`；被跳过的人仍可能被标记。旧结论"永不标"已不成立 |
-| 9 | 中 | 【部分修】`events` 重跑不再把已有块的 evidence 降级成空；但同 summary 的新结果会整块覆盖 text / body / evidence | `dream:253-255`、`:256-284` | 旧证据不保留，重跑一次换一批证据。旧结论"重跑降级 evidence"已不成立 |
-| 10 | 中 | 【已修】`alreadyRan` 按 `key` 精确查一行，不再扫 200 行窗口；残余是 `dream-run` 每天 7 行、永不清理（`retention` 只写不读） | `dream:148-154` | "约 29 天后幂等失效"已不成立；现在的代价是表无界增长（约 2555 行/年） |
-| 11 | 中 | 【已修】游标按 `key` 精确读，不再"限 1 行读错"；残余是每次 `recall` 无条件 `saveCursor`，空召回也写，`resetCursor` 只删当前 key | `recall:58-73`、`:256` | 不再读错游标；剩下的是无谓写库与历史行残留 |
-| 12 | 中 | 日界两套：`dayKey` / `dayRange` 用本机时区，`dayStartOf` 把偏移写死 `+08:00`，`ymdInTz` 用 `config.timezone` | `dream:22-31`、`:803-808` | 改时区配置后同一天可能落到两个 `day:<date>`，`alreadyRan` 也记两份，wash 跑两遍 |
+| # | 严重度 | 现象（代码实际行为） | 状态（2026-11-03 晚） |
+|---|---|---|---|
+| 1 | 高 | 传 `cursor` 时 `includeArchive: true`，`resolve`（纠正队列）也被搜到 | **已修**：回忆只走 `recallable !== false` 的命名空间 |
+| 2 | 高 | `cleanup` 的 `rewrites` 连打三次 `patch`，后两次基于改写前 `existing.data` | **已修**：一次算出完整 `nextData/nextText`，只 patch 一次 |
+| 3 | 高 | `events` 把 log 行号当 `evidence.id`，重洗后行号位移 | **已修**：证据同时存 `line`（正文快照）与 `at`；`from/to` 用 `at` |
+| 4 | 高 | 窗口都是"最老 N 条" | **已修**：`memory.query` 支持 `order:'desc'` / `id` / `count`；主要读取改最新；`missingVectors` 改 DESC；`note_status` 用 `count` 不再受窗口限制 |
+| 5 | 高 | 原话层没有"谁说的" | **已修**：`dsh-raw` 补 `sender`（role）并解析 `tool/result`；桥的 `dsh-session` 源也补 `sender` |
+| 6 | 中高 | `remember` 每次传 `weight:1.5`，更新时覆盖 boost | **已修**：更新默认保留原权重，只有 `reweight:true` 才覆盖 |
+| 7 | 中高 | `patch`/`remove` 不删 `mem_vec` | **已修**：改正文或删行都清向量 |
+| 8 | 中 | `skippedPeople` 存 `kind:value`，比对用 `person:kind:value` | **已修**：统一存 block key；"只标被引用的 note"仍是有意设计 |
+| 9 | 中 | 同 summary 重跑会整块覆盖 text/body/evidence | **已修**：新证据优先，旧 evidence 合并保留（text/body 仍按新结果） |
+| 10 | 中 | `dream-run` 每天 7 行，永不清理 | **已修**：每次 `dream.run` 结束清理 90 天前的账本 |
+| 11 | 中 | 每次 `recall` 无条件 `saveCursor`，空召回也写 | **已修**：只在游标真的变化时落盘 |
+| 12 | 中 | 日界三套：`dayKey`/`dayRange` 本机时区、`dayStartOf` 写死 +08、`ymdInTz` 用配置 | **已修**：三处统一走 `config.timezone`（含 DST 偏移校正） |
+
+### 8.1 2026-11-03 晚补查的缺陷
+
+| # | 严重度 | 现象 | 状态 |
+|---|---|---|---|
+| 13 | 高 | `lexicon.upsert` 用 `all()`（最新 500）查旧词；老词查不到时 origins/tags/decay 被空数组覆盖 | **已修**：按 `key` 精确取旧行；索引用 `put` 返回的 id |
+| 14 | 中 | 同一个未知词每次 `lexicon_learn` 都写一条 note 待办 | **已修**：按 `about.key` 去重 |
+| 15 | 中 | `whois.recentEventsFor` 在 DESC 结果上 `slice(-limit)`，拿到的是最老几条 | **已修**：`slice(0, limit)` |
+| 16 | 中 | `dsh-raw.list` 取 `slice(0, limit)`（最老）；只解析 user/assistant | **已修**：取最新 `slice(-limit)`；解析 tool/result |
+| 17 | 中 | `note`/`whois`/`dream` 按 id 找行时扫 200/500 行窗口，旧行找不到 | **已修**：`memory.query` 支持 `id` 精确查 |
+| 18 | 高 | `memory.search` 只扫最新 500 行；事件块几个月后就永远搜不到 | **已修**：扫描窗口 `config.scanLimit` 默认 5000 |
+| 19 | 中 | `lexicon` 的 `conv=web` 查不到默认 web 来源（存 `null`，比 `'web'`） | **已修**：`web` 归一到 `null` 比较 |
 
 修复顺序建议见 STATUS.md。

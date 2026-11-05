@@ -29,11 +29,18 @@ function messagesFrom(text, sessionId = null) {
       : (typeof content === 'string' ? content : '')
     if (!body) continue
     const innerRole = obj.data?.message?.role
-    if (obj.type !== 'user/message' && obj.type !== 'assistant/message') continue
-    if (innerRole && innerRole !== 'user' && innerRole !== 'assistant') continue
+    if (obj.type !== 'user/message' && obj.type !== 'assistant/message' && obj.type !== 'tool/result') continue
+    if (innerRole && innerRole !== 'user' && innerRole !== 'assistant' && innerRole !== 'tool') continue
     // 跳过注入的运行上下文
     if (/^(Current runtime context|Time sampled|This is an automatically generated checkpoint|<system-reminder>)/.test(body.trim())) continue
-    out.push({ time: t, text: body.replace(/\s+/g, ' ').trim().slice(0, 600), role: obj.type === 'user/message' ? 'user' : 'assistant', sessionId })
+    const role = obj.type === 'user/message' ? 'user' : obj.type === 'tool/result' ? 'tool' : 'assistant'
+    out.push({
+      time: t,
+      text: body.replace(/\s+/g, ' ').trim().slice(0, 600),
+      role,
+      sender: role,
+      sessionId,
+    })
   }
   return out
 }
@@ -97,10 +104,12 @@ export function apply(ctx) {
     return scored.slice(0, Math.max(1, Number(limit) || 2)).map((x) => ({ text: x.m.text, time: x.m.time, role: x.m.role, sessionId: x.m.sessionId }))
   }
 
-  const list = ({ since = null, until = null, limit = 500 } = {}) => load()
-    .filter((m) => (since == null || m.time >= since) && (until == null || m.time < until))
-    .slice(0, limit)
-    .map((m) => ({ text: m.text, time: m.time, role: m.role, sessionId: m.sessionId }))
+  const list = ({ since = null, until = null, limit = 500 } = {}) => {
+    const rows = load()
+      .filter((m) => (since == null || m.time >= since) && (until == null || m.time < until))
+    return rows.slice(-Math.max(1, Number(limit) || 500))
+      .map((m) => ({ text: m.text, time: m.time, role: m.role, sender: m.sender, sessionId: m.sessionId }))
+  }
 
   ctx.services.raw.register({ id: 'dsh-sessions', search, list })
   ctx.tools.register({

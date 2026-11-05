@@ -1,0 +1,10 @@
+# Host 行：给 headless / 冒烟测试用（不进 desktop 的 preset）。
+# 用法：dsh --profile headless --patch <this file> "一句话"
+# 相对路径按 patch 文件所在目录解析，所以不需要先安装到 profile。
+- insert:
+    - id: dsh-icl
+      name: ./index.mjs
+      config:
+        stateDir: ./.state/headless
+        tickMs: 500
+        timeTickMs: 1000

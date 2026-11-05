@@ -142,7 +142,7 @@ export function apply(ctx) {
         type: 'object',
         additionalProperties: false,
         properties: {
-          kind: { type: 'string', enum: Object.keys(CATEGORIES), description: 'Only this category.' },
+          kind: { type: 'string', enum: Object.keys(CATEGORIES).filter((key) => CATEGORIES[key].recallable !== false), description: 'Only this category.' },
           query: { type: 'string', description: 'What you are trying to remember.' },
           limit: { type: 'number', description: 'How many items (default 6).' },
           cursor: { type: 'string', description: 'Opaque cursor from the previous recall.' },
@@ -177,10 +177,10 @@ export function apply(ctx) {
           const rows = []
           for (const ns of Object.keys(CATEGORIES)) {
             if (CATEGORIES[ns].recallable === false) continue
-            const blocks = memory.query({ namespace: ns, kind: 'block', limit: 200 })
+            const blocks = memory.query({ namespace: ns, kind: 'block', limit: 200, order: 'desc' })
               .filter((b) => Number(b.createdAt) >= since && b.data?.superseded !== true)
             for (const b of blocks) rows.push({ ns, b, kind: 'block' })
-            const notes = memory.query({ namespace: ns, kind: 'note', limit: 200 })
+            const notes = memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
               .filter((n) => Number(n.createdAt) >= since && n.data?.consolidated !== true)
             for (const n of notes) rows.push({ ns, b: n, kind: 'note' })
           }
@@ -200,7 +200,10 @@ export function apply(ctx) {
           }
         }
 
-        const namespaces = kind && CATEGORIES[kind] ? [kind] : Object.keys(CATEGORIES)
+        const namespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
+          ? [kind]
+          // resolve 是纠正反馈队列，不是回忆：即使 cursor 走 includeArchive 也不能混进来。
+          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
         const seen = new Set()
         const candidates = []
         for (const ns of namespaces) {
@@ -225,7 +228,7 @@ export function apply(ctx) {
         // 未消化的 note（任何日期）优先展示，标签用"未整理"
         // 不可回忆的类别（如 resolve 纠正队列）不能以待整理笔记的身份出现在回忆里
         const pendingNamespaces = namespaces.filter((ns) => CATEGORIES[ns]?.recallable !== false)
-        const pendingNotes = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200 })
+        const pendingNotes = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: 1.15, namespace: ns })))
 
@@ -253,7 +256,8 @@ export function apply(ctx) {
         for (const entry of candidates.slice(0, 100)) take(entry, label(entry.namespace, entry.item.createdAt, now))
 
         const nextCursor = rollCursor(stored, additions)
-        saveCursor(nextCursor)
+        // 空召回/全在窗口内时不要写库；游标只在真的变化时落盘。
+        if (additions.length || JSON.stringify(nextCursor.items) !== JSON.stringify(stored.items)) saveCursor(nextCursor)
 
         // 召回成功 → 回到新鲜
         if (picked.length) memory.boost(picked.map((p) => p.entry.item.id), { now })

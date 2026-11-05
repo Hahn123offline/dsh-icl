@@ -1,0 +1,17 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "world-information",
+    "op": "prompt",
+    "text": "请先调用 memo，text='闭环待办'；再调用 world_status（不带参数）；把 world_status 的结果原样回复。",
+    "timeoutSec": 180
+  },
+  {
+    "id": "world-info-present",
+    "op": "assert",
+    "systemContains": ["时间：", "待办："],
+    "toolCalled": ["memo", "world_status"],
+    "toolResultContains": ["待办"],
+    "minTurns": 2
+  }
+]

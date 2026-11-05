@@ -65,7 +65,10 @@ export function apply(ctx) {
       try { raw = source.items() } catch { raw = [] }
       for (const item of normalizeItems(raw)) out.push({ ...item, source: source.id, owner: source.owner, title: source.title })
     }
-    return out.sort((a, b) => a.source.localeCompare(b.source))
+    return out.sort((a, b) => {
+      const orderOf = (id) => sources.get(id)?.order ?? 50
+      return orderOf(a.source) - orderOf(b.source) || a.source.localeCompare(b.source)
+    })
   }
 
   /** 注册者分组（只保留还有内容的）。 */
@@ -123,20 +126,25 @@ export function apply(ctx) {
     }
   }
 
-  // 默认来源：时间
-  registerSource({ id: 'clock', owner: 'clock', title: '时间', order: 10, items: () => [{ key: 'now', brief: `现在是 ${stamp(ctx.now())}。` }] })
+  // 默认来源：没有 time 插件时兜底显示系统时间；time 在时不再重复一行。
+  registerSource({
+    id: 'clock', owner: 'clock', title: '时间', order: 10,
+    items: () => ([...sources.values()].some((s) => s.owner === 'time')
+      ? []
+      : [{ key: 'now', brief: `现在是 ${stamp(ctx.now())}。` }]),
+  })
 
   const world = { registerSource, read, renderBrief, owners, itemsOf, sources: () => [...sources.values()].map((s) => ({ id: s.id, owner: s.owner, title: s.title, order: s.order, cap: s.cap })) }
   ctx.services.provide('world', world)
 
-  ctx.prompt.section({ name: 'world', order: 10, text: () => renderBrief() })
+  ctx.prompt.section({ name: 'world', order: 890, text: () => renderBrief() })
 
   ctx.tools.register({
     name: 'world_status',
-    summary: 'Read the world state bus: one line per source, or expand one source or item.',
+    summary: 'Read the world state bus: one line per feed, or expand one owner or item.',
     when: ['you want to know what is going on around you', 'before acting somewhere'],
     avoid: ['when nothing changed since you last looked'],
-    description: 'No arguments: the global glance. owner: list that source\'s items. owner + item: expand one item\'s full detail. Sources are assembled at runtime and may disappear when they have nothing to report.',
+    description: 'No arguments: the global glance (one line per owner/feed). owner: list that owner\'s items. owner + item: expand one item\'s full detail. Sources are assembled at runtime and may disappear when they have nothing to report.',
     parameters: {
       type: 'object',
       additionalProperties: false,

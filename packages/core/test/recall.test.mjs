@@ -22,6 +22,14 @@ async function setup({ budgetTokens = 10_000 } = {}) {
   return { host, tools, memory: host.shared.get('memory') }
 }
 
+test('resolve 纠正笔记不会被回忆（即使 cursor 深入）', async () => {
+  const { tools } = await setup()
+  await tools.remember.execute({ text: '纠正：不是她去见他，是他来见她', kind: 'resolve', about: { namespace: 'event', key: 'event:x' } })
+  const cursor = Buffer.from(JSON.stringify({ items: [{ id: 999, tokens: 1 }] }), 'utf8').toString('base64url')
+  const out = await tools.recall.execute({ query: '她去见他', cursor })
+  assert.doesNotMatch(out.text, /她去见他/)
+})
+
 test('remember 落进分类命名空间，recall 带 [今天] 标签', async () => {
   const { tools, memory } = await setup()
   await tools.remember.execute({ text: '他说周末可能去看海', kind: 'event' })

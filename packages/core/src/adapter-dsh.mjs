@@ -1,56 +1,70 @@
-// DSH 适配器：把 ICL 的工具面和提示词接到 DSH 的会话上。
+// DSH 适配器（通用版）：把 ICL 的工具面与提示词接到 DSH 的会话上下文上。
 //
-// 这里只做"接线"，不做决策：
-//   · 工具面来自 host.services.surface（已按预设过滤）
-//   · 预设来自 host.services.presets（我们自己的，运行中可切）
-//   · 提示词来自 host.services.prompt / context
+// 真实契约（见 dsh-contract.mjs）：
+//   ctx.tools.register({name, description, parameters, output, execute}) -> disposer
+//   ctx.systemPrompt.section({name, order, text}) -> disposer
 //
-// DSH 一侧的契约（最小集）：
-//   dsh.tools.register({name, description, parameters, execute}) -> disposer
-//   dsh.systemPrompt.section({name, order, text}) -> disposer
-export function attachDshAdapter(host, dsh, { sessionId = null, order = 30 } = {}) {
+// 这里只做"接线"，不做决策；作用域由传入的 dsh 决定（preset ctx / agent.ctx）。
+import { toDshToolDefinition, toDshPromptSection } from './dsh-contract.mjs'
+
+function sameTool(prev, def) {
+  return Boolean(prev)
+    && prev.def?.execute === def.execute
+    && prev.def?.description === def.description
+    && JSON.stringify(prev.def?.parameters ?? {}) === JSON.stringify(def.parameters ?? {})
+}
+
+export function attachDshAdapter(host, dsh, { sessionId = null, order = 30, log = () => {}, preset = null } = {}) {
+  if (!dsh?.tools || typeof dsh.tools.register !== 'function') {
+    throw new Error('DSH 适配器需要 dsh.tools.register(def)')
+  }
   const surface = host.services.surface
   const registered = new Map()
   let disposed = false
 
+  function list() {
+    return surface.list(preset ? { preset } : {})
+  }
+
   function sync() {
     if (disposed) return { added: [], removed: [] }
-    const want = new Map(surface.list(sessionId ? { preset: host.services.presets.active() } : {}).map((t) => [t.name, t]))
+    const want = new Map(list().map((t) => [t.name, t]))
     const added = []
     const removed = []
     for (const [name, entry] of [...registered]) {
       if (want.has(name)) continue
-      try { entry.off() } catch { /* ignore */ }
+      try { entry.off() } catch (error) { log({ msg: 'dsh.tool-unregister-fail', name, error: String(error?.message ?? error) }) }
       registered.delete(name)
       removed.push(name)
     }
     for (const [name, def] of want) {
       const prev = registered.get(name)
+      if (sameTool(prev, def)) continue
       if (prev) {
-        // 定义没变就不要 churn：execute 与描述都相同视为同一个工具
-        if (prev.def?.execute === def.execute && prev.def?.description === def.description) continue
-        try { prev.off() } catch { /* ignore */ }
+        try { prev.off() } catch (error) { log({ msg: 'dsh.tool-unregister-fail', name, error: String(error?.message ?? error) }) }
         registered.delete(name)
       }
-      const off = dsh.tools.register({
-        name,
-        description: def.description,
-        parameters: def.parameters,
-        execute: def.execute,
-      })
-      registered.set(name, { off: typeof off === 'function' ? off : () => {}, def })
-      added.push(name)
+      try {
+        const off = dsh.tools.register(toDshToolDefinition(def))
+        registered.set(name, { off: typeof off === 'function' ? off : () => {}, def })
+        added.push(name)
+      } catch (error) {
+        log({ msg: 'dsh.tool-register-fail', name, error: String(error?.message ?? error) })
+      }
     }
     return { added, removed }
   }
 
   const offChange = surface.onChange(() => { sync() })
 
-  const sectionOff = dsh.systemPrompt?.section?.({
-    name: 'icl:tools-and-memory',
-    order,
-    text: () => host.services.prompt.assemble({ sessionId }),
+  const section = toDshPromptSection({
+    host, sessionId, order,
+    onError: (error) => log({ msg: 'dsh.prompt-section-fail', error: String(error?.message ?? error) }),
   })
+  const sectionOff = typeof dsh.systemPrompt?.section === 'function'
+    ? dsh.systemPrompt.section(section)
+    : null
+  if (!sectionOff) log({ msg: 'dsh.prompt-section-missing' })
 
   sync()
 
