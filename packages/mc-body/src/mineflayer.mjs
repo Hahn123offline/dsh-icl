@@ -462,7 +462,8 @@ export function createMineflayerAdapter({
       const remaining = timeoutMs - (Date.now() - startedAt)
       if (remaining <= 800) break
       if (action === 'repath') {
-        pathStats.resets += 1
+        // 首次 setGoal 不算 reset；只有被判定卡住后的重算才计入 pathResets。
+        if (index > 0) pathStats.resets += 1
         stopPath()
       } else if (action === 'jump') {
         await jumpOnce(signal)
