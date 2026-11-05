@@ -346,5 +346,22 @@ mc-link 的 `serversFile`，所以场景里 `--server lab-normal` 就能用。�
 证据：`.state/lab/<run>/{transcript.md,events.jsonl,scenes/{A,C,E}/{verdict.md,verdict.json,interview.md}}`。
 三问原文在各 `interview.md`，是当事人自述，不算链路证据。
 
+**最终判定（2026-11-05 收尾）**：
+
+- **云端 3 连 PASS**：r3（`66820a5`）+ r4/r5（`73494e9`），A/C/E 每轮全 PASS（r3 A 的 noToolError、r4 C 的会话内 crash-notice 只是软断言）。
+- **本地 A PASS 8/8**：`LA` run，`coder390-27b-q3-df2-4x500`，commit `98d1f96` 实跑，A 首轮 **22.1s**，
+  工具 `mcb_join → mcb_scan → mcb_do`（mine 返回 `mined:1`），**无工具错误**，自己 `mcb_leave`；
+  证据 `.state/lab/LA/{transcript.md,scenes/A/verdict.md,scenes/A/interview.md}`。
+  本地两次 A 对比：修复断言前 35s（join→scan→mine mined:1→leave、0 工具错误）也已达功能面。
+- **本地缓存（同一会话）**：cache 按 L1 时间窗从引擎日志复算，prompt 342,533 tok / hit 329,521（**96.2%**）/
+  prefill 13,012 tok / 全量失效仅首轮 1 次 / 稳态 TTFT 0.35–0.70s（对照修复前每轮 hit=0、TTFT 10–24s）。
+- 遗留（不阻塞整体门）：mc-body 的 `craft wooden_pickaxe` / `place` 两行真服证据（脚本/校验时序问题已修，复验中）；
+  mc-link 把 `environment.summary` 接进 `mcb_join` 返回。
+
+**资源说明（2026-11-05 收尾）**：`lab-normal` 验收服 54840 与 54838 survival、54839 soak 服均已关闭；
+54837 flat 调试服由 lead 关闭（mc-lab 未动）。lab 侧 57101/57104 无监听、无 stray dsh/observer/body，
+根锁 `C:\DSH\icl\.state\locks\llama.lock` 不存在，`.state/lab/current.json` 已清。
+
+
 
 
