@@ -5,44 +5,80 @@
 //   node packages/plugins/qq/tools/fake-onebot.mjs --port 3301 --token test-token --after 800
 //   然后在 lab 的 qq 配置里写 url: ws://127.0.0.1:3301/, token: test-token, allowPrivate: ['10001']
 //
-// 它是"服务器"，只推事件；客户端（插件）从不发帧，所以这里连读帧都不需要实现。
+// 它是"服务器"：推事件；同时能读客户端发来的 OneBot 动作帧并回 echo 回执，
+// 用来验证 phase 1 的出站（send_private_msg）——但**不会真的连 QQ**。
 // 也导出 createFakeOneBot() 给 node --test 直接用（监听 127.0.0.1:0 随机端口）。
 //
-// 发的内容刻意覆盖闸门：私聊白名单内 1 条 + 同 id 重复 1 条 + 白名单外 1 条 + 群消息 1 条。
+// 发的内容刻意覆盖入站闸门：私聊白名单内 1 条 + 同 id 重复 1 条 + 白名单外 1 条 + 群消息 1 条。
+// 动作模式（setActionMode）：ok=正常回执 / reject=retcode 100 / drop=不回（触发客户端超时 unknown）。
 import http from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
-function frame(text) {
+function frame(text, opcode = 0x1) {
   const payload = Buffer.from(String(text), 'utf8')
   const len = payload.length
   let head
   if (len < 126) {
-    head = Buffer.from([0x81, len])
+    head = Buffer.from([0x80 | opcode, len])
   } else if (len < 65536) {
     head = Buffer.alloc(4)
-    head[0] = 0x81
+    head[0] = 0x80 | opcode
     head[1] = 126
     head.writeUInt16BE(len, 2)
   } else {
     head = Buffer.alloc(10)
-    head[0] = 0x81
+    head[0] = 0x80 | opcode
     head[1] = 127
     head.writeBigUInt64BE(BigInt(len), 2)
   }
   return Buffer.concat([head, payload])
 }
 
+/** 解析客户端帧（客户端帧必带 mask）。返回 { frames, rest }，只处理完整的文本/ping/close。 */
+function decodeClientFrames(buffer) {
+  const frames = []
+  let rest = buffer
+  while (rest.length >= 2) {
+    const b0 = rest[0]
+    const b1 = rest[1]
+    const opcode = b0 & 0x0f
+    const masked = (b1 & 0x80) !== 0
+    let len = b1 & 0x7f
+    let offset = 2
+    if (len === 126) {
+      if (rest.length < 4) break
+      len = rest.readUInt16BE(2)
+      offset = 4
+    } else if (len === 127) {
+      if (rest.length < 10) break
+      len = Number(rest.readBigUInt64BE(2))
+      offset = 10
+    }
+    const maskLen = masked ? 4 : 0
+    if (rest.length < offset + maskLen + len) break
+    const mask = masked ? rest.subarray(offset, offset + 4) : null
+    const payload = Buffer.from(rest.subarray(offset + maskLen, offset + maskLen + len))
+    if (mask) for (let i = 0; i < payload.length; i += 1) payload[i] ^= mask[i % 4]
+    frames.push({ opcode, text: opcode === 0x1 ? payload.toString('utf8') : null })
+    rest = rest.subarray(offset + maskLen + len)
+  }
+  return { frames, rest }
+}
+
 /**
  * 创建假 OneBot 服务（不自动发消息，由调用方触发）。
  * @returns {Promise<{port:number, token:string, framesSent:()=>number, privateMessage:Function, groupMessage:Function, sendJson:Function, close:Function, sockets:Set}>}
  */
-export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '' } = {}) {
+export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', actionMode = 'ok' } = {}) {
   const sockets = new Set()
   let frames = 0
   let clientChunks = 0
+  let mode = actionMode
+  let messageSeq = 7000
+  const actions = []
   const server = http.createServer((req, res) => { res.statusCode = 404; res.end('{}') })
 
   server.on('upgrade', (req, socket) => {
@@ -63,10 +99,34 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '' } = 
       '\r\n',
     ].join('\r\n'))
     socket.setNoDelay(true)
-    // 客户端按设计零出站帧；仍然把收到的数据排掉，避免缓冲区反压。
-    // clientChunks 是"只读不变量"的证据：连接期间客户端一个字节都不该发（close 帧除外，
-    // 测试在 stop 之前断言它仍是 0）。
-    socket.on('data', () => { clientChunks += 1 })
+    // 收客户端动作帧：phase 1 的 send_private_msg 在这里被记录并按 mode 回执。
+    // 入站影子模式（不发动作）时 clientChunks 保持 0，仍可作为"零出站"证据。
+    let pending = Buffer.alloc(0)
+    socket.on('data', (chunk) => {
+      clientChunks += 1
+      pending = Buffer.concat([pending, chunk])
+      const { frames: decoded, rest } = decodeClientFrames(pending)
+      pending = rest
+      for (const item of decoded) {
+        if (item.opcode === 0x8) { try { socket.end() } catch { /* 已关 */ } continue }
+        if (item.opcode === 0x9) { try { socket.write(frame('', 0xA)) } catch { /* 已关 */ } continue }
+        if (item.opcode !== 0x1 || !item.text) continue
+        let payload
+        try { payload = JSON.parse(item.text) } catch { continue }
+        if (!payload || typeof payload !== 'object' || payload.action == null) continue
+        const record = { action: String(payload.action), params: payload.params ?? {}, echo: payload.echo ?? null, at: Date.now() }
+        actions.push(record)
+        if (payload.echo == null) continue
+        if (mode === 'drop') continue
+        if (mode === 'reject') {
+          try { socket.write(frame(JSON.stringify({ status: 'failed', retcode: 100, wording: 'fake backend rejected', echo: payload.echo }))) } catch { /* 已关 */ }
+          continue
+        }
+        messageSeq += 1
+        const data = /^send_/.test(record.action) ? { message_id: messageSeq } : {}
+        try { socket.write(frame(JSON.stringify({ status: 'ok', retcode: 0, data, echo: payload.echo }))) } catch { /* 已关 */ }
+      }
+    })
     socket.on('error', () => {})
     socket.on('close', () => sockets.delete(socket))
     sockets.add(socket)
@@ -154,6 +214,10 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '' } = 
         sockets,
         framesSent: () => frames,
         clientDataChunks: () => clientChunks,
+        actions: () => actions.map((row) => ({ ...row })),
+        sendActions: () => actions.filter((row) => /^send_/.test(row.action)).map((row) => ({ ...row })),
+        setActionMode(next) { mode = String(next) },
+        actionMode: () => mode,
         sendJson,
         privateMessage,
         groupMessage,

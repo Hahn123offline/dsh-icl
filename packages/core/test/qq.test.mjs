@@ -392,7 +392,7 @@ test('qq_status 是可读的只读工具，明确说不能发', async () => {
   assert.match(result.text, /QQ 只读影子/)
   assert.match(result.text, /群消息：整类忽略/)
   assert.match(result.text, /出站：关闭/)
-  assert.match(result.text, /只读不变量：客户端已发帧 0/)
+  assert.match(result.text, /只读不变量：入站连接客户端已发帧 0/)
   assert.match(result.text, /最近一条私聊：.*测试（10001） #9601：测试：最近一条/)
   host.disable('qq')
 })
@@ -460,26 +460,32 @@ test('真 WebSocket 回环：收得到、进 delivery、客户端一个字节都
   }
 })
 
-/* ── 4. 静态安全不变量：插件里没有任何发送路径 ───────── */
+/* ── 4. 静态安全不变量：index 里没有发送实现，唯一入口在 send-tool ───────── */
 
-test('静态安全：index.mjs 没有发送调用；发送代码只存在于 outbound.mjs 且无人调用', () => {
+test('静态安全：index 不 import 发送实现；qq_send 只在 send-tool；群发送动作不存在', () => {
   const srcDir = new URL('../../plugins/qq/src/', import.meta.url)
   const index = fs.readFileSync(new URL('index.mjs', srcDir), 'utf8')
   const outbound = fs.readFileSync(new URL('outbound.mjs', srcDir), 'utf8')
+  const sendTool = fs.readFileSync(new URL('send-tool.mjs', srcDir), 'utf8')
   const connector = fs.readFileSync(new URL('connector.mjs', srcDir), 'utf8')
-  // index 不得出现任何 OneBot 发送动作，也不得调用 outbound 的发送函数
+  // index 不得出现任何 OneBot 发送动作，也不得出现发送实现/发送函数
   assert.doesNotMatch(index, /send_(?:private|group)_msg/)
   assert.doesNotMatch(index, /createOutbound\s*\(/)
   assert.doesNotMatch(index, /\.sendPrivate\s*\(/)
-  // 只允许 import 纯判定（sendEnabled / SEND_APPROVAL_TOKEN），不允许 import 发送实现
+  // index 只允许静态 import outbound 的纯判定（sendEnabled / SEND_APPROVAL_TOKEN）
   const importLine = index.split(/\r?\n/).find((line) => line.includes("from './outbound.mjs'")) ?? ''
   assert.doesNotMatch(importLine, /createOutbound/)
-  // 只读连接器里没有任何 ws.send（影子模式零出站）
+  // 发送入口：只有 send-tool 注册 qq_send；它才 import createOutbound
+  assert.match(sendTool, /name: 'qq_send'/)
+  assert.match(sendTool, /createOutbound/)
+  assert.doesNotMatch(sendTool, /send_group_msg/)
+  // 只读连接器里没有任何 ws.send（影子模式零出站）；发送动作只在 outbound
   assert.doesNotMatch(connector, /\.send\s*\(/)
-  // 发送实现存在但只定义、不自动执行；动作字符串只应出现在 outbound.mjs
   assert.match(outbound, /send_private_msg/)
-  const callers = ['index.mjs', 'connector.mjs', 'normalize.mjs', 'gate.mjs']
-    .map((file) => fs.readFileSync(new URL(file, srcDir), 'utf8'))
-    .filter((text) => /createOutbound\s*\(/.test(text))
-  assert.deepEqual(callers, [], 'createOutbound 不允许被其它源文件调用')
+  for (const file of ['index.mjs', 'connector.mjs', 'normalize.mjs', 'gate.mjs', 'send-tool.mjs']) {
+    assert.doesNotMatch(fs.readFileSync(new URL(file, srcDir), 'utf8'), /send_group_msg/, `${file} 不得出现群发送动作`)
+  }
+  // index 只在三把钥匙打开时动态装配 send-tool（不是静态 import）
+  assert.match(index, /await import\('\.\/send-tool\.mjs'\)/)
+  assert.doesNotMatch(index, /^import .*from '\.\/send-tool\.mjs'/m)
 })
