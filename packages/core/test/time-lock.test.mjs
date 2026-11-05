@@ -439,7 +439,7 @@ test('嵌套睡眠不提前结束外层睡眠', async () => {
 })
 
 test('goal 连续唤醒到上限后发明确结束消息并释放', async () => {
-  const { host, api } = await boot({ withFocus: true })
+  const { host, api } = await boot({ withFocus: true, config: { goalResumeMinGapSec: 0 } })
   const goal = api.addGoal({ theme: '会跑飞的目标', resumeLimit: 2, focus: 'space-x' })
   drainText(host)
   assert.ok(host.services.focus.list().some((l) => l.label === 'space-x'))
@@ -452,6 +452,34 @@ test('goal 连续唤醒到上限后发明确结束消息并释放', async () => 
   assert.equal(api.goals().length, 0)
   assert.ok(!host.services.focus.list().some((l) => l.label === 'space-x'), '目标结束要释放 focus')
   assert.equal(goal.id.length > 0, true)
+})
+
+test('goal 续推有最小间隔：连发 turn-end 被节流，tick 到点补发并标“第 N 次续推”', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, goalResumeMinGapSec: 60 } })
+  api.addGoal({ theme: '慢慢挖', resumeLimit: 10 })
+  drainText(host)
+  emitTurnEnd(host, 1)
+  assert.match(drainText(host), /第 1 次续推/)
+  virtualNow += 10_000
+  emitTurnEnd(host, 2)
+  assert.equal(drainText(host), '', '最小间隔内不续推')
+  assert.ok(api.goals()[0].resumeDueAt != null, '被节流的续推要有 dueAt')
+  virtualNow += 50_000
+  api.tick()
+  assert.match(drainText(host), /第 2 次续推/, '到 gap 后由 tick 补发')
+})
+
+test('goalResumeMinGapSec=0 时保持每回合续推（可配回旧行为）', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, goalResumeMinGapSec: 0 } })
+  api.addGoal({ theme: '快节奏', resumeLimit: 10 })
+  drainText(host)
+  emitTurnEnd(host, 1)
+  emitTurnEnd(host, 2)
+  const text = drainText(host)
+  assert.match(text, /第 1 次续推/)
+  assert.match(text, /第 2 次续推/)
 })
 
 test('取消同 id 的安排与目标一次收尾，并释放 focus', async () => {
@@ -655,6 +683,51 @@ test('睡眠边界：入睡后出现新 turn（边界回合已结束）→ postS
   assert.ok(events.includes('sleep-boundary-new-turn'))
   assert.ok(readTimeEvents(root).some((event) => event.type === 'sleep-boundary-new-turn'), 'time-events 要落 new-turn')
   assert.match(api.statusText(), /睡眠边界：入睡后出现新回合/)
+})
+
+/* ───────────────────────── 醒来简报（红队 C4） ───────────────────────── */
+
+test('醒来简报：睡眠时长/积压来源/dream/异常合并进醒来消息', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host) // 清掉入睡消息
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'QQ 一条' })
+  host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'MC 一条' })
+  virtualNow += 30 * 60_000
+  api.tick() // 醒来：结束 span + 释放积压
+  const text = drainText(host)
+  assert.match(text, /睡眠简报/)
+  assert.match(text, /睡了 30 分钟/)
+  assert.match(text, /积压 2 条（qq 1、mc 1）/)
+  assert.match(text, /记忆整理：入睡时已触发/)
+  assert.match(text, /无异常/)
+  // 顺序：结束语在前，简报随后，积压摘要再后
+  assert.ok(text.indexOf('整理完了') < text.indexOf('睡眠简报'), '结束语在前')
+  assert.ok(text.indexOf('睡眠简报') < text.indexOf('积压了 2 条消息'), '简报在积压摘要前')
+  const brief = api.status().lastSleepBrief
+  assert.ok(brief)
+  assert.equal(brief.backlog, 2)
+  assert.deepEqual(brief.anomalies, [])
+})
+
+test('醒来简报：dream 回执与边界超时进入简报', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, sleepGraceSec: 60 } })
+  emitTurnStart(host, 1) // 入睡时的在飞回合
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  virtualNow += 61_000
+  api.tick() // 超过 grace → overrun
+  // dream 插件（接口提案）在睡眠中 emit 一条结果
+  host.services.signals.emit({ from: { plugin: 'dream' }, kind: 'event', text: '整理完成：3 个记忆块', tags: ['dream-result'], meta: { ok: true } })
+  virtualNow += 29 * 60_000
+  api.tick() // 醒来
+  const text = drainText(host)
+  assert.match(text, /记忆整理：完成/)
+  assert.match(text, /异常：边界回合超过 grace/)
+  assert.ok(api.status().lastDreamResult?.ok)
+  assert.ok(api.status().lastSleepBrief?.anomalies.some((item) => item.includes('grace')))
 })
 
 test('turn-start 记录模型活动开始时间，heartbeat.lastModelCallAt 用它', async () => {

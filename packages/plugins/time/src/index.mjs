@@ -409,6 +409,8 @@ export function apply(ctx) {
   const firedRetentionMs = Math.max(1, Number(ctx.config.firedRetentionDays ?? 8)) * 86_400_000
   const goalMaxResumes = Math.max(1, Number(ctx.config.goalMaxResumes ?? 50))
   const goalMaxAgeMs = Math.max(60_000, Number(ctx.config.goalMaxAgeMs ?? 8 * 3_600_000))
+  // 红队 C3：turn-end 续推不能"每回合立刻连发"；同一个 goal 至少间隔这么久才再唤醒一次。
+  const goalResumeMinGapSec = Math.max(0, Number(ctx.config.goalResumeMinGapSec ?? 60))
   const maxMuteMs = Math.max(60_000, Number(ctx.config.maxMuteMs ?? 8 * 3_600_000))
   const defaultMuteMin = Math.max(1, Number(ctx.config.defaultMuteMin ?? 30))
   const emergencyQuotaDefault = Math.max(0, Number(ctx.config.emergencyQuota ?? 2))
@@ -473,6 +475,9 @@ export function apply(ctx) {
     awakeTickCappedAt: null,
     sleepBoundary: null,
     lastSleepBoundary: null,
+    sleepBrief: null,
+    lastSleepBrief: null,
+    lastDreamResult: null,
     turnEnds: 0,
     heartbeatOverdueLoggedAt: null,
     stats: { dropped: 0, missed: 0, expired: 0, overflow: 0, failed: 0, inboxBad: 0 },
@@ -506,6 +511,9 @@ export function apply(ctx) {
       state.turnEnds = Number(saved.turnEnds) > 0 ? Number(saved.turnEnds) : 0
       state.sleepBoundary = saved.sleepBoundary && typeof saved.sleepBoundary === 'object' ? saved.sleepBoundary : null
       state.lastSleepBoundary = saved.lastSleepBoundary && typeof saved.lastSleepBoundary === 'object' ? saved.lastSleepBoundary : null
+      state.sleepBrief = saved.sleepBrief && typeof saved.sleepBrief === 'object' ? saved.sleepBrief : null
+      state.lastSleepBrief = saved.lastSleepBrief && typeof saved.lastSleepBrief === 'object' ? saved.lastSleepBrief : null
+      state.lastDreamResult = saved.lastDreamResult && typeof saved.lastDreamResult === 'object' ? saved.lastDreamResult : null
       state.lock = saved.lock && typeof saved.lock === 'object' ? saved.lock : null
       state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
       state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
@@ -929,8 +937,9 @@ export function apply(ctx) {
 
   /* ── 目标（会话轴） ── */
 
-  function goalMessage(goal) {
+  function goalMessage(goal, { resume = false } = {}) {
     const bits = []
+    if (resume && Number(goal.resumes) > 0) bits.push(`第 ${goal.resumes} 次续推`)
     if (goal.turnLimit != null) bits.push(`还剩 ${goal.turnLimit} 轮`)
     if (goal.until != null) bits.push(`到 ${stampAt(goal.until, timeZone)} 结束`)
     const tail = bits.length ? `（${bits.join('，')}）` : ''
@@ -1004,27 +1013,53 @@ export function apply(ctx) {
     return { removed: before !== state.goals.length }
   }
 
-  /** turn-end 续推：有轮次/时间/续推次数上限，超限就结束并释放。 */
+  /**
+   * 尝试给一个 goal 发一次续推：先处理到期/轮次/次数/年龄，再检查最小间隔。
+   * 间隔未到 → 记 resumeDueAt（tick 到点再发），返回 false；真的发了返回 true。
+   */
+  function resumeGoal(goal, at) {
+    if (!goal.resumeOnStop) return false
+    if (goal.until != null && at >= goal.until) { goalExpired(goal, '时间到'); return false }
+    const gapMs = goalResumeMinGapSec * 1000
+    if (gapMs > 0 && goal.lastResumeAt != null && at - Number(goal.lastResumeAt) < gapMs) {
+      const dueAt = Number(goal.lastResumeAt) + gapMs
+      if (goal.resumeDueAt !== dueAt) { goal.resumeDueAt = dueAt; dirty = true }
+      return false
+    }
+    if (goal.turnLimit != null) {
+      if (goal.turnLimit <= 0) { goalExpired(goal, '轮次用完'); return false }
+      goal.turnLimit -= 1
+    }
+    goal.resumes = Number(goal.resumes ?? 0) + 1
+    const limit = Number(goal.resumeLimit ?? goalMaxResumes)
+    if (goal.resumes > limit) { goalExpired(goal, `连续唤醒到上限 ${limit} 次`); return false }
+    if (at - Number(goal.createdAt ?? at) > goalMaxAgeMs) { goalExpired(goal, '目标存在时间过久'); return false }
+    goal.lastResumeAt = at
+    goal.resumeDueAt = null
+    send({ kind: 'goal', text: goalMessage(goal, { resume: true }), tags: ['goal', 'resume'], focus: goal.focus })
+    return true
+  }
+
+  /** turn-end 续推：有轮次/时间/续推次数上限，且同一 goal 受 goalResumeMinGapSec 节流。 */
   function resumeGoals() {
     if (state.phase !== 'awake') return 0
+    const at = nowTime()
+    let sent = 0
+    for (const goal of [...state.goals]) if (resumeGoal(goal, at)) sent += 1
+    persist()
+    return sent
+  }
+
+  /** tick 里补发被最小间隔挡住的续推。 */
+  function flushDeferredGoalResumes(at = nowTime()) {
+    if (state.phase !== 'awake' || !state.goals.length) return 0
     let sent = 0
     for (const goal of [...state.goals]) {
-      if (!goal.resumeOnStop) continue
-      const now = nowTime()
-      if (goal.until != null && now >= goal.until) { goalExpired(goal, '时间到'); continue }
-      if (goal.turnLimit != null) {
-        if (goal.turnLimit <= 0) { goalExpired(goal, '轮次用完'); continue }
-        goal.turnLimit -= 1
-      }
-      goal.resumes = Number(goal.resumes ?? 0) + 1
-      const limit = Number(goal.resumeLimit ?? goalMaxResumes)
-      if (goal.resumes > limit) { goalExpired(goal, `连续唤醒到上限 ${limit} 次`); continue }
-      if (now - Number(goal.createdAt ?? now) > goalMaxAgeMs) { goalExpired(goal, '目标存在时间过久'); continue }
-      goal.lastResumeAt = now
-      send({ kind: 'goal', text: goalMessage(goal), tags: ['goal', 'resume'], focus: goal.focus })
-      sent += 1
+      if (goal.resumeDueAt == null || at < Number(goal.resumeDueAt)) continue
+      if (resumeGoal(goal, at)) sent += 1
+      else if (goal.resumeDueAt != null && at >= Number(goal.resumeDueAt)) goal.resumeDueAt = at + Math.max(1, goalResumeMinGapSec) * 1000
     }
-    persist()
+    if (sent) persist()
     return sent
   }
 
@@ -1222,6 +1257,17 @@ export function apply(ctx) {
           allow: Array.isArray(schedule.allow) ? schedule.allow : DEFAULT_ALLOW,
         })
         if (schedule.sleep) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] })
+        if (schedule.sleep) {
+          // 醒来简报的底账：睡眠开始时间、dream 触发标记、统计基线（tick 在睡眠中不丢这些）。
+          state.sleepBrief = {
+            startedAt: now,
+            sleepingId: schedule.id,
+            dreamTriggered: true,
+            statsStart: { missed: state.stats.missed, dropped: state.stats.dropped, expired: state.stats.expired },
+            boundaryAtEntry: { inFlight: Boolean(state.sleepBoundary?.inFlight), turnAgeAtEntrySec: state.sleepBoundary?.turnAgeAtEntrySec ?? null },
+          }
+          recordEvent('sleep-brief-start', { sleepingId: schedule.id, inFlight: Boolean(state.sleepBoundary?.inFlight), dreamTriggered: true })
+        }
         outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
       }
     } else if (!schedule.silent) {
@@ -1235,6 +1281,49 @@ export function apply(ctx) {
     state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
     persist()
     return outcome
+  }
+
+  /** 醒来简报：睡眠时长 / 积压与来源 / dream / 异常，合并进醒来消息（红队 C4）。 */
+  function buildWakeBrief(span, at) {
+    const brief = state.sleepBrief ?? {}
+    const startedAt = Number(brief.startedAt ?? state.since ?? at)
+    const durationSec = Math.max(0, Math.round((at - startedAt) / 1000))
+    const queue = state.queue
+    const sources = new Map()
+    for (const item of queue) {
+      const key = item.from?.plugin ?? '?'
+      sources.set(key, (sources.get(key) ?? 0) + 1)
+    }
+    const sourceText = [...sources.entries()].map(([plugin, n]) => `${plugin} ${n}`).join('、')
+    const anomalies = []
+    const boundary = state.lastSleepBoundary ?? state.sleepBoundary
+    if (boundary?.overrun) anomalies.push('边界回合超过 grace')
+    if (boundary?.postSleepTurn) anomalies.push('入睡后出现新回合')
+    const start = brief.statsStart ?? {}
+    const missed = Math.max(0, Number(state.stats.missed ?? 0) - Number(start.missed ?? 0))
+    const dropped = Math.max(0, Number(state.stats.dropped ?? 0) - Number(start.dropped ?? 0))
+    const expired = Math.max(0, Number(state.stats.expired ?? 0) - Number(start.expired ?? 0))
+    if (missed) anomalies.push(`漏响 ${missed}`)
+    if (dropped) anomalies.push(`丢弃 ${dropped}`)
+    if (expired) anomalies.push(`过期 ${expired}`)
+    let dream = '记忆整理：未触发'
+    if (state.lastDreamResult) {
+      const result = state.lastDreamResult
+      dream = `记忆整理：${result.ok ? '完成' : '失败'}${result.text ? `（${String(result.text).slice(0, 60)}）` : ''}`
+    } else if (brief.dreamTriggered !== false) {
+      dream = '记忆整理：入睡时已触发（dream 回执未回传）'
+    }
+    const backlogText = queue.length ? `积压 ${queue.length} 条（${sourceText}）` : '没有积压'
+    const anomalyText = anomalies.length ? `异常：${anomalies.join('、')}` : '无异常'
+    return {
+      text: `（睡眠简报：睡了 ${fmtDuration(durationSec * 1000)}；${backlogText}；${dream}；${anomalyText}）`,
+      durationSec,
+      backlog: queue.length,
+      sources: sourceText,
+      anomalies,
+      dream,
+      startedAt,
+    }
   }
 
   function endSpan(span) {
@@ -1253,10 +1342,19 @@ export function apply(ctx) {
         state.lastSleepBoundary = { ...state.sleepBoundary, endedAt: nowTime() }
         state.sleepBoundary = null
       }
+      // 醒来简报：睡眠时长 / 积压与来源 / dream / 异常，合并进醒来消息（不额外刷屏）。
+      let wakeBrief = null
+      try { wakeBrief = buildWakeBrief(span, nowTime()) } catch (error) { log('warn', 'time.wake-brief', { error: String(error?.message ?? error) }) }
+      if (wakeBrief) state.lastSleepBrief = { ...wakeBrief, endedAt: nowTime() }
+      state.sleepBrief = null
       emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
-      if (!span.silent) send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
+      if (!span.silent) {
+        const text = wakeBrief ? `${span.endMessage}\n${wakeBrief.text}` : span.endMessage
+        send({ kind: 'wake', text, tags: wakeBrief ? ['wake', 'wake-brief'] : ['wake'] })
+      }
       const released = flushQueue('你睡觉时')
-      recordEvent('sleep-end', { sleepingId: span.id, released, boundary: state.lastSleepBoundary ? { inFlight: state.lastSleepBoundary.inFlight, turnEndedAfterSec: state.lastSleepBoundary.turnEndedAfterSec ?? null, postSleepTurn: Boolean(state.lastSleepBoundary.postSleepTurn), overrun: Boolean(state.lastSleepBoundary.overrun) } : null })
+      recordEvent('sleep-end', { sleepingId: span.id, released, boundary: state.lastSleepBoundary ? { inFlight: Boolean(state.lastSleepBoundary.inFlight), turnEndedAfterSec: state.lastSleepBoundary.turnEndedAfterSec ?? null, postSleepTurn: Boolean(state.lastSleepBoundary.postSleepTurn), overrun: Boolean(state.lastSleepBoundary.overrun) } : null })
+      if (wakeBrief) recordEvent('wake-brief', { sleepingId: span.id, released, backlog: wakeBrief.backlog, sources: wakeBrief.sources, anomalies: wakeBrief.anomalies, dream: wakeBrief.dream, durationSec: wakeBrief.durationSec })
       // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       // 醒来后如果没有新的 turn 触发，清醒节拍负责在 idleSec 内叫起一次自检。
@@ -1371,6 +1469,8 @@ export function apply(ctx) {
         alive.push(goal)
       }
       if (alive.length !== state.goals.length) state.goals = alive
+      // 被最小间隔挡住的 goal 续推，到点在 tick 里补发。
+      if (state.goals.length) flushDeferredGoalResumes(at)
 
       for (const schedule of [...state.schedules]) {
         let parsed
@@ -1596,6 +1696,9 @@ export function apply(ctx) {
       heartbeat: heartbeatStatus(),
       sleepBoundary: state.sleepBoundary ? { ...state.sleepBoundary } : null,
       lastSleepBoundary: state.lastSleepBoundary ? { ...state.lastSleepBoundary } : null,
+      lastSleepBrief: state.lastSleepBrief ? { ...state.lastSleepBrief } : null,
+      lastDreamResult: state.lastDreamResult ? { ...state.lastDreamResult } : null,
+      goalResumeMinGapSec,
       missed: state.stats.missed,
       dropped: state.stats.dropped,
       overflow: state.stats.overflow,
@@ -1795,7 +1898,7 @@ export function apply(ctx) {
   tool({
     name: 'time_arrange',
     summary: '新建一条安排：一次/每天/每周/倒计时到点唤醒；mode:"goal" 则持续在回合末唤醒，直到取消。',
-    description: 'at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"（倒计时，与 at 同给时 at 优先）；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放。weekdays:[1..7] 配 HH:mm 表示每周。silent:true 只发事件不发消息（给插件订阅用，tags 决定谁收到）。focus 绑定注意力空间；turnLimit 限制 goal 的回合数。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
+    description: 'at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"（倒计时，与 at 同给时 at 优先）；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放。weekdays:[1..7] 配 HH:mm 表示每周。silent:true 只发事件不发消息（给插件订阅用，tags 决定谁收到）。focus 绑定注意力空间；turnLimit 限制 goal 的回合数；goal 在回合末续推，但同一目标至少间隔 goalResumeMinGapSec（默认 60s）才再唤醒一次，续推会标注"第 N 次"。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal'], description: 'wake=到点发一条唤醒；goal=持续目标' },
@@ -1970,6 +2073,20 @@ export function apply(ctx) {
   // turn-end：目标续推 + 心跳；没有目标时安排清醒节拍（见 onTurnEnd）。
   ctx.signals.on({ tags: ['turn-end'] }, (signal) => {
     try { onTurnEnd(signal) } catch (error) { log('warn', 'time.turn-end', { error: String(error?.message ?? error) }) }
+  })
+
+  // dream 完成/失败回执（接口提案：dream 插件 emit tags:['dream-result'], meta.ok, text）。
+  // time 只记录并放进醒来简报/状态；不在睡眠中额外投递，醒着时给一条 notice。
+  ctx.signals.on({ tags: ['dream-result'] }, (signal) => {
+    try {
+      const text = String(signal?.text ?? '').slice(0, 200)
+      const ok = signal?.meta?.ok != null ? Boolean(signal.meta.ok) : !/失败|错误|fail/i.test(text)
+      state.lastDreamResult = { at: nowTime(), ok, text }
+      dirty = true
+      recordEvent('dream-result', { ok, text })
+      if (state.phase === 'awake') send({ kind: 'notice', text: `记忆整理回执：${ok ? '完成' : '失败'}${text ? `（${text.slice(0, 80)}）` : ''}。`, tags: ['dream', 'dream-result'] })
+      else persist()
+    } catch (error) { log('warn', 'time.dream-result', { error: String(error?.message ?? error) }) }
   })
 
   // 重启后恢复 focus 租约：睡眠租约、目标绑定的 focus（否则状态在、租约丢了）。

@@ -165,7 +165,8 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 - 来源：`time_arrange {mode:'goal', ...}`（到点建）、`goal_add`（立即建）。`addGoal` 接受 `until`（ISO/HH:mm/in 式）、`afterMin`、`durationMin`、`in`、`turnLimit`、`resumeLimit`、`focus`、`resumeOnStop`。
 - 目标消息带 **id / theme / 剩余轮次 / 到期时间**：`你在目标内：<theme>（还剩 N 轮，到 …）。id=g-xxx，不用时用 time_cancel 取消，别留着空跑。`
-- 每个 `turn-end`（`signals.on({tags:['turn-end']})`，只在 awake 时）续推一次；在 `until` 到期、`turnLimit` 用完、`resumeLimit`（默认 50）或 `goalMaxAgeMs`（默认 8h）到上限时发**明确的"目标结束：…（原因）"**并释放 focus——不是静默停止。
+- 每个 `turn-end`（`signals.on({tags:['turn-end']})`，只在 awake 时）续推一次，**但同一目标有最小间隔**：`config.goalResumeMinGapSec`（默认 **60s**）内不重复唤醒，被节流的续推记 `resumeDueAt`，由 tick 到点补发；消息带"第 N 次续推"。这样"持续目标"是节奏，不是每回合紧循环（红队 C3）。间隔设 0 可恢复旧行为（测试/特殊场景）。
+- 在 `until` 到期、`turnLimit` 用完、`resumeLimit`（默认 50）或 `goalMaxAgeMs`（默认 8h）到上限时发**明确的"目标结束：…（原因）"**并释放 focus——不是静默停止。
 - `time_cancel(id)` 取消目标、释放绑定 focus；`time_list`/`time_status` 都能看到 id（旧版看不到 id 导致无法取消）。
 - 与 focus 的配合：goal 用 `owner:'time'` 的租约进入 `focus`（`interruptible:true`），换目标/结束/取消都会释放；模型自己的 `focus_leave` 不会替她取消 goal（由 `time_cancel` 或上限收尾）；time 发的目标消息在 `focus.admit` 里因 `from.plugin==='time'` 始终可达，并带 `focus` 字段以便归并到同一个 batchKey。
 
@@ -584,3 +585,39 @@ node tools/lab.mjs down --run "$RUN"
 `time-lock.test.mjs`：入睡时在飞回合被记录（`inFlight/turnAgeAtEntrySec`）、grace 内结束归档为合法收尾、
 超过 grace 只发一次 `sleep-boundary-overrun`、入睡后新 turn 标 `postSleepTurn` 并发事件、醒后 `lastSleepBoundary` 可查。
 
+
+---
+
+## 15. 红队整改（C2 / C3 / C4，2026-11-06）
+
+> 来源：`docs/REDTEAM-REVIEW.md` C2/C3/C4 + `docs/AUDIT-2026-11-05.md §12` 对照。
+> 只改 time/focus 插件；不改 focus gate 裁决语义、不改 bridge。
+
+### 15.1 C2：`focus_enter` 不带 `activity` 不再静默随机
+
+- 旧行为：`activity ?? act:<random>` → 同一件事每轮标签都不同，MC 事件（`focus:'mc'`）永远对不上，全进"别处"积压。
+- 新行为（`packages/plugins/focus`）：
+  1. 显式 `activity` → 原样使用；
+  2. 未给且 **检测到 MC 在线**（`ctx.services.get('mc-link').status().connected`）→ 自动用 `mc`，回执明说"检测到 MC 已连接，已自动设为 mc"；
+  3. 否则按标题推**稳定标签** `auto:act:<slug>`（同一标题每次相同），回执带 ⚠ 提示，建议重新 `focus_enter` 并显式给 `activity`；
+  4. `focus_status` 对自动标签显示"（标签自动生成，不是显式 activity）"。
+- 测试：显式/自动（无 MC）/自动（MC 在线）三种回执与 label 断言（`focus-semantics.test.mjs`）。
+
+### 15.2 C3：持续目标的最小间隔
+
+- 旧行为：每个 turn-end 立刻续推，云端 2 秒一轮 → 50 轮约 2 分钟烧完。
+- 新行为：`config.goalResumeMinGapSec` 默认 **60s**；同一 goal 在间隔内只记 `resumeDueAt`，由 tick 到点补发；续推消息带"第 N 次续推"；`turnLimit`/`resumeLimit`/`goalMaxAgeMs` 仍照旧收尾。`0` 可恢复旧行为。
+- 与清醒节拍的关系：被节流时本轮没有 goal 续推，turn-end 会照常 arm 清醒节拍；goal 的 due 通常先到，二者不会叠加发消息（同一批 drain 也会合并）。
+- 测试：连发两个 turn-end 只发第 1 次、tick 到 gap 补第 2 次；`gap=0` 保持旧行为（`time-lock.test.mjs`）。`time_arrange` description 已写明节奏。
+
+### 15.3 C4：醒来简报 + dream 回执接口
+
+- 醒来消息现在 = `endMessage` + 一行 **睡眠简报**（同一批投递，顺序：结束语→简报→积压摘要）：
+  `（睡眠简报：睡了 4 小时 30 分；积压 17 条（mc 17）；记忆整理：入睡时已触发（dream 回执未回传）；无异常）`
+  - 时长来自入睡时刻；积压条数与来源来自 `queue`（按 plugin 计数）；异常 = 边界超时/入睡后新回合 + 睡眠期间新增的漏响/丢弃/过期。
+- `status().lastSleepBrief` 可查（`{text,durationSec,backlog,sources,anomalies,dream,startedAt,endedAt}`）；`time-events.jsonl` 落 `sleep-brief-start` / `wake-brief`。
+- **dream 回执接口（提案，dream 插件本轮不在 scope）**：dream 完成/失败时 `signals.emit({from:{plugin:'dream'},kind:'event',text:'整理完成：…'/'整理失败：…',tags:['dream-result'],meta:{ok:true|false}})`。time 已订阅：
+  - 睡眠中收到 → 记 `lastDreamResult`，并入醒来简报（"记忆整理：完成/失败（原文）"）；
+  - 醒着收到 → 直接发一条可读 notice；
+  - dream 未升级时简报显示"入睡时已触发（回执未回传）"，不假装成功。
+- 测试：正常醒来的简报内容/顺序/计数；dream 回执 + 边界超时进入简报（`time-lock.test.mjs`）。
