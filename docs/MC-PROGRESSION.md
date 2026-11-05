@@ -190,3 +190,8 @@
 | 10 | 长任务等待只能 wait 轮询 | **教学已改** | mc-link 文档/描述“提交后别 wait”；宏 progress 限频（5–10%/10s） |
 
 未决（明早）：farm、build 旋转/替代材质、bridge 真实沟壑、tunnel stairs、pickup op、doPlan 单飞锁、craft 变体选择、低血 resume 策略。
+
+**§7.4 更新（05:3x 实际完成度）**：
+- 宏：`collect/tunnel/bridge/build/shelter/sort/deposit/farm` **全部已实现**；真服 smoke 覆盖 collect/tunnel/bridge/build/shelter + tunnel stairs + sort 失败路径；`build`/`shelter` 加 `<80% → failed(partial)`；剩余：build 旋转/替代材质、bridge 真实沟壑、farm 真实水源/种子（beta，lab 重启后验）。
+- body 侧仍未做（明早）：`doPlan` 单飞锁、`pickup` op、craft 变体选择、low-health resume 策略（supervisor 侧）。
+- 文档/技能：MC-MACRO.md 契约+证据齐全；mc-link 宏工具面/skills 已接（`ab3c076`/`4a4e003`），lab 重启后生效。
