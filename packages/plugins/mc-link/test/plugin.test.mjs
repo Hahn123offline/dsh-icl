@@ -70,7 +70,16 @@ async function startFakeBody({ connected = true } = {}) {
       return send(200, { ok: true, seq: state.seq, events: state.events.filter((event) => event.seq > since) })
     }
     if (url.pathname === '/v1/inspect' && req.method === 'POST') {
-      return read((input) => send(200, { ok: true, result: { text: `inspect:${input.kind}` } }))
+      return read((input) => {
+        if (input.kind === 'scan' && state.scanRows != null) {
+          const name = input.params?.name ?? 'dirt'
+          const text = state.scanRows > 0
+            ? Array.from({ length: state.scanRows }, (_, i) => `${name} @ ${i},-60,0（${(i * 0.5 + 0.5).toFixed(1)}m）`).join('\n')
+            : `附近没有 ${name}。`
+          return send(200, { ok: true, result: { text } })
+        }
+        return send(200, { ok: true, result: { text: `inspect:${input.kind}` } })
+      })
     }
     if (url.pathname === '/v1/do' && req.method === 'POST') {
       return read(async (input) => {
@@ -304,7 +313,7 @@ test('mcb_join：失败给进程退出码 + body 日志（不是"没有连上"�
   }
 })
 
-test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归本会话；goal/focus 不被动', async () => {
+test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归本会话；focus/goal 不被动', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
@@ -312,7 +321,8 @@ test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归�
     assert.match(joined.text, /已连接 127\.0\.0\.1:54837/)
     const left = await link.tools.mcb_leave.execute({})
     assert.match(left.text, /不是本会话启动的/)
-    assert.match(left.text, /focus\/goal 没有动/)
+    assert.match(left.text, /body 进程：本会话没有启动过/)
+    assert.match(left.text, /focus\/goal：没有挂着的/)
     assert.equal(body.state.paused, true, 'leave 必须先安全停止')
   } finally {
     await link.cleanup()
@@ -458,6 +468,71 @@ test('mcb_do：wait 的 durationMs 容错成 body 的 ms；cancel+task 两步都
     assert.match(combo.text, /\[cancel\]/)
     assert.match(combo.text, /任务 t-1（mine）已接受/)
     assert.ok(combo.text.indexOf('[cancel]') < combo.text.indexOf('已接受'), 'cancel 结果应在任务结果之前')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_leave：默认只停 body 但报告还挂着什么；cleanup:true 释放 focus/goal 且幂等', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const joined = await link.tools.mcb_join.execute({ server: 'flat' })
+    assert.match(joined.text, /已连接 127\.0\.0\.1:54837/)
+    // 模型自己建的 focus 租约（focus_enter 的 owner 就是 'focus'）+ 一条 MC 持续目标（time 不在测试里，用不上）。
+    link.host.services.focus.enter({ label: 'mc', owner: 'focus', title: '在 MC 里玩' })
+    const left = await link.tools.mcb_leave.execute({})
+    assert.match(left.text, /安全停止：成功/)
+    assert.match(left.text, /body 进程：本会话没有启动过|body 进程：已结束/)
+    assert.match(left.text, /不是本会话启动的/)
+    assert.match(left.text, /还挂着：focus 1 个/)
+    assert.match(left.text, /cleanup:true/)
+    assert.equal(body.state.paused, true, 'leave 必须先安全停止')
+
+    const cleaned = await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.match(cleaned.text, /收尾清理：focus 释放 1 个/)
+    assert.match(cleaned.text, /清理后：focus 和 MC 持续目标都空了/)
+    assert.equal(link.host.services.focus.list().length, 0, 'cleanup 应释放模型 focus 租约')
+    // 幂等：再调一次不报错、不重复清
+    const again = await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.match(again.text, /没有启动过|无需停止/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_scan：按 count 说明截断（到上限说"可能还有更多"），不再假装列表完整', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.scanRows = 20
+    const out = await link.tools.mcb_scan.execute({ name: 'dirt', radius: 6, count: 5 })
+    assert.match(out.text, /只列最近的 5 个（count=5）/)
+    assert.match(out.text, /可能还有更多/)
+    body.state.scanRows = 64
+    const capped = await link.tools.mcb_scan.execute({ name: 'dirt', count: 200 })
+    assert.match(capped.text, /已到 body 上限 64 个/)
+    body.state.scanRows = 2
+    const small = await link.tools.mcb_scan.execute({ name: 'dirt', count: 8 })
+    assert.doesNotMatch(small.text, /可能还有更多/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：dig/place 的 pos 写成 [x,y,z] 也规整成 {x,y,z} 再交给 body', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: [12, -60, 14] } }] })
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.deepEqual(sent.params.pos, { x: 12, y: -60, z: 14 })
+    const text = body.state.requests.at(-1).steps[0]
+    assert.equal(text.op, 'dig')
   } finally {
     await link.cleanup()
     await body.close()

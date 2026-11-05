@@ -281,24 +281,99 @@ export function apply(ctx) {
     return { ...out, joined: { ...joinedServer } }
   }
 
-  async function leave() {
+  /** 模型自己（focus_enter）正在用的专注租约；别的插件/时间的租约不碰。 */
+  function modelFocusLeases() {
+    try { return (ctx.focus?.list?.() ?? []).filter((lease) => lease.owner === 'focus') } catch { return [] }
+  }
+
+  /** 时间的持续目标（"游戏收尾"范围：focus==='mc' 或未来的 'mc:*' 命名空间）。 */
+  function mcTimeGoals() {
+    try {
+      const time = ctx.services?.get?.('time')
+      if (!time?.goals) return []
+      return time.goals().filter((goal) => {
+        const tag = String(goal.focus ?? '')
+        return tag === focus || tag.startsWith(`${focus}:`)
+      })
+    } catch { return [] }
+  }
+
+  /** time 侧剩下的东西（schedules/lock/queue）——不碰，但要如实告诉她还有什么会叫醒她。 */
+  function timeLeftover() {
+    try {
+      const time = ctx.services?.get?.('time')
+      if (!time) return null
+      const schedules = time.schedules?.() ?? []
+      const queue = time.queue?.() ?? []
+      const lock = time.lock?.() ?? null
+      return { schedules: schedules.length, queue: queue.length, lock }
+    } catch { return null }
+  }
+
+  async function leave({ cleanup = false } = {}) {
     const own = supervisor.state()
     const externalConnected = isConnected(lastStatus) && !own.owns
-    let safety = 'ok'
+    let safety = 'failed'
     try {
       await call('/v1/safety/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'leave' }), timeoutMs: 1200 })
-    } catch { safety = 'skipped' }
+      safety = 'ok'
+    } catch { safety = 'unreachable' }
     const killed = await supervisor.stop({ reason: 'leave' })
     lastStatus = null
     joinedServer = null
     primed = false
     lastSeq = 0
+
     const lines = []
-    if (killed.killed) lines.push(`已停止本会话启动的 body（pid ${killed.pid ?? '?'}${killed.forced ? '，SIGKILL' : ''}）`)
-    else lines.push('本会话没有启动 body，没有进程要停')
-    if (externalConnected) lines.push('注意：连着的 body 不是本会话启动的，我只发了安全停止，没有杀它（进程由启动方负责）')
-    if (safety === 'skipped') lines.push('body 已经不在，安全停止请求跳过')
-    lines.push('focus/goal 没有动：不需要持续唤醒时，自己 time_cancel + focus_leave')
+    lines.push(safety === 'ok'
+      ? '安全停止：成功（当前任务已中断）'
+      : safety === 'unreachable' ? '安全停止：body 已不在，请求跳过' : '安全停止：失败（body 没响应）')
+    if (killed.killed) {
+      const how = killed.forced ? 'SIGKILL 强杀' : 'SIGTERM 正常退出'
+      lines.push(`body 进程：已结束（pid ${killed.pid ?? '?'}，${how}）`)
+    } else {
+      lines.push('body 进程：本会话没有启动过，无需停止')
+    }
+    if (externalConnected) lines.push('注意：连着的 body 不是本会话启动的，只发了安全停止，没有杀进程（那个进程由启动方负责）')
+
+    const focusLeases = modelFocusLeases()
+    const goals = mcTimeGoals()
+    if (cleanup) {
+      const failed = []
+      let released = 0
+      for (const lease of focusLeases) {
+        try { lease.release(); released += 1 } catch { failed.push(`focus:${lease.label}`) }
+      }
+      let cancelled = 0
+      try {
+        const time = ctx.services?.get?.('time')
+        for (const goal of goals) {
+          try { time.removeGoal(goal.id); cancelled += 1 } catch { failed.push(`goal:${goal.id}`) }
+        }
+      } catch { /* time 不存在：下面用剩余数量报告 */ }
+      lines.push(`收尾清理：focus 释放 ${released} 个、MC 持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
+      const leftFocus = modelFocusLeases()
+      const leftGoals = mcTimeGoals()
+      const leftover = timeLeftover()
+      if (leftFocus.length || leftGoals.length) {
+        lines.push(`清理后仍挂着：focus ${leftFocus.length} 个${leftGoals.length ? `、MC 目标 ${leftGoals.length} 个（${leftGoals.map((goal) => goal.id).slice(0, 3).join('、')}）` : ''}`)
+      } else {
+        lines.push('清理后：focus 和 MC 持续目标都空了')
+      }
+      if (leftover) {
+        const bits = [`schedule ${leftover.schedules} 个（闹钟不会因 leave 消失）`, `积压 ${leftover.queue} 条`]
+        if (leftover.lock) bits.push(`时间锁：${leftover.lock.reason ?? '有'}`)
+        lines.push(`time 侧没动：${bits.join('、')}`)
+      }
+    } else {
+      const hanging = []
+      if (focusLeases.length) hanging.push(`focus ${focusLeases.length} 个（${focusLeases.map((lease) => lease.label).slice(0, 3).join('、')}）`)
+      if (goals.length) hanging.push(`MC 持续目标 ${goals.length} 个（${goals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
+      lines.push(hanging.length
+        ? `还挂着：${hanging.join('；')}——不想被持续叫醒就 mcb_leave {cleanup:true} 一起清，或分开 focus_leave / time_cancel`
+        : 'focus/goal：没有挂着的，不会被叫醒')
+    }
+    lines.push('下一轮 mcb_status 应显示未连接（幂等：可以再调一次确认）')
     return lines.join('；')
   }
 
@@ -430,6 +505,33 @@ export function apply(ctx) {
     return `[${op}] ${JSON.stringify(result).slice(0, 400)}`
   }
 
+  /** 坐标点：接受 {x,y,z} 或 [x,y,z]（模型两种写法都用过），统一成 body 认的对象。 */
+  function posObject(value) {
+    if (Array.isArray(value) && value.length >= 3) {
+      const [x, y, z] = value.map(Number)
+      if ([x, y, z].every(Number.isFinite)) return { x, y, z }
+    }
+    if (value && typeof value === 'object') {
+      const { x, y, z } = value
+      if ([x, y, z].every((n) => Number.isFinite(Number(n)))) return { x: Number(x), y: Number(y), z: Number(z) }
+    }
+    return null
+  }
+
+  function fixPositions(params) {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return params
+    const next = { ...params }
+    if (next.pos != null) next.pos = posObject(next.pos) ?? next.pos
+    if (next.target != null) {
+      const point = posObject(next.target)
+      if (point) next.target = { pos: point }
+      else if (typeof next.target === 'object' && next.target.pos != null) {
+        next.target = { ...next.target, pos: posObject(next.target.pos) ?? next.target.pos }
+      }
+    }
+    return next
+  }
+
   /** 校验/规整 steps：错误必须能指导下一步，不能把 body 的 "未知任务：undefined" 原样丢给她。 */
   function normalizeSteps(steps) {
     if (!Array.isArray(steps) || !steps.length) {
@@ -472,6 +574,13 @@ export function apply(ctx) {
         step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
       }
       if (op === 'events' && raw.since == null) step.since = lastSeq
+      // 坐标容错：params.pos / params.target 或顶层 pos/target，可以写 [x,y,z] 也可以写 {x,y,z}。
+      step.params = fixPositions(step.params)
+      if (step.pos != null) step.pos = posObject(step.pos) ?? step.pos
+      if (step.target != null) {
+        const point = posObject(step.target)
+        if (point) step.target = { pos: point }
+      }
       return step
     })
   }
@@ -540,7 +649,7 @@ export function apply(ctx) {
     {
       name: 'mcb_join',
       summary: '连接 MC 服务器：必要时启动 mc-body 进程，并等到真正连上；只负责连接，不建 focus/goal。',
-      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符）。成功返回服务器与连接状态，之后用 mcb_status 复核。失败会给可读原因：进程退出码 + body 日志最后几行、端口被占/被别的 body 占着、服务器没开或端口错（reconnect_exhausted）。失败时不留下半死进程，修好原因后可以直接再 join。',
+      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服必须唯一；默认 ICL，lab/多 owner 用 ICL_MC_BOT_NAME 区分）。成功返回服务器与连接状态，之后用 mcb_status 复核。失败会给可读原因：进程退出码 + body 日志、端口被占/被别的 body 占着、服务器没开或端口错、同名 bot 被踢。失败不留半死进程，修好原因后可再 join。想认真投入时：连上后 focus_enter 要带 activity:"mc"（MC 事件才和专注同一空间），再用 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾用 mcb_leave {cleanup:true}。',
       when: ['被叫去玩，或她自己想玩', 'mcb_status 显示未连接、服务器已经开着'],
       avoid: ['body 已经连在另一台服务器：先 mcb_leave', '只想随便玩一小会儿：连上直接玩，不必建 focus/goal'],
       parameters: {
@@ -550,7 +659,7 @@ export function apply(ctx) {
           server: { type: 'string', description: 'mcb_servers/mcb_lan 返回的服务器名，如 flat、survival。优先用它，不用记端口。' },
           host: { type: 'string', description: '服务器地址；和 server 二选一。' },
           port: { type: 'number', description: '服务器端口；默认 25565。' },
-          username: { type: 'string', description: '游戏内名字，≤16 字符；默认 ICL。' },
+          username: { type: 'string', description: '游戏内名字，≤16 字符，同服唯一；默认 ICL。两个 bot 同名会互相踢。' },
         },
       },
       async execute(args = {}) {
@@ -563,12 +672,18 @@ export function apply(ctx) {
     },
     {
       name: 'mcb_leave',
-      summary: '退出 MC：安全停止并结束本会话启动的 body 进程；不取消 focus/goal。',
-      description: '先 POST /v1/safety/stop，再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部启动的 body 只安全停止、不杀进程（返回值里会说明）。之后 mcb_status 应显示未连接。不想被持续唤醒时，自己先 time_cancel（取消 goal）再 focus_leave；mcb_leave 不会替你做这两件事。',
-      when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）'],
-      avoid: ['只离开游戏但想保留持续目标：focus/time 不用动，直接 leave'],
-      parameters: { type: 'object', properties: {} },
-      async execute() { return { text: await leave() } },
+      summary: '退出 MC：安全停止并结束本会话启动的 body；可选 cleanup 一并清 focus/goal。',
+      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部启动的 body 只安全停止、不杀进程（返回里说明）。返回值会报告：安全停止是否成功、进程怎么结束、focus 和 MC 持续目标还挂着什么。默认只停 body（既定语义）；不想被持续叫醒就带 cleanup：释放模型自己的 focus 租约、取消 focus=="mc" 的 time 持续目标（不碰 schedules/积压/时间锁）。幂等，可重复调用确认。',
+      when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）', '收工：想同时清掉 focus 和 MC 持续目标'],
+      avoid: ['只离开游戏但想保留持续目标：默认 leave 就行，别带 cleanup'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          cleanup: { type: 'boolean', description: '默认 false：只停 body 并报告还剩什么。true：同时释放 focus 租约、取消 focus="mc" 的 time 持续目标（不碰闹钟/积压）。' },
+        },
+      },
+      async execute({ cleanup = false } = {}) { return { text: await leave({ cleanup: Boolean(cleanup) }) } },
     },
     {
       name: 'mcb_status',
@@ -629,8 +744,8 @@ export function apply(ctx) {
     },
     {
       name: 'mcb_scan',
-      summary: '扫描附近某类方块的位置和距离。只读。参数：name 必填，radius/count 可选。',
-      description: 'name 用 Minecraft 方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest、water、lava。radius 默认 8（方块格），count 默认 8，结果按距离排序。返回空表示这个范围内没有——把 radius 调大或换块名，不要换任务重试同一件事。',
+      summary: '扫描附近某类方块的位置和距离（按距离升序）。只读。参数：name 必填，radius/count 可选。',
+      description: 'name 用 Minecraft 方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest。body 的硬限制：radius 默认 16、最大 48；count 默认 8、最大 64（超过按 64）。结果按距离升序、只列 count 个；到上限时返回会附一句"可能还有更多"。返回"附近没有 X"表示范围内真的没有——先调大 radius 或换块名，别假装它存在。',
       when: ['下 mine 任务之前确认目标存在', '找工作台/熔炉/箱子/矿', '脱困时找方向'],
       parameters: {
         type: 'object',
@@ -638,28 +753,44 @@ export function apply(ctx) {
         required: ['name'],
         properties: {
           name: { type: 'string', description: '方块 id，如 oak_log、stone、iron_ore。' },
-          radius: { type: 'number', description: '搜索半径（格），默认 8。' },
-          count: { type: 'number', description: '最多返回几个，默认 8。' },
+          radius: { type: 'number', description: '搜索半径（格），默认 16，最大 48。' },
+          count: { type: 'number', description: '最多列几个（按距离最近的），默认 8，最大 64。' },
         },
       },
-      async execute({ name, radius, count } = {}) { return inspect('scan', { name, radius, count }) },
+      async execute({ name, radius, count } = {}) {
+        const body = await inspect('scan', { name, radius, count })
+        const text = String(body.text ?? '')
+        const lines = text.split('\n').filter((line) => line.trim())
+        const rowLines = lines.filter((line) => line.includes('@'))
+        const others = lines.filter((line) => !line.includes('@'))
+        if (!rowLines.length) return { text }
+        // count 要真的生效：body 可能给多了（或被它的上限截断），这里按 count 只列最近的几行并说清楚。
+        const wanted = Math.max(1, Math.min(64, Number(count) || 8))
+        const kept = rowLines.slice(0, wanted)
+        const note = rowLines.length >= 64
+          ? '（已到 body 上限 64 个，可能还有更多：缩小 radius 或换更具体的方块名）'
+          : rowLines.length >= wanted
+            ? `（只列最近的 ${kept.length} 个（count=${wanted}），可能还有更多：调大 count（≤64）或缩小 radius）`
+            : ''
+        return { text: [...others, ...kept].join('\n') + (note ? `\n${note}` : '') }
+      },
     },
     {
       name: 'mcb_map',
       summary: '看脚下方块层的字符小地图（#实心 .空 ~水 ≈岩浆 ?未加载）。只读。参数：radius 可选。',
-      description: '用来判断地形：前面是墙/悬崖/水/岩浆。radius 默认 8（格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标。',
+      description: '用来判断地形：前面是墙/悬崖/水/岩浆。radius 默认 4 格、最大 8（超过按 8，地图是 (2r+1)² 的字符网格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标；想找远处某类方块用 mcb_scan。',
       when: ['goto/寻路失败', '判断悬崖、水域、洞窟'],
       parameters: {
         type: 'object',
         additionalProperties: false,
-        properties: { radius: { type: 'number', description: '地图半径（格），默认 8。' } },
+        properties: { radius: { type: 'number', description: '地图半径（格），默认 4，最大 8。' } },
       },
       async execute({ radius } = {}) { return inspect('map', { radius }) },
     },
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）；wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}（台账含 state/error/result）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解安全暂停；旧任务已中断）、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。说一句的时机见 mcb_help play。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],
