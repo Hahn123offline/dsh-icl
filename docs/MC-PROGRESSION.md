@@ -73,9 +73,21 @@
 - `[11-05 19:xx] 说明不清` · 暂停态 cancel 被 409（当事人预期"撤回消息"）· 已把 cancel 加入暂停安全 op · **已修** e6850e5。
 - `[11-05 19:xx] 组合不可行` · mine count=1 背包 6 个还 running 追目标 · 已改"净增达标即 done" · **已修** e6850e5/e53246e。
 - `[11-05 20:5x] 环境卡死` · 出生在 jungle_leaves/oak_leaves 顶，mine 掉落慢；health-drop 落树 4 血就暂停 · 已改"净增继续挖/再收"+"掉血 ≥6 才接管" · **已修** e53246e。
-- `[11-05 23:xx] 说明不清` · skill chest.md 说 `all:true` 但 body 未实现 · 待实现（见 §2-9）。
-- `[11-05 23:xx] 说明不清` · skill furnace.md 说"等待烧炼完成"但 body 固定 waitMs/单次 take · 待实现（见 §2-8）。
-- `[11-05 23:xx] 说明不清` · fairy 无昼夜/死亡坐标/背包剩余格，导致"该干什么"信息不足 · 待实现（见 §2-4/1/7）。
+- `[11-05 23:xx] 说明不清` · skill chest.md 说 `all:true` 但 body 未实现 · **已实现**（ddb170c 起 chest all:true put/take，工具/装备/食物默认不存）。
+- `[11-05 23:xx] 说明不清` · skill furnace.md 说"等待烧炼完成"但 body 固定 waitMs/单次 take · **已实现**（`count/fuelCount/轮询产物/partial`）。
+- `[11-05 23:xx] 说明不清` · body 无昼夜/死亡坐标/背包剩余格，导致"该干什么"信息不足 · **已实现**（`adapter.time/lastDeath/inventory/equipment/sleeping` + `sleep` op；mc-link 待加展示/白名单）。
+
+### 2026-11-06 night-smoke（真实 lab，5 分钟 smoke，mc-lab run `night-smoke`）
+
+证据：`C:/DSH/icl-wt/mc-lab/.state/lab/night-smoke/{transcript.md,events.jsonl,status.json,state/mc-body/body.jsonl,state/icl-mc-lab/mc-link.jsonl}`
+
+- `[00:10] 说明不清` · prompt 里 MC 状态行只有 `位置/任务/血/背包`，缺饱食/昼夜/附近敌人（seq=49/60）· 她夜间无法判断"该回家吗" · **已修 body 侧字段**（time/lastDeath/inventory/equipment），mc-link 展示待合。
+- `[00:11] 说明不清` · `mcb_status` 里“氧气：0”（陆地上 body 报 null，mc-link 显示 0，seq=32）· 容易误解为憋气 · 转 mc-link：null 显示 `?`（body 语义正确）。
+- `[00:11] 组合不可行` · `craft oak_planks` requested=8、craftTimes=2×4 但只记 produced=4；`inputsBefore/After=[]`（mc-link seq=77）· 根因：旧实现只有一次总轮询 + 从 `recipe.requires` 取材料（crafting 配方用 `recipe.delta`，所以为空）· **已修** ddb170c：逐批合成+逐批轮询+delta 材料快照+partial 明确文案。
+- `[00:11] 说明不清` · 任务 done 的 `reason=net-target` 被旧 mc-link 翻成“任务结束但没达成”（seq=74/78）· lead 已在 master 修 success reasons 白名单；body 侧成功原因固定为 `net-target|duration|target`（已写 README）。
+- `[00:11] 说明不清` · 她在长任务期间连续 `wait 20s → tasks → wait 30s ×3` 等结果（seq=61/66/71/80/85/90）· 没有其它事可做；progress 事件被 gate 合并（suppressed:1，seq=79）· 建议 skills/play.md 教“wait 60s 再看一次，同时 mcb_inventory 规划下一步”，或 mc-link 每 ~60s 主动给一条进度摘要（转 mc-link）。
+- `[00:12] 说明不清` · survival 地形 `path_stuck @24,73,-54`（1.4–3.9m）在任务最终成功前就发给她 seq=77（`[MC] 走不过去…`），容易让她以为任务要失败 · 建议：path_stuck 只在**任务最终 failed** 或连续 ≥2 次时升为 signal，否则降为日志（转 mc-link）；body 保留事件不改。
+- `[00:12] ✅ 正常` · mine oak_log net 12/12 完成、掉落逐件入包（body net 字段逐条上报），task_done 后背包 16 件 —— mine 净增/掉落修复在真实生存服生效。
 
 ## 4. 与 mc-lab 的 checkpoint 约定（早报汇总用）
 
