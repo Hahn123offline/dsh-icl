@@ -294,7 +294,7 @@ S6 hour（`loop-s6-hour.json`）用测试时钟跳到"下一个整点+1 分钟"�
 
 产物：`.state/lab/time-3/loop-s2|loop-s4|loop-s5/{report.md,verdict.json,events.jsonl}`（worktree 内，不提交）。
 
-### 真实 8h 生存长测（night-1，2026-11-06 02:09–06:49）
+### 夜间生存长测（night-1，2026-11-06 00:26–06:51，8h 未跑满/提前结束）
 
 完整证据与结论见 **[TIME-NIGHT-REPORT.md](TIME-NIGHT-REPORT.md)**。摘要：入睡/醒来/dawn 均按计划（02:09:05 → 06:39:06 → 06:49:05，dawn 只响一次）；睡眠期 17 条外部消息全部进积压（reason=sleeping），醒来一条合并消息按"结束语→积压摘要"释放且计数一致；dream 在入睡瞬间跑完（wash 1119 行）；两次 lab 重启后 schedules/fired/queue 原样保留（`loop-probe.resetOnStart:false` 后）。事故三条：测试脚手架 startupReset 清 time state（已修）、睡眠期 9 条 supervisor 直投（DSH 队列残余，修复后 0）、睡眠边界 in-flight turn（语义 B+有界兜底，time/supervisor 均已实现，待合并部署）。
 
