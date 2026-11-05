@@ -53,6 +53,12 @@ export function normalizeConfig(input = {}) {
     persona: readText(personaFile, ''),
     simulation: readText(simulationFile, ''),
     dreamPersona: readText(dreamPersonaFile, ''),
+    /**
+     * 第一屏净化（红队 P0-1）：用同名空段 shadow 掉 DSH 全局的工程脚手架段。
+     * 默认空数组 = 不净化；只有显式配置的 preset（目前仅 lab）才开。
+     * 段名目录与语义见 src/purify.mjs；产品 preset 要开需用户批准。
+     */
+    purifySections: Array.isArray(input.purifySections) ? input.purifySections.map(String) : [],
     rawFile: resolvePath(input.rawFile, path.join(stateDir, 'session-events.jsonl')),
     focusFile: resolvePath(input.focusFile, path.join(stateDir, 'focus.json')),
     sessionsRoot: resolvePath(input.sessionsRoot, path.join(dshHome(), 'sessions')),

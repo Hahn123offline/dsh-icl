@@ -33,6 +33,14 @@
               simulationFile: prompts/sim.md
               tickMs: 200
               timeTickMs: 1000
+              # 第一屏净化（红队 P0-1，lab 先验证；产品 preset 要开需用户批准）：
+              # 在 agent scope 注册同名空段，shadow 掉 DSH 全局的工程脚手架段。
+              # 段名/顺序见 src/purify.mjs；空文本段会被渲染层跳过。
+              purifySections:
+                - 'harness:identity'
+                - 'ui:deliverable-file-references'
+                - 'harness:source'
+                - 'app:web-surface'
               pluginConfig:
                 time:
                   # 测试/复核用：允许 inbox clock 命令平移 time 看到的时钟（跨小时前缀复核）。
