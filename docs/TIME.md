@@ -221,6 +221,7 @@ CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。
 | 多 gate 只有 time 在用 | 其它插件若用旧 `setGate` 会整体替换 | `addGate` 组合 + time tick 自愈重装 + log |
 | 时区 | `timeZone` 配置当前只影响 time 自己的 HH:mm/daily/weekly/dayKey；dream 有独立时区配置 | 默认宿主时区；换机器/改时区后 `fired` 日期键会错一天，需 reset 或等自然跨天 |
 | delivery 重试与 signal 幂等 | signals 的 `exactlyOnce:false`；批 ack 丢失时同一批可能重发 | delivery 层 nack 退避；时间侧 `fired` 保证"安排不重复响"，但已投递文本的重复由 delivery 决定 |
+| **测试脚手架的 startupReset 会吞掉 time state** | lab/test preset 里 `loop-probe` 默认 `resetOnStart:true`，每次 dsh 新进程 apply 时调 `time.runCommand({cmd:'reset'})` → `time.json` 的 `phase/spans/queue/fired` 全清。长测/supervisor 自愈重启后"继续睡、积压保留、不重复释放"都不可测，且会误判成 time 恢复失败 | 测试 preset 显式 `pluginConfig.loop-probe.resetOnStart:false`（driver 的显式 `reset` 步骤仍可用）；产品装配不含 loop-probe；2026-11-06 night-1 长测踩到过，已单独记入 `docs/TIME-NIGHT-REPORT.md` |
 | `time-accept.mjs` 是旧 host 验收脚本 | 仍可跑，但不是契约验收（见 §11） | 契约验收走单测 + `loop-host.mjs` |
 
 ---
