@@ -65,10 +65,10 @@
 | 能力 | 旧实现要点 | 我们现在 | 缺口/风险 | 成本 | P |
 |---|---|---|---|---|---|
 | 文本段 / @ / face / 名片 | `bridge.js:1338-1403` 完整映射（at→群名片、mface summary、markdown、reply、forward id） | ✅ text；⚠️ 其它只占位（`normalize.mjs:42-83`） | @ 名称需要成员查询（group 阶段） | 0.5 | P1（群时） |
-| 引用回复解析（入站） | `bridge.js:11570-11697`：慢取缓存（120s）、并发去重、归属校验防跨会话、pending 占位、回复引用也当"叫你" | ❌ 只保留 reply id，不解析 | 不理解"在回哪句"；私聊里也常见 | 1 | **P0-2** |
-| 合并转发展开（含嵌套） | `qq-forward.js:62-91`（≤2 层、≤12 条、1200 字）；`qq-events.js:53-60` | ❌ `[合并转发]` 占位 | 群/私聊都可能遇到；有总字数上限防撑爆 | 1 | **P0-2** |
-| 图片（下载 + 进模型） | `qq.js:150-196` 下载 ≤2 张/≤8MB；`qq-media.js` 落盘；v2 用 `get_image`/CDN 兜底 + `safeFetchBuffer` 安全抓取（`bridge.js:9341-9419`）；模型不能看图时降级文字 | ❌ 只有 `[图片]` 占位与 URL 引用 | **需要 bridge/DSH attachment 小改**；SSRF/大小/类型/超时风险 | 2.5 | **P0-2** |
-| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ❌ `[文件]` 占位 | 私聊文件会丢上下文；下载要受控路径 | 1 | P0-2（收）/P2（发） |
+| 引用回复解析（入站） | `bridge.js:11570-11697`：慢取缓存（120s）、并发去重、归属校验防跨会话、pending 占位、回复引用也当"叫你" | ✅ P0-2 已实现（`reply-cache.mjs`：等待可配/归属校验/pending/缓存） | 慢取时延受上游影响；真机 `get_msg` 语义待验证 | 0.5（已完成） | P0-2 |
+| 合并转发展开（含嵌套） | `qq-forward.js:62-91`（≤2 层、≤12 条、1200 字）；`qq-events.js:53-60` | ✅ P0-2 已实现（`forward.mjs`；假数据 fake 覆盖） | 真机 `get_forward_msg` 慢（旧项目实测 ~76s）→ 收消息不等它，失败保留 id 占位 | 0.5（已完成） | P0-2 |
+| 图片（下载 + 进模型） | `qq.js:150-196` 下载 ≤2 张/≤8MB；`qq-media.js` 落盘；v2 用 `get_image`/CDN 兜底 + `safeFetchBuffer` 安全抓取（`bridge.js:9341-9419`）；模型不能看图时降级文字 | ⚠️ 半完成：`media.mjs` 已有安全抓取/类型/大小；**字节未进模型**（只有文本占位+meta） | **需要 bridge/DSH attachment**（单独申请）；SSRF/大小/类型/超时风险 | 2 | **P0-2（剩余）** |
+| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ✅ 文本带 `[文件：name（size）]` + meta.files；下载未接 | 私聊文件会丢上下文；下载要受控路径（P1/P2） | 1 | P0-2（收）/P2（下载） |
 | 语音（入站转写） | `bridge.js:61-70` 接 ASR；dsh-qq `voice-asr.js`：`fetch_ptt_text` 重试 3 次×3s，空串常见；失败降级 `[语音]`；本地 whisper 端口预留 | ❌ `[语音]` 占位 | QQ 原生转写依赖网关；延迟/失败率未知；P2 | 1.5 | P2 |
 | 表情/收藏表情元数据 | `bridge.js:1421-1463` 保留 emoji_id/package/key/url/sub_type/summary（防字段丢失后无法兜底）；dsh-qq `sticker-lib.js` 297 行知识库 | ❌ 只 `[表情]` | P1 表情体系的前置 | 0.5 | P1 |
 | 群成员/好友/人物库 | `qq-forward.js:34-55`、focus-core people；dsh-qq `social/people.js`(28KB) 入群/退群/改名片/连续性 | ❌ 无 | 群阶段；P2 | 2 | P2 |
@@ -175,7 +175,7 @@
   `src/onebot-http.mjs`（独立 OneBot HTTP 动作端，入站 WS 仍 framesSent=0）；connector 增加 open 回调
   （first/reconnect + downtime）；gate 增加 `backfilled` 通道（`[补课]`/tag/meta + `stale-backfill` 判旧）；
   index 接线 + `gap/ledger/http` 状态 + `qq_status` 文本。
-- ✅ 测试：`qq-backfill.test.mjs` 6 条（账本/契约/集成断线补回/不双投/超龄/HTTP 失败）；全量 480 pass。
+- ✅ 测试：`qq-backfill.test.mjs` 6 条（账本/契约/集成断线补回/不双投/超龄/HTTP 失败）；全量 527 pass。
 - 边界（必须说清）：水位 = `signals.offer` 被接受（进入 delivery 队列、未被 time/focus 拦下）；
   bridge ack 在 dsh-icl，插件拿不到，不能宣称"用户已看到"。
 - 未做（有意）：`mark_msg_as_read`/`mark_private_msg_as_read` 不在 P0 调用（会把已读同步到用户 QQ，属产品决定）；
@@ -185,10 +185,16 @@
   - 单测：seq 单调、qq_id 去重、水位只进不退、断层不跳号、重启恢复（SQLite）。
   - 真实窗口（需 lead 批准）：连接中 kill SnowLuma WS（或断网模拟不可行时 kill lab 的 WS 连接）→ 恢复后 gap 指标合理、无重复回复；私聊补课能力按真机结论记录（做不到就明确报 gap，不静默）。
 
-**P0-2 入站富内容（预计 4–6 人日，含 bridge/cache 协调）**
-- 纯函数移植：`segmentsToText`（at→名片、reply 解析、forward id、markdown、mface summary）、`extractMedia`、`expandForward`（≤2 层/≤12 条/1200 字）、`resolveReplyInfo`（背景慢取 120s +  ingest 等 4s + pending 占位 + 归属校验）、图片安全抓取（https only、≤2 张/≤8MB、media type 校验、`get_image`/CDN 兜底）、文件元数据（name/size/file_id）+ `get_private_file_url`/`get_file` 受控下载、语音 ASR 端口（P2 先留接口）。
-- 进模型：优先 DSH attachment/`ImageBlock`；不可用降级"文本明确说明 + `qq_get_message_images` 工具按需取图"。
-- 验收：
+**P0-2 入站富内容（预计 4–6 人日，含 bridge/cache 协调；✅ 2026-11-06 纯函数层已落地）**
+- ✅ 已实现（`packages/plugins/qq`，未动 bridge/DSH）：`rich.mjs`（segmentsToText/媒体/文件/转发 id/引用 id/@自己）、
+  `reply-cache.mjs`（`get_msg` 慢取 120s、收消息等待可配、并发去重/负缓存、归属校验、pending 占位）、
+  `forward.mjs`（节点形状兼容、嵌套≤2 层、≤12 条/1200 字）、`media.mjs`（http(s)/禁内网/8MB/魔数/`get_image` 兜底）；
+  index 在闸门前异步 enrich（普通文本仍同步路径），补课也走同一 enrich；`meta.qq` 增加 media/files/forwardIds/replyId/atSelf。
+- ✅ 测试：`qq-rich.test.mjs` 11 条（段/提取/引用/转发/媒体安全/插件集成/focus 语义）；全量 527 pass。
+- 边界：**图片/文件字节还没有进模型**（只有文本占位 + meta）；真正进上下文要 DSH attachment/`ImageBlock` 通道，
+  按 lead 要求单独申请；届时遵守 CACHE-MODEL §7、改 bridge 前 merge master、给 cache 留言。
+- 原验收计划（剩余项）：
+  - 进模型：优先 DSH attachment/`ImageBlock`；不可用降级"文本明确说明 + `qq_get_message_images` 工具按需取图"。
   - fake：私聊富消息（图片+文件+引用+转发）→ 模型可见：文字 + 图片（或可操作提示）+ 文件 name/size + 引用原文 + 转发展开；获取失败**降级占位并上报**，事件不丢。
   - 安全：非 http(s)/内网/超大/非图片 → 拒绝且不崩；不把本地路径/凭据交给模型。
   - cache：`npm test` 全绿 + CACHE-MODEL §7 自检不变 + cache 留言。
@@ -200,6 +206,8 @@
 - 出站引用回复：reply 段（私聊必须 reply 段）；验收 fake + 真实 1 条。
 - 表情包：移植 `sticker-lib.js`（知识库/备注/策略注入）+ 入站收集 + `send_custom_face`/图片发送；预算/大小/上限；验收 fake + 受控真实 1 张。
 - 注意力/唤醒矩阵：per-conversation 配置（mode/triggers/budget/batchWindow/睡眠观察）、replyCheck、proactive、nudge digest；**只生成 signal，不接管投递**；验收：配置矩阵单测 + "同一批积压只提醒一次" + 不越权穿透 focus/time。
+  **前置语义已修正（2026-11-06 红队）**：私聊默认 ambient，普通消息会被 focus 拦进积压；唤醒矩阵不得自动补 `mention`
+  或自造 `admin/alarm` 特权，只在显式 @/真正紧急来源时穿透。
 - 验收通用：`npm test` 全绿、对 focus/time 现有测试无回归、真实窗口按需申请。
 
 ### P2（用户明确后再做）
@@ -228,7 +236,7 @@
 | **dsh-qq bridge.js 主体** | **不移植** | 812KB/14,279 行单 `main`、多会话/模式机/审批/WSL/控制台；与 ICL 架构冲突，移植=把三代教训再来一遍 | — |
 
 **落地顺序（lead 批准）**：P0-3（纯函数，1–2 天）→ P0-1（3–4 天）→ P0-2（4–6 天）→ P1（按账本工具/引用 → 表情 → 唤醒矩阵，约 8–10 天）→ P2（语音 → 群 → 空间，约 15–25 天，按需）。
-**每个 P0 完成**：全量 `npm test` 绿（当前 452+）+ fake 场景 + commit 到 `wt/qq` + merge 信号；真实 QQ 验证单独向 lead 申请。
+**每个 P0 完成**：全量 `npm test` 绿（当前 527+）+ fake 场景 + commit 到 `wt/qq` + merge 信号；真实 QQ 验证单独向 lead 申请。
 
 ---
 
@@ -290,12 +298,13 @@
 
 ### 7.3 我们（本仓库）
 
-- `packages/plugins/qq/src/{connector,normalize,gate,outbound,send-tool,index}.mjs`（216/166/223/275/198/523 行）；
-  P0-3 新增 `humanize.mjs`；P0-1 新增 `ledger.mjs`（SQLite 账本/水位）、`backfill.mjs`（补课契约）、`onebot-http.mjs`（独立 HTTP 动作端）。
+- `packages/plugins/qq/src/{connector,normalize,gate,outbound,send-tool,index}.mjs`；
+  P0-3 新增 `humanize.mjs`；P0-1 新增 `ledger.mjs`（SQLite 账本/水位）、`backfill.mjs`（补课契约）、`onebot-http.mjs`（独立 HTTP 动作端）；
+  P0-2 新增 `rich.mjs`（段/媒体/文件/转发/引用提取）、`reply-cache.mjs`（引用慢取）、`forward.mjs`（转发展开）、`media.mjs`（安全抓取/校验）。
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 480 pass。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 527 pass。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证

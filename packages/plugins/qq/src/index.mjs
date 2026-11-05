@@ -25,6 +25,10 @@ import { SEND_APPROVAL_TOKEN, sendEnabled } from './outbound.mjs'
 import { createLedger } from './ledger.mjs'
 import { createOneBotHttp } from './onebot-http.mjs'
 import { createBackfill } from './backfill.mjs'
+import { createReplyResolver, pendingReplyText, replyContextText } from './reply-cache.mjs'
+import { expandForwardIds } from './forward.mjs'
+import { extractForwardIds, extractReplyId } from './rich.mjs'
+import { senderIdOf } from './normalize.mjs'
 
 export const name = 'qq'
 
@@ -83,6 +87,14 @@ const DEFAULTS = Object.freeze({
   backfillCount: 50,
   maxBackfillAgeMs: 6 * 3600_000,
   backfillMaxPeers: 5,
+  // P0-2 富内容（纯格式化/慢取；图片真正进模型要等 DSH attachment，本轮不接）
+  richEnabled: true,
+  replyResolveEnabled: true,
+  replyIngestWaitMs: 2000,
+  replyResolveTtlMs: 30 * 60_000,
+  forwardExpandEnabled: true,
+  forwardExpandMax: 2,
+  forwardExpandMaxChars: 1200,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -120,8 +132,11 @@ export function normalizeQqConfig(input = {}) {
   cfg.burstEnabled = cfg.burstEnabled !== false
   cfg.markdownToPlain = cfg.markdownToPlain !== false
   cfg.backfillEnabled = cfg.backfillEnabled !== false
+  cfg.richEnabled = cfg.richEnabled !== false
+  cfg.replyResolveEnabled = cfg.replyResolveEnabled !== false
+  cfg.forwardExpandEnabled = cfg.forwardExpandEnabled !== false
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -220,6 +235,7 @@ export async function apply(ctx) {
   let ledger = null
   let http = null
   let backfill = null
+  let replyResolver = null
   const gap = {
     reconnects: 0,
     lastDowntimeMs: null,
@@ -392,6 +408,52 @@ export async function apply(ctx) {
     return 'retry'
   }
 
+  /**
+   * P0-2 入站富内容：进闸门前做两件"慢但必要"的事（都受配置控制、失败不阻塞消息）：
+   *   1) 引用解析：`get_msg` 慢取缓存；等不到就放占位文字，不丢原消息；
+   *   2) 合并转发展开：`get_forward_msg` 取一层/两层，拼成可读文本（有深度/字数上限）。
+   * 图片/文件这里**不下载**：只保留 meta 定位信息，真正看图片等 DSH attachment 通道。
+   */
+  async function enrichInbound(raw) {
+    if (!cfg.richEnabled || !Array.isArray(raw?.message)) return raw
+    let message = raw.message
+    let enriched = null
+    const replyId = extractReplyId(message)
+    if (replyId && cfg.replyResolveEnabled && replyResolver) {
+      const peerId = senderIdOf(raw)
+      let info = null
+      try {
+        info = await replyResolver.resolve(replyId, {
+          peerId,
+          selfId: cfg.selfId ?? raw.self_id,
+          waitMs: cfg.replyIngestWaitMs,
+        })
+      } catch (error) {
+        ctx.log({ level: 'info', msg: 'qq.reply.enrich-fail', id: replyId, error: String(error?.message ?? error) })
+      }
+      const context = info?.pending ? pendingReplyText(replyId) : (info ? replyContextText(info) : null)
+      if (context) {
+        // 把 reply 段换成不可伪造的文本段，同时保留原始 id 供 meta 使用。
+        message = message.map((seg) => (seg?.type === 'reply' ? { type: 'text', data: { text: context } } : seg))
+        enriched = { ...raw, __qqReplyId: replyId }
+      }
+    }
+    const forwardIds = extractForwardIds(message)
+    if (cfg.forwardExpandEnabled && forwardIds.length && http?.ok) {
+      try {
+        const expanded = await expandForwardIds(forwardIds, {
+          fetchForward: (id) => http.call('get_forward_msg', { id }),
+          maxIds: cfg.forwardExpandMax,
+          maxChars: cfg.forwardExpandMaxChars,
+        })
+        if (expanded) message = [...message, { type: 'text', data: { text: `\n[转发展开]\n${expanded}` } }]
+      } catch (error) {
+        ctx.log({ level: 'info', msg: 'qq.forward.expand-fail', error: String(error?.message ?? error) })
+      }
+    }
+    return message === raw.message && !enriched ? raw : { ...(enriched ?? raw), message }
+  }
+
   function handleEvent(raw, { backfilled = false } = {}) {
     if (disposed) return { accept: false, code: 'disposed' }
     stats.frames += 1
@@ -400,7 +462,15 @@ export async function apply(ctx) {
       connector?.onMeta?.() // 保留扩展点：当前只更新连接器内部 lastPacketAt
       return { accept: false, code: 'meta' }
     }
-    const decision = gate.admit(raw, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
+    // 只有带引用/转发的消息才需要异步慢取；普通文本保持同步路径（现有调用方/测试语义不变）。
+    const needsEnrich = cfg.richEnabled && raw?.post_type === 'message' && Array.isArray(raw.message)
+      && (extractReplyId(raw.message) != null || extractForwardIds(raw.message).length > 0)
+    if (needsEnrich) return enrichInbound(raw).then((event) => ingestEvent(event, { backfilled }))
+    return ingestEvent(raw, { backfilled })
+  }
+
+  function ingestEvent(event, { backfilled = false } = {}) {
+    const decision = gate.admit(event, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
     if (!decision.accept) {
       stats.recent.lastDropped = { at: now(), code: decision.code }
       // 群消息不落记录（整类忽略，避免把群内容写进影子证据文件）
@@ -529,6 +599,12 @@ export async function apply(ctx) {
       maxPeers: cfg.backfillMaxPeers,
       peers: peerList,
       ingest: (event, opts) => handleEvent(event, opts),
+      log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
+    })
+    replyResolver = createReplyResolver({
+      http,
+      now,
+      ttlMs: cfg.replyResolveTtlMs,
       log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
     })
     ctx.log({
