@@ -309,6 +309,51 @@ DSH / ICL 会话
 - **空白/失败要可读**：搜索空 `bvid`、无字幕、`-412`、凭证失效——都要在工具文本里说清"发生了什么、下一步能做什么"，而不是把异常栈丢给模型。
 - **别把"看视频"变成任务清单**：`prompts/sim.md` 已经写了"没有画面依据时不要假装看过"；C 不要再往全局提示词里加 B 站操作步骤（会与 `PROMPT-CONTRACT` 的"工具教学归 description"冲突）。
 
+### 7.1 本机体检一页（2026-11-06，`--offline` / `--credential` + 失败模式实测）
+
+> 本页只记录**结论和元数据**：没有打印、复制任何 cookie/token；cookies 文件只解析了到期列。用途：明早拍板时判断"这套接缝还能撑多久、先修哪一段"。
+
+#### 7.1.1 凭证有效期（两套登录态，差 5 个多月）
+
+| 登录态 | 签发/写入 | 到期 | 剩余 | 备注 |
+|---|---|---|---|---|
+| bilibili-api（搜索/字幕/评论；`$DSH_HOME/bili-duty/bili_credential.json`） | 2026-10-22 19:57 | **2027-04-20 19:57**（SESSDATA 内嵌时间戳） | ≈166 天 | 4 字段齐全（只记长度 222/32/46/16）；`--credential` 实测 `logged_in=true`（uid 脱敏） |
+| yt-dlp / storyboard（切帧拉流；`~/.dsh/video.json` 的 `cookies` 指向的 cookies.txt） | 文件最后写入 2026-11-06 00:11（早于本次 frames 测试；本评估全程只读，未写入） | **2026-12-01**（SESSDATA / bili_jct / buvid3 / DedeUserID 四条同到期） | ≈25 天 | `b_nut` 到 2027-11-02（非鉴权）；`sid` 是会话 cookie |
+
+- **结论 1**：文字类工具（search/watch/comments）按内嵌到期时间还能用约 5 个月；**切帧的登录态只剩约 25 天**。
+- **结论 2**：2026-12-01 之后 storyboard 会转匿名——匿名最高 480P、1080P 可能根本不在格式列表里，而 `--allow-anonymous` 会把警告也吞掉（`src/fetch.js:271-291`）⇒ **夜里切帧会悄悄变糊，且没有任何报错**。这件事独立于 ICL 凭证，必须在 12-01 前重新导出 cookies（或明确接受降级）。
+- **结论 3（重要）**：`bili_check_credential` **不能证明会话有效**。用伪造凭证（`sessdata` 乱写、`dedeuserid=1`）实测也返回 `logged_in=true`（uid=1 的公开用户信息本来就不需要登录），见 §7.3。真正的有效期信号只有 SESSDATA 内嵌时间戳 + 真实工具调用。
+
+#### 7.1.2 依赖路径（`node tools/bili-eval.mjs --offline` = 5/5 通过）
+
+| 检查 | 本机值 | 谁维护 | 备注 |
+|---|---|---|---|
+| python 解释器 `BILI_PYTHON` | `$DSH_HOME/bili-duty/.venv/Scripts/python.exe`（274 424 B） | **旧插件** | C 应改成 ICL 自己的 venv/解释器 |
+| 桥接脚本 `BILI_RUNNER` | `C:/DSH/qwenstuff/icl/tools/bili-run.py`（1 661 B） | 旧仓库副本 | **默认 `ICL_ROOT` 指旧仓库**，实测加载的就是这一份；与 `C:/DSH/icl` 的副本只差 CRLF |
+| bili-duty 家目录 `BILI_DIR` | `$DSH_HOME/bili-duty`（680+ 个文件） | **旧插件** | 里面是 `mcp_server.py` + `bili_credential.json` + duty.log/out/seen.md |
+| storyboard CLI `STORYBOARD_CLI` | `.../node_modules/dsh-video-storyboard/bin/storyboard.mjs`（8 899 B） | desktop profile 的第三方插件 | C 打算"原生入口 + 兜底"，仍需此路径 |
+| 凭证文件 | `bili-duty/bili_credential.json`（390 B，存在） | 旧插件登录页 | 内容未打印 |
+
+坏路径对照（把 4 条 env 指到不存在路径）：`--offline` 0/5，逐条报"缺 `X` → 用 `Y` 指过去"；工具调用侧同样返回可操作文本（`packages/core/test/audit-regressions.test.mjs:248-273` 已锁）。
+
+#### 7.1.3 失败模式（实测，除标注外均为本机只读复现）
+
+| # | 场景 | 实测表现 | 对"夜里刷 B 站"的影响 | C 的处置 |
+|---|---|---|---|---|
+| 1 | 缺依赖路径 | `preflight()` 逐条说清缺哪个；`--offline` 0/5；工具回"缺 …" | 可诊断，不会静默 | 保留；换成 ICL 自己的配置项 |
+| 2 | **无凭证**（temp BILI_DIR 只放 `mcp_server.py`） | `bili_search` **仍可用**（匿名，2.0 s 出结果）；`bili_watch`/`bili_comments` 失败，但插件层只回 `打不开：Command failed: <python> <runner> …` —— **真实原因（"未登录"）丢了** | 模型看到一条没有信息量的命令串，无法自救 | 错误归一化（解析 runner 的 `{"ok":false}` / stderr），给出"去登录/复制凭证"的下一步 |
+| 3 | **凭证无效/过期** | `bili_check_credential` **假阳性** `logged_in=true`（伪造 sessdata + uid=1 → 返回 "bishi"）；`bili_subtitle` 回 `{"message":"该视频没有字幕"}`（实际可能是鉴权失败）；`bili_video_info` 可能照常成功 | "看起来还活着，字幕/评论突然没了"；长期测试会误判为"视频没字幕" | 不信 `logged_in`；用 SESSDATA 到期 + 真实调用探针；subtitle 的失败与空结果分开上报 |
+| 4 | **storyboard cookies 过期/缺失** | 按代码语义是**匿名降级**而非报错（`src/fetch.js:271-291`）；`allowAnonymous` 只关警告 | 画面变糊且无信号；2026-12-01 后必现 | frames 输出带清晰度/来源（degraded）标记；文档写清续期 |
+| 5 | **B 站风控 `-412`/`-509`** | 旧插件 `duty.log` 有 `-509 请求过于频繁` 实例（2026-10-29T13:43:55）；本次**没有主动触发**（不骚扰 B 站） | 无退避时一次失败就结束；夜间连续 10–20 次调用会踩 | 全局 ≥1 req/s + 指数退避 + 单轮上限 |
+| 6 | **空 bvid / 无字幕** | `bili_search` 第 3 条 `bvid:""`（实测）；subtitle 空结果回"该视频没有字幕" | 空 bvid 传给 watch 会变成无意义报错 | search 清洗空卡片；watch 对空 bvid 直接给可操作错误；区分"无语音"与"鉴权失败" |
+| 7 | **路径漂移** | 默认 `ICL_ROOT` 指向旧仓库（§7.1.2），换机/清理旧仓库即坏 | 夜间长测可能在某次重启后全废 | 配置化 + 启动自检（`--offline` 语义） |
+
+#### 7.1.4 对明早拍板的意义（三行）
+
+1. C 的 §8 顺序不变，但**"登录/续期"是 P0**；另外切帧 cookies 要在 **2026-12-01 前**重新导出（或明确接受匿名 480P）。
+2. "凭证是否有效"不能再看 `bili_check_credential.logged_in`（假阳性）；用 SESSDATA 到期 + 真实调用。
+3. 失败模式 #2/#3 不是美化问题——**当前接缝坏掉时给的是误导性文本**，C 的错误归一化是长期测试的必要条件，不是锦上添花。
+
 ---
 
 ## 8. 路线 C 迁移步骤草案（不写实现）
@@ -338,7 +383,7 @@ DSH / ICL 会话
 ## 9. 验收标准
 
 **通用（A/B/C 都要）**：
-1. `node --test packages/core/test packages/mc-body/test packages/plugins/mc-link/test` = 452 pass（注：任务里写的两个目录实测是 396；452 需加 `packages/plugins/mc-link/test`）。
+1. `node --test packages/core/test packages/mc-body/test packages/plugins/mc-link/test` = 452 pass（本 worktree 基线；lead 合并到 master 后为 474 绿。注：任务里写的两个目录实测是 396；452 需加 `packages/plugins/mc-link/test`）。
 2. `node tools/bili-eval.mjs --credential` = 11/11 通过（只读；不产生任何 B 站写操作）。
 3. ICL 会话的工具面里 `bili_*` 数量 ≤ 6，且没有 `reply|upload|send|dynamic` 命名的工具（`sandbox-and-seams.test.mjs` 同款断言）。
 4. 换机/换仓库路径时，只改 `pluginConfig.bili`（或 4 个 env）就能跑；失败信息指出"缺哪一条、怎么补"（沿用现有 `preflight` 风格）。
@@ -364,6 +409,16 @@ DSH / ICL 会话
 3. **登录续期的责任**：凭证过期后谁去扫？给 ICL 一个扫码工具（C 的步骤 4），还是继续用旧插件设置页（需要重新启用旧插件，会引入 A 的副作用）？
 4. **切帧的归属**：用已安装的 `dsh-video-storyboard`（宿主级工具、图直接进模型）作为唯一入口，还是保留 `bili_frames` 作为兜底（多一条 CLI 路径与一个硬编码项）？我倾向"原生优先，bili_frames 兜底"。
 5. **旧插件的去留**：desktop profile 里它现在 `disabled: true` 且注释是过期的（提到不存在的 `bili_feed/bili_reply`）；是否由用户侧清理那条注释/是否保留安装（不影响 C，但会误导后来人）。
+
+### 10.1 lead 技术判断（2026-11-06，**待用户最终确认**，不是产品决策）
+
+1. 路线 C 认可为推荐项，但**今晚不开工**，等用户确认 A/B/C。
+2. "刷热门"第一版 = **现成的首页热门/排行榜**（vendor 已有、行为可预期）；"按兴趣推荐流"作为后续，不做。
+3. 登录续期倾向**给 ICL 自己的扫码/续期工具**（不启用旧插件设置页，避免把旧插件的自动化写路径带回来）；凭证放 ICL `stateDir`。
+4. 切帧：**原生 `dsh-video-storyboard` 为唯一入口**，`bili_frames` 保留为兜底（描述改成 `read_image`/正确的读图方式）。
+5. desktop profile 的旧注释**不动用户 profile**，等用户自己决定。
+
+> 以上是技术判断；§10 的 5 个问题仍以用户明早的最终决定为准。若用户批准 C，按 §8 开工（其中登录/续期与错误归一化是 P0，见 §7.1.4）。
 
 ---
 
@@ -406,11 +461,14 @@ DSH / ICL 会话
 | `bili_hot_buzzwords page_size=5` | 2.4 s；热搜词可用 |
 | `bili_frames BV1dC4y117Rz from=0 to=10 cells=4` | 28.6 s（缓存命中）；360P 0.9 MB；4 格 + 时间线；sheet 365 KB |
 | `tools/bili-eval.mjs --credential` | 11/11 通过 |
-| 测试 | core 362 + mc-body 34 + mc-link 56 = **452 pass** |
+| 测试 | core 362 + mc-body 34 + mc-link 56 = **452 pass**（本 worktree；lead 合并后 master 474 绿） |
+| 无凭证（temp `BILI_DIR` 只有 `mcp_server.py`） | `bili_search` 仍可用（匿名 2.0 s）；`bili_watch`/`bili_comments` 失败，插件层只回 `打不开：Command failed: <python> <runner> …`（真实原因丢失） |
+| 伪造凭证（temp，`sessdata` 乱写、`dedeuserid=1`） | `bili_check_credential` **假阳性** `logged_in=true`；`bili_subtitle` 回 `{"message":"该视频没有字幕"}` |
+| 坏路径（4 条 env 指向不存在路径） | `--offline` **0/5**，逐条报缺哪个、怎么补 |
 
 ## 附录 C：登录态与安全（只记录位置与处理方式，不记录内容）
 
 - **bilibili-api 凭证**：`$DSH_HOME/bili-duty/bili_credential.json`（4 字段：sessdata / bili_jct / buvid3 / dedeuserid；`lib/login.mjs:78-88`）。**本文不复制、不打印其内容**；C 迁移时只做文件级复制到 ICL 自己的 stateDir。
-- **yt-dlp cookies**：由 `~/.dsh/video.json` 的 `cookies` 字段指向一份 Netscape `cookies.txt`（storyboard 读它拉流）；同样不打印内容。**本文没有读 cookie 文件内容。**
+- **yt-dlp cookies**：由 `~/.dsh/video.json` 的 `cookies` 字段指向一份 Netscape `cookies.txt`（storyboard 读它拉流）。本次**只解析了它的到期列**（cookie 名 + 到期时间戳，见 §7.1.1），**没有读取/打印任何 cookie 值**。
 - **写操作红线**：本轮没有调用任何 B 站写接口（评论/私信/上传/动态/收藏），也没有开启旧插件的调度或私信监听。
 - **C 的约束**：`bili-run.py` 只读白名单 + 不注册任何写工具；迁移时若发现 `BILI_DIR` 指向用户旧插件目录，直接报"请迁移到 ICL 自己的状态目录"。
