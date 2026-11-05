@@ -82,3 +82,13 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 - 寻路：progress watcher 按“是否更靠近目标”判卡 → repath→jump→backoff→carve（1×2 通道挖头/挖脚）→ giveup；`path_approximate` 表示目标点被占但已在 range+1 内；任务级走不过去=任务 `failed(no-path)`，**不**暂停身体（物理卡住由 25s movement stall 暂停）。
 - `mine` 开始做可达性预检：只有 A* 明确 `noPath` 才快速失败；`unknown` 继续尝试；走不到但已在 4.5 格内 → **原地挖**（`dig_fallback`）；`no-path` 带 distance/detail/suggestion。
 - `craft`：**`count` = 想要多少个成品**（不是合成次数）——一次产 4 的木板/木棍会按 `ceil(count/4)` 合成；合成后校验产物是否真的进背包（防“吞材料”假成功，失败带材料前后快照）。`kicked` reason 归一为可读文本；`place` 支持多坐标从下往上、返回 placed/skipped 明细与原因、`autoSupport` 先垫一层。
+
+## 装备与工具（2026-11-06，用户要求）
+
+- `mcb_inventory` 现在给：**手持物品（快捷栏槽位）+ 9 格快捷栏（★=当前选中）+ 每件物品的 `toolFor`（pickaxe/axe/shovel/shears）+ 工具等级 + 耐久**；数据里还有 `data.hotbar/selectedSlot`。
+- `mcb_do {"steps":[{"op":"equip","params":{"item":"stone_pickaxe"}}]}` 换成手持；`{"op":"equip","params":{"slot":3}}` 直接选中快捷栏第 3 格。
+- `mine` / `dig` **开始前会检查工具**：
+  - 手持合适 → 直接用；不合适但背包有更好的 → **自动换上**（结果/progress 里 `autoTool:true`、事件 `auto_tool`）；
+  - 没有可用工具/等级不够 → **立即失败**，`task.error`/result 带 `needsTool`、`suggestCraft`、以及可执行步骤（如“先 craft stone_pickaxe（3 cobblestone+2 stick）”），**不会原地重试**；
+  - `mine`/`dig` 参数传 `autoTool:false` 可关闭自动换工具（模型自己用 equip 管）。
+- 自动反应（战斗/低血/危险）仍由 body 自己切武器/食物；普通挖掘/采集默认尊重模型的装备选择。
