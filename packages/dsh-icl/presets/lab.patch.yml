@@ -48,6 +48,7 @@
                 - dream
                 - editor
                 - bili
+                - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
@@ -100,6 +101,7 @@
                 - dream
                 - editor
                 - mc-link
+                - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:

@@ -17,9 +17,11 @@
 | 连接器/消息模型/focus 张力设计 | ✅ | §3–§7 |
 | 只读入站实现（OneBot WS → signals） | ✅ | `packages/plugins/qq/src/` |
 | 单测（规范化/去重/gate/限流/不发送） | ✅ 18 条 | `node --test packages/core/test/qq.test.mjs` |
-| 全量测试 | ✅ 287 pass（269 基线 + 18 新增） | `node --test packages/core/test packages/mc-body/test` |
+| QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
+| shadow preflight（谁可能抢连接，一条命令出结论） | ✅ 8 条判定单测 + 真机 BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
+| 全量测试 | ✅ 340 pass | `node --test packages/core/test packages/mc-body/test` |
 | 进程内演练（含 time 睡眠锁） | ✅ 12/12 | `.state/qq-shadow/fake-2026-11-05T10-14-11-098Z/report.md` |
-| 真实 lab 验证（假上游，端口 57108） | ✅ 10/10 | `.state/lab/qq-5/report.md` |
+| 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
 | 真实 SnowLuma 影子 | ⏸ 未跑，等用户时间窗 | §10 runbook |
 
 三条不变量（任何后续改动都不能破坏）：
@@ -120,6 +122,11 @@ QQ 插件只做两件事：**把 OneBot 事件变成 signal**、**offer 给 sign
 > credential 发现路径正好指向本机 SnowLuma 配置。它还会在多处主动发消息（`main.js:145` 的 owner 通知、`routes/qq.js`
 > 的发送端点）。所以"启动 SnowLuma" = "把旧人格请回来"，这是 §10 第 2 步必须先处理它的原因。
 
+这张表现在有可执行版本：`node packages/plugins/qq/tools/preflight.mjs`（或 `lab-shadow.mjs --preflight`）
+一条命令枚举进程/端口/3001 已建立连接/desktop profile/启动项/端点发现/历史 send 痕迹，输出
+`CLEAR | WARN | BLOCK` 与逐项处置建议，报告落在 `.state/qq-shadow/preflight/preflight-latest.{md,json}`。
+当前真机结论：**BLOCK**（唯一阻断项 = pid 12232 旧应用；warn = 启动文件夹 `dsh-icl.lnk`）。
+
 ## 3. 连接器形态：进程内插件，不是外部进程
 
 ### 3.1 两种形态对比
@@ -148,8 +155,9 @@ packages/plugins/qq/
   src/outbound.mjs        出站最小实现：三把钥匙全开才可能工作；index.mjs 不 import
   src/index.mjs           插件装配：gate → signals.offer；重试队列；qq_status；影子记录/状态文件
   tools/fake-onebot.mjs   假 SnowLuma（RFC6455 服务端，只推事件），给测试与 lab 用
+  tools/preflight.mjs     shadow 前一条命令取证：谁可能抢连接 / 端口 / 已有连接 / desktop 配置
   tools/qq-shadow-host.mjs 进程内演练（真实 focus+time 插件 + 假上游，含睡眠锁）
-  tools/lab-shadow.mjs    真实 lab（DSH web 实例，57108）验证；--real 模式留给用户时间窗
+  tools/lab-shadow.mjs    真实 lab（DSH web 实例，57108）验证；--real 模式留给用户时间窗；--preflight 委派
 ```
 
 ### 3.3 契约（QQ 与 ICL 的唯一接口）
@@ -215,7 +223,7 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 |---|---|---|---|
 | 1. 本地准入闸门 | `packages/plugins/qq/src/gate.mjs` | **丢弃**（群/白名单/过旧/重复/限流） | 计数；影子记录 `dropped`（群不记录文本） |
 | 2. time 静音锁 | `packages/plugins/time` 的 `signals.setGate` | time 自己的**持久积压**（`time.json` 的 queue），醒来一次性重放 | 计 `blockedReasons[reason]`，**不重试**（重试会双投） |
-| 3. focus 穿透裁决 | `host.setDeliver → focus.admit` | `focus.defer` 的**按命名空间积压**，focus 释放/切换时由 host 合成一条 `plugin:focus` 摘要投递 | 计 `blocked`（reason 里带 `focus-pierce`/`focus-sacred`） |
+| 3. focus 穿透裁决 | `host.setDeliver → focus.admit` | `focus.defer` 的**按命名空间积压**，focus 释放/切换时由 host 合成一条 `plugin:focus` 摘要投递 | **插件不可感知**：`host.setDeliver` 接住了这条 signal 并返回 `queued`，`signals.offer` 仍回 `accepted`；QQ 的 `blocked` 计数**只反映 time gate**。要看 focus 拦截请查 `focus_backlog`/`focus.json` |
 | 4. 投递瞬时失败 | delivery `nack`（会话切换/下游抛错） | 有界重试队列（200 条 / 5 次 / TTL） | 重试；耗尽计 `retryDropped` |
 
 ### 5.2 focus 语义对照
@@ -233,8 +241,8 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 
 | 机制 | 谁拥有 | 形态 | 已知代价 |
 |---|---|---|---|
-| time 积压 | time 插件 | 持久（`time.json`）；醒来一条 `plugin:time` notice，正文按 `· [qq] 主人：…` 拼接 | **重放丢 signal id/来源** → 无法与 QQ 的本地去重对账；一次重放后不可再重放 |
-| focus 积压 | core | 内存 + `focus.json`；按 `focus` 命名空间 `count/lastText/items(≤20)`；focus 释放时一条摘要 | `items` 只存最近 20 条、截 200 字 |
+| time 积压 | time 插件 | 持久（`time.json`）；醒来一条 `plugin:time` notice，正文按 `· [qq/qq:private:<qq>] 主人：…` 拼接（time 已保留 `from.plugin` + `from.activity`） | **重放不保留 signal id**：能归因到 QQ/哪个会话，但无法与 QQ 本地去重表对账；一次重放后不可再重放 |
+| focus 积压 | core | 内存 + `focus.json`；按 `focus` 命名空间 `count/lastText/items(≤20)`；focus 释放时一条摘要 | `items` 只存最近 20 条、截 200 字；QQ 插件看不到这一层 |
 | QQ 重试队列 | qq 插件 | 内存，200 条上限，`deliver` 失败专用 | 进程重启即丢（影子阶段可接受，因为账本在 SnowLuma/后续补课另议） |
 
 紧急穿透的既有规则（core 层）：`from==='time'`、`tags` 含 `admin`/`alarm` 的信号 privileged → 一定穿透 focus。
@@ -262,16 +270,16 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
   `interruptible:false` 的 sacred focus：不穿透（进 focus 积压）。这就是本轮实测的行为（见 §13 演练第 6–9 项）。
 - **QQ 怎么知道被拦了？** `signals.offer` 返回 `{blocked:true, reason}`；QQ 只计数（`blockedReasons`），**不重试**，
   把重放权留给 time。`qq_status` 会显示"被静音/睡眠锁拦下 N（已交给 time 的积压，不重试）"。
-- **两侧如何对账？** time `time_status` 看 `phase/backlog`；QQ `qq_status` 看 `blockedReasons` + 影子记录 `blocked` 行；
-  time 醒来后投递的正文里有 `[qq]` 前缀，能和 QQ 侧计数对上。
+- **两侧如何对账？** time `time_status` 看 `phase/backlog`；QQ `qq_status` 看 `blockedReasons` + 最近一条私聊/最近一次被拦
+  + 影子记录 `blocked` 行；time 醒来后投递的正文里有 `[qq/qq:private:<qq>]` 前缀，能和 QQ 侧计数对上。
 
 ### 6.3 给 time owner 的三条建议（不改你实现，只是接口建议）
 
-1. `time.json` 的积压条目现在只存 `{from,kind,text,tags,focus,reason,at,expiresAt}`；**建议再存 `signalId`**
-   （或至少 `from.plugin` + 原始 id），否则重放后的消息既不能去重、也无法追溯它原本是 QQ 私聊。
-   QQ 这边的 `id` 已经是稳定的，存下来成本为零。
-2. `flushQueue` 的正文前缀 `[${item.from?.plugin ?? '?'}]` 已经够用，保留即可；一次性重放所有来源会合并成一条
-   `plugin:time` notice，这是有意的（避免逐条打断），QQ 不反对。
+> 已按 lead 决策把本节结论直接发给 time；合并 master 后已看到 time 先做了第 2 条的一半（保留 `from.plugin`/`from.activity`，正文前缀变成 `[qq/qq:private:<qq>]`）。下面保留完整口径。
+
+1. `time.json` 的积压条目现在存 `{from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`；**建议再存 `signalId`**
+   （QQ 的 signal id 是稳定的 `qq:private:<qq>:<message_id>`），否则重放后的消息能归因、但仍不能去重。
+2. `flushQueue` 的正文前缀保留 `[plugin/activity]`（已实现）；一次性重放所有来源合并成一条 `plugin:time` notice 是有意的，QQ 不反对。
 3. 若产品上要"私聊能穿睡眠"，用 schedule 的 `allow` 规则表达（`allow: [{ from: 'qq' }]` 或 `[{ tags: ['mention'] }]`），
    并在 `time_status` 里能查到当前 active schedule 的 `allow`（现在 schedule 字段里有，够了）。
 
@@ -355,42 +363,49 @@ pluginConfig:
 QQ 与 mc-link 是同一 host 里的两个插件，共享：`signals` 唯一 gate 链、`delivery` 队列、`bridge` 的 steer。
 各自的 batchKey 不同（QQ：`signal:qq:qq:private:<peer>`；MC：`signal:mc:<focus>` / mc-link 自己的 key），不会互相合批。
 
-| 测试点 | 怎么做 | 期望 |
-|---|---|---|
-| T1 双源同时到达 | 假 OneBot 私聊 + 假 body 触发 task 完成，一次 `delivery.drain('session')` | 两个 batch，来源可区分，不丢不重 |
-| T2 focus 拦截一致性 | 设 `focus.enter({interruptible:false})` 后各来一条 | 两者都被 defer；QQ 计 blocked、MC 计自己的；`focus_backlog` 能看到两个命名空间 |
-| T3 time 睡眠一致性 | `time.sleep()` 后双源各来一条，再 `time.wake()` | 都在 time 积压；醒来一条 `plugin:time` notice 同时重放，正文带 `[qq]`/`[mc]` |
-| T4 双限流独立 | QQ `maxPerMinute=2`、MC 自己的限流；各自超发 | QQ drop 不消耗 MC 配额，反之亦然 |
-| T5 重启/会话切换 | 换会话（`delivery.clear()` + 新 claim）时 QQ 继续来消息 | QQ 重试队列把 deliver 失败的那条补投；`dedupeFile` 不重复 |
-| T6 顺序/归属 | 两条 QQ 连发 + 一条 MC 事件交错 | 同一 batch 不混来源；`entries[].source.plugin` 正确 |
+| 测试点 | 怎么做 | 期望 | 状态 |
+|---|---|---|---|
+| T1 双源同时到达 | 假 OneBot 私聊 + 假 body 触发 task 完成，一次 `delivery.drain('session')` | 两个 batch，来源可区分，不丢不重 | ✅ `qq-mc-concurrent.test.mjs` |
+| T2 focus 拦截一致性 | 设 `focus.enter({interruptible:false})` 后各来一条 | 两者都不投递；core `focus.backlog` 里出现两个命名空间（QQ 插件看不到这一层，属正常） | ✅ 同上 |
+| T3 time 睡眠一致性 | `time.sleep()` 后双源各来一条，再 `time.wake()` | 都在 time 积压；醒来一条 `plugin:time` notice 同时重放，正文带 `[qq/…]`/`[mc/…]` | ✅ 同上 |
+| T4 双限流独立 | QQ `maxPerMinute=2`、MC 自己的限流；各自超发 | QQ drop 不消耗 MC 配额，反之亦然 | ⏳ 待补 |
+| T5 重启/会话切换 | 换会话（`delivery.clear()` + 新 claim）时 QQ 继续来消息 | QQ 重试队列把 deliver 失败的那条补投；`dedupeFile` 不重复 | ⏳ 待补 |
+| T6 顺序/归属 | 两条 QQ 连发 + 一条 MC 事件交错 | 同一 batch 不混来源；`entries[].source.plugin` 正确 | T1 已覆盖"不混来源"；交错顺序待补 |
 
 资源与端口：QQ 是**出站 WS 客户端，不占监听端口**；假 OneBot 用随机端口；lab 用 57108（TEAM-PLAN §3）；
 mc-body 用 549xx；模型：lab 默认 `deepseek-flash`（远程，可与 MC 的本地模型实验并行）；
 真要用本地模型，走 lead 的 `.state/locks/llama.lock`，QQ 本身不碰模型。
 
-**未做**：真实 mc-body + 真实 QQ 同时跑。等私聊回到位、且用户批准群之前再做（群是最后一步）。
+**未做**：T4–T6；真实 mc-body + 真实 QQ 同时跑。等私聊回到位、且用户批准群之前再做（群是最后一步）。
 
 ## 10. Shadow runbook（可执行清单）
 
 > 目标：在**用户知情**的一个短时间窗里，只收一条真实私聊，证明"能进 signals/delivery、零出站、群没被接进来"。
 > 前提：SnowLuma 与旧消费者默认不在跑；我们**不**启动 SnowLuma（EULA §5.4 + 会叫醒旧消费者）。
 
-### 第 0 步：开工前取证（不用连 QQ）
+### 第 0 步：开工前取证（一条命令，只读）
 
 ```powershell
-# 1) QQ 后端/旧桥接是否在听（应无输出）
-Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3000,3001,3120,3100,3099,5099 }
+cd C:\DSH\icl-wt\qq
+node packages/plugins/qq/tools/preflight.mjs          # 结论 CLEAR / WARN / BLOCK + 逐项处置
+# 等价写法：node packages/plugins/qq/tools/lab-shadow.mjs --preflight
+```
 
-# 2) 有没有旧消费者
+它枚举/核对：进程（旧应用/dsh-qq 桥/接口平台/SnowLuma/已有 shadow）、端口 3000/3001/3120/3100/3099/5099、
+3001 上已建立的连接、desktop profile 里是否还有启用的 snowluma 行、启动文件夹/计划任务、
+SnowLuma 端点只读发现、最近日志尾部的 send 痕迹、已有 shadow 的状态文件（只认进程还活着的）。
+报告：`.state/qq-shadow/preflight/preflight-latest.md` / `.json`（每次另存带时间戳的一份）。
+
+**当前真机结论（2026-11-05）：BLOCK** —— 唯一阻断项是 pid 12232（focus-core 旧应用，会连会发）；
+warn 项是启动文件夹里的 `dsh-icl.lnk`。其余全 ok。需要人工兜底时再看：
+
+```powershell
+Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 3000,3001,3120,3100,3099,5099 }
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'apps\\dsh-icl\\src\\main.js|dsh-qq|SnowLuma' } |
   Select-Object ProcessId, CreationDate, CommandLine
-
-# 3) 记录 SnowLuma 最后日志时间（之后用它判断是否有人发过消息）
 Get-ChildItem 'C:\Users\ai_admin\Downloads\SnowLuma-v2.1.1-win-x64-lite\logs' |
   Sort-Object LastWriteTime -Descending | Select-Object -First 3 Name, LastWriteTime
 ```
-
-期望：1 无输出；2 只有 pid 12232（focus-core 旧应用）；3 最后活动停在 2026-11-01。
 
 ### 第 1 步：零风险假演练（必须先过）
 
@@ -440,7 +455,8 @@ node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved `
 ```
 
 它做的事：物化 lab patch（只给 `icl-lab` 加 `qq` 插件、`enabled:true`、`snowlumaHomeDir` 只读发现、
-`allowPrivate:['3429502459']`）→ 起独立 DSH web 实例（57108）→ 等 **owner 发一条私聊** → 抓
+`allowPrivate:['3429502459']`）→ 起独立 DSH web 实例（57108）→ **显式 `selectModel(deepseek-account/deepseek-flash)`**
+（不继承 profile 的 `agent-default-model`；本地模型实验必须走 lead 的 llama 锁）→ 等 **owner 发一条私聊** → 抓
 `user/message(source.kind=plugin:qq)` → 写报告 → 自动停 lab。
 
 ### 第 5 步：前 5 分钟看什么
@@ -453,6 +469,7 @@ node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved `
 | 没有任何发送 | SnowLuma 当天日志尾部搜 `send_private_msg`/`send_group_msg`；看用户 QQ 有没有新消息 | 无 |
 | 群没被接 | `status.json` 的 `gate.byCode.group` 在涨（只计数）、`inbound.jsonl` 无群文本 | 只有计数，无内容 |
 | 私聊进来了 | `status.json` 的 `stats.delivered` / `gate.byCode`；`inbound.jsonl` 的 `kind:"accepted"` | 1 条（owner 那条） |
+| 最近一条/有没有被拦 | `qq_status` 工具文案（或 `host.shared.get('qq').status().stats.recent`）：`最近一条私聊：HH:MM:SS 名称（QQ） #id：…`、`最近被 time 锁拦下…`、`最近被本地闸门丢弃…` | 与记录文件一致；被拦时能看到 reason |
 | 进了会话 | `<runDir>/events.jsonl` 搜 `plugin:qq`；`transcript.md` 的"插件消息 来源=插件(qq)" | 有 user/message，summary 以"外部消息"开头 |
 | 她能不能回 | 事实：没有发送工具；`outbound.mjs` 未被 index.mjs import | 她只能看到，不能回 |
 
@@ -496,7 +513,7 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 5. **群/@/poke/notice/request 未接**：本轮的"@ 穿透"只存在于设计里（§6.2）。
 6. **time 重放丢 id**：见 §6.3 建议；当前靠"QQ 不重试 blocked"避免双投。
 7. **影子会起一轮**：lab 实测私聊在空闲时会 `turn/start`（她看到了、会思考怎么回，但没有回复工具）。`promptLine` 默认关闭，下一轮建议打开一句"QQ 只读影子不能回复"，避免她误以为自己已经回了。
-8. **未与 MC 真并发验证**；§9 是测试点清单，不是已跑结果。
+8. **并发只验证到 T1–T3（fake）**：T4–T6（双限流独立、会话切换/重试、交错顺序）还没做；真实 mc-body + 真实 QQ 未同跑。
 9. **旧消费者风险**：见 §2.3 / §10 第 2 步；不处理就没有干净影子。
 
 ## 13. 测试与证据
@@ -504,8 +521,10 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 287 pass / 0 fail（269 基线 + 18 新）
+node --test packages/core/test packages/mc-body/test   # 340 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 18 pass
+node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
+node --test packages/core/test/qq-preflight.test.mjs   # 8 pass（判定 + 陈旧 shadow 文件不误报）
 ```
 
 `packages/core/test/qq.test.mjs` 覆盖：
@@ -529,6 +548,13 @@ node --test packages/core/test/qq.test.mjs             # 18 pass
 | 16 | `qq_status` 文案（只读、不能发） | 工具面 |
 | 17 | 状态文件（连接态 + 零出站） | runbook 观测 |
 | 18 | 真 WebSocket 回环 + 假 OneBot（`clientDataChunks()===0`） | 真连接、零出站 |
+
+另两个测试文件：
+
+- `qq-mc-concurrent.test.mjs`（3 条）：T1 双源两个 batch/不混来源/不重；T2 sacred focus 下双源都进 core 积压且不投递；
+  T3 time 睡眠下双源都进 time 积压、醒来一条 `plugin:time` notice 同时重放（正文 `[qq/qq:private:10001]`、`[mc/event]`）。
+- `qq-preflight.test.mjs`（8 条）：干净=CLEAR；旧应用/dsh-qq 桥/端口占用/desktop 启用行/已有 shadow=BLOCK；
+  拿不到进程列表=WARN（不报 CLEAR）；被 kill 的 lab 留下的 `connected:true` 状态文件不算"正在跑"。
 
 ### 13.2 进程内演练（含 time 睡眠锁）
 
@@ -567,7 +593,24 @@ seq=3  agent/inbox/spliced  inserted[0].content=[{type:'text',text:'主人：lab
 seq=8  user/message         source.kind='plugin:qq'（同一份内容）
 ```
 
-### 13.4 真实 SnowLuma 影子
+### 13.4 preflight 真机结论（2026-11-05）
+
+`node packages/plugins/qq/tools/preflight.mjs` → `.state/qq-shadow/preflight/preflight-latest.md`：
+
+```text
+结论：BLOCK（block 1 / warn 1）
+⛔ 有会抢 QQ 连接的进程在跑 — pid 12232 focus-core 旧应用（会连=true，会发=true）
+✅ QQ 相关端口都空闲 — 3000/3001/3120/3100/3099/5099
+✅ 3001 上没有 Established 连接 — 干净
+✅ desktop profile 没有启用的 snowluma 行
+✅ 没有正在运行的真实 shadow
+⚠️ 启动文件夹里有 dsh-icl.lnk — 下次登录会自动拉起 focus-core 旧应用
+✅ 没有相关计划任务
+✅ SnowLuma 端点可只读发现 — uin=2593621742 ws://127.0.0.1:3001/（token 存在）
+✅ 最近日志尾部没有 send_* 痕迹 — snowluma-2026-11-01.log @ 2026-10-31T20:07:07Z
+```
+
+### 13.5 真实 SnowLuma 影子
 
 ⏸ 未跑（lead 决策：暂不启动 SnowLuma，避免叫醒旧消费者）。runbook 见 §10；`lab-shadow.mjs --real` 已备好，
 `--real` 必须带 `--approval lead-approved`（不带直接 exit 2，单测/手工验证过）。
@@ -585,6 +628,8 @@ seq=8  user/message         source.kind='plugin:qq'（同一份内容）
 ## 附录：常用命令
 
 ```powershell
+# preflight（shadow 前一条命令：谁可能抢连接 / 端口 / 已有连接 / 配置）
+node packages/plugins/qq/tools/preflight.mjs            # 或 lab-shadow.mjs --preflight
 # 假 OneBot（手动演示；随机/指定端口均可）
 node packages/plugins/qq/tools/fake-onebot.mjs --port 3301 --token test-token --after 800 --group --duplicate
 # 进程内演练（不碰 DSH、不碰真 QQ）

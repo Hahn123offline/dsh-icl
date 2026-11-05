@@ -156,6 +156,8 @@ export function apply(ctx) {
     retryDropped: 0,
     recorded: 0,
     recordErrors: 0,
+    // 只读观测：最近一条进来的私聊 / 最近一次丢弃 / 最近一次被 time 锁拦下
+    recent: { lastAccepted: null, lastDropped: null, lastBlocked: null },
   }
   let connector = null
   let endpoint = null
@@ -219,6 +221,7 @@ export function apply(ctx) {
     if (out?.blocked) {
       stats.blocked += 1
       bump(stats.blockedReasons, out.reason ?? 'gate')
+      stats.recent.lastBlocked = { at: now(), reason: String(out.reason ?? 'gate'), id: signal.id }
       record({ kind: 'blocked', id: signal.id, reason: out.reason ?? 'gate' })
       return 'blocked'
     }
@@ -241,6 +244,7 @@ export function apply(ctx) {
     }
     const decision = gate.admit(raw, { receivedAt: now() })
     if (!decision.accept) {
+      stats.recent.lastDropped = { at: decision.receivedAt, code: decision.code }
       // 群消息不落记录（整类忽略，避免把群内容写进影子证据文件）
       if (!['group', 'meta', 'not-message', 'invalid'].includes(decision.code)) {
         record({ kind: 'dropped', code: decision.code, at: decision.receivedAt })
@@ -249,6 +253,14 @@ export function apply(ctx) {
     }
     const signal = decision.signal
     stats.accepted += 1
+    stats.recent.lastAccepted = {
+      at: decision.messageAt,
+      receivedAt: decision.receivedAt,
+      peerId: decision.peerId,
+      senderName: decision.senderName,
+      messageId: decision.messageId,
+      text: String(signal.text ?? '').slice(0, 80),
+    }
     signal.expiresAt = decision.receivedAt + cfg.signalTtlMs
     record({
       kind: 'accepted',
@@ -350,7 +362,7 @@ export function apply(ctx) {
       allowAllPrivate: cfg.allowAllPrivate,
       groupPolicy: 'ignore',
       gate: gate.counters(),
-      stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length },
+      stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
       recordFile: recordFile || null,
       statusFile: statusFile || null,
       dedupe: { size: dedupe.size(), file: cfg.dedupeFile || null },
@@ -370,6 +382,17 @@ export function apply(ctx) {
     lines.push(`准入：收到 ${g.received} 条，放行 ${g.accepted} 条；去重 ${g.byCode.duplicate ?? 0}，限流 ${g.byCode.rate ?? 0}，白名单外 ${g.byCode['not-allowlisted'] ?? 0}，过旧 ${g.byCode.stale ?? 0}，群 ${g.byCode.group ?? 0}，自发 ${g.byCode.self ?? 0}，空 ${g.byCode.empty ?? 0}`)
     const blocked = Object.entries(s.stats.blockedReasons).map(([k, v]) => `${k}×${v}`).join('、')
     lines.push(`投递：进 signals/delivery ${s.stats.delivered} 条${s.stats.dedupedAtSignals ? `，signals 去重 ${s.stats.dedupedAtSignals}` : ''}${blocked ? `；被静音/睡眠锁拦下 ${blocked}（已交给 time 的积压，不重试）` : ''}${s.stats.expired ? `；过期 ${s.stats.expired}` : ''}；待重试 ${s.stats.retryPending}`)
+    // 最近一条：谁、什么时候、有没有被拦（只读，影子抽查用）
+    const stamp = (at) => { try { return new Date(Number(at)).toLocaleTimeString('zh-CN', { hour12: false }) } catch { return '?' } }
+    const recent = s.stats.recent ?? {}
+    if (recent.lastAccepted) {
+      const a = recent.lastAccepted
+      lines.push(`最近一条私聊：${stamp(a.at)} ${a.senderName}（${a.peerId}）${a.messageId ? ` #${a.messageId}` : ''}：${a.text}`)
+    } else {
+      lines.push('最近一条私聊：还没有')
+    }
+    if (recent.lastBlocked) lines.push(`最近被 time 锁拦下：${stamp(recent.lastBlocked.at)}（${recent.lastBlocked.reason}）`)
+    if (recent.lastDropped) lines.push(`最近被本地闸门丢弃：${stamp(recent.lastDropped.at)}（${recent.lastDropped.code}）`)
     if (s.recordFile) lines.push(`影子记录：${s.recordFile}（已写 ${s.stats.recorded} 行${s.stats.recordErrors ? `，写失败 ${s.stats.recordErrors}` : ''}）`)
     lines.push(`出站：${s.sendEnabled ? '已启用（需 lead 批准的字面量）' : `关闭（双钥匙未齐：enabled+allowSend+sendApproval=${SEND_APPROVAL_TOKEN}）`}；本插件不含任何发送工具`)
     lines.push(`只读不变量：客户端已发帧 ${s.connection.framesSent ?? 0}（应为 0）`)

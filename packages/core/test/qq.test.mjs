@@ -272,6 +272,8 @@ test('只读入站：私聊进 signals/delivery；群、陌生人、重复被挡
   assert.equal(status.gate.byCode.duplicate, 1)
   assert.equal(status.gate.byCode.group, 1)
   assert.equal(status.gate.byCode['not-allowlisted'], 1)
+  assert.equal(status.stats.recent.lastAccepted?.messageId, '9001')
+  assert.equal(status.stats.recent.lastDropped?.code, 'not-allowlisted')
   assert.equal(status.readOnlyInvariant.framesSent, 0)
   assert.equal(ws.sent.length, 0, '插件绝不能往 OneBot 写任何帧')
 
@@ -302,6 +304,7 @@ test('被 time 静音锁拦下：计入 blocked、不重试（由 time 的 backl
   let status = shared.status()
   assert.equal(status.stats.blocked, 1)
   assert.equal(status.stats.blockedReasons.sleeping, 1)
+  assert.equal(status.stats.recent.lastBlocked?.reason, 'sleeping')
   assert.equal(status.stats.delivered, 0)
   assert.equal(host.services.delivery.pendingCount(), 0)
 
@@ -380,7 +383,9 @@ test('qq_status 是可读的只读工具，明确说不能发', async () => {
   const host = createHost({ log: () => {} })
   host.registerPlugin(manifest, qqModule, { config: makePluginConfig() })
   await host.enable('qq')
-  FakeWebSocket.last().emit('open', {})
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(privateEvent({ messageId: 9601, text: '最近一条' })))
   const tool = host.services.tools.list().find((t) => t.name === 'qq_status')
   assert.ok(tool)
   const result = await tool.execute()
@@ -388,6 +393,7 @@ test('qq_status 是可读的只读工具，明确说不能发', async () => {
   assert.match(result.text, /群消息：整类忽略/)
   assert.match(result.text, /出站：关闭/)
   assert.match(result.text, /只读不变量：客户端已发帧 0/)
+  assert.match(result.text, /最近一条私聊：.*测试（10001） #9601：测试：最近一条/)
   host.disable('qq')
 })
 

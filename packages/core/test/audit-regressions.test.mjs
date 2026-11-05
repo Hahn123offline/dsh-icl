@@ -15,6 +15,7 @@ import * as persona from '../../plugins/persona/src/index.mjs'
 import * as dream from '../../plugins/dream/src/index.mjs'
 import * as compaction from '../../plugins/compaction/src/index.mjs'
 import * as editor from '../../plugins/editor/src/index.mjs'
+import * as eager from '../../plugins/eager-recall/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import worldManifest from '../../plugins/world-state/manifest.json' with { type: 'json' }
@@ -24,6 +25,8 @@ import personaManifest from '../../plugins/persona/manifest.json' with { type: '
 import dreamManifest from '../../plugins/dream/manifest.json' with { type: 'json' }
 import compactionManifest from '../../plugins/compaction/manifest.json' with { type: 'json' }
 import editorManifest from '../../plugins/editor/manifest.json' with { type: 'json' }
+import eagerManifest from '../../plugins/eager-recall/manifest.json' with { type: 'json' }
+import biliManifest from '../../plugins/bili/manifest.json' with { type: 'json' }
 import { toDshToolDefinition } from '../src/dsh-contract.mjs'
 
 function fakeDsh() {
@@ -219,4 +222,68 @@ test('editor：读失败带原因，长文件截断有标记', async () => {
   const big = await tools.get('read_file').execute({ path: 'big.txt' })
   assert.match(big.text, /已截断/)
   assert.ok(big.text.length < 25000)
+})
+
+test('editor：写保护 ICL 自己的状态文件（记忆/日程/focus/原文），读仍然可以', async () => {
+  const host = createHost({ log: () => {} })
+  const root = tempRoot('editor-guard')
+  fs.mkdirSync(path.join(root, 'state'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'state', 'memory.db'), 'FAKE-DB', 'utf8')
+  host.registerPlugin(editorManifest, editor, { config: { root } })
+  await host.enable('editor')
+  const write = host.services.tools.list().find((d) => d.name === 'write_file')
+  const read = host.services.tools.list().find((d) => d.name === 'read_file')
+  for (const rel of ['state/memory.db', 'time.json', 'focus.json', 'session-events.jsonl']) {
+    const out = await write.execute({ path: rel, text: '毁掉' })
+    assert.match(out.text, /状态文件/, `${rel} 应被拒绝，实际：${out.text}`)
+  }
+  assert.equal(fs.readFileSync(path.join(root, 'state', 'memory.db'), 'utf8'), 'FAKE-DB', '原文件不能被改')
+  const own = await write.execute({ path: 'notes/today.md', text: '我自己的笔记' })
+  assert.match(own.text, /写好了/)
+  assert.equal(fs.readFileSync(path.join(root, 'notes', 'today.md'), 'utf8'), '我自己的笔记')
+  const peek = await read.execute({ path: 'state/memory.db' })
+  assert.equal(peek.text, 'FAKE-DB', '读不受限')
+})
+
+test('bili：缺依赖时 4 个工具给可操作的错误，frames 不再承诺"图已发给你"', async () => {
+  const saved = { BILI_PYTHON: process.env.BILI_PYTHON, BILI_RUNNER: process.env.BILI_RUNNER, BILI_DIR: process.env.BILI_DIR, STORYBOARD_CLI: process.env.STORYBOARD_CLI, ICL_ROOT: process.env.ICL_ROOT }
+  process.env.BILI_PYTHON = path.join(tempRoot('nopy'), 'python.exe')
+  process.env.BILI_RUNNER = path.join(tempRoot('norun'), 'bili-run.py')
+  process.env.BILI_DIR = path.join(tempRoot('nodir'), 'bili-duty')
+  process.env.STORYBOARD_CLI = path.join(tempRoot('noclis'), 'storyboard.mjs')
+  try {
+    const bili = await import(`../../plugins/bili/src/index.mjs?deps-missing=${Date.now()}`)
+    const host = createHost({ log: () => {} })
+    host.registerPlugin(biliManifest, bili, {})
+    await host.enable('bili')
+    const tools = new Map(host.services.tools.list().map((d) => [d.name, d]))
+    const search = await tools.get('bili_search').execute({ keyword: '测试' })
+    assert.match(search.text, /BILI_PYTHON/, `应指出去哪配 python：${search.text}`)
+    assert.match(search.text, /不是视频或网络的问题/)
+    const frames = await tools.get('bili_frames').execute({ target: 'BV1xx411c7mD' })
+    assert.match(frames.text, /STORYBOARD_CLI/, `应指出 storyboard CLI 缺：${frames.text}`)
+    assert.doesNotMatch(tools.get('bili_frames').summary, /sent to you as an image/)
+    assert.match(tools.get('bili_frames').summary, /NOT attached/)
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('eager-recall：没有嵌入时用退化阈值，相关记忆能被注入（且仍有长度上限）', async () => {
+  const { host } = await (async () => {
+    const h = createHost({ log: () => {}, now: () => Date.parse('2026-11-05T20:00:00+08:00') })
+    h.registerPlugin(memoryManifest, memory, { config: { root: tempRoot('eager') } })
+    h.registerPlugin(recallManifest, recall, { config: { sessionId: 's' } })
+    h.registerPlugin(eagerManifest, eager, {})
+    for (const id of ['memory', 'recall', 'eager-recall']) await h.enable(id)
+    return { host: h }
+  })()
+  host.shared.get('memory').put({ namespace: 'event', kind: 'note', key: 'n1', text: '下午在河边看到一只白鹭，站了很久。', weight: 1.5 })
+  const text = await host.services.prompt.turnText({ message: '今天在河边走了走，你在干嘛' })
+  assert.ok(text.length > 0, 'bigram 退化路径下也应该命中（阈值 0.2，实测该句 0.25）')
+  assert.match(text, /白鹭/)
+  assert.ok(text.length <= 200, `不得超过 maxChars：${text.length}`)
 })
