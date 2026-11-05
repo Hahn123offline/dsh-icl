@@ -1,0 +1,21 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "advance-to-next-hour",
+    "op": "time",
+    "cmd": "clock",
+    "args": { "nextPeriod": true }
+  },
+  { "id": "settle", "op": "wait", "seconds": 2 },
+  {
+    "id": "after-hour",
+    "op": "prompt",
+    "text": "只回复 ok"
+  },
+  {
+    "id": "assert",
+    "op": "assert",
+    "systemContains": ["时间："],
+    "minTurns": 2
+  }
+]
