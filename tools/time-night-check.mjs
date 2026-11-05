@@ -264,6 +264,16 @@ function analyse(runDir) {
     }
   } catch { transcript.exists = false }
   out.transcript = transcript
+
+  // time 自己落的可观测事件（外部 supervisor 消费的文件通道，不依赖 signals 订阅）
+  const eventsFile = path.join(stateDir, 'time-events.jsonl')
+  const timeEvents = { file: eventsFile, exists: fs.existsSync(eventsFile), counts: {}, tail: [] }
+  try {
+    const rows = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    for (const row of rows) timeEvents.counts[row.type] = (timeEvents.counts[row.type] ?? 0) + 1
+    timeEvents.tail = rows.slice(-6).map((row) => `${new Date(row.at).toISOString()} ${row.type}${row.afterSec != null ? ` after=${row.afterSec}s` : ''}${row.overrun ? ' OVERRUN' : ''}`)
+  } catch { timeEvents.exists = false }
+  out.timeEvents = timeEvents
   out.ageLabel = age == null ? 'unknown' : `${minutes(age)} 分钟前落盘`
   return out
 }
@@ -296,6 +306,10 @@ function printHuman(result) {
   if (t.lastTickError) console.log(`lastTickError: ${JSON.stringify(t.lastTickError).slice(0, 300)}`)
   if (result.transcript) {
     console.log(`transcript: ${result.transcript.exists ? '有' : '缺'}  counts=${JSON.stringify(result.transcript.counts)}`)
+  if (result.timeEvents) {
+    console.log(`time-events: ${result.timeEvents.exists ? '有' : '缺'}  counts=${JSON.stringify(result.timeEvents.counts)}`)
+    for (const line of result.timeEvents.tail ?? []) console.log(`  · ${line}`)
+  }
     for (const line of result.transcript.tail ?? []) console.log(`  · ${line}`)
   }
   console.log('checks:')
@@ -335,6 +349,7 @@ function compact(result) {
     errors: errors.map((c) => `${c.name}${c.detail ? `:${String(c.detail).slice(0, 120)}` : ''}`),
     warns: warns.map((c) => `${c.name}${c.detail ? `:${String(c.detail).slice(0, 120)}` : ''}`),
     transcript: result.transcript ? { counts: result.transcript.counts, duplicates: result.transcript.duplicates } : null,
+    timeEvents: result.timeEvents ? { exists: result.timeEvents.exists, counts: result.timeEvents.counts } : null,
   }
 }
 

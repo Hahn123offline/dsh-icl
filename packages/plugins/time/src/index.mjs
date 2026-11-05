@@ -398,6 +398,9 @@ export function apply(ctx) {
   const tickMs = Math.max(1000, Number(ctx.config.tickMs ?? 15_000))
   const inboxFile = ctx.config.inboxFile ? String(ctx.config.inboxFile) : path.join(path.dirname(stateFile), 'time.inbox.jsonl')
   const outboxFile = ctx.config.outboxFile ? String(ctx.config.outboxFile) : path.join(path.dirname(stateFile), 'time.outbox.jsonl')
+  // 可观测事件落盘：插件总线（signals.emit）只到进程内订阅者，外部 supervisor 读不到；
+  // time-events.jsonl 给 supervisor/早报一个稳定的文件通道。
+  const eventsFile = ctx.config.eventsFile ? String(ctx.config.eventsFile) : path.join(path.dirname(stateFile), 'time-events.jsonl')
   const maxQueue = Math.max(1, Number(ctx.config.maxQueue ?? 500))
   const backlogShow = Math.max(1, Number(ctx.config.backlogShow ?? 20))
   const backlogMaxChars = Math.max(200, Number(ctx.config.backlogMaxChars ?? 3000))
@@ -627,6 +630,15 @@ export function apply(ctx) {
       fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(file, body, 'utf8')
     } catch (error) { log('warn', 'time.side-file', { file: path.basename(file), error: String(error?.message ?? error) }) }
+  }
+
+  /** 追加一行可观测事件（外部 supervisor/早报用；不依赖 signals 是否被订阅/拦截）。 */
+  function recordEvent(type, meta = {}) {
+    try {
+      const at = nowTime()
+      fs.mkdirSync(path.dirname(eventsFile), { recursive: true })
+      fs.appendFileSync(eventsFile, `${JSON.stringify({ at, iso: new Date(at).toISOString(), type, ...meta })}\n`, 'utf8')
+    } catch (error) { log('warn', 'time.events.write', { type, error: String(error?.message ?? error) }) }
   }
 
   function send({ kind = 'notice', text, focus: target = null, tags = [] }) {
@@ -1031,6 +1043,7 @@ export function apply(ctx) {
       state.sleepBoundary.turnEndedAfterSec = Math.max(0, Math.round((at - Number(state.sleepBoundary.at)) / 1000))
       state.sleepBoundary.overrun = state.sleepBoundary.turnEndedAfterSec > sleepGraceSec
       log('info', 'time.sleep-boundary.turn-end', { afterSec: state.sleepBoundary.turnEndedAfterSec, graceSec: sleepGraceSec, overrun: state.sleepBoundary.overrun })
+      recordEvent('sleep-boundary-turn-end', { afterSec: state.sleepBoundary.turnEndedAfterSec, graceSec: sleepGraceSec, overrun: state.sleepBoundary.overrun })
       if (state.sleepBoundary.overrun) emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-overrun', tags: ['sleep', 'boundary', 'overrun'], meta: { afterSec: state.sleepBoundary.turnEndedAfterSec, graceSec: sleepGraceSec } })
     }
     let resumed = 0
@@ -1185,6 +1198,8 @@ export function apply(ctx) {
             overrunLoggedAt: null,
           }
           log('info', 'time.sleep-boundary.entry', { inFlight, turnAgeAtEntrySec: state.sleepBoundary.turnAgeAtEntrySec, graceSec: sleepGraceSec })
+          recordEvent('sleep-boundary-entry', { sleepingId: schedule.id, sleepUntil: endAt, inFlight, turnAgeAtEntrySec: state.sleepBoundary.turnAgeAtEntrySec, graceSec: sleepGraceSec })
+          recordEvent('sleep-start', { sleepingId: schedule.id, sleepUntil: endAt })
           if (focusApi?.enter && !sleepLease) {
             try {
               sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
@@ -1241,6 +1256,7 @@ export function apply(ctx) {
       emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
       if (!span.silent) send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
       const released = flushQueue('你睡觉时')
+      recordEvent('sleep-end', { sleepingId: span.id, released, boundary: state.lastSleepBoundary ? { inFlight: state.lastSleepBoundary.inFlight, turnEndedAfterSec: state.lastSleepBoundary.turnEndedAfterSec ?? null, postSleepTurn: Boolean(state.lastSleepBoundary.postSleepTurn), overrun: Boolean(state.lastSleepBoundary.overrun) } : null })
       // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       // 醒来后如果没有新的 turn 触发，清醒节拍负责在 idleSec 内叫起一次自检。
@@ -1383,6 +1399,7 @@ export function apply(ctx) {
           state.sleepBoundary.overrun = true
           dirty = true
           log('warn', 'time.sleep-boundary.overrun', { afterSec: boundaryAgeSec, graceSec: sleepGraceSec })
+          recordEvent('sleep-boundary-overrun', { afterSec: boundaryAgeSec, graceSec: sleepGraceSec, sleepingId: state.sleepingId })
           emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-overrun', tags: ['sleep', 'boundary', 'overrun'], meta: { afterSec: boundaryAgeSec, graceSec: sleepGraceSec } })
         }
       }
@@ -1943,6 +1960,7 @@ export function apply(ctx) {
       if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt != null && !state.sleepBoundary.postSleepTurn) {
         state.sleepBoundary.postSleepTurn = true
         log('warn', 'time.sleep-boundary.new-turn', { at: nowTime() })
+        recordEvent('sleep-boundary-new-turn', { at: nowTime(), sleepingId: state.sleepingId })
         emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-new-turn', tags: ['sleep', 'boundary', 'injection'], meta: { at: nowTime() } })
       }
       dirty = true

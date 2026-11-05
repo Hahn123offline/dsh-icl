@@ -556,6 +556,24 @@ node tools/lab.mjs down --run "$RUN"
 - 外部注入方（supervisor/driver/未来连接器）直投前必须读 `time.json` 的 `phase` **和 `lock`**（静音不改 phase），
   或改走 `signals.offer` 让 gate 拦进积压。night-1 2026-11-06 实测：睡眠期 9 条 supervisor 直投（02:09:56–02:11:27），
   不是 time 拦截失败；修复后 0。
+- **事件形状（supervisor 消费用）**：`sleep-boundary-overrun` 的 `meta = {afterSec, graceSec}`、
+  `sleep-boundary-new-turn` 的 `meta = {at}`；两者都 `from.plugin='time'`, `kind:'event'`,
+  `tags` 见上表。睡眠中 `status().sleepBoundary` 与醒来后 `status().lastSleepBoundary`（多一个 `endedAt`）
+  字段一致：`inFlight / turnAgeAtEntrySec / turnEndedAfterSec / postSleepTurn / overrun`。
+- **grace 口径（2026-11-06 定稿）**：time 默认 `sleepGraceSec=120`，**与 mc-lab supervisor / DSH 适配层同口径**
+  （supervisor 可用 `--sleep-grace-sec`/`ICL_SLEEP_GRACE_SEC` 调整；当前双方都是 120s，无需改代码）。
+  supervisor 消费 `sleep-boundary-overrun` 只入 anomalies、不重复 cancel（cancel 由 supervisor 本地 grace 触发一次）。
+- **文件通道（外部 supervisor 可直接消费）**：signals.emit 只在进程内，不写 `session-events.jsonl`；
+  time 额外把可观测事件追加到 `<stateDir>/time-events.jsonl`（一行一个 JSON，`fs.appendFileSync`，不依赖 gate）：
+  ```json
+  {"at":1793…,"iso":"2026-11-06T…Z","type":"sleep-boundary-overrun","afterSec":125,"graceSec":120,"sleepingId":"night:main-sleep"}
+  {"at":1793…,"iso":"…","type":"sleep-boundary-new-turn","at":1793…,"sleepingId":"night:main-sleep"}
+  {"at":1793…,"iso":"…","type":"sleep-boundary-turn-end","afterSec":18,"graceSec":120,"overrun":false}
+  {"at":1793…,"iso":"…","type":"sleep-boundary-entry","inFlight":true,"turnAgeAtEntrySec":12,"graceSec":120,"sleepingId":"…","sleepUntil":1793…}
+  {"at":1793…,"iso":"…","type":"sleep-start","sleepingId":"…","sleepUntil":1793…}
+  {"at":1793…,"iso":"…","type":"sleep-end","sleepingId":"…","released":3,"boundary":{...}}
+  ```
+  配置 `config.eventsFile` 可改路径；文件只追加（事件稀疏，不做轮转）。supervisor 读它做 anomalies 双证据即可。
 
 ### 14.4 测试
 
