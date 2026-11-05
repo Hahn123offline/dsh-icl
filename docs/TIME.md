@@ -610,14 +610,18 @@ node tools/lab.mjs down --run "$RUN"
 - 与清醒节拍的关系：被节流时本轮没有 goal 续推，turn-end 会照常 arm 清醒节拍；goal 的 due 通常先到，二者不会叠加发消息（同一批 drain 也会合并）。
 - 测试：连发两个 turn-end 只发第 1 次、tick 到 gap 补第 2 次；`gap=0` 保持旧行为（`time-lock.test.mjs`）。`time_arrange` description 已写明节奏。
 
-### 15.3 C4：醒来简报 + dream 回执接口
+### 15.3 C4：醒来简报 + dream 回执（已实现）
 
 - 醒来消息现在 = `endMessage` + 一行 **睡眠简报**（同一批投递，顺序：结束语→简报→积压摘要）：
   `（睡眠简报：睡了 4 小时 30 分；积压 17 条（mc 17）；记忆整理：入睡时已触发（dream 回执未回传）；无异常）`
   - 时长来自入睡时刻；积压条数与来源来自 `queue`（按 plugin 计数）；异常 = 边界超时/入睡后新回合 + 睡眠期间新增的漏响/丢弃/过期。
 - `status().lastSleepBrief` 可查（`{text,durationSec,backlog,sources,anomalies,dream,startedAt,endedAt}`）；`time-events.jsonl` 落 `sleep-brief-start` / `wake-brief`。
-- **dream 回执接口（提案，dream 插件本轮不在 scope）**：dream 完成/失败时 `signals.emit({from:{plugin:'dream'},kind:'event',text:'整理完成：…'/'整理失败：…',tags:['dream-result'],meta:{ok:true|false}})`。time 已订阅：
-  - 睡眠中收到 → 记 `lastDreamResult`，并入醒来简报（"记忆整理：完成/失败（原文）"）；
-  - 醒着收到 → 直接发一条可读 notice；
-  - dream 未升级时简报显示"入睡时已触发（回执未回传）"，不假装成功。
-- 测试：正常醒来的简报内容/顺序/计数；dream 回执 + 边界超时进入简报（`time-lock.test.mjs`）。
+- **dream 回执（已实现：dream emit，commit `60d8abe`）**：一次 run 一条
+  `signals.emit({from:{plugin:'dream'},kind:'event',text:'wash 1119 行 / …',tags:['dream-result'],meta:{ok,jobs,degraded,failedShards,at}})`；
+  全 skip 不发、失败 `ok:false`。time 已订阅并消费：
+  - 睡眠中收到 → 记 `status().lastDreamResult`（`{ok,text,jobs,ranJobs,degraded,failedShards,dreamAt,at}`），**并入醒来简报**：
+    `记忆整理：完成（wash 1119 行 / events 3 块；分片降级（1 片失败））` 或 `记忆整理：失败（原因）`；
+  - 醒着收到 → 直接发一条可读 notice（`记忆整理回执：完成/失败（detail；分片降级…）`）；
+  - 一直没收到回执时简报显示"入睡时已触发（dream 回执未回传）"，不假装成功。
+- `time-events.jsonl` 也会落 `dream-result {ok,text,jobs,ranJobs,degraded,failedShards}`，supervisor/早报可直接消费。
+- 测试：正常醒来简报内容/顺序/计数；dream 回执（含 degraded/失败分片）+ 边界超时进简报；醒着收到失败回执发 notice（`time-lock.test.mjs`）。
