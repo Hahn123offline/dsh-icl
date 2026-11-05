@@ -1441,7 +1441,7 @@ export function createMineflayerAdapter({
         const now = Date.now()
         if (step % every === 0 || now - lastReportAt >= 10_000) {
           lastReportAt = now
-          progress?.({ done: step, total, direction: dir.name, position: currentPosition(), torches })
+          progress?.({ done: step, total, direction: dir.name, position: currentPosition(), torches, stairs: opts.stairs })
         }
         if (opts.torchEvery > 0 && step % opts.torchEvery === 0) {
           try {
@@ -1455,9 +1455,9 @@ export function createMineflayerAdapter({
           } catch { /* 火把只是锦上添花，不阻塞隧道 */ }
         }
       }
-      progress?.({ done: total, total, direction: dir.name, position: currentPosition(), torches })
+      progress?.({ done: total, total, direction: dir.name, position: currentPosition(), torches, stairs: opts.stairs })
       emit('macro_done', { kind: 'tunnel', done: total, direction: dir.name, torches })
-      return { done: total, total, direction: dir.name, height: opts.height, torches }
+      return { done: total, total, direction: dir.name, height: opts.height, torches, stairs: opts.stairs }
     }
     if (task.kind === 'bridge') {
       const plan = bridgePlan(params)
@@ -2312,6 +2312,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 
