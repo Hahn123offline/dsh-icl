@@ -1411,7 +1411,26 @@ export function createMineflayerAdapter({
           await digBlock(block, signal)
           await sleep(50)
         }
-        const next = { x: base.x + dir.x + 0.5, y: base.y, z: base.z + dir.z + 0.5 }
+        // stairs=true：只支持向下阶梯（每步降 1 格）；向上暂不支持（契约保留）。
+        if (opts.stairs && String(params.stairsMode ?? 'down') === 'up') {
+          throw taskFailure('tunnel: unsupported', { done: step - 1, total, suggestion: 'stairs 目前只支持向下（stairsMode:"down"/true）；向上阶梯请水平挖再垫脚，或换方向' })
+        }
+        if (opts.stairs) {
+          const floorPos = new Vec3(base.x + dir.x, base.y - 1, base.z + dir.z)
+          const floorBlock = bot.blockAt(floorPos)
+          if (floorBlock && !/(^air$|cave_air|void_air)/.test(floorBlock.name)) {
+            if (/(water|lava|bedrock|barrier|flowing_)/.test(floorBlock.name)) {
+              emit('macro_blocked', { kind: 'tunnel', block: floorBlock.name, position: floorPos, stairs: true })
+              throw taskFailure('tunnel: blocked', { done: step - 1, total, block: floorBlock.name, at: floorPos, suggestion: '阶梯下方是流体/基岩；换方向' })
+            }
+            const floorTool = await ensureToolFor(floorBlock, { signal, autoTool: params.autoTool })
+            if (!floorTool.ok && floorTool.requiredClass) throw needsToolError('tunnel', floorTool)
+            await faceBlock(floorBlock)
+            await digBlock(floorBlock, signal)
+            await sleep(50)
+          }
+        }
+        const next = { x: base.x + dir.x + 0.5, y: base.y + (opts.stairs ? -1 : 0), z: base.z + dir.z + 0.5 }
         try {
           await walkOnce(makeGoal(next, 0.8), next, { signal, progress: null, stallMs: 1500, timeoutMs: 5000, arriveRange: 1.2 })
         } catch (error) {

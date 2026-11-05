@@ -149,3 +149,8 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 ### 补充：farm 实现（04:1x）
 
 - [x] `farm {crop,count}`：需锄（没有 → failed(needs-tool) 给 craft wooden_hoe 链）、需种子（没有 → failed(needs-material)）、找 16 格内水 + 8 格内水边土/草（水距 ≤4、上方空气），逐块 `activateBlock` 开垦为 farmland 后播种；progress `{done,total,tilled,crop}`；无成 → failed(partial/farm: no-water/no-site)。真服完整用例（真实水渠/种子）明早 normal 地形补，flat 无水的失败路径可验。
+
+### 补充：tunnel stairs（04:5x）
+
+- `tunnel {stairs:true}` 支持**向下阶梯**（每步先挖头/脚，再挖前下方地板，前进时降 1 格）；`stairsMode:"up"` 暂不支持（failed tunnel: unsupported，契约保留）；阶梯下流体/基岩 → blocked。
+- result/progress 带 `stairs` 标记；未做真服阶梯用例（flat 平地可验基础，normal 地形明早）。
