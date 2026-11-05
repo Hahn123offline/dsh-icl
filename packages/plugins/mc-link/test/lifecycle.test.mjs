@@ -239,7 +239,7 @@ test('lifecycle：body-exit.json 优先（带 status 快照），waitExit 能等
     fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
   })
   await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
-  fs.writeFileSync(path.join(dir, 'body-exit.json'), JSON.stringify({ reason: 'api-shutdown', at: Date.now(), status: { connected: true, paused: false, taskId: 't-9', lastError: null } }), 'utf8')
+  fs.writeFileSync(path.join(dir, 'body-exit.json'), JSON.stringify({ reason: 'api-shutdown', exitCode: 0, detail: 'Error: boom\n    at x', at: Date.now(), status: { connected: true, paused: false, taskId: 't-9', lastError: 'boom' }, recentEvents: [{ seq: 7, type: 'task_started' }, { seq: 8, type: 'health' }], stderrTail: ['[mc-body] x'] }), 'utf8')
   setTimeout(() => child.emit('exit', 0, null), 30)
   const exited = await supervisor.waitExit(1500)
   assert.equal(exited, true)
@@ -247,4 +247,8 @@ test('lifecycle：body-exit.json 优先（带 status 快照），waitExit 能等
   assert.equal(last.exitInfo?.source, 'body-exit.json')
   assert.equal(last.exitInfo?.reason, 'api-shutdown')
   assert.equal(last.exitInfo?.status?.taskId, 't-9')
+  assert.equal(last.exitInfo?.exitCode, 0)
+  assert.match(last.exitInfo?.detail ?? '', /boom/)
+  assert.equal(last.exitInfo?.recentEvents?.length, 2)
+  assert.deepEqual(last.exitInfo?.stderrTail, ['[mc-body] x'])
 })

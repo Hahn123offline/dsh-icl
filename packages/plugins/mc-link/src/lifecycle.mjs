@@ -29,15 +29,19 @@ export function readExitInfo(stateDir, stderrTail = []) {
       return {
         source: 'body-exit.json',
         reason: data.reason == null ? null : String(data.reason),
+        exitCode: data.exitCode == null ? null : Number(data.exitCode),
+        detail: data.detail == null ? null : String(data.detail),
         at: Number(data.at) || null,
         status: data.status && typeof data.status === 'object' ? data.status : null,
+        recentEvents: Array.isArray(data.recentEvents) ? data.recentEvents.slice(-12) : [],
+        stderrTail: Array.isArray(data.stderrTail) ? data.stderrTail.slice(-10) : [],
       }
     }
   } catch { /* 旧 body 没有这个文件，或还没写 */ }
   const line = [...stderrTail].reverse().map(String).find((row) => /exit reason=/i.test(row))
   if (line) {
     const match = line.match(/exit reason=([a-z][a-z-]*)/i)
-    if (match) return { source: 'stderr', reason: match[1].toLowerCase(), at: null, status: null }
+    if (match) return { source: 'stderr', reason: match[1].toLowerCase(), exitCode: null, detail: null, at: null, status: null, recentEvents: [], stderrTail: [] }
   }
   return null
 }

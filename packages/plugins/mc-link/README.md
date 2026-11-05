@@ -49,3 +49,11 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 | `reconnect_exhausted` | alarm | 自动重连放弃，状态栏必须显示未连接 |
 | `kicked` | alarm | reason 是对象时给真实文本；同名/重复登录提示换 username |
 | `task_queued`/`started`/`progress`/`health`/`heartbeat`/`watchdog*` | 不投递 | 状态以 `/v1/status` 为准 |
+
+## body 进程退出（lifecycle）
+
+- `body-exit.json`（mc-body 新版）优先：`reason`、`exitCode`、`detail`(栈)、`recentEvents`、`stderrTail`、退出时 status；旧 body 退化读 stderr 的 `[mc-body] exit reason=`。
+- reason 分类文案：`sigterm`/`sigint`/`api-shutdown`/`clean-exit`（主动停）、`idle-timeout`（暂停超时下线）、`reconnect-exhausted`（服务器/连接）、`uncaught-exception`/`unhandled-rejection`（body 崩溃，带栈首行）、`exit-code`（无栈非正常退出）、`startup-error`。
+- crash signal 内容：原因 + 退出码 + 本会话第 N 次退出 + 死时任务/位置/最后错误/栈首行/死前事件 + 下一步；**同因账本**按 `reason+taskId+pausedReason` 计数，第 2 次起标"本会话第 N 次同因退出"并按类给差异化建议。
+- `mcb_leave` 对本会话 spawn 的 body 先 `POST /v1/shutdown`（code 0 + 归因），2s 内没退才 SIGTERM；外部 body 只安全停止。
+- 时延埋点：`mc-link.jsonl` 的 `crash-detect {at, exitAt, latencyMs}` 与 `signal {at}`，可直接算 kill→检测→投递。
