@@ -1,0 +1,204 @@
+// mc-link body 生命周期：用假子进程 + 假 HTTP 验证启动/健康检查/崩溃上报/只杀自己的。
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { createBodySupervisor } from '../src/lifecycle.mjs'
+
+class FakeChild extends EventEmitter {
+  constructor(pid = 4242) {
+    super()
+    this.pid = pid
+    this.stdout = new EventEmitter()
+    this.stderr = new EventEmitter()
+    this.signals = []
+  }
+
+  kill(signal) {
+    this.signals.push(signal)
+    if (signal === 'SIGTERM' || signal === 'SIGKILL') setTimeout(() => this.emit('exit', 0, signal), 5)
+    return true
+  }
+}
+
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'icl-mc-lifecycle-'))
+}
+
+function statusOf(connected, overrides = {}) {
+  return {
+    ok: true,
+    paused: false,
+    adapter: { connected, host: '127.0.0.1', port: 54837, position: { x: 0, y: 64, z: 0 }, health: 20, food: 20, inventoryCount: 0 },
+    ...overrides,
+  }
+}
+
+test('lifecycle：spawn 参数正确，连上后 owns=true，stop 只杀自己的进程', async () => {
+  const dir = tmpDir()
+  const calls = []
+  const lifecycle = []
+  let probes = 0
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'C:/x/mc-body/src/cli.mjs',
+    stateDir: dir,
+    startTimeoutMs: 3000,
+    spawnImpl: (cmd, args) => { calls.push({ cmd, args }); return new FakeChild(9001) },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+    onLifecycle: (event) => lifecycle.push(event),
+  })
+  const out = await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL-mclink-1' })
+  assert.equal(out.reused, false)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].cmd, process.execPath)
+  const args = calls[0].args
+  assert.equal(args[0], 'C:/x/mc-body/src/cli.mjs')
+  assert.equal(args[args.indexOf('--listen') + 1], '54901')
+  assert.equal(args[args.indexOf('--host') + 1], '127.0.0.1')
+  assert.equal(args[args.indexOf('--port') + 1], '54837')
+  assert.equal(args[args.indexOf('--name') + 1], 'ICL-mclink-1')
+  assert.ok(args.includes('--allow-task') && args.includes('--allow-say'))
+  assert.equal(args[args.indexOf('--state') + 1], path.join(dir, 'tasks.json'))
+  assert.equal(args[args.indexOf('--log') + 1], path.join(dir, 'body.jsonl'))
+  assert.equal(supervisor.owns(), true)
+  assert.equal(lifecycle.filter((event) => event.type === 'body-spawn').length, 1)
+
+  const stopped = await supervisor.stop({ reason: 'leave' })
+  assert.equal(stopped.killed, true)
+  assert.equal(supervisor.owns(), false)
+  assert.ok(lifecycle.some((event) => event.type === 'body-stopped' && event.reason === 'leave'))
+})
+
+test('lifecycle：已连上的同目标 body 直接复用，不重复 spawn', async () => {
+  let spawned = 0
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    spawnImpl: () => { spawned += 1; return new FakeChild() },
+    fetchStatus: async () => statusOf(true),
+  })
+  const out = await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL-mclink-1' })
+  assert.equal(out.reused, true)
+  assert.equal(spawned, 0)
+  assert.equal(supervisor.owns(), false)
+})
+
+test('lifecycle：body 连在别的服务器时拒绝并让人先 leave', async () => {
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    spawnImpl: () => new FakeChild(),
+    fetchStatus: async () => statusOf(true, { adapter: { connected: true, host: '127.0.0.1', port: 54838 } }),
+  })
+  await assert.rejects(
+    () => supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL-mclink-1' }),
+    /先 mcb_leave/,
+  )
+})
+
+test('lifecycle：进程连不上就退出时给出退出码 + body 日志，不留句柄', async () => {
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    startTimeoutMs: 3000,
+    spawnImpl: () => {
+      const child = new FakeChild(9002)
+      setTimeout(() => {
+        child.stderr.emit('data', 'connect ECONNREFUSED 127.0.0.1:54837\n')
+        child.emit('exit', 1, null)
+      }, 30)
+      return child
+    },
+    fetchStatus: async () => null,
+    onLifecycle: () => {},
+  })
+  await assert.rejects(
+    () => supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL-mclink-1' }),
+    (error) => {
+      assert.match(error.message, /进程在连上服务器前就退出/)
+      assert.match(error.message, /退出码 1/)
+      assert.match(error.message, /ECONNREFUSED/)
+      return true
+    },
+  )
+  assert.equal(supervisor.state().owns, false)
+})
+
+test('lifecycle：启动超时会清理半死进程并报原因', async () => {
+  const dir = tmpDir()
+  const child = new FakeChild(9003)
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: dir,
+    startTimeoutMs: 400,
+    spawnImpl: () => child,
+    fetchStatus: async () => null,
+  })
+  await assert.rejects(
+    () => supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL-mclink-1' }),
+    /没能在/,
+  )
+  assert.ok(child.signals.includes('SIGTERM'), '超时后必须结束进程')
+  assert.equal(supervisor.state().owns, false)
+})
+
+test('lifecycle：spawn 自己抛错时给出直接原因', async () => {
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    spawnImpl: () => { throw new Error('ENOENT spawn') },
+    fetchStatus: async () => null,
+  })
+  await assert.rejects(
+    () => supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' }),
+    /启动 mc-body 失败.*ENOENT/,
+  )
+})
+
+test('lifecycle：自己起的进程崩溃会回调 body-exit（expected=false）', async () => {
+  const events = []
+  let probes = 0
+  let child = null
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    startTimeoutMs: 3000,
+    spawnImpl: () => { child = new FakeChild(9004); return child },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+    onLifecycle: (event) => events.push(event),
+  })
+  await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
+  child.emit('exit', 137, null)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const exit = events.find((event) => event.type === 'body-exit')
+  assert.ok(exit)
+  assert.equal(exit.expected, false)
+  assert.equal(exit.code, 137)
+  assert.equal(supervisor.owns(), false)
+})
+
+test('lifecycle：dispose 会发 SIGTERM，不把子进程留在后台', async () => {
+  let probes = 0
+  let child = null
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: tmpDir(),
+    startTimeoutMs: 3000,
+    spawnImpl: () => { child = new FakeChild(9005); return child },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+  })
+  await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
+  supervisor.dispose()
+  assert.ok(child.signals.includes('SIGTERM'))
+  assert.equal(supervisor.owns(), false)
+})
