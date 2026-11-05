@@ -62,11 +62,18 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     offHistory: null,
     offFocus: null,
     offFocusBacklog: null,
+    offFactsDirty: null,
     timer: null,
     raw: [],
     rawSeen: new SeqSet(),
     injected: new Set(),
-    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false },
+    // facts 快照节流：同一 turn 内各 step 复用第一份事实文本，最多 1 条快照/轮。
+    // 依据：DSH 的 runtime-context 快照只 append 不 replace，step-heavy 回合（MC 可到 39 步）
+    // 会按步数线性累积（见 docs/CACHE-MODEL.md §7.7）。
+    turn: null,
+    factsCache: { turn: null, text: null },
+    factsDirty: false,
+    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0 },
   }
 
   function report(where, error) {
@@ -166,21 +173,49 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       return
     }
     try {
-      const off = ctx.systemPrompt.context({
-        name: 'icl:facts',
-        order: 850,
-        text: () => {
+      // facts 快照节流（Option 1，默认开）：同一 turn 内各 step 复用第一份事实文本，最多 1 条快照/轮。
+      // 背景：DSH 的 runtime-context 快照只 append 不 replace，step-heavy 回合（MC 可到几十步）
+      // 若事实每步都变，就会按步数线性累积（见 docs/CACHE-MODEL.md §7.7）。
+      //
+      // 新鲜度护栏（stale ≤ 1 步）：
+      //   · focus enter/leave、time arrange/cancel/sleep/wake 这类**事件类事实**通过
+      //     focus.onChange / delivery tick 标 dirty → 下一次 context 求值立即重算（下一步可见）；
+      //   · **MC 环境事实（位置/血量/背包）允许整轮陈旧**（豁免，勿当 bug）：以模型显式
+      //     mcb_status / mcb_inventory 为准，换来 MC 回合不再每步追加一条快照。
+      const throttle = config.factsEveryStep !== true && process.env.ICL_FACTS_EVERY_STEP !== '1'
+      const readFacts = () => {
+        if (!throttle) {
           try {
             return host.services.prompt.assemble({ sessionId: state.session?.id ?? undefined }, { minOrder: FACTS_MIN_ORDER })
           } catch (error) {
             report('prompt.context', error)
             return ''
           }
-        },
+        }
+        if (state.factsDirty) { state.factsDirty = false; state.factsCache = { turn: null, text: null } }
+        if (state.factsCache.turn === state.turn && state.factsCache.text != null) return state.factsCache.text
+        let text = ''
+        try {
+          text = host.services.prompt.assemble({ sessionId: state.session?.id ?? undefined }, { minOrder: FACTS_MIN_ORDER })
+        } catch (error) {
+          report('prompt.context', error)
+        }
+        state.factsCache = { turn: state.turn, text }
+        state.stats.factsRefreshes += 1
+        return text
+      }
+      const off = ctx.systemPrompt.context({
+        name: 'icl:facts',
+        order: 850,
+        text: readFacts,
       })
       state.factsOff = typeof off === 'function' ? off : () => {}
       state.stats.factsInContext = true
-      log({ msg: 'icl.prompt-layout', layout: 'static+facts-context', staticMaxOrder: FACTS_MIN_ORDER - 1, factsOrder: 850 })
+      // 事件类事实的 dirty 源（focus）：进入/离开/换焦点 → 下一步快照必须含新焦点。
+      try {
+        state.offFactsDirty = host.services.focus.onChange(() => { state.factsDirty = true })
+      } catch (error) { report('prompt.facts-dirty', error) }
+      log({ msg: 'icl.prompt-layout', layout: 'static+facts-context', staticMaxOrder: FACTS_MIN_ORDER - 1, factsOrder: 850, factsPerTurn: throttle })
     } catch (error) {
       report('prompt.context', error)
       // 注册失败不能让事实丢失：撤掉静态段，退回旧的全量单段（缓存差，但语义完整）。
@@ -347,6 +382,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         }
         host.services.delivery.ack(batch.id)
         state.stats.delivered += 1
+        state.factsDirty = true // 事件类事实（time/focus 通知）→ 下一步刷新快照
         sent += 1
       } catch (error) {
         host.services.delivery.nack(batch.id, error?.message ?? error)
@@ -375,6 +411,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.session = session
     state.releaseClaim = host.claimSession ? host.claimSession(id) : null
     state.injected.clear()
+    state.turn = null
+    state.factsCache = { turn: null, text: null }
     // 新会话从空投递队列开始；旧会话/旧 run 留在 host 队列里的消息不能先于第一轮漏进来。
     try { host.services.delivery.clear() } catch { /* ignore */ }
     log({ msg: 'icl.session', id })
@@ -386,6 +424,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.releaseClaim = null
     state.session = null
     state.agent = null
+    state.turn = null
+    state.factsCache = { turn: null, text: null }
     state.injected.clear()
     // 旧会话的待投递不能漏给下一条会话。
     try { host.services.delivery.clear() } catch { /* ignore */ }
@@ -402,8 +442,23 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 事件 ─────────────────────────────────────────────── */
 
+  /** 会改 facts 文本的工具名白名单（工具结果出现即标 dirty，下一步刷新快照）。 */
+  function isFactsTool(rawName) {
+    const name = String(rawName ?? '')
+    return name.startsWith('time_') || name.startsWith('memo') || name.startsWith('lexicon_learn')
+  }
+
   function onEvent(session, event) {
     if (!state.session || String(session?.id) !== String(state.session.id)) return
+    // 记当前 turn：facts 快照节流按 turn 刷新（turn/start 是 DSH 每轮第一件事）。
+    // 缓存键是 turn 号：会话恢复/重放若复用同一 turn 号，bind/unbind 会清空缓存（够用）；
+    // 若将来支持同一 session 内 rewind，需要额外的 generation 计数，别只靠 turn。
+    if (event?.type === 'turn/start') state.turn = Number.isFinite(Number(event.data?.turn)) ? Number(event.data.turn) : state.turn
+    // 模型在 turn 内自己改事实的工具（time_*/memo*/lexicon_learn）——它们出现在 facts 文本里
+    // （下一个安排/静音到/待办计数/词汇），必须标 dirty，否则同一 turn 后面几十步仍是旧值。
+    // 注：silent schedule（如 dream:nightly）走 signals.emit 不走 delivery，不在此列，
+    // 允许陈旧到轮末（它通常不产生模型消息）；MC 环境事实按 §7.7 豁免。
+    if (event?.type === 'tool/result' && isFactsTool(event.data?.name ?? event.data?.tool)) state.factsDirty = true
     appendRaw(session, event)
     if (event?.type !== 'turn/end') return
     const seq = Number(event.seq)
@@ -478,12 +533,16 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.stats.contextInjected += 1
     const injected = toDshUserMessage(`<icl-context>\n${extra}\n</icl-context>`, {
       id: `${CTX_PREFIX}${randomUUID()}`,
-      // 用 DSH 已知的 runtime-context 来源：GUI 当成上下文快照，不会显示成用户发言；
-      // 原文/历史层按 kind 过滤，也不会把它记成人话。
+      // producer-owned 来源：**不能**再用 'runtime-context'。
+      // DSH 的 RuntimeContextProjection 用 `source.kind === 'runtime-context'` 判断这是不是
+      // 它自己的快照；ICL 每注入一次 <icl-context>，DSH 就以为"自己的快照被换了"，
+      // 于是在下一个 step 额外 append 一份完整快照（≈+190 tok 上下文 / +140 prefill 每轮）。
+      // 'plugin:<owner>' 是 v4 规范允许的 producer-owned kind（同 noticeMessage 的先例）。
+      // 原文/历史/本轮扫描都按 kind!=='user' 过滤，改后仍不会把它当人话。
       source: {
-        kind: 'runtime-context',
-        form: 'snapshot',
-        sections: [{ name: 'icl:context', text: extra }],
+        kind: 'plugin:icl',
+        form: 'notice',
+        summary: `上下文：${extra.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
       },
     })
     return { ...decision, messages: [...messages, injected] }
@@ -523,6 +582,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     try { state.offSurface?.() } catch { /* ignore */ }
     try { state.sectionOff?.() } catch { /* ignore */ }
     try { state.factsOff?.() } catch { /* ignore */ }
+    try { state.offFactsDirty?.() } catch { /* ignore */ }
     try { state.offRaw?.() } catch { /* ignore */ }
     try { state.offHistory?.() } catch { /* ignore */ }
     saveFocus()

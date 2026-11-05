@@ -7,9 +7,9 @@
 
 ## 现状
 
-- 阶段：**核心与插件有 269 个测试覆盖**；DSH 接线已在仓库内重建（`packages/dsh-icl`），并在真实 headless 会话里跑通了工具面（focus 后 31 个）、人格段、原文层、每轮上下文注入、以及 wake → followup → 新轮（2026-11-03 晚，session `1f855bc3` / `4de2a564`）。host 虚拟 30 分钟闭环已跑；desktop 30 分钟仍未跑。
-- 无 GUI、未部署、无远程服务。所有连接器（QQ / MC / B 站）都在仓库外或只有临时接缝。
-- 事实基线：2026-11-03，`docs/STATUS.md` 里的测试数与缺陷台账是唯一权威。
+- 阶段：**2026-11-05 本轮迭代**。`npm test` → **419 通过**（core + mc-body + mc-link 契约）；新增后台 lab（`tools/lab*.mjs`，不碰 Desktop）、前缀缓存修复（`docs/CACHE-MODEL.md`，hit 41.5%→91.2%）、MC 身体/适配器加固、time 静音锁（`docs/TIME.md` 契约版）、QQ 只读入站（`docs/QQ.md`）、提示词分层（`docs/PROMPT-CONTRACT.md`）、插件审计（`docs/AUDIT-2026-11-05.md`）。
+- **当前状态与待办以 [docs/HANDOVER-2026-11-05.md](docs/HANDOVER-2026-11-05.md) 为准**；`STATUS.md`/`OVERVIEW.md` 等旧文档只作历史参考。
+- 无 GUI、未部署、无远程服务。QQ 真实影子挂起（等用户时间窗）；MC 本地模型验收待跑。
 
 ## 跑
 
