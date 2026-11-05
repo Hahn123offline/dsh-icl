@@ -13,4 +13,9 @@
 
 ## 注意
 
-`all:true` 全搬会把工具/装备也存进去；先看清单。
+`all:true` 会搬走所有材料（工具/装备/食物默认保留）；先看清单，想留种/留木板就单件存。
+
+## 新版 body（2026-11-06）
+
+- `chest {action:"put", all:true}` / `{action:"take", all:true}` 现在真的支持整包存取（工具/装备/食物默认不存）；返回 `moved/kept/container`。单件仍用 `items[]`。
+- 前后 `mcb_inventory` 对比；`all:true` 不会把工具存走，但**会存走所有材料**，想留种/留木板就先单件存。

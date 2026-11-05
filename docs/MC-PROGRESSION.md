@@ -105,16 +105,17 @@
 
 结论：**"能不能推进"在 body/op 层基本齐了（M1/M2/M6 可走通），差的是一组"环境事实"（时间/背包/死亡/威胁）与几个高频技能文档**——这正是 §2 的 body 快修项 + mc-link 提示词项。本夜长测的判定标准不是"她全通"，而是：她是否**在缺信息时自己去查（status/scan/map/inventory）并调整**，以及哪些缺口让她卡住（记 §3）。
 
-## 6. 本轮 body 侧快修清单（不阻塞当前 run；改完 commit）
+## 6. 本轮 body 侧快修清单（不阻塞当前 run；已 commit）
 
-- [ ] `status.adapter.time{timeOfDay,isNight,day}` + 白天/夜晚二进制
-- [ ] `status.adapter.lastDeath{position,at,dimension}`（death 事件时记录）
-- [ ] `status.adapter.inventory{emptySlots,full}` / mine 开始检查背包满 → `mine: inventory-full`
-- [ ] `status.adapter.equipment{hand,armor,durability}`（工具坏了能看见）
-- [ ] `sleep` op：附近床 → 走过去睡；没有床则明确报"没有床/没床物品"
-- [ ] mine/goto 开始/循环内 auto-eat（food≤14，有食物才吃）
-- [ ] `chest all:true`（put/take）+ 不误存工具提示
-- [ ] `furnace count/轮询输出/取全部` + 产物校验
-- [ ] skills：`play.md` 增加"夜晚/死亡回收/背包满/出发前吃"四小节（mc-link 注册 night/death 或并入 play）
+- [x] `status.adapter.time{timeOfDay,isNight,day,clock}`（昼夜判断）
+- [x] `status.adapter.lastDeath{position,at,dimension,inventoryCount}`（death 事件时记录）
+- [x] `status.adapter.inventory{emptySlots,full,used}` + `equipment{hand,armor,durability,keeps}` + `sleeping`
+- [x] mine 背包满 → `mine: inventory-full`（不再挖半天 no-effect）
+- [x] `sleep` op：附近床 → 走过去睡；没床/没床物品/白天 各有明确原因（**mc-link 需把 `sleep` 加进 OPS 才能在 `mcb_do` 用**）
+- [x] mine/goto 开始 + mine 循环内 auto-eat（food≤14，有食物才吃，事件 `auto_eat`）
+- [x] `chest all:true`（put/take，工具/装备/食物默认不存；返回 moved/kept/container）
+- [x] `furnace count/按需燃料/轮询取产物/partial 标记/0 产物报原因`
+- [x] skills：`play.md` 增加“夜晚/死亡回收/背包满/出发前吃”四节；`chest.md`/`furnace.md` 与新语义对齐
+- [ ] mc-link 侧（不在我 scope，已发建议）：`OPS` 加 `sleep`；status 行加 饱食/时间/附近敌人/背包满；注册 night/death 技能入口
 
 > 维护约定：一个事实只有一个家。里程碑/风险放本文；body 接口细节放 `packages/mc-body/README.md`；技能操作放 `packages/plugins/mc-link/skills/*.md`。
