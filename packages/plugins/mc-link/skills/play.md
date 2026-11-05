@@ -10,8 +10,13 @@
 
 ## 做事（下任务）
 
-- 长任务（会自动寻路、持续采集）：`mcb_do {"steps":[{"op":"task","kind":"mine","params":{"block":"oak_log","count":4,"radius":16}}]}`
-  - kind：`mine`（block/count/radius）、`goto`（x/y/z/range）、`patrol`（points）、`explore`（radius）、`follow`（player）、`routine`（durationMs，持续采集/生存）、`chat`（text）
+- **重复劳动用宏，不要逐方块 mine/goto/dig**（用户看到过"10 分钟逐块挖同一种资源数百方块、没有结构产出"的退化）。
+  一条宏调用 = 一个 body task：自动找目标、自动换工具、自动计数、自动拾取，模型只负责"做什么/要不要停"。
+  - 批量采集：`{"op":"task","kind":"collect","params":{"item":"oak_log","count":16,"radius":24}}`（详见 `mcb_help collect`）
+  - 挖直线隧道：`{"op":"task","kind":"tunnel","params":{"direction":"east","length":8,"height":2}}`（详见 `mcb_help tunnel`）
+  - 同族宏：`bridge`/`build`/`sort`/`shelter`/`farm`（build 用 blueprint，后续开放）
+  - 宏的 progress 限频（每 5–10% 或 10s），**提交后不要用 wait 轮询**；`{"op":"tasks"}` 查、`{"op":"cancel","taskId":"t-1"}` 停、`{"op":"resume","taskId":"t-1"}` 续。
+- 原语长任务（少量/精确动作时才用）：`mine`（block/count/radius）、`goto`（x/y/z/range）、`patrol`（points）、`explore`（radius）、`follow`（player）、`routine`（durationMs，持续采集/生存）、`chat`（text）
   - 立即返回 taskId，进度/完成/失败会作为事件回来。**同一件事不要连发多个 task**，先查 `{"op":"tasks"}`。
 - 单步动作：`dig`/`place`/`use`/`equip`/`toss`/`attack`/`eat`/`face`/`wait`/`craft`/`furnace`/`chest`/`trade`/`move`。
   它们会阻塞到完成（最长约 120 秒）；超时只说明"没及时返回"，先查状态，别原样重试。
