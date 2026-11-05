@@ -544,7 +544,7 @@ async function handleSleepBoundary({ stats, nowMs, sleeping }) {
     state.sleepEnteredAt = nowIso()
     state.sleepDirectSeen = 0
     state.lastStepAt = nowIso()
-    recordStrategy('sleep-boundary', '进入睡眠：停 playbook 定时器；60s grace 后处理在飞 turn/队列')
+    recordStrategy('sleep-boundary', `进入睡眠：停 playbook 定时器；${cfg.sleepGraceSec}s grace 后处理在飞 turn/队列`)
   }
   if (state.sleepFlushedAt) {
     const directs = readEvents().filter((event) => event.type === 'user/message'
