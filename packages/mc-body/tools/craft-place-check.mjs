@@ -101,22 +101,24 @@ try {
     })
   }
 
-  // 2. 砍 3 个原木
-  await step('mine oak_log x3', async () => {
-    const data = await post('/v1/do', { steps: [{ op: 'mine', params: { block: 'oak_log', count: 3, radius: 28 } }] }, 180_000)
+  // 2. 砍 4 个原木（木镐链需要：12 木板 = 4+2+3 才够工作台/木棍/木镐）
+  await step('mine oak_log x4', async () => {
+    const data = await post('/v1/do', { steps: [{ op: 'mine', params: { block: 'oak_log', count: 4, radius: 28 } }] }, 180_000)
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const mined = Number(data?.results?.[0]?.result?.mined ?? data?.results?.[0]?.result?.result?.mined ?? 0)
     const logs = await inventoryCount('oak_log')
-    if (logs < 3) throw new Error(`背包 oak_log 只有 ${logs}（期望 ≥3）；mined=${mined}`)
+    if (logs < 4) throw new Error(`背包 oak_log 只有 ${logs}（期望 ≥4）；mined=${mined}`)
     return { mined, logs }
   })
 
-  // 3. 木板（一次产 4；要 8 个 = 合成 2 次）
-  await step('craft oak_planks x8', async () => {
-    const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'oak_planks', count: 8 } }] })
+  // 3. 木板（一次产 4；要 12 个 = 合成 3 次）
+  await step('craft oak_planks x12', async () => {
+    const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'oak_planks', count: 12 } }] })
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('oak_planks')
-    if (have < 8) throw new Error(`oak_planks 只有 ${have}（期望 ≥8）`)
+    if (have < 12) throw new Error(`oak_planks 只有 ${have}（期望 ≥12）`)
     return { ...data.results[0].result, inventory: have }
   })
 

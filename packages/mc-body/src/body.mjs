@@ -521,12 +521,17 @@ export function createBody({
       alertWatchdog('danger', 'low-health', { health: value, food: food ?? null }, () => safetyStop('low-health'))
       return
     }
-    if (previous != null && value < previous - 1) {
-      // 只在“还在正常活动”时把掉血当成独立事件；已暂停/安全停止后不再刷 health_drop，
-      // 只计数（suppressed 统计），避免真实局里几百条重复事件。
-      if (!paused) push('health_drop', { from: previous, to: value })
+    if (previous != null && value < previous) {
+      const drop = previous - value
+      // 小掉血（摔一下 1–3 点、挖树/走路蹭伤）是正常玩法：只记录，不暂停。
+      // 只有“单次掉 >3”或“已到低血线以下”才接管，避免正常采集被 health-drop 频繁打断。
+      if (!paused) push('health_drop', { from: previous, to: value, drop })
       else watchdogStats.healthDropSuppressed = (watchdogStats.healthDropSuppressed ?? 0) + 1
-      alertWatchdog('danger', 'health-drop', { from: previous, to: value }, () => safetyStop('health-drop'))
+      if (drop > 3) {
+        alertWatchdog('danger', 'health-drop', { from: previous, to: value, drop }, () => safetyStop('health-drop'))
+      } else {
+        alertWatchdog('idle', 'health-drop-minor', { from: previous, to: value, drop })
+      }
     }
   }
 
