@@ -21,9 +21,30 @@ function minutesSince(lease, now) {
   return Math.max(0, Math.round((now - Number(lease.since)) / 60_000))
 }
 
+/** activity 没传时按标题推一个稳定标签（而不是每次随机，否则同一次专注跨轮都不稳定）。 */
+function derivedActivity(title) {
+  const slug = String(title ?? '').trim().toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24)
+  return slug ? `auto:act:${slug}` : `auto:act:${randomUUID().slice(0, 8)}`
+}
+
 export function apply(ctx) {
   const api = () => ctx.focus
   const now = () => ctx.now()
+  /** 自动生成/自动推断的 activity：lease.id -> 提示语（同进程内展示用）。 */
+  const autoActivities = new Map()
+
+  /** 是否检测到 MC 身体在线（mc-link 提供的只读 api；没有 mc-link 时安全返回 false）。 */
+  function mcConnected() {
+    try {
+      const mc = ctx.services.get('mc-link')
+      const status = mc?.status?.()
+      if (!status) return false
+      return Boolean(status.connected ?? status.adapter?.connected)
+    } catch { return false }
+  }
 
   function modelLeases() {
     return api().list().filter((lease) => lease.owner === 'focus')
@@ -35,12 +56,31 @@ export function apply(ctx) {
 
   function leave() {
     const leases = modelLeases()
-    for (const lease of leases) { try { lease.release() } catch { /* 已释放 */ } }
+    for (const lease of leases) {
+      try { lease.release() } catch { /* 已释放 */ }
+      autoActivities.delete(lease.id)
+    }
     return leases.length
   }
 
+  /**
+   * 进入专注。activity 优先；没给时：
+   *   1) 检测到 MC 在线 → 自动用 "mc"（否则 MC 事件会被当成"别处"）；
+   *   2) 否则按 title 推一个稳定标签 auto:act:<slug>，并在回执/状态里明说"自动"。
+   */
   function enter({ title, reason = '', interruptible = true, goal = null, minutes = null, activity = null, pierce = null } = {}) {
-    const label = String(activity ?? `act:${randomUUID().slice(0, 8)}`)
+    const explicit = activity != null && String(activity).trim() !== ''
+    let label
+    let activityNote = null
+    if (explicit) {
+      label = String(activity).trim()
+    } else if (mcConnected()) {
+      label = 'mc'
+      activityNote = 'activity 未指定；检测到 MC 已连接，已自动设为 "mc"（否则游戏事件会被当成别处）。'
+    } else {
+      label = derivedActivity(title)
+      activityNote = `activity 未指定，标签按标题自动生成（${label}）；要让某个来源正常投递请重新 focus_enter 并显式给 activity（MC 用 "mc"）。`
+    }
     // 模型侧一次只留一个 focus：进入新的 = 离开旧的
     leave()
     const lease = api().enter({
@@ -54,7 +94,8 @@ export function apply(ctx) {
       pierce: pierce ?? DEFAULT_PIERCE,
       ttlMs: minutes == null ? null : Math.max(1, Number(minutes) || 1) * 60_000,
     })
-    return lease
+    if (!explicit && activityNote) autoActivities.set(lease.id, activityNote)
+    return { ...lease, activityAuto: !explicit, activityNote }
   }
 
   function statusText() {
@@ -64,9 +105,10 @@ export function apply(ctx) {
     if (lease) {
       const mins = Math.floor(minutesSince(lease, now()) / MINUTES_BUCKET) * MINUTES_BUCKET
       const sacred = lease.interruptible === false ? '（勿扰：只有管理员和闹钟能打断）' : ''
+      const auto = autoActivities.has(lease.id) || String(lease.label).startsWith('auto:act:') ? '（标签自动生成，不是显式 activity）' : ''
       // 不足一档就不说"已 0 分钟"：既没信息，又让每段文本无谓地变长。
       const elapsed = mins >= MINUTES_BUCKET ? `，已 ${mins} 分钟` : ''
-      lines.push(`你现在在：${lease.title}${sacred}${lease.reason ? ` —— ${lease.reason}` : ''}${elapsed}。`)
+      lines.push(`你现在在：${lease.title}${sacred}${auto}${lease.reason ? ` —— ${lease.reason}` : ''}${elapsed}。`)
     } else {
       lines.push('你不在任何专注空间里（自己的时间）。')
     }
@@ -105,12 +147,13 @@ export function apply(ctx) {
           interruptible: { type: 'boolean', description: 'Allow other places to interrupt you. Default true.' },
           goal: { type: 'string', description: 'What you want to finish.' },
           minutes: { type: 'number', description: 'Optional expected duration in minutes.' },
-          activity: { type: 'string', description: 'Optional stable id for this activity, e.g. qq:group:123.' },
+          activity: { type: 'string', description: 'Stable id of the activity whose messages should still reach you, e.g. "mc" or "qq:group:123". If omitted: when MC is connected it auto-uses "mc"; otherwise a label is derived from the title and the result tells you it was auto-generated.' },
         },
       },
       async execute(args) {
         const lease = enter(args ?? {})
-        return { text: `进入了专注空间：${lease.title}（${lease.label}）。` }
+        const note = lease.activityNote ? `\n⚠ ${lease.activityNote}` : ''
+        return { text: `进入了专注空间：${lease.title}（${lease.label}）。${note}` }
       },
     },
     {

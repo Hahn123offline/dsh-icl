@@ -86,3 +86,47 @@ test('focus 插件：工具能进入/查看/离开，提示词带焦点快照', 
   assert.equal(host.services.focus.current(), null)
   host.disable('focus')
 })
+
+// ── 红队 C2：focus_enter 忘带 activity 时不能静默变成随机标签 ──
+
+test('focus_enter 不带 activity：无 MC 时按标题推稳定标签，并明确提示"自动"', async () => {
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(focusManifest, focusPlugin)
+  await host.enable('focus')
+  const enter = host.services.tools.list().find((tool) => tool.name === 'focus_enter')
+  const status = host.services.tools.list().find((tool) => tool.name === 'focus_status')
+
+  const out = await enter.execute({ title: '写记忆层' })
+  assert.match(out.text, /auto:act:写记忆层/)
+  assert.match(out.text, /activity 未指定/)
+  assert.equal(host.services.focus.current().label, 'auto:act:写记忆层', '标签要按标题推，而不是随机 uuid')
+  assert.match((await status.execute({})).text, /标签自动生成/)
+
+  // 同标题再次进入得到同一标签（稳定，可被 pierce/对账）
+  await enter.execute({ title: '写记忆层' })
+  assert.equal(host.services.focus.current().label, 'auto:act:写记忆层')
+  host.disable('focus')
+})
+
+test('focus_enter 不带 activity：检测到 MC 在线时自动用 mc 并说明原因', async () => {
+  const host = createHost({ log: () => {} })
+  host.shared.set('mc-link', { status: () => ({ connected: true, adapter: { connected: true } }) })
+  host.registerPlugin(focusManifest, focusPlugin)
+  await host.enable('focus')
+  const enter = host.services.tools.list().find((tool) => tool.name === 'focus_enter')
+  const out = await enter.execute({ title: '玩 MC' })
+  assert.equal(host.services.focus.current().label, 'mc')
+  assert.match(out.text, /自动设为 "mc"/)
+  host.disable('focus')
+})
+
+test('focus_enter 显式 activity：标签原样、不出现自动提示', async () => {
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(focusManifest, focusPlugin)
+  await host.enable('focus')
+  const enter = host.services.tools.list().find((tool) => tool.name === 'focus_enter')
+  const out = await enter.execute({ title: '玩 MC', activity: 'mc' })
+  assert.equal(host.services.focus.current().label, 'mc')
+  assert.doesNotMatch(out.text, /自动/)
+  host.disable('focus')
+})
