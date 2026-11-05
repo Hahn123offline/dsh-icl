@@ -32,6 +32,7 @@ const SKILLS = [
   { id: 'furnace', title: '熔炼', when: (s) => Number(s?.adapter?.nearby?.furnace ?? 0) > 0, summary: '附近有熔炉' },
   { id: 'chest', title: '箱子', when: (s) => Number(s?.adapter?.nearby?.chest ?? 0) > 0, summary: '附近有箱子' },
   { id: 'craft', title: '合成', when: (s) => Number(s?.adapter?.inventoryCount ?? 0) > 0, summary: '背包有材料' },
+  { id: 'macro', title: '宏操作总览', when: () => false, summary: '8 个宏、参数、失败码、别逐方块' },
   { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
   { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
@@ -380,15 +381,53 @@ export function apply(ctx) {
     try { return (ctx.focus?.list?.() ?? []).filter((lease) => lease.owner === 'focus') } catch { return [] }
   }
 
-  /** 时间的持续目标（"游戏收尾"范围：focus==='mc' 或未来的 'mc:*' 命名空间）。 */
+  /** 所有 focus 租约（含时间/其它插件的）：回执要如实列出，不能只报 MC 相关的。 */
+  function allFocusLeases() {
+    try { return ctx.focus?.list?.() ?? [] } catch { return [] }
+  }
+
+  // MC 相关性的识别：不再只靠 focus==='mc' 字符串，也认 activity/title/goal/reason/服务器别名。
+  const MC_TOKEN_RE = /(^|[^a-z0-9])mc([^a-z0-9]|$)|minecraft|我的世界/i
+  function mcTokenMatch(value) {
+    const text = String(value ?? '').trim()
+    if (!text) return false
+    if (MC_TOKEN_RE.test(text)) return true
+    // 服务器别名（flat/survival…）：专注/目标里写"在 flat 服挖矿"也算 MC。
+    try {
+      return serverList().some((row) => row.name && new RegExp(`(^|[^a-z0-9])${String(row.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(text))
+    } catch { return false }
+  }
+
+  function focusIsMc(lease) {
+    return [lease?.label, lease?.title, lease?.goal, lease?.reason, lease?.activity].some(mcTokenMatch)
+  }
+
+  function goalIsMc(goal) {
+    const tag = String(goal?.focus ?? '')
+    if (tag === focus || tag.startsWith(`${focus}:`)) return true
+    return [goal?.focus, goal?.theme, goal?.title].some(mcTokenMatch)
+  }
+
+  /** MC 相关的模型 focus（cleanup 会释放）。 */
+  function mcFocusLeases() {
+    return modelFocusLeases().filter((lease) => focusIsMc(lease))
+  }
+
+  /** MC 相关的时间持续目标（cleanup 会 cancel）；focus 写成别的名字也能按 activity/theme/服务器识别。 */
   function mcTimeGoals() {
     try {
       const time = ctx.services?.get?.('time')
       if (!time?.goals) return []
-      return time.goals().filter((goal) => {
-        const tag = String(goal.focus ?? '')
-        return tag === focus || tag.startsWith(`${focus}:`)
-      })
+      return time.goals().filter((goal) => goalIsMc(goal))
+    } catch { return [] }
+  }
+
+  /** 所有时间持续目标（回执要如实列出，不只看 MC 的）。 */
+  function allTimeGoals() {
+    try {
+      const time = ctx.services?.get?.('time')
+      if (!time?.goals) return []
+      return time.goals()
     } catch { return [] }
   }
 
@@ -432,8 +471,8 @@ export function apply(ctx) {
     primed = false
     lastSeq = 0
 
-    const focusLeases = modelFocusLeases()
-    const goals = mcTimeGoals()
+    const mcFocusBefore = mcFocusLeases()
+    const mcGoalsBefore = mcTimeGoals()
     const details = []
     const processLine = () => {
       if (killed.clean) {
@@ -455,31 +494,49 @@ export function apply(ctx) {
     if (cleanup) {
       const failed = []
       let released = 0
-      for (const lease of focusLeases) {
+      for (const lease of mcFocusBefore) {
         try { lease.release(); released += 1 } catch { failed.push(`focus:${lease.label}`) }
       }
       let cancelled = 0
       try {
         const time = ctx.services?.get?.('time')
-        for (const goal of goals) {
+        for (const goal of mcGoalsBefore) {
           try { time.removeGoal(goal.id); cancelled += 1 } catch { failed.push(`goal:${goal.id}`) }
         }
       } catch { /* time 不存在：下面用剩余数量报告 */ }
-      details.push(`收尾清理：focus 释放 ${released} 个、MC 持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
+      details.push(`收尾清理（MC 相关，按 activity/标签/服务器别名识别）：focus 释放 ${released} 个、持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
     }
 
-    // 结论先行：先给"干净没有"，再给分项。她自己说过要能把分项拼成一句结论。
-    const leftFocus = modelFocusLeases()
-    const leftGoals = mcTimeGoals()
+    // 结论先行，但只对"真的空了"说干净：所有 focus/目标都算（MC 和非 MC 分开报），不再只看 MC 字符串。
+    const leftFocusAll = allFocusLeases()
+    const leftMcFocus = leftFocusAll.filter((lease) => focusIsMc(lease))
+    const leftGoalsAll = allTimeGoals()
+    const leftMcGoals = leftGoalsAll.filter((goal) => goalIsMc(goal))
+    const leftOtherFocus = leftFocusAll.filter((lease) => !focusIsMc(lease))
+    const leftOtherGoals = leftGoalsAll.filter((goal) => !goalIsMc(goal))
     const leftover = timeLeftover()
-    const hanging = []
-    if (externalConnected) hanging.push('外部 body 仍在线')
-    if (leftFocus.length) hanging.push(`focus ${leftFocus.length} 个（${leftFocus.map((lease) => lease.label).slice(0, 3).join('、')}）`)
-    if (leftGoals.length) hanging.push(`MC 持续目标 ${leftGoals.length} 个（${leftGoals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
-    const verdict = hanging.length
-      ? `收工完成但没完全干净：${hanging.join('；')}${leftFocus.length || leftGoals.length ? '——要一起清就 mcb_leave {cleanup:true}，或分开 focus_leave / time_cancel' : ''}`
-      : '已完全收工：body 已退出，focus 和 MC 持续目标都空着，不会被游戏事件叫醒'
-    if (!cleanup && (leftFocus.length || leftGoals.length)) details.push(`还挂着：${hanging.join('；')}`)
+    const mcHanging = []
+    if (externalConnected) mcHanging.push('外部 body 仍在线')
+    if (leftMcFocus.length) mcHanging.push(`MC focus ${leftMcFocus.length} 个（${leftMcFocus.map((lease) => lease.label).slice(0, 3).join('、')}）`)
+    if (leftMcGoals.length) mcHanging.push(`MC 持续目标 ${leftMcGoals.length} 个（${leftMcGoals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
+    const otherHanging = []
+    if (leftOtherFocus.length) otherHanging.push(`其它 focus ${leftOtherFocus.length} 个（${leftOtherFocus.map((lease) => lease.label).slice(0, 3).join('、')}）`)
+    if (leftOtherGoals.length) otherHanging.push(`其它持续目标 ${leftOtherGoals.length} 个（${leftOtherGoals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
+    let verdict
+    if (mcHanging.length) {
+      verdict = `收工完成但没完全干净：${mcHanging.join('；')}${otherHanging.length ? `；另外还有${otherHanging.join('、')}` : ''}${cleanup ? '——MC 相关已尽量清，剩下的需要手动 focus_leave / time_cancel 或再确认' : '——要一起清就 mcb_leave {cleanup:true}，或分开 focus_leave / time_cancel'}`
+    } else if (otherHanging.length) {
+      verdict = `body 已退出；但还有非 MC 的专注/目标在：${otherHanging.join('；')}——游戏事件不会叫醒你，这些要清用 focus_leave / time_cancel`
+    } else {
+      verdict = '已完全收工：body 已退出，focus 和持续目标都空着，不会被游戏事件叫醒'
+    }
+    if (!cleanup && (leftFocusAll.length || leftGoalsAll.length)) {
+      const bits = []
+      if (leftMcFocus.length || leftMcGoals.length) bits.push(`MC 相关 ${leftMcFocus.length + leftMcGoals.length} 个`)
+      if (otherHanging.length) bits.push(otherHanging.join('、'))
+      details.push(`还挂着（全部）：${bits.join('；')}`)
+    }
+    if (cleanup && (leftOtherFocus.length || leftOtherGoals.length)) details.push(`非 MC 的没动：${otherHanging.join('；')}（不归 MC 收尾管；要清用 focus_leave / time_cancel）`)
     if (leftover) {
       const bits = [`schedule ${leftover.schedules} 个（闹钟不会因 leave 消失）`, `积压 ${leftover.queue} 条`]
       if (leftover.lock) bits.push(`时间锁：${leftover.lock.reason ?? '有'}`)
@@ -512,10 +569,10 @@ export function apply(ctx) {
     const a = s?.adapter ?? {}
     if (isConnected(s)) {
       const p = a.position
-      const pos = p ? `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}` : '?'
+      const pos = p ? fmtPosition(p) : '?'
       const paused = s.paused ? ` · 暂停(${REASON_TEXT[s.pausedReason] ?? s.pausedReason ?? '安全'})` : ''
-      const bag = Number.isFinite(Number(a.inventoryCount)) ? ` · 背包${Number(a.inventoryCount)}` : ''
-      return clampLine(`MC｜在线 ${a.host}:${a.port} · ${pos} · ${taskInline(s.task)}${paused} · 血${Math.round(Number(a.health ?? 0))}/20${bag}`)
+      const bag = Number.isFinite(Number(a.inventoryCount)) ? ` · 背包${Number(a.inventoryCount)}件` : ''
+      return clampLine(`MC｜在线 ${a.host}:${a.port} · ${pos} · ${taskInline(s.task)}${paused} · 血${fmtVital(a.health)}/20${bag}`)
     }
     if (s) {
       // body HTTP 活着但没连上：重连中/被踢/暂停太久。
@@ -563,7 +620,66 @@ export function apply(ctx) {
   // ── 工具 ────────────────────────────────────────────────────────────────
   async function inspect(kind, params = {}) {
     const body = await call('/v1/inspect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, params }) })
-    return { text: String(body.result?.text ?? '') }
+    return { text: String(body.result?.text ?? ''), data: body.result?.data ?? null }
+  }
+
+  // 位置/血量统一口径：所有工具文本与提示词行都走同一取整（x,y,z 无空格），避免差 1-3 格/两种写法。
+  function fmtPosition(pos) {
+    if (!pos) return '未知'
+    const x = Number(pos.x)
+    const y = Number(pos.y)
+    const z = Number(pos.z)
+    if (![x, y, z].every((value) => Number.isFinite(value))) return '未知'
+    return `${Math.round(x)},${Math.round(y)},${Math.round(z)}`
+  }
+
+  function fmtVital(value) {
+    const number = Number(value)
+    return Number.isFinite(number) ? String(Math.round(number)) : '?'
+  }
+
+  /** body 的 look 文本里有原始小数（health 17.8333…）：用同一取整口径重写成"18/18/0"。 */
+  function normalizeLookText(text, data = {}) {
+    const lines = String(text ?? '').split('\n')
+    const health = Number.isFinite(Number(data?.health)) ? Math.round(Number(data.health)) : null
+    const food = Number.isFinite(Number(data?.food)) ? Math.round(Number(data.food)) : null
+    return lines.map((line) => {
+      if (line.startsWith('位置：') && data?.position) {
+        const tail = line.includes('；') ? line.slice(line.indexOf('；')) : ''
+        return `位置：${fmtPosition(data.position)}${tail}`
+      }
+      if (line.startsWith('生命/饥饿/氧气：')) {
+        const match = line.match(/^生命\/饥饿\/氧气：([^/\n]+)\/([^/\n]+)\/(.+)$/)
+        if (match) {
+          const hp = health ?? fmtVital(match[1])
+          const satiety = food ?? fmtVital(match[2])
+          return `生命/饥饿/氧气：${hp}/${satiety}/${match[3]}`
+        }
+      }
+      return line
+    }).join('\n')
+  }
+
+  /** 背包口径：件 = 物品总数（body inventoryCount），格 = 占用格子（body inventory.used）。 */
+  function backpackText(status = lastStatus) {
+    const adapter = status?.adapter ?? {}
+    const count = Number(adapter.inventoryCount)
+    if (!Number.isFinite(count)) return null
+    const used = Number(adapter.inventory?.used)
+    const full = adapter.inventory?.full === true
+    return `${count} 件${Number.isFinite(used) ? `（占 ${used} 格${full ? '，快满了' : ''}）` : ''}`
+  }
+
+  /** 把结果对象里的坐标（x/y/z）统一取整，避免 dig/place 的 JSON 里出现 12.70000001。 */
+  function roundCoords(value, depth = 0) {
+    if (Array.isArray(value)) return value.map((entry) => roundCoords(entry, depth + 1))
+    if (!value || typeof value !== 'object' || depth > 3) return value
+    const out = {}
+    for (const [key, entry] of Object.entries(value)) {
+      if ((key === 'x' || key === 'y' || key === 'z') && typeof entry === 'number' && Number.isFinite(entry)) out[key] = Math.round(entry)
+      else out[key] = roundCoords(entry, depth + 1)
+    }
+    return out
   }
 
   function eventLineFor(event, status = null) {
@@ -620,7 +736,7 @@ export function apply(ctx) {
     }
     if (op === 'say') return `[say] ${result?.ok === false ? '没发出去' : '已发送'}`
     if (result == null) return `[${op}] 已完成（没有返回内容）`
-    return `[${op}] ${JSON.stringify(result).slice(0, 400)}`
+    return `[${op}] ${JSON.stringify(roundCoords(result)).slice(0, 400)}`
   }
 
   /** 坐标点：接受 {x,y,z} 或 [x,y,z]（模型两种写法都用过），统一成 body 认的对象。 */
@@ -784,7 +900,7 @@ export function apply(ctx) {
       async execute(args = {}) {
         const out = await join(args)
         const a = out.status?.adapter ?? {}
-        const pos = a.position ? `${Math.round(a.position.x)},${Math.round(a.position.y)},${Math.round(a.position.z)}` : '未知'
+        const pos = a.position ? fmtPosition(a.position) : '未知'
         const how = out.reused ? '复用了一个已经连着的 body' : 'body 已启动并连上'
         // 新版 body 的 preflight：这张图有什么资源（她问过"能不能给张服务器小卡片"）。
         const env = a.environment?.summary ? `；环境：${String(a.environment.summary).slice(0, 160)}` : ''
@@ -841,12 +957,13 @@ export function apply(ctx) {
         const offlineReason = status.safety?.offlineReason ?? null
         // 陆地上 body 的 oxygen 是 null（不是 0）——别显示"氧气 0"让她以为在憋气。
         const oxygen = a.oxygen == null || !Number.isFinite(Number(a.oxygen)) ? '?' : Math.round(Number(a.oxygen))
+        const bag = backpackText(status)
         const lines = [
           `MC 身体：${connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}${!connected && offlineReason ? `（离线原因：${String(offlineReason).slice(0, 120)}）` : ''}`,
           `玩家：${(a.players ?? []).join('、') || '无'}`,
-          `位置：${a.position ? `${Math.round(a.position.x)}, ${Math.round(a.position.y)}, ${Math.round(a.position.z)}` : '未知'} · 维度 ${a.dimension ?? '?'}`,
-          `生命/饥饿/氧气：${Math.round(Number(a.health ?? 0))}/20，${Math.round(Number(a.food ?? 0))}/20，${oxygen}`,
-          `背包：${Number.isFinite(Number(a.inventoryCount)) ? `${Number(a.inventoryCount)} 件` : '未知'}`,
+          `位置：${fmtPosition(a.position)} · 维度 ${a.dimension ?? '?'}`,
+          `生命/饥饿/氧气：${fmtVital(a.health)}/20，${fmtVital(a.food)}/20，${oxygen}`,
+          `背包：${bag ?? '未知'}`,
           `任务：${status.task ? `${status.task.kind} ${status.task.state}${status.task.outcomeUnknown ? '（结果未知）' : ''}${status.task.state === 'paused' ? '（断线挂起，可 resume taskId 继续）' : ''}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
         ]
         const reconnect = status.reconnect
@@ -877,7 +994,10 @@ export function apply(ctx) {
       description: '附近实体会列出名字和距离——hostile（zombie/skeleton/creeper）就在旁边时先保命。视线方块给出她正对着什么，用来判断朝向。想知道某类方块在哪用 mcb_scan，想看地形用 mcb_map。',
       when: ['刚进服/刚复活，先看周围', '要判断危险、朝向、附近有什么'],
       parameters: { type: 'object', properties: {} },
-      async execute() { return inspect('look') },
+      async execute() {
+    const out = await inspect('look')
+    return { text: normalizeLookText(out.text, out.data) }
+  },
     },
     {
       name: 'mcb_inventory',
@@ -885,7 +1005,11 @@ export function apply(ctx) {
       description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：task_done 只表示达成了 body 的判据（mine 是背包净增达标），物品还可能散落在地上；task_failed/unknown 时更要看背包确认到底有没有到手。合成/熔炼/交易前先看材料够不够。',
       when: ['合成/熔炼/放置之前', '任务完成后核对产物'],
       parameters: { type: 'object', properties: {} },
-      async execute() { return inspect('inventory') },
+      async execute() {
+    const out = await inspect('inventory')
+    const summary = backpackText()
+    return { text: summary ? `${out.text}\n合计：${summary}（件=物品总数，格=占用背包格子）` : out.text }
+  },
     },
     {
       name: 'mcb_scan',
