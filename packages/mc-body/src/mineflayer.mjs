@@ -1338,13 +1338,17 @@ export function createMineflayerAdapter({
       if (!recipes.length) throw new Error(`没有可用配方：${name}（可能缺工作台/材料；需要工作台时先放一张或靠近它）`)
       const before = countOf(name)
       const recipe = recipes[0]
+      // 语义对齐：count = “想要多少个成品”（不是 craft 次数）。
+      // 木板/木棍等一次产 4 个：老代码把 count 直接当次数，要 5 个木板会真合成 5 次（吞 5 根木头）。
+      const perCraft = Math.max(1, Number(recipe.result?.count) || 1)
+      const craftTimes = Math.max(1, Math.ceil(count / perCraft))
       // 材料快照：合成窗口异常时，材料可能已经进窗口/被消耗，产物却没到背包（当事人反馈“吞材料”）。
       const inputs = [recipe.requires?.[0], recipe.requires?.[1], recipe.requires?.[2]].filter(Boolean)
         .map((entry) => ({ name: entry.name ?? null, count: Number(entry.count) || 1 }))
       const inputsBefore = inputs.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null }))
       let craftError = null
       try {
-        await bot.craft(recipe, count, table)
+        await bot.craft(recipe, craftTimes, table)
       } catch (error) {
         craftError = error
       }
@@ -1353,7 +1357,10 @@ export function createMineflayerAdapter({
       const produced = after - before
       if (produced < count) {
         const detail = {
-          expected: count,
+          requested: count,
+          craftTimes,
+          perCraft,
+          expectedAtLeast: count,
           produced,
           before,
           after,
@@ -1361,13 +1368,13 @@ export function createMineflayerAdapter({
           inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null })),
           craftError: craftError ? String(craftError?.message ?? craftError) : null,
         }
-        const error = new Error(`craft: 产物没进背包（期望 +${count}，实际 +${produced}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
+        const error = new Error(`craft: 产物没进背包（想要 +${count}，实际 +${produced}，合成 ${craftTimes} 次×${perCraft}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
         error.name = 'TaskFailedError'
         error.result = detail
         emit('craft_no_product', detail)
         throw error
       }
-      return { crafted: name, count, inInventory: after, produced }
+      return { crafted: name, requested: count, craftTimes, perCraft, produced, inInventory: after }
     }
     if (op === 'furnace') {
       const block = blockAtTarget(params.target ?? { block: 'furnace', radius: 4 }) || bot.findBlock({ matching: bot.registry.blocksByName.furnace?.id, maxDistance: 4 })
