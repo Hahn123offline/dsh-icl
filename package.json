@@ -7,7 +7,7 @@
   "workspaces": ["packages/core", "packages/dsh-icl", "packages/plugins/*", "packages/mc-body"],
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test packages/core/test packages/mc-body/test",
+    "test": "node --test packages/core/test packages/mc-body/test packages/plugins/mc-link/test",
     "check": "node --check packages/core/src/index.mjs"
   },
   "dependencies": {

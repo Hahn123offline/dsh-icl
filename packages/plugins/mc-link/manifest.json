@@ -1,8 +1,20 @@
 {
   "id": "mc-link",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "entry": "./src/index.mjs",
-  "tools": ["mcb_servers", "mcb_lan", "mcb_join", "mcb_leave", "mcb_status", "mcb_look", "mcb_scan", "mcb_map", "mcb_inventory", "mcb_do", "mcb_help"],
+  "tools": [
+    "mcb_servers",
+    "mcb_lan",
+    "mcb_join",
+    "mcb_leave",
+    "mcb_status",
+    "mcb_look",
+    "mcb_scan",
+    "mcb_map",
+    "mcb_inventory",
+    "mcb_do",
+    "mcb_help"
+  ],
   "slots": [],
   "focus": {},
   "requires": {}
