@@ -476,9 +476,11 @@ node tools/cache-probe.mjs diff --run cache-bf2
      换来 MC 回合不再每步追加一条快照。bridge 代码里已写明。
    - **DSH 侧有没有更干净的方式**：本版本 `RuntimeContextProjection.project()` 只产出 append 消息，没有 replace API
      （只有系统提示词投影有 replace 分支），所以只能在 ICL 侧节流；将来 DSH 支持快照 replace 可以去掉节流。
-   - **测量**：bridge 单测（同一 turn 5 次求值 = 1 次刷新；focus enter/leave 各 +1 次刷新且内容含新焦点；
-     `time_arrange` 工具结果 → 下一步快照含新安排；只读工具不重置节流；delivery 通知 → +1 次刷新；
-     `factsEveryStep` 关闭节流时每步刷新）；云端 lab 冒烟（`cache-throttle-smoke`：3 轮，1 条快照/轮，system 零 replace）。
+   - **测量口径（misc §0.5.5 提醒）**：bridge 单测断言的是 **provider 层 `stats.factsRefreshes`**（facts 文本重算次数），
+     **不是 DSH 实际 append 的快照条数**；`stale ≤ 1` 的完整证据 = fake ctx（provider 层）+ lab 冒烟（DSH 层 append/turn）。
+     单测清单：同一 turn 5 次求值 = 1 次刷新；focus enter/leave 各 +1 且内容含新焦点；`time_arrange` 工具结果 →
+     下一步快照含新安排；只读工具不重置节流；delivery 通知 → +1 次刷新；`factsEveryStep` 关闭节流时每步刷新。
+     lab 冒烟：`cache-throttle-smoke` 3 轮 **每轮 1 条快照**、system 零 replace（DSH 层 append/turn ≤ 1）。
    - **hit% 口径**：节流冒烟两组都是云端 `deepseek-account`（没有引擎 `cache-probe-engine.jsonl`），**云端不可测 hit%**；
      本地 hit% 由 `cache-bf2`/`cache-af2` 的本地 A/B 证明，节流只减少 append（方向非回归）。严格复核需本地同场景
      `ICL_FACTS_EVERY_STEP=1` vs 默认的对照（lead 已安排 mc-lab 在本地验收 run 上 `cache-probe rebuild` 补证据）。
