@@ -173,6 +173,19 @@ try {
 const initial = body.status()
 console.log(`[mc-body] initial connected=${initial.connected} paused=${initial.paused}${initial.pausedReason ? `(${initial.pausedReason})` : ''} name=${username}`)
 
+// 自检钩子（只给验证归因用）：模拟 crash/静默 exit，检查 body-exit.json 是否带 reason+stack。
+const selftestCrash = arg('--selftest-crash', null)
+if (selftestCrash) {
+  console.error(`[mc-body] selftest-crash=${selftestCrash}（1.5s 后触发，仅验证退出归因）`)
+  const timer = setTimeout(() => {
+    if (selftestCrash === 'uncaught') throw new Error('selftest: uncaught exception')
+    if (selftestCrash === 'rejection') { void Promise.reject(new Error('selftest: unhandled rejection')) ; return }
+    if (selftestCrash === 'exit1') { process.exit(1); return }
+    if (selftestCrash === 'exit0') { process.exit(0); return }
+  }, 1500)
+  if (typeof timer.unref === 'function') timer.unref()
+}
+
 // 心跳文件：被硬 kill 时，上层至少能从最后一条 alive 判断“进程是在哪个状态下被杀的”。
 const aliveTimer = setInterval(() => { if (!exiting) writeJson(aliveFile, snapshot()) }, Math.max(1000, Math.min(10_000, Number(watchdogMs) || 2000)))
 if (typeof aliveTimer.unref === 'function') aliveTimer.unref()
