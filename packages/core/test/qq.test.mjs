@@ -459,3 +459,27 @@ test('真 WebSocket 回环：收得到、进 delivery、客户端一个字节都
     await fake.close()
   }
 })
+
+/* ── 4. 静态安全不变量：插件里没有任何发送路径 ───────── */
+
+test('静态安全：index.mjs 没有发送调用；发送代码只存在于 outbound.mjs 且无人调用', () => {
+  const srcDir = new URL('../../plugins/qq/src/', import.meta.url)
+  const index = fs.readFileSync(new URL('index.mjs', srcDir), 'utf8')
+  const outbound = fs.readFileSync(new URL('outbound.mjs', srcDir), 'utf8')
+  const connector = fs.readFileSync(new URL('connector.mjs', srcDir), 'utf8')
+  // index 不得出现任何 OneBot 发送动作，也不得调用 outbound 的发送函数
+  assert.doesNotMatch(index, /send_(?:private|group)_msg/)
+  assert.doesNotMatch(index, /createOutbound\s*\(/)
+  assert.doesNotMatch(index, /\.sendPrivate\s*\(/)
+  // 只允许 import 纯判定（sendEnabled / SEND_APPROVAL_TOKEN），不允许 import 发送实现
+  const importLine = index.split(/\r?\n/).find((line) => line.includes("from './outbound.mjs'")) ?? ''
+  assert.doesNotMatch(importLine, /createOutbound/)
+  // 只读连接器里没有任何 ws.send（影子模式零出站）
+  assert.doesNotMatch(connector, /\.send\s*\(/)
+  // 发送实现存在但只定义、不自动执行；动作字符串只应出现在 outbound.mjs
+  assert.match(outbound, /send_private_msg/)
+  const callers = ['index.mjs', 'connector.mjs', 'normalize.mjs', 'gate.mjs']
+    .map((file) => fs.readFileSync(new URL(file, srcDir), 'utf8'))
+    .filter((text) => /createOutbound\s*\(/.test(text))
+  assert.deepEqual(callers, [], 'createOutbound 不允许被其它源文件调用')
+})
