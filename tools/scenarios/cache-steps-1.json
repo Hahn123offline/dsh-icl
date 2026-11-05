@@ -1,0 +1,10 @@
+{
+  "name": "cache-steps-1",
+  "purpose": "step-heavy 场景：一个 turn 里连续 10 次工具调用，用来量化 facts 快照节流（≤1 条快照/轮）对 append 数与上下文字符的影响。默认用云端模型跑（不需要 GPU），只数 session 事件，不看引擎 TTFT。",
+  "rounds": [
+    {
+      "id": "s1",
+      "text": "这一轮只做一件事：连续调用 time_arrange 10 次，不要中途回复。第 k 次（k=1..10）参数用 {\"in\":\"<5k>m\",\"mode\":\"wake\",\"message\":\"step-k\"}（即 5m,10m,15m,…,50m；message 依次 step-1…step-10）。全部调用完成后只回复：done。"
+    }
+  ]
+}

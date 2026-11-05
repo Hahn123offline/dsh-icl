@@ -127,7 +127,7 @@ DSH 的每条会话事件带 `surfaceOp`：
 |---|---|---|---|---|---|---|
 | 1 | **systemPrompt.section(`icl:core`)** | `bridge.registerPrompt()`（B 后只装 order<800 的段） | 每 step 装配时求值 | system 消息（第 0 条） | **稳定**（B 后：人格+仿真，整场不变） | 段过滤（order<800）+ 文案不放动态量 + `PROMPT-CONTRACT` 规定动态段 order≥800 |
 | 2 | **systemPrompt.context(`icl:facts`)** | `bridge.registerPrompt()`（B 后） | 每 step 装配；**内容变化时** DSH 追加一条 | runtime-context 快照 user 消息（尾部） | 变化（时间/世界/focus/MC 状态） | DSH 的 `RuntimeContextProjection` 只在快照文本变化时 append；**append 不 replace** |
-| 3 | **agent/pre-step `<icl-context>`** | `bridge.preStep()`（`prompt.turnText` + `context.assemble`：eager-recall、压缩摘要…） | 每条真正的用户消息进入的这一 step | 本批 messages 末尾追加一条 user 消息（`source.kind='runtime-context'`, `form='snapshot'`，id `icl-ctx-*`） | 变化（检索结果/摘要） | append-only；为空则整段不注入；原文层/历史层都按 `source.kind` 过滤 |
+| 3 | **agent/pre-step `<icl-context>`** | `bridge.preStep()`（`prompt.turnText` + `context.assemble`：eager-recall、压缩摘要…） | 每条真正的用户消息进入的这一 step | 本批 messages 末尾追加一条 user 消息（`source.kind='plugin:icl'`, `form='notice'`，id `icl-ctx-*`；producer-owned，避免与 DSH 快照投影撞车） | 变化（检索结果/摘要） | append-only；为空则整段不注入；原文层/历史层都按 `source.kind` 过滤 |
 | 4 | **delivery → steer/followup notice** | 插件 `delivery.push` → `bridge.tick()` | 每 500ms tick（空闲时起一轮；运行中在下一个 step 边界） | 追加 user 消息（`source.kind='plugin:<plugin>'`, `form='notice'`） | 变化（通知内容） | append-only；`signals`/`delivery` 的 gate 决定"投不投/进不进积压"，不改变消息位置 |
 | 5 | **tool result** | DSH 工具执行 | 每个 tool call 之后 | 追加 tool 消息（surface append），下一 step 请求可见 | 变化（内容本身） | append-only；**例外**：DSH `compaction-tool-result-pruner` 超阈值时会改写旧 tool result（§7） |
 | 6 | **context.provideHistory** | `bridge.registerHistory()` | 每次 `context.assemble()`（pre-step） | **不进请求**，只作为插件生成 `<icl-context>` 的输入 | 派生自 surface | 只读投影；按 `kind==='user'` 过滤，滤掉 runtime-context/`icl-ctx-*` |
@@ -206,9 +206,13 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | `headclock`（旧 bug：动态行放 system 开头） | 开头变 | **0%** | **8008 tok 全量** | **5.0–5.3s** |
 | `facts-tail`（**方案 B**：system 全静态，事实作为尾部 runtime 消息） | 不变 | **99%** | **108 tok** | **0.4s** |
 
-**结论：把动态段从 system 开头挪到 system 尾部（方案 A）收益 = 0**——只要 system 有差异就整条作废，
-和差异出现在第 1 个字节还是最后一个字节无关。唯一有效的是让 system **完全不变**（方案 B）：
+**结论（限定在 ninfer 的复用粒度上）：把动态段从 system 开头挪到 system 尾部（方案 A）收益 = 0**——ninfer 按**整段 system 的 digest** 决定能不能复用，system 有任何差异就整条作废，
+和差异出现在第 1 个字节还是最后一个字节无关。唯一有效的是让 system **完全不变**（方案 B）。
 真实 8k payload 下 **TTFT 5.1s → 0.4s（12×）、每轮 prefill 8008 → 108 tok（74×）**。
+
+> 限定：这是 **NInfer KVMem** 的行为（按整段 system 的 digest 复用）。按 token 前缀复用的引擎（如 llama.cpp `--cache-reuse` 一类）通常能保住差异点之前的 token，"把动态段后置"在那种引擎上可能仍有一半收益；对外引用请带上引擎限定。
+
+
 复跑：`node tools/cache-probe.mjs api --from-run cache-af2 --turns 4`。
 
 ---
@@ -238,13 +242,16 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | 事实的"持久指令"感 | system 里不再有"时间：…"，改为每轮快照；模型按"当前状态"理解（DSH 官方语义） | 否（PROMPT-CONTRACT §3 本来就规定事实段只陈述、不教导） |
 | GUI/transcript | 事实显示为 runtime-context 快照，不再是 system 提示词的一部分 | 展示位置变化，内容不变 |
 | ICL 原文层 / dream | 桥内按 `source.kind!=='user'` 过滤；`dsh-raw` 另有 `/^(Current runtime context|Time sampled|…)/` 过滤 → 快照不会进原文/dream wash | 否 |
+| `<icl-context>` 的 source.kind | `runtime-context` → `plugin:icl`（producer-owned）；内容/位置/频率不变，GUI 从"上下文快照"变"插件通知" | 否（DSH 不再把它当自己的快照 → 少一次重复 append） |
 | 旧宿主兼容 | 无 `systemPrompt.context` 时退回全量单段（缓存差但语义完整），有测试 | 否 |
-| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同代码 A/B；生产默认必须是 B（不设该变量）。它不是产品配置、不会出现在 preset 文档里，**release/handover 前应删**。唯一读取点在 `bridge.registerPrompt()` 的短路（`!== ''1''`），不设时行为完全由 config 决定；删之前也不会被业务代码误用 | 不是产品路径 |
+| facts 快照刷新频率 | 同一 turn 内最多 1 次；focus/time 等**事件类事实** dirty 后下一步必刷新（stale ≤ 1 步）；MC 环境事实允许整轮陈旧（以 `mcb_status` 为准） | 是（有明确豁免与护栏，见 §7.7） |
+| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同代码 A/B；生产默认必须是 B（不设该变量）。它不是产品配置、不会出现在 preset 文档里，**release/handover 前应删**。唯一读取点在 `bridge.registerPrompt()` 的短路（`!== '1'`），不设时行为完全由 config 决定；删之前也不会被业务代码误用 | 不是产品路径 |
 
 ### 5.3 before / after 数字
 
-> 两轮跑的是**同一份代码内容**：before 启动时 HEAD 还是 `6f7e88f`（B 代码已在工作区、尚未提交），随后 `ff44c00` 提交的就是这份代码，
-> after 在 `ff44c00` 上跑；两轮 `toolsHash` 相同（`ea157721d261`）、system 只差 118 字节（事实移出），除 `ICL_FACTS_IN_SYSTEM` 外没有别的差异。
+> 两轮是**相邻 commit**（before `6f7e88f`、after `ff44c00`）：两 commit 之间只有测量开关（`ICL_FACTS_IN_SYSTEM`）、日志、`factsOff` 清理、探测工具/场景/测试的差异，
+> **core/src、plugins、prompts、config.mjs 零变化**（misc §0.4 独立核过）→ 对"布局"这一变量有效；两轮 `toolsHash` 相同（`ea157721d261`）、system 只差 118 字节（事实移出）。
+> 要**严格同 commit** 复跑 before：在 master 上设 `ICL_FACTS_IN_SYSTEM=1` + `cache-probe run` 即可（开关正是为此保留到测量结束）。
 > 同一 scenario（`tools/scenarios/cache-facts-6.json`：每轮用 `time_arrange` 让"下一个安排"变早，
 > 制造真实的事实变化）、`--rounds 6 --gap 65`（每轮跨分钟）、同一引擎（`coder390-27b-q3-df2-4x500`）、
 > 同一 lab preset（`icl-lab`，32 个 ICL 工具 + `tool-todo`，**toolsHash 实测 34 个工具 / `ea157721d261`**）；
@@ -288,7 +295,7 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | 合计 | — | — | **0 次 replace** | 106534 | **9421** | 97113 | **91.2%** | 0.5s/轮 | **1/6（仅冷启动）** |
 
 > 对照：before 每轮 system 被 replace 一次 → 每轮一次 8.3k 全量 prefill；
-> after 每轮 prefill ≈240 tok（= 新增的用户消息 + 事实快照 + 助手回复的增量）。
+> after 每轮 prefill ≈240 tok（= 新增的用户消息 + 事实快照 + 助手回复的增量）；注意这 240 tok 里有 ≈130–150 tok 是事实快照（见 §7.7）。
 
 #### 合并后 sanity（`d1574d5` + 云端 deepseek-flash，不占 GPU）
 
@@ -303,18 +310,19 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 
 | 指标 | before（事实在 system） | after（事实走 runtime-context） | 变化 |
 |---|---|---|---|
-| commit | `6f7e88f`（工作区已含 B 代码，用 env 开关切旧布局） | `ff44c00`（同一份代码，默认布局） | 同代码，只切布局 |
+| commit | `6f7e88f`（相邻 commit，env 开关切旧布局） | `ff44c00`（相邻 commit，默认布局） | 注入内容面零变化，只切布局 |
 | 工具面 | 34 个 / `ea157721d261` | 34 个 / `ea157721d261` | 不变 |
 | 系统提示词字节（每轮） | 8526–8533 | **8408（12 步恒定）** | 少 118 B（事实移出） |
 | 系统提示词更新方式 | **每轮 `replace`（6/6 轮）** | **1 次 `append`，0 次 replace** | 关键 |
-| 相邻两轮首差异字节 | 2263–2269（每次 replace） | **-1（完全一致）** | 关键 |
-| 每轮 prompt tokens | 16150 → 17805 | 16278 → 19232 | 略增（快照消息累积） |
+| 相邻两轮首差异位置 | **2263–2269 字符（5721–5727 字节）**，每次 replace | **-1（完全一致）** | 关键 |
+| 每轮 prompt tokens | 16150 → 17805 | 16278 → 19232 | +590 tok/轮（含正常对话；快照**线性累积**见 §7.7） |
 | 每轮 prefill tokens（合计 6 轮） | **59547** | **9421** | **-84%** |
 | 每轮 cache hit tokens（合计 6 轮） | 42327（41.5%） | 97113（**91.2%**） | +120% |
-| 每轮 TTFT（全量那次 / 稳态） | 5.3–6.1s | **0.48–0.58s** | **≈11×** |
-| 全量失效轮数 | **6/6** | **1/6（仅首轮冷启动）** | 关键 |
+| 每轮 TTFT（全量请求 / 稳态请求） | **5.01–6.09s**（7 条全量请求）/ 0.51–0.57s | **0.42–0.58s**（11 条命中请求） | **≈11×** |
+| 全量失效 | **7 条请求 / 6 轮全部命中失效** | **1 条请求（首轮冷启动）/ 6 轮** | 关键 |
 | 跨 6 轮 prefill 总秒数 | **40.4s** | **9.64s**（其中 5.5s 是首轮冷启动） | **-76%** |
-| 单轮 turnMs | 6.6–11.6s | **1.6–1.9s**（首轮 6.9s） | ≈4× |
+| 事实快照追加量 | 0（在 system 里 replace） | **7 条 append / 12 步累计 3213 字符**（首条 465，稳态 458；≈130–150 tok/次） | 线性累积，见 §7.7 |
+| 单轮 turnMs | 6.6–11.6s | **1.6–1.9s**（不含首轮 6.9s） | ≈4× |
 
 > 真实会话的绝对数字更大（prompt 7k–24k tokens、TTFT 10–24s），因为会话历史更长；
 > 修复后的稳态成本与历史长度无关（只 prefill 新增消息），所以**会话越长，收益越大**。
@@ -354,6 +362,7 @@ node tools/cache-probe.mjs run --scenario tools/scenarios/cache-facts-6.json \
 ```
 
 > **`ICL_FACTS_IN_SYSTEM=1` 仅用于测量**：它不是产品配置、不会出现在 preset 文档或用户可见设置里；
+> 同类的测量开关还有 `ICL_FACTS_EVERY_STEP=1`（关闭 facts 按轮节流、退回每步求值），同样仅用于测量、release 前应删。
 > 生产默认必须是 B（不设该变量），**release/handover 前应删掉这个 env 分支**（唯一读取点是
 > `bridge.registerPrompt()` 的短路；删掉它不需要改任何默认行为）。
 
@@ -428,12 +437,15 @@ node tools/cache-probe.mjs diff --run cache-bf2
 
 ## 7. 已知交互坑与后续选项
 
-1. **`<icl-context>` 用 `source.kind='runtime-context'`，与 DSH 自己的快照投影撞车**：
-   DSH 的 `RuntimeContextProjection` 把最新的 runtime-context user 消息当作"自己上一次的快照"。
-   ICL 注入 `<icl-context>` 之后，DSH 下一步会再追加一份自己的快照（**追加**，缓存安全，但多几百字节）。
-   - 现状：eager-recall 命中率低、compaction 默认关，所以多数回合不触发，暂不动（lead 决策）。
-   - 后续选项：把 `<icl-context>` 的 `source.kind` 改成 producer-owned（如 `plugin:icl`），
-     代价是 GUI 里从"上下文快照"变成"插件通知"。
+1. **`<icl-context>` 的 `source.kind` 已从 `runtime-context` 改为 `plugin:icl`（已修，本 commit）**：
+   修前它冒充 DSH 的运行时快照：DSH 的 `RuntimeContextProjection` 用 `isOwned(message) = source.kind === 'runtime-context'`
+   判归属，于是 ICL 每注入一次 `<icl-context>`，DSH 下一步就认为"自己的快照被换了"、**额外 append 一份完整快照**
+   （≈ **+190 tok 上下文 / +140 prefill tok，每轮一次**）；而 bridge 自己在 `noticeMessage` 里写着"kind 必须 producer-owned"。
+   - 修法：`source: { kind: 'plugin:icl', form: 'notice', summary }`（producer-owned，v4 规范允许；GUI 显示为插件通知）。
+   - 证据：`dsh-bridge.test.mjs` 断言注入消息 `kind === 'plugin:icl'` 且 `!== 'runtime-context'`；
+     raw/原文层与 `sessionHistory` 仍按 `kind !== 'user'` 过滤（改后不进人话/dream）。
+   - 语义：`<icl-context>` 仍然是"这一轮的上下文补充"，只是不再被 DSH 误认成"快照"；
+     DSH 自己的快照仍由 `systemPrompt.context('icl:facts')` 等正常贡献，两者不再互相触发。
 2. **DSH 自己的压缩/剪枝会改写历史**：`compaction-basic`（80% context window 触发）、
    `compaction-tool-result-pruner`（旧 tool result 超阈值改写）。触发时前缀全废；
    这不是 ICL 的问题，但长会话里它是第二股"全量失效"来源。ICL 的 compaction 插件已默认关（避免第三套）。
@@ -445,6 +457,23 @@ node tools/cache-probe.mjs diff --run cache-bf2
    "时段/阶段/下一个安排/积压/focus 分钟数（5 分钟取整）/MC 状态"。B 之后它们都不在 system 里了。
 6. **`bridge.mjs` 有一处重复的 `debug({where:'pre-step.extra'})`**（原 426–427 行，misc 已报）；无害但冗余，
    本文件不动它以免混入无关改动，后续可清理。
+7. **facts 快照累积与节流（Option 1，已实现）**
+   - **现状更正（misc §0.5）**：`cache-af2` 12 个 step 只有 **7 条快照 ≈1 条/轮**——DSH 的 `RuntimeContextProjection.project()`
+     文本相同就不 append。所以"每步一条"只在**一个 turn 内事实每步都变**时发生（典型是 MC 的 `mc:status`），
+     不是所有会话都会按步数线性爆。
+   - **累积量**（af2 实测 + misc §0.5 换算）：单条 append ≈ **458 字符 / 510 字节**；有快照的请求 prefill **191–194 tok**、
+     无快照 **49–50 tok**（净 **+142 tok**）；prompt 增量 +244 vs +51（净 **+190 tok 上下文**）。
+     MC 39 步/轮 ⇒ 不节流约 **+7.2K tok 上下文/轮、+5.4K prefill tok/轮**；节流后 ≈ **+190 / +142**。
+   - **实现（turn 级缓存 + 事件 dirty）**：同一 turn 内各 step 复用第一份 facts 文本（≤1 条快照/轮）；
+     **事件类事实**标 dirty 并**下一步必刷新（stale ≤ 1 步）**：focus enter/leave/换焦点（`focus.onChange`）、
+     delivery 发出（`time_arrange`/`time_cancel`/sleep/wake 等通知走 `tick`）。
+   - **豁免（不是 bug）**：MC 环境事实（位置/血量/背包）允许**整轮陈旧**，以 `mcb_status`/`mcb_inventory` 为准；
+     换来 MC 回合不再每步追加一条快照。bridge 代码里已写明。
+   - **DSH 侧有没有更干净的方式**：本版本 `RuntimeContextProjection.project()` 只产出 append 消息，没有 replace API
+     （只有系统提示词投影有 replace 分支），所以只能在 ICL 侧节流；将来 DSH 支持快照 replace 可以去掉节流。
+   - **测量**：bridge 单测（同一 turn 5 次求值 = 1 次刷新；focus enter/leave 各 +1 次刷新且内容含新焦点；
+     `factsEveryStep` 关闭节流时每步刷新）；云端 lab 冒烟（`cache-throttle-smoke`：3 轮，1 条快照/轮，system 零 replace）。
+   - **开关**：默认节流；`factsEveryStep: true`（config）或 `ICL_FACTS_EVERY_STEP=1`（env，**仅测量**）可退回每步求值。
 
 ---
 
@@ -465,8 +494,8 @@ node tools/cache-probe.mjs diff --run cache-bf2
 | 有 focus 修复前 | firstDiff=1（focus order 15 在最前） | misc |
 | 有 focus 修复后（order 875） | firstDiff=2183/2518 字 | misc |
 | B 之后 lab system（静态段） | **4978 字符 / 8408 字节**（无事实） | 本文件 cache-af2 |
-
-| 事实快照消息（每轮变化时追加） | 458–465 字符 | 本文件 cache-af2 |
+| 事实快照消息（变化时追加） | 首条 465 字符，稳态 458 字符；7 条/12 步累计 3213 字符 | 本文件 cache-af2 |
+| **B 拆分体积守恒**（host 级，只读复算） | 静态段（order<800）= **2181 字 / 5605 字节**（跨时间/跨 focus 完全不变）；事实段（order≥800）= **73 字 / 123 字节**（有 focus 89 字、5 分钟后 96 字）；两段 + `\n\n` = **2256 字**，与旧单段布局一致 → 无体积回归 | misc §0.4（wt/misc `54b31ff`） |
 
 ---
 
