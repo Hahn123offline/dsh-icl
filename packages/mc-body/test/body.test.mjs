@@ -548,3 +548,18 @@ test('body：HTTP 暂停任务显式 resume 端点', async () => {
     await body.stop().catch(() => {})
   }
 })
+
+test('do：长 op 单飞锁（并发第二个 409，查询类不受限）', async () => {
+  const adapter = fakeAdapter()
+  adapter.runOp = async (op) => { await sleep(60); return { op } }
+  const body = createBody({ adapter })
+  const first = body.doPlan([{ op: 'mine', params: { block: 'oak_log' } }])
+  await sleep(5)
+  await assert.rejects(() => body.doPlan([{ op: 'dig', params: { pos: { x: 0, y: 64, z: 0 } } }]), /上一个 do 动作还在执行/)
+  // 查询类/任务提交不被锁挡（读操作安全）
+  await assert.doesNotReject(() => body.doPlan([{ op: 'look' }]))
+  await assert.doesNotReject(() => body.doPlan([{ op: 'tasks' }]))
+  await first
+  // 前一个结束后，新长 op 可以执行
+  await assert.doesNotReject(() => body.doPlan([{ op: 'dig', params: { pos: { x: 0, y: 64, z: 0 } } }]))
+})

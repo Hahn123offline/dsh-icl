@@ -4,7 +4,7 @@
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
 import {
-  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
+  chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
 
@@ -1411,7 +1411,26 @@ export function createMineflayerAdapter({
           await digBlock(block, signal)
           await sleep(50)
         }
-        const next = { x: base.x + dir.x + 0.5, y: base.y, z: base.z + dir.z + 0.5 }
+        // stairs=true：只支持向下阶梯（每步降 1 格）；向上暂不支持（契约保留）。
+        if (opts.stairs && String(params.stairsMode ?? 'down') === 'up') {
+          throw taskFailure('tunnel: unsupported', { done: step - 1, total, suggestion: 'stairs 目前只支持向下（stairsMode:"down"/true）；向上阶梯请水平挖再垫脚，或换方向' })
+        }
+        if (opts.stairs) {
+          const floorPos = new Vec3(base.x + dir.x, base.y - 1, base.z + dir.z)
+          const floorBlock = bot.blockAt(floorPos)
+          if (floorBlock && !/(^air$|cave_air|void_air)/.test(floorBlock.name)) {
+            if (/(water|lava|bedrock|barrier|flowing_)/.test(floorBlock.name)) {
+              emit('macro_blocked', { kind: 'tunnel', block: floorBlock.name, position: floorPos, stairs: true })
+              throw taskFailure('tunnel: blocked', { done: step - 1, total, block: floorBlock.name, at: floorPos, suggestion: '阶梯下方是流体/基岩；换方向' })
+            }
+            const floorTool = await ensureToolFor(floorBlock, { signal, autoTool: params.autoTool })
+            if (!floorTool.ok && floorTool.requiredClass) throw needsToolError('tunnel', floorTool)
+            await faceBlock(floorBlock)
+            await digBlock(floorBlock, signal)
+            await sleep(50)
+          }
+        }
+        const next = { x: base.x + dir.x + 0.5, y: base.y + (opts.stairs ? -1 : 0), z: base.z + dir.z + 0.5 }
         try {
           await walkOnce(makeGoal(next, 0.8), next, { signal, progress: null, stallMs: 1500, timeoutMs: 5000, arriveRange: 1.2 })
         } catch (error) {
@@ -1422,7 +1441,7 @@ export function createMineflayerAdapter({
         const now = Date.now()
         if (step % every === 0 || now - lastReportAt >= 10_000) {
           lastReportAt = now
-          progress?.({ done: step, total, direction: dir.name, position: currentPosition(), torches })
+          progress?.({ done: step, total, direction: dir.name, position: currentPosition(), torches, stairs: opts.stairs })
         }
         if (opts.torchEvery > 0 && step % opts.torchEvery === 0) {
           try {
@@ -1436,9 +1455,9 @@ export function createMineflayerAdapter({
           } catch { /* 火把只是锦上添花，不阻塞隧道 */ }
         }
       }
-      progress?.({ done: total, total, direction: dir.name, position: currentPosition(), torches })
+      progress?.({ done: total, total, direction: dir.name, position: currentPosition(), torches, stairs: opts.stairs })
       emit('macro_done', { kind: 'tunnel', done: total, direction: dir.name, torches })
-      return { done: total, total, direction: dir.name, height: opts.height, torches }
+      return { done: total, total, direction: dir.name, height: opts.height, torches, stairs: opts.stairs }
     }
     if (task.kind === 'bridge') {
       const plan = bridgePlan(params)
@@ -1603,6 +1622,74 @@ export function createMineflayerAdapter({
       const result = await runOp('chest', chestParams)
       emit('macro_done', { kind: task.kind, action, result })
       return { action, ...result }
+    }
+    if (task.kind === 'farm') {
+      const crop = String(params.crop ?? 'wheat')
+      const seedName = ({ wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato', beetroots: 'beetroot_seeds' })[crop] ?? `${crop}_seeds`
+      const count = Math.max(1, Math.min(64, Number(params.count) || 4))
+      const hoe = (bot.inventory?.items?.() ?? []).find((item) => /_hoe$/.test(item.name))
+      if (!hoe) {
+        throw taskFailure('farm: needs-tool', {
+          needsTool: '锄',
+          suggestion: '先 craft wooden_hoe（2 木板+2 木棍）→ mcb_do equip {"item":"wooden_hoe"}；没有木板先 mine oak_log → craft oak_planks',
+        })
+      }
+      const seedItem = (bot.inventory?.items?.() ?? []).find((item) => item.name === seedName)
+      const seedCount = seedItem?.count ?? 0
+      if (!seedCount) {
+        throw taskFailure('farm: needs-material', {
+          material: seedName, have: 0,
+          suggestion: `没有 ${seedName}：割草/打草拿种子（或先 collect {item:"grass_block"} 附近找草），有了再来`,
+        })
+      }
+      await bot.equip(hoe, 'hand')
+      const waterIds = [bot.registry.blocksByName.water?.id, bot.registry.blocksByName.flowing_water?.id].filter((id) => id != null)
+      const waterBlocks = bot.findBlocks({ matching: (block) => waterIds.includes(block.type), maxDistance: 16, count: 32 })
+      const waterPositions = waterBlocks.map((p) => ({ x: p.x, y: p.y, z: p.z }))
+      if (!waterPositions.length) {
+        throw taskFailure('farm: no-water', { suggestion: '附近 16 格没有水：先找河边/挖水渠引水（水距耕地 4 格内才能种）' })
+      }
+      const pos = currentPosition()
+      if (!pos) throw taskFailure('farm: no-position', {})
+      const soilIds = [bot.registry.blocksByName.dirt?.id, bot.registry.blocksByName.grass_block?.id].filter((id) => id != null)
+      const soils = bot.findBlocks({ matching: (block) => soilIds.includes(block.type), maxDistance: 8, count: 128 })
+      const nearWater = soils
+        .map((p) => ({ x: p.x, y: p.y, z: p.z }))
+        .filter((target) => waterPositions.some((w) => Math.abs(w.y - target.y) <= 1 && Math.hypot(w.x - target.x, w.z - target.z) <= 4))
+        .filter((target) => { const above = bot.blockAt(new Vec3(target.x, target.y + 1, target.z)); return !above || /(^air$|cave_air|void_air)/.test(above.name) })
+        .sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z))
+      if (!nearWater.length) {
+        throw taskFailure('farm: no-site', { water: waterPositions.length, suggestion: '水边 8 格内没有可开垦的土/草方块（需要土上方是空气、离水 4 格内）' })
+      }
+      let tilled = 0
+      let planted = 0
+      const every = progressEvery(count)
+      for (const target of nearWater) {
+        checkAbort(signal)
+        if (planted >= count) break
+        if (planted >= seedCount) break
+        try {
+          await bot.equip(hoe, 'hand')
+          await faceBlock(bot.blockAt(new Vec3(target.x, target.y, target.z)))
+          await bot.activateBlock(bot.blockAt(new Vec3(target.x, target.y, target.z)))
+          await sleep(120)
+          const after = bot.blockAt(new Vec3(target.x, target.y, target.z))
+          if (!after || after.name !== 'farmland') continue
+          tilled += 1
+          await bot.equip(seedItem, 'hand')
+          await bot.activateBlock(after)
+          await sleep(80)
+          const plantedBlock = bot.blockAt(new Vec3(target.x, target.y + 1, target.z))
+          if (plantedBlock && plantedBlock.name !== 'air') planted += 1
+          if (planted % every === 0) progress?.({ done: planted, total: count, tilled, crop })
+        } catch (error) {
+          if (signal?.aborted) throw error
+        }
+      }
+      progress?.({ done: planted, total: count, tilled, crop })
+      if (planted === 0) throw taskFailure('farm: partial', { tilled, planted, total: count, suggestion: '开垦/播种都没成：确认锄头在手、地上是土/草、水在 4 格内、种子够' })
+      emit('macro_done', { kind: 'farm', crop, planted, tilled, total: count })
+      return { crop, planted, tilled, total: count, seeds: seedCount, water: waterPositions.length }
     }
     throw new Error(`unsupported task: ${task.kind}`)
   }
@@ -1842,6 +1929,37 @@ export function createMineflayerAdapter({
       await bot.toss(found.type, null, Math.max(1, Number(params.count) || 1))
       return { tossed: found.name }
     }
+    if (op === 'pickup') {
+      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标。
+      const radius = Math.max(1, Math.min(16, Number(params.radius) || 8))
+      const max = Math.max(1, Math.min(16, Number(params.max) || 8))
+      let picked = 0
+      const pickedNames = []
+      for (let index = 0; index < max; index += 1) {
+        const pos = currentPosition()
+        if (!pos) break
+        const drops = Object.values(bot.entities ?? {})
+          .filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(pos) <= radius)
+          .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))
+        const target = drops[0]
+        if (!target) break
+        const name = target.metadata?.item ? bot.registry.items?.[target.metadata.item]?.name ?? 'item' : 'item'
+        try {
+          await gotoWithRecovery({ x: target.position.x, y: target.position.y, z: target.position.z, range: 1, timeoutMs: 4000, stallMs: 2000 }, null, null)
+          await sleep(250)
+        } catch { /* 走不到就换下一个 */ }
+        if (!bot.entities?.[target.id]) {
+          picked += 1
+          pickedNames.push(name)
+        } else {
+          // 走不到/没吸到：标记跳过，换下一个
+          target.__skip = true
+          continue
+        }
+      }
+      const left = Object.values(bot.entities ?? {}).filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(currentPosition() ?? { x: 0, y: 0, z: 0 }) <= radius).length
+      return { picked, items: pickedNames, radius, left }
+    }
     if (op === 'attack') {
       const entity = resolveEntity(params.target ?? params)
       if (!entity) throw new Error('attack: 找不到目标')
@@ -1883,22 +2001,13 @@ export function createMineflayerAdapter({
         const hint = []
         let plan = null
         try {
-          const candidates = bot.recipesAll(def.id, null, table)
-          const noTable = bot.recipesAll(def.id, null, null)
-          const pick = candidates[0] ?? noTable[0] ?? null
-          if (pick) {
-            const craftCount = Math.max(1, Math.ceil(count / Math.max(1, Number(pick.result?.count) || 1)))
-            const missing = []
-            for (const entry of Array.isArray(pick.delta) ? pick.delta : []) {
-              if (Number(entry?.count) >= 0) continue
-              const itemName = bot.registry.items?.[entry.id]?.name
-              if (!itemName) continue
-              const need = Math.abs(Number(entry.count)) * craftCount
-              const have = countOf(itemName)
-              if (have < need) missing.push({ name: itemName, need, have, short: need - have })
-            }
-            plan = { requiresTable: Boolean(pick.requiresTable), missing }
-          }
+          // 多配方变体里选“缺料最少”的那个：避免明明有 oak/cobblestone，却提示缺 pale_oak_planks/cobbled_deepslate。
+          const variants = [...(bot.recipesAll(def.id, null, table) ?? []), ...(bot.recipesAll(def.id, null, null) ?? [])]
+          plan = chooseRecipeVariant(variants, {
+            count,
+            nameOf: (id) => bot.registry.items?.[id]?.name,
+            countOf,
+          })
         } catch { /* 拿不到配方明细就退回通用提示 */ }
         if (plan?.requiresTable && !table) hint.push('这个配方需要工作台：先 craft crafting_table（4 木板）并 place 到身边（4 格内）')
         if (table && plan?.requiresTable) hint.push('工作台在附近但可能够不到：先 goto 到工作台 4 格内')
@@ -2225,6 +2334,9 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+
+
 
 
 
