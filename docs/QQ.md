@@ -242,14 +242,15 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 
 | 机制 | 谁拥有 | 形态 | 已知代价 |
 |---|---|---|---|
-| time 积压 | time 插件 | 持久（`time.json`）；条目 `{signalId, createdAt, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`；同一 `signal.id` 重复 offer **不重复入队**；醒来一条 `plugin:time` notice，正文 `· [qq/qq:private:<qq>] …`；溢出优先丢最旧 **ambient**，保护 `mention/at/private/direct/admin`（QQ 私聊 tags 含 `private`+`mention`）；`time_status` 暴露"丢弃：漏响/溢出/过期" | 一次重放后不可再重放；QQ 不该也不会重试 blocked |
+| time 积压 | time 插件 | 持久（`time.json`）；条目 `{id, signalId, createdAt, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`（time W3 已收尾，**形状冻结**）；同一 `signal.id` 重复 offer **不重复入队**；醒来一条 `plugin:time` notice，正文 `· [qq/qq:private:<qq>] …`；溢出优先丢最旧 **ambient**，保护 `mention/at/private/direct/admin`（QQ 私聊 tags 含 `private`+`mention`）；`time_status` 暴露"丢弃：漏响/溢出/过期" | 一次重放后不可再重放；QQ 不该也不会重试 blocked |
 | focus 积压 | core | 内存 + `focus.json`；按 `focus` 命名空间 `count/lastText/items(≤20)`；focus 释放时一条摘要 | `items` 只存最近 20 条、截 200 字；QQ 插件看不到这一层 |
 | QQ 重试队列 | qq 插件 | 内存，200 条上限，`deliver` 失败专用 | 进程重启即丢（影子阶段可接受，因为账本在 SnowLuma/后续补课另议） |
 
 紧急穿透的既有规则（core 层）：`from==='time'`、`tags` 含 `admin`/`alarm` 的信号 privileged → 一定穿透 focus。
 **私聊不是 privileged**，但因为有 `mention` tag，能穿普通 focus、不能穿 sacred/sleep。
-如果用户明确希望"私聊在半梦半醒也能把我叫起来"，正确做法是给睡眠 schedule 配 `allow`（例如 `[{ from: 'qq' }]`），
-**不要**去改 focus/time 的全局特权列表。
+如果用户明确希望"私聊在半梦半醒也能把我叫起来"，正确做法是给睡眠 schedule 配 `allow`，**不要**去改 focus/time 的全局特权列表：
+`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['mention']}]`）。
+⚠️ `tags:alarm` 的全局特权按 time 的 `docs/TIME.md §9` 是**已知风险，不是安全边界**——QQ/其它来源不要依赖它做"紧急穿透"。
 
 ## 6. 与 time 静音锁的接口（给 time owner 的对接点）
 
@@ -269,17 +270,20 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
   time 睡着时仍需 schedule 的 `allow` 命中才穿（默认 `allow=[{from:'admin'}]`）；普通群消息保持 ambient。
 - **私聊是否穿透？** 醒着：穿透普通 focus；睡着/暂停：**不穿透**（time 拦下、进它自己的积压，醒来重放）；
   `interruptible:false` 的 sacred focus：不穿透（进 focus 积压）。这就是本轮实测的行为（见 §13 演练第 6–9 项）。
+  要显式允许"私聊穿睡眠"，由 sleep schedule 的 `allow` 表达：`time_arrange {sleep:true, allow:[{from:'qq'}]}`（精确调用口径由 time 提供）。
 - **QQ 怎么知道被拦了？** `signals.offer` 返回 `{blocked:true, reason}`；QQ 只计数（`blockedReasons`），**不重试**，
   把重放权留给 time。`qq_status` 会显示"被静音/睡眠锁拦下 N（已交给 time 的积压，不重试）"。
 - **两侧如何对账？** time `time_status` 看 `phase/backlog/丢弃（漏响/溢出/过期）`；QQ `qq_status` 看 `blockedReasons` + 最近一条私聊/最近一次被拦
   + 影子记录 `blocked` 行；time 醒来后投递的正文里有 `[qq/qq:private:<qq>]` 前缀，能和 QQ 侧计数对上。
   time 的积压条目带 `signalId`（`qq:private:<qq>:<message_id>`），必要时可用 `time_list` 的 `sig=` 与 QQ 影子的 `id` 精确对账。
 
-### 6.3 给 time owner 的三条建议（已全部采纳并合并：time `05c4d19`）
+### 6.3 给 time owner 的三条建议（已全部采纳、合并并冻结契约：time W3 收尾）
 
-> 按 lead 决策已直接发给 time。time 实现了全部三条：`signalId` 入队且按 signal id 去重；重放前缀保持 `[plugin/activity]`；
-> 溢出改为"优先丢最旧 ambient"，保护 tags 默认 `['mention','at','private','direct','admin']`（QQ 私聊有 `private`+`mention`，受保护），
+> 按 lead 决策已直接发给 time。time 实现了全部三条并确认 **backlog 形状冻结**（2026-11-05，W3/task-5 completed）：
+> 最终形状 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，
+> 重放前缀固定 `[plugin/activity]`，溢出"优先丢 ambient、保 `mention/at/private/direct/admin`"；没有继续改这三项的计划。
 > `time_status` 暴露 `丢弃/溢出`，`time_list` 显示 `sig=`。来源侧不需要兜底暂存——gate 返回 blocked 前已 `enqueue()+persist()`。
+> 若 lead 合并 review 要求调整，time 会先通知 QQ 并同步 `docs/TIME.md §4/§11`；QQ 侧对应改本文 §6 与 drill 断言。
 
 1. **`signalId` 已落地**：`time.json` 的积压条目现在存 `{signalId, createdAt, from:{plugin,activity}, …}`；同一 `signal.id` 重复 offer
    不重复入队。QQ 的 signal id 稳定为 `qq:private:<qq>:<message_id>`，drill 已严格断言 `queue()[0].signalId === 'qq:private:10001:1003'`。
@@ -287,7 +291,8 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
    `plugin:time` notice 是有意的，QQ 不反对。
 3. **溢出策略已采纳**：满 `maxQueue` 时优先丢最旧 **ambient**（无 `mention/at/private/direct/admin` 标签的），全都受保护时才丢最旧；
    `protectTags` 是 time 的 config 项，QQ 现有 tags 已被默认值覆盖，暂不需要额外配置。
-4. 若将来要"私聊穿睡眠"：用 schedule 的 `allow`（`allow: [{ from: 'qq' }]` 或 `[{ tags: ['mention'] }]`）表达，不要改全局特权列表。
+4. 若将来要"私聊穿睡眠"：用 sleep schedule 的 `allow` 表达——`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['mention']}]`），
+   不要改全局特权列表。⚠️ `tags:alarm` 的全局特权按 `docs/TIME.md §9` 是已知风险、不是安全边界，QQ 不依赖它。
 
 ## 7. 私聊收发路径
 
@@ -630,6 +635,7 @@ seq=8  user/message         source.kind='plugin:qq'（同一份内容）
 | focus-core | `docs/{TRANSPORT-ARCH.md,MESSAGING-SUMMARY.md}`、`DESIGN-activity-focus.md`、`docs/focus-architecture.md` | 接缝设计、压测与投递决议、focus 语义基准 |
 | dsh-qq | `interface-platform/src/connectors/{onebot-v11/*,qq-snowluma/discovery.mjs}`、`config.json`、`docs/FOLDER_MAP.md`、工作区 `dsh-qq-部署笔记.md` | OneBot/SnowLuma 稳定接法、账号与白名单、EULA 约束 |
 | icl 前身 | `docs/HISTORY.md` | "QQ 连接器是最大缺口""一机多会话"的教训 |
+| time（本仓库 W3） | `wt/time` HEAD `6a8809f`、core gate 语义 `93a67cb`/`5fa5051`、`docs/TIME.md §4/§9/§11` | 静音锁/backlog 契约、`allow` 语义、`tags:alarm` 已知风险 |
 | 本仓库 | `packages/core/src/{signals,services,host,contracts}.mjs`、`packages/dsh-icl/src/bridge.mjs`、`packages/plugins/time/src/index.mjs`、`docs/{FOCUS,MESSAGES,SURVIVAL,TEAM-PLAN-2026-11-05}.md` | 既有的信号/投递/focus/time 接缝 |
 
 ## 附录：常用命令
