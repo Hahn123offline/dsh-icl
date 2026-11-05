@@ -314,9 +314,21 @@ export function apply(ctx) {
     return { host: targetHost, port: targetPort, username: botName }
   }
 
-  async function join({ host = null, port = null, username = null, server = null } = {}) {
+  /** time 的时间相位（awake/sleeping/paused）；没有 time 插件时 null。 */
+  function timePhase() {
+    try { return ctx.services?.get?.('time')?.phase?.() ?? null } catch { return null }
+  }
+
+  async function join({ host = null, port = null, username = null, server = null, force = false } = {}) {
     const target = resolveTarget({ host, port, server })
     if (username) target.username = String(username).slice(0, 16)
+    // 睡眠期管理面可能用 /v1/shutdown 把身体收起来保命（night-1 的 sleep-safe）。
+    // 这时不要自动/顺手 mcb_join：否则"睡觉"期间身体又回夜间世界挨打。
+    // force 只给"用户明确要求现在玩"的场合（工具描述里写清）。
+    const phase = timePhase()
+    if (phase === 'sleeping' && force !== true) {
+      throw new Error('现在在睡觉（time 的睡眠安排生效中）：身体已经被管理面收起来了，不会自动重连。不要用 mcb_join；醒来后再连。除非用户明确要求现在玩，才用 mcb_join {force:true}。')
+    }
     let out = await supervisor.ensure(target)
     joinedServer = { host: target.host, port: target.port }
     sessionTouchedMc = true
@@ -732,6 +744,7 @@ export function apply(ctx) {
           host: { type: 'string', description: '服务器地址；和 server 二选一。' },
           port: { type: 'number', description: '服务器端口；默认 25565。' },
           username: { type: 'string', description: '游戏内名字，≤16 字符，同服唯一；默认 ICL。两个 bot 同名会互相踢。' },
+          force: { type: 'boolean', description: '睡眠期默认拒绝 join（身体已被管理面收起）。只有用户明确要求“现在就去玩”时才传 true。' },
         },
       },
       async execute(args = {}) {
@@ -781,7 +794,12 @@ export function apply(ctx) {
             lines.push(`上次退出：${why}${clean ? '（预期内，不是崩溃）' : ''}${last.code != null ? `；code ${last.code}` : ''}`)
           }
           if (own.stderrTail?.length) lines.push(`body 日志：${own.stderrTail.slice(-2).join(' / ')}`)
-          lines.push('下一步：mcb_join 重连（会重新起进程）；不玩了用 mcb_leave 收尾。')
+          const phase = timePhase()
+          if (phase === 'sleeping') {
+            lines.push('现在在睡觉（time 的睡眠安排生效中）：身体被管理面收起来了，不要 mcb_join；醒来后再连（除非用户明确要求现在玩）。')
+          } else {
+            lines.push('下一步：mcb_join 重连（会重新起进程）；不玩了用 mcb_leave 收尾。')
+          }
           return { text: lines.join('\n') }
         }
         const a = status.adapter ?? {}

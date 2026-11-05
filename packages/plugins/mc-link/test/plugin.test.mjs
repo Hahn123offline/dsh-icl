@@ -125,9 +125,12 @@ async function startFakeBody({ connected = true } = {}) {
   }
 }
 
-async function mountLink({ port, config = {} } = {}) {
+async function mountLink({ port, config = {}, timePhase = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-mc-link-'))
   const host = createHost({ log: () => {} })
+  // 模拟 time 插件 provide 的公开 api（phase）：睡眠期 join 守卫要用。
+  // 插件侧 ctx.services.get('time') 读的是 host 的 shared 注册表。
+  if (timePhase) host.shared.set('time', { phase: () => timePhase })
   host.registerPlugin(manifest, mcLink, {
     config: { baseUrl: `http://127.0.0.1:${port}`, pollMs: 60_000, logFile: path.join(root, 'events.jsonl'), ...config },
   })
@@ -659,6 +662,37 @@ test('mcb_status：展示新 body 的 environment/pathfinder/pausedTasks（旧 b
   } finally {
     await link.cleanup()
     await body.close()
+  }
+})
+
+test('mcb_join：睡眠期（time.phase=sleeping）拒绝重连，force:true 才允许；醒来后正常', async () => {
+  const body = await startFakeBody()
+  const sleeping = await mountLink({ port: body.port, timePhase: 'sleeping' })
+  try {
+    await assert.rejects(() => sleeping.tools.mcb_join.execute({ server: 'flat' }), /在睡觉[\s\S]*不要用 mcb_join/)
+    // force（用户明确要求现在玩）可以连
+    const forced = await sleeping.tools.mcb_join.execute({ server: 'flat', force: true })
+    assert.match(forced.text, /已连接/)
+    const status = await sleeping.tools.mcb_status.execute({})
+    assert.match(status.text, /已连接/)
+    // body 被管理面收起（HTTP 也没了）→ status 报未连接并提示"在睡觉、不要 mcb_join"
+    await body.close()
+    const noBody = await sleeping.tools.mcb_status.execute({})
+    assert.match(noBody.text, /未连接/)
+    assert.match(noBody.text, /在睡觉/)
+    assert.match(noBody.text, /不要 mcb_join/)
+  } finally {
+    await sleeping.cleanup()
+  }
+  // 醒来（awake）时加入不受影响
+  const body2 = await startFakeBody()
+  const awake = await mountLink({ port: body2.port, timePhase: 'awake' })
+  try {
+    const out = await awake.tools.mcb_join.execute({ server: 'flat' })
+    assert.match(out.text, /已连接/)
+  } finally {
+    await awake.cleanup()
+    await body2.close()
   }
 })
 
