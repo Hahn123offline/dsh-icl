@@ -5,7 +5,7 @@
 > 数据源（全部只读，不占 GPU、不碰 lab 进程）：
 > - 引擎请求日志 `C:/DSH/moe_streaming/logs/ninfer-coder390-q3-df2-4x500.requests.jsonl`（全局，按时间窗切片）；
 > - DSH 会话事件流 `C:/DSH/icl-wt/mc-lab/.state/lab/night-1/events.jsonl`；
-> - mc-lab 夜间报告 `morning-report.md`（睡眠/醒来时间权威值）。
+> - mc-lab 夜间报告 `morning-report.md`（睡眠/醒来时间权威值）与 `final-summary.json`（全夜 64 turns/1182 calls/281 err）、`checkpoint/lab-gen-*/events.jsonl`（各代事件）、`validity-awake.json`（醒着活跃 81.4%/等待 19.3%）、`sleep-direct-injections.json`（睡眠期 9 次直投）。
 > 复算：`node tools/cache-longrun.mjs --start 2026-11-06T00:22:00+08:00 --end 2026-11-06T06:51:30+08:00 --events <night-1/events.jsonl> --out .state/cache/night-1.json`
 > 口径：与 `docs/CACHE-MODEL.md` §6.4 一致；全量失效 = `hit=0 && prefill>0`（另列 `prefill>1000` 的"整段冷启动"口径）。
 
@@ -14,7 +14,7 @@
 ## 0. 一句话结论
 
 **6h29m 本地长会话里，缓存命中率 99.50%；稳态请求 TTFT 中位数 0.60s、p95 0.94s；
-窗口内 1220 条 tool-bearing 请求只有 8 次全量失效，且全部是 DSH 会话重启的冷启动（不是前缀被破坏）；
+窗口内 1220 条 tool-bearing 请求（全夜 6 代合计 64 turns / 1182 tool calls）只有 8 次全量失效，且全部是 DSH 会话/代际重启的冷启动（不是前缀被破坏）；
 睡眠 4h27m 完全无模型请求。** 上下文从 ~11k 涨到 ~104k tokens，命中率没有随会话变长而下降。
 
 ---
@@ -23,7 +23,7 @@
 
 | 指标 | 数值 |
 |---|---|
-| tool-bearing 引擎请求 | **1220**（另有 8 条 tools=0 的标题/辅助请求，不计入） |
+| tool-bearing 引擎请求 | **1220**（请求级：携带 41 个工具定义。全夜 **1182 tool calls** 是 `tool/call` 事件级，两者不可相减——请求可以带工具但某 step 不产生调用）；另有 8 条 tools=0 的标题/辅助请求不计入 |
 | prompt tokens 合计 | 47,204,575（avg 38,692/请求） |
 | **hit tokens / 命中率** | **46,968,874 / 99.50%** |
 | prefill tokens 合计 | **235,096**（avg 193/请求） |
@@ -64,7 +64,8 @@ last 请求 02:11:55，next 请求 06:39:09 → **02:11:56–06:39:07 共 4h27m 
 | 01:36:13 | 10,705 | 10,705 | root | 3 | 8.91s |
 
 全部满足 `msgs=3`（system + 用户消息 + runtime-context 快照）、prompt ≈10.7–11.2k、TTFT 7.7–8.9s —— 是**新会话第一轮**的特征。
-窗口内确实有两个 DSH 会话（`session-44b51dbe…` 00:22 起、`session-5d3e76be…` 01:35:55 起，lab.json）；**01:36:13 最后一次启动后，5h15m 内 0 次全量失效**。
+窗口内实际是 **6 个 lab 代**（gen-1…gen-5 + 01:35:55 起的 current 会话 `session-5d3e76be…`；mc-lab `final-summary.json` 口径：全夜 64 turns/1182 calls）；
+**01:36:13 最后一次启动后，5h15m 内 0 次全量失效**。
 
 ## 4. 结构指标（DSH 事件流；session `5d3e76be`，01:35–06:51）
 
@@ -72,7 +73,8 @@ last 请求 02:11:55，next 请求 06:39:09 → **02:11:56–06:39:07 共 4h27m 
 |---|---|
 | `system/message` | **1 条 append、0 次 replace**，全文 **5004 字符**，整场不变 |
 | facts runtime-context 快照 | **48 条 / 37 个 turn = 1.30 条/轮**，avg 559 字符 |
-| turn / step | 37 / 521 |
+| turn / step（current 会话） | 37（`turn/start`）/ 521 |
+| 全夜 turn / tool call（6 代汇总，mc-lab 口径） | **64（`turn/end`）/ 1182（`tool/call`）** |
 | 真实 user 消息（非快照） | 27（75 条 user/message − 48 条快照） |
 | assistant / tool result | 516 / 492 |
 | `<icl-context>` 注入 | 0（夜间 eager-recall 无命中；kind 修复未在本轮触发，但代码已在位） |
@@ -97,7 +99,9 @@ max prompt **103,969 tokens**（06:51:12）。**命中率没有随上下文增�
 ## 6. 注意事项（引用时带上）
 
 1. **8 条 tools=0 辅助请求**（标题 LLM 等）未计入缓存表；它们各自独立、不影响主会话前缀。
-2. **窗口内有两个 DSH 会话**（00:22 与 01:35 各启动一次），8 次冷启动对应启动/重启；不要把它读成"前缀被破坏 8 次"。
+2. **口径差异（与 mc-lab 对过账）**：turns——§4 的 **37** 是 current 会话的 `turn/start`；全夜 **64** 是 6 代 `turn/end` 汇总（gen-1…gen-5 + current），两者都对但定义不同。
+   requests——**1220** 是请求级（携带工具定义），**1182** 是 `tool/call` 事件级，不可相减。
+   8 次冷启动对应 6 代的启动/重启（00:22–00:53 七次 + 01:36 一次），**不要读成"前缀被破坏 8 次"**。
 3. **15 条 cancelled** 是 supervisor/turn-cancel 的结果（mc-lab 负责），全部发生在 decode 阶段（prefill 0–355 tok），未造成可见 prefill 浪费。
 4. 夜间跑的是 mc-lab worktree `ca01099` 的 bridge —— 已核对包含本轮的 B 布局、facts 按轮节流 + dirty、`plugin:icl` kind 修复（`factsDirty` / `isFactsTool` / `kind: 'plugin:icl'` 均在位）。
 5. 睡眠期事实变化只追加 runtime-context 快照（48 条/37 轮，1.30 条/轮），**没有改 system、没有改工具面**；这符合 CACHE-MODEL §7.7 的节流边界（事件类 dirty ≤1 步、环境事实可以陈旧）。
