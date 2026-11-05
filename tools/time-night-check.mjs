@@ -222,12 +222,32 @@ function analyse(runDir) {
       error: /失败|错误|error/i,
     }
     for (const [name, re] of Object.entries(patterns)) transcript.counts[name] = lines.filter((line) => re.test(line)).length
-    const wakeLines = lines.filter((line) => patterns.wake.test(line)).map((line) => line.trim()).filter(Boolean)
+    // 只把"time 发来的唤醒/节拍"当作重复唤醒的判据；模型自己说的话、MC 死亡提示不算。
+    const userLines = lines.filter((line) => /\buser\/user\b/.test(line)).map((line) => line.trim())
+    const wakeUserLines = userLines.filter((line) => patterns.wake.test(line) && !/你刚死了|身体|安全停止|死亡|血量/.test(line))
     const seen = new Map()
-    for (const line of wakeLines) seen.set(line, (seen.get(line) ?? 0) + 1)
+    for (const line of wakeUserLines) {
+      const textPart = line.replace(/^\d{2}:\d{2}:\d{2}\s+user\/user\s+seq=\d+\s+·\s+/, '')
+      seen.set(textPart, (seen.get(textPart) ?? 0) + 1)
+    }
     transcript.duplicates = [...seen.entries()].filter(([, n]) => n > 1).map(([line, n]) => `${n}x ${line.slice(0, 120)}`)
-    transcript.tail = lines.filter((line) => patterns.wake.test(line) || patterns.backlog.test(line)).slice(-6).map((line) => line.trim().slice(0, 160))
+    transcript.userMessages = userLines.length
+    transcript.tail = wakeUserLines.slice(-6).map((line) => line.slice(0, 160))
     if (transcript.duplicates.length) flag('warn', 'transcript 里同一唤醒文本重复', transcript.duplicates.join(' | ').slice(0, 300))
+    // 睡眠期直投 user 消息 = 绕过 signals/time gate 的外部注入（driver/supervisor），
+    // 不算 time 的拦截失败，但会让"睡眠期静默"的验证结论失真，必须显式记下来。
+    if (state.phase === 'sleeping' && Number(state.since) > 0) {
+      const since = new Date(Number(state.since))
+      const sinceHms = `${String(since.getHours()).padStart(2, '0')}:${String(since.getMinutes()).padStart(2, '0')}:${String(since.getSeconds()).padStart(2, '0')}`
+      const injected = userLines.filter((line) => {
+        const hms = /^(\d{2}:\d{2}:\d{2})/.exec(line)?.[1]
+        return hms != null && hms >= sinceHms
+      })
+      if (injected.length) {
+        flag('warn', '睡眠期出现直投 user 消息（绕过 signals gate，非 time 拦截失败）', `${injected.length} 条；首条：${injected[0].slice(0, 160)}`)
+        transcript.sleepInjected = injected.slice(0, 5).map((line) => line.slice(0, 160))
+      }
+    }
   } catch { transcript.exists = false }
   out.transcript = transcript
   out.ageLabel = age == null ? 'unknown' : `${minutes(age)} 分钟前落盘`
