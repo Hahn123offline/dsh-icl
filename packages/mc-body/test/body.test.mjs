@@ -434,6 +434,19 @@ test('body：/v1/shutdown 请求交给宿主退出钩子（reason 归因）', as
   await body.stop()
 })
 
+test('body：小掉血只记录不暂停，单次掉>3 才接管', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 10 })
+  await waitFor(() => body.status().watchdog.ticks >= 1, 2000, 'watchdog baseline')
+  adapter.state.health = 18 // 20 → 18：摔一下/挖树蹭伤，正常玩法
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'health_drop' && e.data.drop === 2), 2500, 'small drop event')
+  assert.equal(body.status().paused, false, '小掉血不应暂停')
+  adapter.state.health = 12 // 18 → 12：单次掉 6，接管
+  await waitFor(() => body.status().paused, 2500, 'big drop pause')
+  assert.equal(body.status().pausedReason, 'health-drop')
+  await body.stop()
+})
+
 test('body：已暂停后不再刷 health_drop，只计 suppressed', async () => {
   const adapter = fakeAdapter()
   const { body } = await startedBody({ adapter, watchdogMs: 10 })
