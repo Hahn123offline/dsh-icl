@@ -82,7 +82,7 @@ for (const line of fs.readFileSync(ENGINE, 'utf8').split('\n')) {
   })
 }
 requests.sort((a, b) => a.at - b.at)
-if (!requests.length) fail('窗口内没有 tool-bearing 请求')
+if (!requests.length && !arg('--events', null)) fail('窗口内没有 tool-bearing 请求（无 --events 可查的事件流）')
 
 const buckets = new Map()
 for (const row of requests) {
@@ -100,14 +100,14 @@ for (let i = 1; i < requests.length; i += 1) {
   if (seconds > 120) gaps.push({ from: requests[i - 1].local, to: requests[i].local, seconds: Math.round(seconds) })
 }
 
-const engine = {
+const engine = requests.length ? {
   window: { start: new Date(start).toISOString(), end: new Date(end).toISOString() },
   overall: stats(requests),
   buckets10min,
   gaps,
   fullInvalidations: requests.filter((row) => row.hit === 0 && row.prefill > 0).map(({ local, prompt, prefill, path }) => ({ local, prompt, prefill, path })),
   cancelled: requests.filter((row) => row.finish === 'cancelled').map(({ local, prompt, prefill, hit }) => ({ local, prompt, prefill, hit })),
-}
+} : null
 
 // 可选：事件流体检（system 稳定性 / facts 快照 / turn 数）
 let events = null
@@ -119,6 +119,7 @@ if (eventsFile) {
   const systemChars = new Set()
   let turns = 0
   let steps = 0
+  let systemHasDynamicFacts = false
   let userMessages = 0
   let snapshots = 0
   let snapshotChars = 0
@@ -137,6 +138,7 @@ if (eventsFile) {
       const op = event.surfaceOp
       if (op && typeof op === 'object' && op.op === 'replace') systemReplace += 1
       else systemAppend += 1
+      if (/时间：|阶段：/.test(text)) systemHasDynamicFacts = true
     }
     if (event.type === 'user/message') {
       const message = event.data?.message ?? event.data
@@ -154,6 +156,7 @@ if (eventsFile) {
     systemAppend,
     systemReplace,
     distinctSystemChars: [...systemChars],
+    systemHasDynamicFacts, // 期望 false：动态事实必须在 runtime-context 快照里，不在 system
     factsSnapshots: snapshots,
     avgFactsSnapshotChars: snapshots ? Math.round(snapshotChars / snapshots) : null,
     snapshotsPerTurn: turns ? +(snapshots / turns).toFixed(2) : null,
