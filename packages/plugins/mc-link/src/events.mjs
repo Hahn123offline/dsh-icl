@@ -192,7 +192,12 @@ export function taskEventText(type, data = {}, status = null) {
       return `[MC] 任务结束但没达成：${label}${params ? `（${params}）` : ''} — ${valueText(reason, '原因未知', 40)}：${why}${suffix}`
     }
     const net = result?.net ?? result?.mined
-    if (net != null) return `[MC] 任务完成：${label} 净增 ${net}${result.item ? ` ${result.item}` : result.block ? ` ${result.block}` : ''}${result.requested != null ? `（目标 ${result.requested}）` : ''}${suffix}`
+    if (net != null) {
+      const what = result.item ?? result.block
+      // mine 用"挖了 N 个"（她/测试都习惯这个说法），其它任务用"净增 N"。
+      if (task.kind === 'mine') return `[MC] 任务完成：${label} 挖了 ${net} 个${what ? ` ${what}` : ''}${result.requested != null && result.requested !== net ? `（目标 ${result.requested}）` : ''}${suffix}`
+      return `[MC] 任务完成：${label} 净增 ${net}${what ? ` ${what}` : ''}${suffix}`
+    }
     if (result?.arrived) return `[MC] 任务完成：${label} 到达目标${result.distance != null ? `（距目标 ${Math.round(result.distance * 10) / 10} 格）` : ''}${suffix}`
     const detail = result && Object.keys(result).length ? ` result=${cut(JSON.stringify(result), 80)}` : ''
     return `[MC] 任务完成：${label}${detail}${suffix}`
