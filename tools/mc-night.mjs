@@ -110,6 +110,7 @@ const state = {
   playbookIndex: 0,
   loopBreakers: 0,
   forceLabRestart: false,
+  progressProbe: null,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -249,7 +250,8 @@ function runLabCli(command, extraArgs = [], timeoutMs = 300_000) {
 
 /** 重启 lab 前把上一代事件/transcript 归档，避免新会话 seq 重排被 observer 去重吃掉。 */
 function archiveLabGeneration() {
-  const generation = state.labStarts
+  let generation = 1
+  try { generation = fs.readdirSync(checkpointRoot).filter((name) => name.startsWith('lab-gen-')).length + 1 } catch { /* ignore */ }
   const dir = path.join(checkpointRoot, `lab-gen-${generation}`)
   fs.mkdirSync(dir, { recursive: true })
   for (const name of ['events.jsonl', 'transcript.md', 'lab.json']) {
@@ -442,6 +444,17 @@ function detectRepeatedFailure(events) {
     errorStreak += 1
   }
   if (errorStreak >= 3) return { kind: 'same-error', count: errorStreak, name: errorRow.row.name, args: errorRow.row.args, error: errorRow.row.error }
+  // 连续 ≥5 次完全相同的调用（即使都成功）：语义空转，例如 goto range16 原地循环、重复 resume
+  let okStreak = 0
+  let okRow = null
+  for (let i = turnRows.length - 1; i >= 0; i -= 1) {
+    const row = turnRows[i]
+    const key = `${row.name}|${row.args}`
+    if (okRow == null) { okRow = { key, row }; okStreak = 1; continue }
+    if (okRow.key !== key) break
+    okStreak += 1
+  }
+  if (okStreak >= 5) return { kind: 'same-call-ok', count: okStreak, name: okRow.row.name, args: okRow.row.args, error: okRow.row.error ?? '（成功但同一个调用重复）' }
   return null
 }
 
@@ -800,6 +813,11 @@ async function main() {
     throw new Error(`根锁被 ${lock.owner} 占用（${lock.purpose ?? ''} ETA ${lock.eta ?? '?'}），拒绝启动本地模型长测`)
   }
   writeJson(nightFile, { cfg, startedAt: state.startedAt, budgetSec })
+  // 上次 supervisor 崩溃记录进 strategy（早报可见）
+  const prevStatus = readJson(statusFile, null)
+  if (prevStatus && (prevStatus.phase === 'failed' || String(prevStatus.stopReason ?? '').startsWith('异常') || prevStatus.stopReason === 'SIGINT' || prevStatus.stopReason === 'SIGTERM')) {
+    recordStrategy('prev-crash', `上次 supervisor 退出（${prevStatus.stopReason ?? '?'}）：${String(prevStatus.lastError ?? '').slice(0, 300)}`)
+  }
   writeStatus({ phase: 'starting' })
 
   if (!(await ensureServer())) throw new Error('服务器不可用，无法开始')
@@ -815,6 +833,8 @@ async function main() {
     writeStatus()
     await checkpoint('adopt')
   } else {
+    // 同一 runDir 续跑：先把上一代的 events/transcript 归档，避免新会话 seq 重排被 observer 去重吃掉。
+    if (fs.existsSync(path.join(runDir, 'events.jsonl'))) archiveLabGeneration()
     if (!(await startLab({ fresh: true }))) throw new Error('lab 启动失败')
     // 初始指令：让她自己安排这一夜
     const baseline = await sendPrompt(initialInstruction(), { timeoutSec: 600 })
@@ -884,8 +904,8 @@ async function main() {
     const events = readEvents()
     const stats = turnStats(events)
     state.lastSeenEventAt = stats.lastEventAt ? new Date(stats.lastEventAt).toISOString() : null
-    const sleep = sleepPhaseNow()
-    const sleeping = sleep.phase === 'sleeping'
+    const sleepInfo = sleepPhaseNow()
+    const sleeping = sleepInfo.phase === 'sleeping'
     // 模式切换（task / survival / rest / sleep）：睡眠期只做健康监控，不 cancel、不催、不打搅
     const progressed = hasProgress(events)
     if (progressed && state.loopBreakers > 0) {
@@ -915,7 +935,7 @@ async function main() {
       state.modeStart = nowIso()
       state.lastModeTickAt = nowIso()
       log(`MODE → ${desiredMode}`)
-      recordStrategy('mode', `切到 ${desiredMode} 模式（sleep=${sleep.phase} survival=${state.survivalMode} rest=${state.restMode} degrade=${state.degradeSignals}）`)
+      recordStrategy('mode', `切到 ${desiredMode} 模式（sleep=${sleepInfo.phase} survival=${state.survivalMode} rest=${state.restMode} degrade=${state.degradeSignals}）`)
     } else if (state.lastModeTickAt) {
       state.modeSeconds[state.mode] = (state.modeSeconds[state.mode] ?? 0) + Math.round((Date.now() - Date.parse(state.lastModeTickAt)) / 1000)
       state.lastModeTickAt = nowIso()
@@ -973,17 +993,45 @@ async function main() {
         await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
       } catch (error) { log(`loop-breaker cancel 失败：${String(error?.message ?? error)}`) }
       await sleep(2500)
-      // dig 特定 steer：她爱用 goto+dig 旧坐标；改成"scan 拿新坐标 → 只用 mine task"
+      // dig / goto 捡物 特定 steer（她爱用 goto+dig 旧坐标、以为 goto 能捡东西）
       const digStuck = /dig|方块没有变化|没有变化/.test(`${loop.name} ${loop.error}`)
-      const steer = digStuck
-        ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
-        : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
+      const pickupStuck = loop.kind === 'same-call-ok' || /goto/.test(loop.name)
+      const steer = pickupStuck
+        ? `你连续 ${loop.count} 次重复同一个调用（它可能"成功"但没用）：${loop.args.slice(0, 120)}。注意：**goto 不会捡东西**。捡掉落物要：mcb_look 看 item 实体距离/方向 → 走到它旁边 1 格内 → wait；死亡掉落 5 分钟内消失，捡不到就放弃换目标。下一步只做这一个动作：${nextStep.text}。`
+        : digStuck
+          ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
+          : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
       try { await sendPrompt(steer, { timeoutSec: 300 }) } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
       if (state.loopBreakers >= 2) {
         log('循环熔断升级：重启 lab 会话清上下文并降级 op 集')
         state.forceLabRestart = true
       }
       await checkpoint('loop-breaker')
+    }
+
+    // 无进展检测：连续 10 次 tool call 后位置/背包/任务都没变化 → 判空转、打断并提示
+    if (!sleeping && !state.restMode) {
+      if (!state.progressProbe) {
+        state.progressProbe = { tools: stats.tools, position: bodyNow.position, task: bodyNow.task, inventory: null, at: nowIso() }
+      } else if (stats.tools - state.progressProbe.tools >= 10) {
+        const inv = await bodyDo([{ op: 'inventory' }], 8000)
+        const invText = inv?.json?.results?.[0]?.result?.text ?? null
+        const unchanged = bodyNow.position === state.progressProbe.position
+          && bodyNow.task === state.progressProbe.task
+          && String(invText ?? '').slice(0, 200) === String(state.progressProbe.inventory ?? '').slice(0, 200)
+        if (unchanged) {
+          recordStrategy('no-progress', `连续 ${stats.tools - state.progressProbe.tools} 次工具调用位置/背包/任务均未变化（pos ${bodyNow.position ?? '?'}），判定空转`)
+          try {
+            const api = apiFor(cfg.port)
+            await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
+          } catch (error) { log(`no-progress cancel 失败：${String(error?.message ?? error)}`) }
+          await sleep(2000)
+          try {
+            await sendPrompt('停一下：你连续十几次操作后位置、背包、任务都没有变化，是在空转。下一步只做一个动作：mcb_status 看状态；然后 mcb_scan 找个新目标，或者回安全点休息。禁止重复刚才的调用。', { timeoutSec: 300 })
+          } catch (error) { log(`no-progress 提示失败：${String(error?.message ?? error)}`) }
+        }
+        state.progressProbe = { tools: stats.tools, position: bodyNow.position, task: bodyNow.task, inventory: invText, at: nowIso() }
+      }
     }
 
     // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步；睡眠/休息期不催）
@@ -1043,7 +1091,7 @@ async function main() {
       recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
       if (!sleeping) {
         try {
-          await sendPrompt(`你刚死了一次（死亡位置 ${position}）。先 mcb_status 看现在在哪、能不能回去捡掉落；捡不到就别硬找，换个安全的目标继续。别在同一个危险点反复送死。`, { timeoutSec: 300 })
+          await sendPrompt(`你刚死了一次（死亡位置 ${position}）。死亡掉落 5 分钟内会消失：先 mcb_look 看 item 实体距离/方向，走到它旁边 1 格内再 wait（**goto 本身不会捡东西**）；捡不到就别硬找，换个安全的目标继续。先 mcb_status 看现在在哪。`, { timeoutSec: 300 })
         } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
       }
     }
@@ -1111,7 +1159,7 @@ async function main() {
         paused: bodyNow.paused,
         mode: state.mode,
         sleeping: sleeping,
-        sleepQueue: sleep.queue,
+        sleepQueue: sleepInfo.queue,
         degradeSignals: state.degradeSignals,
         survivalMode: state.survivalMode,
         restMode: state.restMode,
