@@ -389,6 +389,7 @@ export function apply(ctx) {
       return {
         job: 'events', ok: false, blocks: 0, shards: shards.length,
         failedShards: shardResults.length,
+        degraded: true,
         error: shardResults.map((row) => row.error).filter(Boolean).slice(0, 3).join('；'),
       }
     }
@@ -1140,6 +1141,55 @@ export function apply(ctx) {
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。
    * @returns {{ok:boolean, day:string, results:object[]}}
    */
+  /**
+   * dream 完成/失败的回执（红队 C4 / TIME.md §15.3 契约）：
+   *   signals.emit({from:{plugin:'dream'}, kind:'event', text, tags:['dream-result'], meta:{ok,jobs,degraded,failedShards,at}})
+   * time 侧：睡眠中并入醒来简报；醒着发一条 notice；没收到回执时简报写"未回传"（不假装成功）。
+   * 全是 skip（already-ran/no-raw/…）时不发——没有真干活就别发"完成"。
+   * text 只放载荷（time 自己会包"完成/失败"），例如 "wash 1119 行 / events 3 块"。
+   */
+  function jobDetail(row) {
+    if (row.job === 'wash') return `${row.lines ?? 0} 行${row.omittedLines ? `（省略 ${row.omittedLines} 行）` : ''}`
+    if (row.job === 'events') return `${row.blocks ?? 0} 块`
+    if (row.job === 'people') return `${row.blocks ?? 0} 人`
+    if (row.job === 'slang') return `${row.blocks ?? 0} 条`
+    if (row.job === 'cleanup') return `${row.merged ?? 0} 合并/${row.rewrites ?? 0} 改写`
+    if (row.job === 'index') return `${row.indexed ?? 0} 条`
+    if (row.job === 'lexicon') return `${row.learned ?? 0} 条`
+    if (row.job === 'consume') return `${row.written ?? 0} 条写待办`
+    return 'ok'
+  }
+
+  function emitDreamResult({ now, results }) {
+    const executed = results.filter((row) => row.ok !== false && !row.skipped)
+    const failed = results.filter((row) => row.ok === false)
+    if (!executed.length && !failed.length) return null // 全 skip：没有真干活，不发假回执
+    const degraded = results.some((row) => row.degraded === true)
+    const failedShards = results.reduce((n, row) => n + (Number(row.failedShards) || 0), 0)
+    const ok = failed.length === 0
+    const parts = [
+      ...executed.map((row) => `${row.job} ${jobDetail(row)}`),
+      ...failed.map((row) => `${row.job} 失败（${String(row.error ?? 'unknown').slice(0, 80)}）`),
+    ]
+    if (degraded) parts.push(`分片降级${failedShards ? `（${failedShards} 片失败）` : ''}`)
+    const text = parts.join(' / ')
+    const meta = {
+      ok,
+      jobs: results.map((row) => ({ job: row.job, ok: row.ok !== false, ...(row.skipped ? { skipped: row.skipped } : {}) })),
+      degraded,
+      failedShards,
+      at: now,
+    }
+    try {
+      ctx.signals?.emit?.({ from: { plugin: 'dream' }, kind: 'event', text, tags: ['dream-result'], meta })
+    } catch (error) {
+      // 回执发不出去不能拖垮整轮整理；但必须留痕。
+      ctx.log({ level: 'warn', msg: 'dream.result-emit-fail', error: String(error?.message ?? error) })
+      return null
+    }
+    return { ok, text, meta }
+  }
+
   async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false } = {}) {
     const day = dayKey(now, tzOf())
     const results = []
@@ -1152,7 +1202,9 @@ export function apply(ctx) {
     }
     const ok = results.every((r) => r.ok !== false)
     const pruned = pruneRuns(now)
-    return { ok, day, results, pruned }
+    // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
+    const receipt = emitDreamResult({ now, results })
+    return { ok, day, results, pruned, receipt }
   }
 
   /**
@@ -1175,8 +1227,12 @@ export function apply(ctx) {
         return result
       })
       .catch((error) => {
-        ctx.log({ level: 'warn', msg: 'dream.run-fail', reason, error: String(error?.message ?? error) })
-        return { ok: false, day: null, results: [], error: String(error?.message ?? error) }
+        const reasonText = String(error?.message ?? error)
+        ctx.log({ level: 'warn', msg: 'dream.run-fail', reason, error: reasonText })
+        // 整轮异常也要给 time 一个失败回执（否则醒来简报只能写"未回传"）。
+        const failed = { job: 'run', ok: false, error: reasonText }
+        emitDreamResult({ now, results: [failed] })
+        return { ok: false, day: null, results: [failed], error: reasonText }
       })
   }
 
