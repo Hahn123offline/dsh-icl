@@ -342,6 +342,11 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 **结论**：节流**不降低 hit%（两者都 91.2%）**，prefill 略降（-1.4%），首轮冷启动后的请求全部 `private_endpoint` 命中。
 本 scenario 每轮 facts 只变一次，所以节流只省 1 条快照（2705 vs 3163 字符）；**真正的收益在 step-heavy 场景**
 （mc-lab 本地 MC run `L1`：27 个 step / 10 轮，facts 快照**共 5 条**、system **4999 字符 / 8473 字节**常数、0 replace → 节流有效且不破前缀）。
+
+**MC 真实场景的引擎侧数字（`L1`，默认节流，从全局 NInfer 请求日志按 19:06:49–19:16:15 窗口切片）**：
+27 条 tool-bearing 请求、prompt 合计 342533 tok、**hit 329521 tok（96.2%）**、prefill 合计仅 **13012 tok**、
+**全量失效 1 条（首轮冷启动）**；稳态每条请求 prefill 24–300 tok、TTFT 0.35–0.70s。
+对比修复前真实会话（每回合 hit=0、单次 prefill 7k–24k、TTFT 10–24s），MC 场景下 B+节流同样成立。
 复跑：`node tools/cache-probe.mjs compare --a cache-throttle-on --b cache-throttle-off`。
 
 > 真实会话的绝对数字更大（prompt 7k–24k tokens、TTFT 10–24s），因为会话历史更长；
