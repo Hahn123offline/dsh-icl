@@ -69,3 +69,5 @@
 - `craft wooden_pickaxe` 报"没有可用配方"（缺已放置的工作台/材料链）。
 - `place` 因背包无 dirt 失败。
 → 记为下轮 P0（craft 后置校验加等待/重读；需要工作台时先放置；place 材料预检），本轮不再追。已有可复现证据路径。
+
+**19:46 更新（mc-body 结论 + 修复）**：craft `+0` 是 **inventory 更新延迟导致的校验时序 bug**（最终背包 `oak_planks×13/stick×4` 可自证），已修（`a5c09f7`：craft 后轮询最多 2.5s）；`wooden_pickaxe` 缺配方是因为工作台从未放置（前序被误判打断；body 不自动放工作台），报错已改成可操作建议（`b0b2150`）。`mine` 的 `task_done.result` 已带 `{mined,net,requested,item,reason}`，mc-link 下轮可直接显示"净增 N/M"。木镐/place 两行真服证据仍待补（需要 3 分钟 normal 服窗口），原因已闭合。
