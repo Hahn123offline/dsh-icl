@@ -414,6 +414,11 @@ export function apply(ctx) {
   const listLimit = Math.max(1, Number(ctx.config.listLimit ?? 20))
   const dir = path.dirname(stateFile)
 
+  // 测试时钟（config.testClock:true 时才允许 inbox clock 命令）：只在 time 自己的时间视图上
+  // 加偏移，不改宿主时钟——别的插件/DSH 墙钟不受影响，也不会递归。不落盘，重启恢复。
+  let clockSkew = 0
+  const nowTime = () => ctx.now() + clockSkew
+
   const signals = ctx.signals
   if (!signals?.offer) throw new Error('time 需要 ctx.signals 服务')
   const world = ctx.services.get('world')
@@ -430,7 +435,7 @@ export function apply(ctx) {
 
   const blank = () => ({
     phase: 'awake',
-    since: ctx.now(),
+    since: nowTime(),
     schedules: [],
     queue: [],
     goals: [],
@@ -468,12 +473,12 @@ export function apply(ctx) {
       state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
       state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
       state.sleepUntil = Number(saved.sleepUntil) > 0 ? Number(saved.sleepUntil) : null
-      state.since = Number(saved.since) > 0 ? Number(saved.since) : ctx.now()
+      state.since = Number(saved.since) > 0 ? Number(saved.since) : nowTime()
       if (!state.spans.some((span) => span?.id === state.sleepingId && span.sleep)) {
         // 状态自愈：sleeping 但没有对应 span，回落到 awake（别卡在睡眠里）。
         if (state.phase === 'sleeping') {
           state.phase = 'awake'
-          state.since = ctx.now()
+          state.since = nowTime()
           state.sleepingId = null
           state.sleepUntil = null
         }
@@ -489,7 +494,7 @@ export function apply(ctx) {
 
   // 重建 __parsed，清理坏数据/漏掉的安排（显式记录，不静默）
   ;(() => {
-    const now = ctx.now()
+    const now = nowTime()
     const kept = []
     for (const schedule of state.schedules) {
       if (!schedule || typeof schedule !== 'object' || !schedule.id) { state.stats.dropped += 1; log('warn', 'time.schedule.invalid', { id: schedule?.id ?? null }); continue }
@@ -528,6 +533,40 @@ export function apply(ctx) {
   let gateRemover = null
   let ticking = false
 
+  /**
+   * 测试/复核用：平移 time 看到的时钟（跨小时/跨时段前缀复核、长夜压缩）。
+   * 只在 ctx.config.testClock === true 时开放；时钟仍跟着真实时间走，只是整体偏移。
+   */
+  function advanceClock(args = {}) {
+    if (ctx.config.testClock !== true) throw new Error('clock 命令只在 testClock:true 的测试 preset 里可用')
+    if (args.reset === true) {
+      clockSkew = 0
+      log('info', 'time.clock.test', { reset: true })
+      return { reset: true, now: nowTime() }
+    }
+    let advance = 0
+    if (args.advanceMs != null) advance = Number(args.advanceMs)
+    else if (args.advanceMinutes != null) advance = Number(args.advanceMinutes) * 60_000
+    else if (args.advanceHours != null) advance = Number(args.advanceHours) * 3_600_000
+    if (args.nextHour === true) {
+      const p = partsOf(nowTime(), timeZone)
+      advance += (60 - p.min) * 60_000 + 60_000
+    }
+    if (args.nextPeriod === true) {
+      // 跳到 time 段"时段"的下一个边界（凌晨/上午/下午/晚上/深夜）+1 分钟，
+      // 专门用来复核"跨时段时提示词事实变化、其余时间不抖"。
+      const p = partsOf(nowTime(), timeZone)
+      const boundary = [6, 12, 18, 23].find((hour) => hour > p.h)
+      const dayAdd = boundary == null ? 1 : 0
+      const targetHour = boundary == null ? 6 : boundary
+      advance += ((dayAdd * 24 + targetHour - p.h) * 60 - p.min + 1) * 60_000
+    }
+    if (!Number.isFinite(advance) || advance <= 0) throw new Error('clock 需要 advanceMs / advanceMinutes / advanceHours / nextHour / nextPeriod')
+    clockSkew += Math.round(advance)
+    log('info', 'time.clock.test', { advanceMs: Math.round(advance), skewMs: clockSkew })
+    return { advancedMs: Math.round(advance), now: nowTime(), skewMs: clockSkew }
+  }
+
   function persist() {
     dirty = false
     try {
@@ -544,7 +583,7 @@ export function apply(ctx) {
       state.lastPersistError = null
     } catch (error) {
       dirty = true
-      state.lastPersistError = { at: ctx.now(), error: String(error?.message ?? error) }
+      state.lastPersistError = { at: nowTime(), error: String(error?.message ?? error) }
       log('warn', 'time.persist', { error: String(error?.message ?? error) })
     }
   }
@@ -593,7 +632,7 @@ export function apply(ctx) {
       tags: Array.isArray(signal.tags) ? signal.tags.slice(0, 8) : [],
       focus: signal.focus ?? null,
       reason,
-      at: ctx.now(),
+      at: nowTime(),
       createdAt: signal.createdAt ?? null,
       expiresAt: signal.expiresAt ?? null,
     })
@@ -627,7 +666,7 @@ export function apply(ctx) {
    */
   function flushQueue(reason) {
     if (!state.queue.length) return 0
-    const now = ctx.now()
+    const now = nowTime()
     let expired = 0
     const fresh = []
     for (const item of state.queue) {
@@ -677,7 +716,7 @@ export function apply(ctx) {
         const used = Number(state.lock.emergency?.used ?? 0)
         if (used < quota) {
           state.lock.emergency.used = used + 1
-          state.lock.emergency.log = [...(state.lock.emergency.log ?? []), { at: ctx.now(), plugin: signal.from?.plugin ?? '?', text: String(signal.text ?? '').slice(0, 120) }].slice(-20)
+          state.lock.emergency.log = [...(state.lock.emergency.log ?? []), { at: nowTime(), plugin: signal.from?.plugin ?? '?', text: String(signal.text ?? '').slice(0, 120) }].slice(-20)
           persist()
           log('info', 'time.lock.emergency', { plugin: signal.from?.plugin ?? '?', used: used + 1, quota })
           return { accept: true, emergency: true }
@@ -702,12 +741,12 @@ export function apply(ctx) {
 
   function activeLock() {
     if (!state.lock) return null
-    if (ctx.now() >= Number(state.lock.until)) return null
+    if (nowTime() >= Number(state.lock.until)) return null
     return state.lock
   }
 
   function mute(input = {}) {
-    const now = ctx.now()
+    const now = nowTime()
     let until = null
     if (input.until != null) {
       until = parseUntil(input.until, now, timeZone)
@@ -742,7 +781,7 @@ export function apply(ctx) {
     state.lock = null
     persist()
     emitEvent({ from: { plugin: 'time', activity: 'lock' }, kind: 'event', text: 'mute-end', tags: ['mute'], meta: { reason } })
-    log('info', 'time.unmute', { reason, durationMin: Math.round((ctx.now() - before.since) / 60_000) })
+    log('info', 'time.unmute', { reason, durationMin: Math.round((nowTime() - before.since) / 60_000) })
     const released = flushQueue(reason === 'timeout' ? '静音到点' : '静音结束')
     return { muted: false, released, since: before.since, until: before.until }
   }
@@ -770,7 +809,7 @@ export function apply(ctx) {
   function addGoal(input = {}) {
     const theme = String(input.theme ?? input.message ?? '').trim()
     if (!theme) throw new Error('目标需要 theme')
-    const now = ctx.now()
+    const now = nowTime()
     let until = null
     if (input.until != null) {
       until = parseUntil(input.until, now, timeZone)
@@ -835,7 +874,7 @@ export function apply(ctx) {
     let sent = 0
     for (const goal of [...state.goals]) {
       if (!goal.resumeOnStop) continue
-      const now = ctx.now()
+      const now = nowTime()
       if (goal.until != null && now >= goal.until) { goalExpired(goal, '时间到'); continue }
       if (goal.turnLimit != null) {
         if (goal.turnLimit <= 0) { goalExpired(goal, '轮次用完'); continue }
@@ -856,7 +895,7 @@ export function apply(ctx) {
   /* ── 安排（时间轴） ── */
 
   function scheduleSignature(schedule) {
-    const parsed = schedule.__parsed ?? parsedOf(schedule, ctx.now(), timeZone)
+    const parsed = schedule.__parsed ?? parsedOf(schedule, nowTime(), timeZone)
     if (parsed.kind === 'once') return `once|${parsed.at}`
     if (parsed.kind === 'daily') return `daily|${parsed.hour}:${parsed.minute}`
     return `weekly|${(parsed.weekdays ?? []).join(',')}|${parsed.hour}:${parsed.minute}`
@@ -871,14 +910,14 @@ export function apply(ctx) {
   function markPastOccurrence(schedule) {
     const parsed = schedule.__parsed
     if (!parsed || parsed.kind === 'once') return
-    const now = ctx.now()
+    const now = nowTime()
     const point = occurrenceAt(parsed, now, timeZone)
     if (point == null) return
     if (now - point > catchUpMs) state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = -Math.max(1, point)
   }
 
   function addSchedule(input) {
-    const schedule = normalizeSchedule(input, ctx.now(), { timeZone })
+    const schedule = normalizeSchedule(input, nowTime(), { timeZone })
     state.schedules = state.schedules.filter((s) => s.id !== schedule.id).concat(schedule)
     // 同一个 id 重新安排 = 重新计时；清掉 fired，否则今天不会响。
     clearFired(schedule.id)
@@ -907,18 +946,18 @@ export function apply(ctx) {
     const merged = { ...current, ...patch, id: current.id }
     // 旧实现：current 一定带 at，导致 {id, in} 静默无效。这里让 in 显式压过旧 at。
     if (patch.in != null && patch.at == null) merged.at = null
-    const next = normalizeSchedule(merged, ctx.now(), { timeZone })
+    const next = normalizeSchedule(merged, nowTime(), { timeZone })
     const pointChanged = scheduleSignature(current) !== scheduleSignature(next)
     state.schedules = state.schedules.map((s) => (s.id === current.id ? next : s))
     if (pointChanged) { clearFired(current.id); markPastOccurrence(next) }
     // 进行中的长日程：编辑后同步结束时间（旧实现改不动已经开始的 span）。
     const span = state.spans.find((s) => s.id === current.id)
     if (span && next.durationMin != null) {
-      span.until = ctx.now() + next.durationMin * 60_000
+      span.until = nowTime() + next.durationMin * 60_000
       span.endMessage = next.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${next.id}`
       if (span.sleep && state.sleepingId === span.id) {
         state.sleepUntil = span.until
-        state.since = ctx.now()
+        state.since = nowTime()
       }
     }
     persist()
@@ -941,7 +980,7 @@ export function apply(ctx) {
   }
 
   function startSchedule(schedule) {
-    const now = ctx.now()
+    const now = nowTime()
     const parsed = schedule.__parsed ?? parsedOf(schedule, now, timeZone)
     // 通用日历事件：time 不认识消费者，插件按 tags 订阅（dream 的每日安排就是 tags:['dream']）。
     emitEvent({
@@ -1025,7 +1064,7 @@ export function apply(ctx) {
       state.phase = state.phase === 'paused' ? 'paused' : 'awake'
       state.sleepingId = null
       state.sleepUntil = null
-      state.since = ctx.now()
+      state.since = nowTime()
       emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
       if (!span.silent) send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
       const released = flushQueue('你睡觉时')
@@ -1043,7 +1082,7 @@ export function apply(ctx) {
 
   function pause() {
     if (state.phase === 'paused') return { paused: true, already: true, since: state.pausedAt }
-    state.pausedAt = ctx.now()
+    state.pausedAt = nowTime()
     state.phase = 'paused'
     persist()
     log('info', 'time.pause', { at: state.pausedAt })
@@ -1052,7 +1091,7 @@ export function apply(ctx) {
 
   function resume() {
     if (state.phase !== 'paused') return { resumed: false, phase: state.phase }
-    const now = ctx.now()
+    const now = nowTime()
     const delta = state.pausedAt ? Math.max(0, now - state.pausedAt) : 0
     // 冻结的是"计时"：长日程、目标期限、一次性安排、静音锁、睡眠结束都整体后移。
     for (const span of state.spans) span.until = Number(span.until) + delta
@@ -1082,7 +1121,7 @@ export function apply(ctx) {
       state.phase = 'awake'
       state.sleepingId = null
       state.sleepUntil = null
-      state.since = ctx.now()
+      state.since = nowTime()
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
       return { ended: true, released: flushQueue('你睡觉时') }
@@ -1115,7 +1154,7 @@ export function apply(ctx) {
     } catch (error) { log('warn', 'time.gate.reinstall', { error: String(error?.message ?? error) }) }
   }
 
-  function tick(at = ctx.now()) {
+  function tick(at = nowTime()) {
     if (ticking) return { skipped: 'reentrant' }
     ticking = true
     try {
@@ -1203,7 +1242,7 @@ export function apply(ctx) {
       }
       try {
         fs.mkdirSync(dir, { recursive: true })
-        fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: ctx.now(), ...result })}\n`, 'utf8')
+        fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: nowTime(), ...result })}\n`, 'utf8')
       } catch (error) { log('warn', 'time.outbox.write', { error: String(error?.message ?? error) }) }
       processed += 1
     }
@@ -1229,6 +1268,7 @@ export function apply(ctx) {
         case 'unmute': return { ok: true, result: unmute(args?.reason ?? 'manual') }
         case 'lock': return { ok: true, result: activeLock() }
         case 'wake': return { ok: true, result: wake() }
+        case 'clock': return { ok: true, result: advanceClock(args) }
         case 'reset': {
           for (const lease of goalLeases.values()) { try { lease.release?.() } catch { /* 已经释放 */ } }
           goalLeases.clear()
@@ -1254,7 +1294,7 @@ export function apply(ctx) {
     return ({ awake: '醒着', sleeping: '睡着', paused: '计时暂停' })[state.phase] ?? state.phase
   }
 
-  function nextUpcoming(now = ctx.now()) {
+  function nextUpcoming(now = nowTime()) {
     let best = null
     for (const schedule of state.schedules) {
       let parsed
@@ -1266,7 +1306,7 @@ export function apply(ctx) {
     return best
   }
 
-  function describeSchedule(schedule, now = ctx.now()) {
+  function describeSchedule(schedule, now = nowTime()) {
     let parsed = null
     try { parsed = parsedOf(schedule, now, timeZone) } catch { /* 坏数据在清单里显示原文 */ }
     const bits = []
@@ -1287,7 +1327,7 @@ export function apply(ctx) {
   }
 
   function status() {
-    const now = ctx.now()
+    const now = nowTime()
     return {
       phase: state.phase,
       since: state.since,
@@ -1311,13 +1351,19 @@ export function apply(ctx) {
   }
 
   function statusText() {
-    const now = ctx.now()
-    const lines = [`现在：${stampAt(now, timeZone)}（${phaseText()}${state.phase === 'paused' && state.pausedAt ? `，自 ${stampAt(state.pausedAt, timeZone)}` : ''}）。`]
-    if (state.phase === 'sleeping' && state.sleepUntil) lines.push(`睡到：${stampAt(state.sleepUntil, timeZone)}（${fmtRelative(state.sleepUntil, now)}）。`)
+    const now = nowTime()
+    const lines = [`现在：${stampAt(now, timeZone)}。`]
+    // 四个会"压住她"的状态写成一行的中文，别让她去读 JSON 字段名。
+    const bits = [phaseText()]
+    if (state.phase === 'sleeping' && state.sleepUntil) bits.push(`睡到 ${stampAt(Number(state.sleepUntil), timeZone)}（${fmtRelative(Number(state.sleepUntil), now)}）`)
+    if (state.phase === 'paused' && state.pausedAt) bits.push(`暂停自 ${stampAt(state.pausedAt, timeZone)}`)
     if (state.lock) {
       const lock = state.lock
-      lines.push(`静音：到 ${stampAt(Number(lock.until), timeZone)}（${fmtRelative(Number(lock.until), now)}${lock.reason ? `，${lock.reason}` : ''}；紧急剩余 ${Math.max(0, Number(lock.emergency?.quota ?? 0) - Number(lock.emergency?.used ?? 0))}/${Number(lock.emergency?.quota ?? 0)}）。`)
+      const left = Math.max(0, Number(lock.emergency?.quota ?? 0) - Number(lock.emergency?.used ?? 0))
+      bits.push(`静音到 ${stampAt(Number(lock.until), timeZone)}（${fmtRelative(Number(lock.until), now)}${lock.reason ? `，${lock.reason}` : ''}；紧急剩余 ${left}/${Number(lock.emergency?.quota ?? 0)}）`)
     }
+    if (state.queue.length) bits.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
+    lines.push(`状态：${bits.join('；')}。`)
     const next = nextUpcoming(now)
     if (next) lines.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${fmtRelative(next.point, now)}）。`)
     if (state.spans.length) {
@@ -1326,7 +1372,6 @@ export function apply(ctx) {
     if (state.goals.length) {
       lines.push(`目标：${state.goals.map((g) => `${g.id} ${g.theme}${g.turnLimit != null ? `（剩 ${g.turnLimit} 轮）` : ''}${g.until != null ? `（到 ${stampAt(g.until, timeZone)}）` : ''}`).join('；')}。`)
     }
-    if (state.queue.length) lines.push(`积压：${state.queue.length} 条（${reasonCounts()}）。`)
     if (state.stats.missed || state.stats.dropped || state.stats.expired) {
       lines.push(`丢弃：漏响 ${state.stats.missed}、溢出 ${state.stats.overflow}、过期 ${state.stats.expired}（累计丢弃 ${state.stats.dropped}）。`)
     }
@@ -1334,7 +1379,7 @@ export function apply(ctx) {
   }
 
   function listText() {
-    const now = ctx.now()
+    const now = nowTime()
     const lines = []
     const schedules = state.schedules.slice().sort((a, b) => {
       let pa = nextOccurrence(parsedOf(a, now, timeZone), now, timeZone)
@@ -1372,7 +1417,7 @@ export function apply(ctx) {
   }
 
   function timeFacts() {
-    const now = ctx.now()
+    const now = nowTime()
     const p = partsOf(now, timeZone)
     const phase = phaseText()
     // 精确到分钟会每分钟让提示词前缀失效；DSH 每步已注入精确时间。
@@ -1392,7 +1437,7 @@ export function apply(ctx) {
   /* ── 对外 API ── */
 
   const api = {
-    now: () => ctx.now(),
+    now: () => nowTime(),
     timeZone: () => timeZone,
     phase: () => state.phase,
     schedules: () => state.schedules.map(({ __parsed, ...rest }) => rest),
@@ -1424,6 +1469,8 @@ export function apply(ctx) {
     lock: () => (state.lock ? { ...state.lock } : null),
     setClock(fn) { return clock ? clock.set(fn) : () => {} },
     ownsClock: () => Boolean(clock?.owns?.()),
+    /** 测试/复核用（需 config.testClock）：平移 time 看到的时钟。 */
+    advanceClock,
     addGoal,
     removeGoal,
     goals: () => state.goals.map((g) => ({ ...g })),
@@ -1492,7 +1539,7 @@ export function apply(ctx) {
     },
     async execute(input = {}) {
       const schedule = addSchedule(input)
-      const detail = describeSchedule(schedule, ctx.now())
+      const detail = describeSchedule(schedule, nowTime())
       return { text: `安排好了：${detail}` }
     },
   })
@@ -1515,7 +1562,7 @@ export function apply(ctx) {
     },
     async execute({ id, ...patch } = {}) {
       const out = editSchedule(id, patch)
-      return { text: out.edited ? `改好了：${describeSchedule(out.schedule, ctx.now())}` : `没有这个安排：${id}` }
+      return { text: out.edited ? `改好了：${describeSchedule(out.schedule, nowTime())}` : `没有这个安排：${id}` }
     },
   })
   tool({
@@ -1558,7 +1605,7 @@ export function apply(ctx) {
     },
     async execute(input = {}) {
       const out = mute(input)
-      return { text: `静音了：到 ${stampAt(Number(out.until), timeZone)}（${fmtRelative(Number(out.until), ctx.now())}），紧急放行 ${out.emergencyQuota} 次。` }
+      return { text: `静音了：到 ${stampAt(Number(out.until), timeZone)}（${fmtRelative(Number(out.until), nowTime())}），紧急放行 ${out.emergencyQuota} 次。` }
     },
   })
   tool({

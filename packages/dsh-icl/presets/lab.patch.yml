@@ -33,6 +33,10 @@
               simulationFile: prompts/sim.md
               tickMs: 200
               timeTickMs: 1000
+              pluginConfig:
+                time:
+                  # 测试/复核用：允许 inbox `clock` 命令平移 time 看到的时钟（跨小时前缀复核）。
+                  testClock: true
               plugins:
                 - memory
                 - world-state
