@@ -163,6 +163,14 @@ export function createMineflayerAdapter({
     }
   }
 
+  // 氧值归一：mineflayer 正常是 0–20；某些服务端/插件给未缩放的 air_supply（见过 154），
+  // 这种当“未知”而不是显示成假数字（水下低氧判断也不该被错误数值误导）。
+  function oxygenValue() {
+    const raw = Number(bot?.oxygenLevel)
+    if (!Number.isFinite(raw)) return null
+    return raw >= 0 && raw <= 20 ? Math.round(raw) : null
+  }
+
   function reconnectSummary() {
     if (!autoReconnect) return null
     return {
@@ -186,7 +194,8 @@ export function createMineflayerAdapter({
       position: pos,
       health: bot?.health ?? null,
       food: bot?.food ?? null,
-      oxygen: Number.isFinite(bot?.oxygenLevel) ? bot.oxygenLevel : null,
+      oxygen: oxygenValue(),
+      oxygenRaw: Number.isFinite(bot?.oxygenLevel) ? Number(bot.oxygenLevel) : null,
       submerged: bot?.entity?.isInWater === true,
       players: Object.keys(bot?.players ?? {}),
       dimension: bot?.game?.dimension ?? null,
@@ -339,7 +348,7 @@ export function createMineflayerAdapter({
       dangerBlocks: danger.blocks,
       threats,
       health: bot?.health ?? null,
-      oxygen: Number.isFinite(bot?.oxygenLevel) ? bot.oxygenLevel : null,
+      oxygen: oxygenValue(),
     }
   }
 
@@ -1744,7 +1753,7 @@ export function createMineflayerAdapter({
       return {
         text: [
           `位置：${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}；朝向 yaw=${Math.round(bot.entity.yaw * 180 / Math.PI)}°`,
-          `生命/饥饿/氧气：${bot.health}/${bot.food}/${Number.isFinite(bot.oxygenLevel) ? bot.oxygenLevel : '?'}`,
+          `生命/饥饿/氧气：${bot.health}/${bot.food}/${oxygenValue() ?? '?'}`,
           `手持：${bot.heldItem?.name ?? '空'}`,
           `视线方块：${block ? `${block.name} @ ${block.position.x},${block.position.y},${block.position.z}` : '没有'}`,
           `附近：${entities.length ? entities.map((entity) => `${entity.name}(${entity.distance}m)`).join('、') : '无'}`,
@@ -1788,5 +1797,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+
 
 
