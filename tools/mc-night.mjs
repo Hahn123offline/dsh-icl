@@ -1212,7 +1212,9 @@ async function main() {
       state.survivalMode = false
     } else {
       // 生存模式判据：最近 10 分钟死过 / 血量≤14 / 熔断累计≥3 且无进展（触发后靠"无新死亡+回血+有推进"恢复）
-      const recentDeath = state.lastDeathNoticeAt != null && nowMs - Date.parse(state.lastDeathNoticeAt) < 10 * 60_000
+      // 注意：这里必须用局部 Date.now()，不能用后面的 const nowMs（TDZ：06:51 崩溃原因）。
+      const modeNowMs = Date.now()
+      const recentDeath = state.lastDeathNoticeAt != null && modeNowMs - Date.parse(state.lastDeathNoticeAt) < 10 * 60_000
       const lowHealth = bodyNow.connected && Number(bodyNow.health ?? 20) <= 14
       const degraded = state.degradeSignals >= 3 && !progressed
       if (!state.survivalMode && (recentDeath || lowHealth || degraded)) {
@@ -1220,7 +1222,7 @@ async function main() {
         state.survivalSince = nowIso()
         state.loopBreakersSinceMode = 0
         recordStrategy('survival-mode', `切生存模式：recentDeath=${recentDeath} health=${bodyNow.health ?? '?'} degrade=${state.degradeSignals} progressed=${progressed} → 只做躲怪/封坑/等天亮单步，不逼任务`)
-      } else if (state.survivalMode && !recentDeath && !lowHealth && Number(bodyNow.health ?? 20) > 16 && progressed && state.survivalSince && nowMs - Date.parse(state.survivalSince) > 60_000) {
+      } else if (state.survivalMode && !recentDeath && !lowHealth && Number(bodyNow.health ?? 20) > 16 && progressed && state.survivalSince && modeNowMs - Date.parse(state.survivalSince) > 60_000) {
         state.survivalMode = false
         state.degradeSignals = 0
         state.loopBreakers = 0
