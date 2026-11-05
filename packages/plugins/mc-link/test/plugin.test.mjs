@@ -125,12 +125,13 @@ async function startFakeBody({ connected = true } = {}) {
   }
 }
 
-async function mountLink({ port, config = {}, timePhase = null } = {}) {
+async function mountLink({ port, config = {}, timePhase = null, timeApi = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-mc-link-'))
   const host = createHost({ log: () => {} })
-  // 模拟 time 插件 provide 的公开 api（phase）：睡眠期 join 守卫要用。
+  // 模拟 time 插件 provide 的公开 api（phase/status）：睡眠守卫与睡眠边界展示要用。
   // 插件侧 ctx.services.get('time') 读的是 host 的 shared 注册表。
-  if (timePhase) host.shared.set('time', { phase: () => timePhase })
+  const time = timeApi ?? (timePhase ? { phase: () => timePhase } : null)
+  if (time) host.shared.set('time', time)
   host.registerPlugin(manifest, mcLink, {
     config: { baseUrl: `http://127.0.0.1:${port}`, pollMs: 60_000, logFile: path.join(root, 'events.jsonl'), ...config },
   })
@@ -693,6 +694,42 @@ test('mcb_join：睡眠期（time.phase=sleeping）拒绝重连，force:true 才
   } finally {
     await awake.cleanup()
     await body2.close()
+  }
+})
+
+test('mcb_status：只读展示 time 的睡眠边界事实（在飞 turn/grace 内结束/超 grace/lastSleepBoundary）', async () => {
+  const cases = [
+    [{ phase: () => 'sleeping', status: () => ({ sleepBoundary: { inFlight: true, turnAgeAtEntrySec: 12, turnEndedAfterSec: 8 } }) },
+      /睡眠边界：入睡时在飞 turn（age 12s），grace 内 8s 结束/],
+    [{ phase: () => 'sleeping', status: () => ({ sleepBoundary: { inFlight: true, turnAgeAtEntrySec: 100, overrun: true } }) },
+      /睡眠边界：⚠ 超 grace.*driver 应 cancel/],
+    [{ phase: () => 'awake', status: () => ({ lastSleepBoundary: { inFlight: true, turnAgeAtEntrySec: 12, turnEndedAfterSec: 8, endedAt: Date.now() } }) },
+      /上次睡眠边界：入睡时在飞 turn（age 12s），grace 内 8s 结束/],
+    [{ phase: () => 'sleeping', status: () => ({ sleepBoundary: { postSleepTurn: true } }) },
+      /睡眠边界：⚠ 入睡后出现新 turn/],
+    [{ phase: () => 'sleeping', status: () => ({ sleepBoundary: { inFlight: false } }) },
+      /睡眠边界：入睡时无在飞 turn/],
+  ]
+  for (const [timeApi, pattern] of cases) {
+    const body = await startFakeBody()
+    const link = await mountLink({ port: body.port, timeApi })
+    try {
+      const out = await link.tools.mcb_status.execute({})
+      assert.match(out.text, pattern)
+    } finally {
+      await link.cleanup()
+      await body.close()
+    }
+  }
+  // 旧版 time（没有 status/sleepBoundary）时静默，不报错
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port, timePhase: 'awake' })
+  try {
+    const out = await link.tools.mcb_status.execute({})
+    assert.doesNotMatch(out.text, /睡眠边界/)
+  } finally {
+    await link.cleanup()
+    await body.close()
   }
 })
 

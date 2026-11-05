@@ -319,6 +319,34 @@ export function apply(ctx) {
     try { return ctx.services?.get?.('time')?.phase?.() ?? null } catch { return null }
   }
 
+  /**
+   * time 的睡眠边界事实（status().sleepBoundary / lastSleepBoundary；下一版才有）。
+   * 只读展示，供当事人/早报核对；cancel/overrun 由 supervisor（mc-lab driver）负责。
+   */
+  function timeSleepBoundary() {
+    let current = null
+    let last = null
+    try {
+      const st = ctx.services?.get?.('time')?.status?.() ?? null
+      current = st?.sleepBoundary ?? null
+      last = st?.lastSleepBoundary ?? null
+    } catch { return null }
+    const b = current ?? last
+    if (!b || typeof b !== 'object') return null
+    const isLast = !current && Boolean(last)
+    const head = isLast ? '上次睡眠边界' : '睡眠边界'
+    const age = b.turnAgeAtEntrySec != null ? `（age ${Math.round(Number(b.turnAgeAtEntrySec))}s）` : ''
+    if (b.postSleepTurn) return { text: `${head}：⚠ 入睡后出现新 turn（直投/注入）` }
+    if (b.overrun) return { text: `${head}：⚠ 超 grace${b.inFlight ? `，入睡时在飞 turn${age}还没结束` : ''}，driver 应 cancel` }
+    if (b.inFlight) {
+      const ended = b.turnEndedAfterSec != null
+        ? `，grace 内 ${Math.round(Number(b.turnEndedAfterSec))}s 结束`
+        : '，还在跑'
+      return { text: `${head}：入睡时在飞 turn${age}${ended}` }
+    }
+    return { text: `${head}：入睡时无在飞 turn` }
+  }
+
   async function join({ host = null, port = null, username = null, server = null, force = false } = {}) {
     const target = resolveTarget({ host, port, server })
     if (username) target.username = String(username).slice(0, 16)
@@ -824,6 +852,9 @@ export function apply(ctx) {
         }
         if (status.adapter?.environment?.summary) lines.push(`环境：${String(status.adapter.environment.summary).slice(0, 160)}`)
         if (status.adapter?.pathfinder && status.adapter.pathfinder.available === false) lines.push('寻路：不可用（body 的 pathfinder 没加载；只能手挖/短距移动）')
+        // time 的睡眠边界事实（下一版才有；旧版无字段就静默）：只读展示，不做 cancel。
+        const boundary = timeSleepBoundary()
+        if (boundary) lines.push(boundary.text)
         if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
         const ownState = supervisor.state()
         if (ownState.owns) lines.push(`进程：本会话启动 pid ${ownState.pid ?? '?'}${ownState.alive ? '（运行中）' : '（已退出）'}`)
