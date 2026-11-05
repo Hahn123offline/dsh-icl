@@ -1210,17 +1210,25 @@ async function main() {
     }
     if (sleeping) {
       state.survivalMode = false
-    } else if (!state.survivalMode && (state.degradeSignals >= 3 || state.lastDeaths >= 1 || (bodyNow.connected && Number(bodyNow.health ?? 20) <= 14))) {
-      state.survivalMode = true
-      state.survivalSince = nowIso()
-      state.loopBreakersSinceMode = 0
-      recordStrategy('survival-mode', `切生存模式：deaths=${state.lastDeaths} health=${bodyNow.health ?? '?'} degrade=${state.degradeSignals} → 只做躲怪/封坑/等天亮单步，不逼任务`)
-    } else if (state.survivalMode && state.lastDeaths === 0 && Number(bodyNow.health ?? 20) > 16 && progressed && state.survivalSince && nowMs - Date.parse(state.survivalSince) > 60_000) {
-      state.survivalMode = false
-      recordStrategy('mode-recover', '死亡归零、血量恢复且检测到有效推进，退出生存模式恢复任务')
-    } else if (state.survivalMode && state.loopBreakersSinceMode >= 3) {
-      state.restMode = true
-      recordStrategy('rest-mode', '生存模式下单步仍连续失败 3 次：切休息/整理/聊天模式，不再逼任务')
+    } else {
+      // 生存模式判据：最近 10 分钟死过 / 血量≤14 / 熔断累计≥3 且无进展（触发后靠"无新死亡+回血+有推进"恢复）
+      const recentDeath = state.lastDeathNoticeAt != null && nowMs - Date.parse(state.lastDeathNoticeAt) < 10 * 60_000
+      const lowHealth = bodyNow.connected && Number(bodyNow.health ?? 20) <= 14
+      const degraded = state.degradeSignals >= 3 && !progressed
+      if (!state.survivalMode && (recentDeath || lowHealth || degraded)) {
+        state.survivalMode = true
+        state.survivalSince = nowIso()
+        state.loopBreakersSinceMode = 0
+        recordStrategy('survival-mode', `切生存模式：recentDeath=${recentDeath} health=${bodyNow.health ?? '?'} degrade=${state.degradeSignals} progressed=${progressed} → 只做躲怪/封坑/等天亮单步，不逼任务`)
+      } else if (state.survivalMode && !recentDeath && !lowHealth && Number(bodyNow.health ?? 20) > 16 && progressed && state.survivalSince && nowMs - Date.parse(state.survivalSince) > 60_000) {
+        state.survivalMode = false
+        state.degradeSignals = 0
+        state.loopBreakers = 0
+        recordStrategy('mode-recover', '最近无死亡、血量恢复且检测到有效推进，退出生存模式恢复任务（重置熔断计数）')
+      } else if (state.survivalMode && state.loopBreakersSinceMode >= 3) {
+        state.restMode = true
+        recordStrategy('rest-mode', '生存模式下单步仍连续失败 3 次：切休息/整理/聊天模式，不再逼任务')
+      }
     }
     const desiredMode = sleeping ? 'sleep' : state.restMode ? 'rest' : state.survivalMode ? 'survival' : 'task'
     if (desiredMode !== state.mode) {
