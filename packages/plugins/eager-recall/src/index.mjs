@@ -13,16 +13,26 @@ export function apply(ctx) {
   const enabled = ctx.config.enabled !== false
   // 0.50 是小样本标定出来的；0.55 在我们的混合评分上会漏掉一半该命中的。
   const minScore = Number(ctx.config.minScore ?? 0.5)
+  // 没有绑定嵌入时，memory.search 退化成二元组重叠度，分数整体低一档（实测同义句 0.25），
+  // 0.5 会让这个插件永远 0 注入。所以退化路径单独用一个更低、且明确写出来的阈值。
+  const minScoreNoEmbed = Number(ctx.config.minScoreNoEmbed ?? 0.2)
   const maxItems = Math.max(1, Number(ctx.config.maxItems ?? 2))
   const maxChars = Math.max(40, Number(ctx.config.maxChars ?? 200))
+
+  function effectiveMinScore() {
+    let embedded = false
+    try { embedded = Boolean(memory.stats?.()?.embedded) } catch { embedded = false }
+    return embedded ? minScore : Math.min(minScore, minScoreNoEmbed)
+  }
 
   ctx.prompt.onTurn(async ({ message }) => {
     if (!enabled) return null
     const query = String(message ?? '').trim()
     if (!query) return null
-    const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore })
+    const threshold = effectiveMinScore()
+    const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore: threshold })
     const picked = hits
-      .filter((h) => Number(h.score) >= minScore)
+      .filter((h) => Number(h.score) >= threshold)
       .filter((h) => h.item.kind !== 'cursor')
       .slice(0, maxItems)
     if (!picked.length) return null
@@ -35,5 +45,5 @@ export function apply(ctx) {
     return text
   })
 
-  ctx.log({ msg: 'eager-recall.ready', enabled, minScore, maxItems, maxChars })
+  ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars })
 }
