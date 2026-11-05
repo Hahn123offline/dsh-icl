@@ -6,7 +6,7 @@ import { createProgressTracker, isDangerousBlock, recoveryStep } from './recover
 import {
   describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
-import { clampMacroNumbers, collectBlockCandidates, directionVector, progressEvery } from './macro.mjs'
+import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -1440,6 +1440,116 @@ export function createMineflayerAdapter({
       emit('macro_done', { kind: 'tunnel', done: total, direction: dir.name, torches })
       return { done: total, total, direction: dir.name, height: opts.height, torches }
     }
+    if (task.kind === 'bridge') {
+      const plan = bridgePlan(params)
+      const support = String(params.support ?? params.material ?? 'cobblestone')
+      const need = plan.cells.length
+      const have = Number(inventoryCounts()[support]) || 0
+      if (have < need) {
+        throw taskFailure('bridge: needs-material', {
+          need, have, material: support,
+          suggestion: `先补 ${support}：你需要 ${need} 个，现有 ${have}；可用 collect {item:"${support}",count:${need}} 或换 support 材质`,
+        })
+      }
+      const every = progressEvery(plan.length)
+      let placed = 0
+      let done = 0
+      let lastReportAt = 0
+      for (let step = 1; step <= plan.length; step += 1) {
+        checkAbort(signal)
+        const pos = currentPosition()
+        if (!pos) throw taskFailure('bridge: no-position', {})
+        const base = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) }
+        const stepCells = plan.cells.filter((cell) => cell.step === step)
+        let placedThisStep = 0
+        for (const cell of stepCells) {
+          const target = { x: base.x + cell.x, y: base.y + cell.yOffset, z: base.z + cell.z }
+          const existing = bot.blockAt(new Vec3(target.x, target.y, target.z))
+          if (existing && !/(^air$|cave_air|void_air)/.test(existing.name)) continue // 已有支撑/地面，跳过
+          try {
+            await runOp('place', { pos: target, item: support })
+            placed += 1
+            placedThisStep += 1
+          } catch { /* 单格放不上不立刻判死；下一步继续，最后看整体 */ }
+        }
+        const next = { x: base.x + plan.direction.x + 0.5, y: base.y, z: base.z + plan.direction.z + 0.5 }
+        try {
+          await walkOnce(makeGoal(next, 0.6), next, { signal, progress: null, stallMs: 1500, timeoutMs: 5000, arriveRange: 1.1 })
+        } catch (error) {
+          if (signal?.aborted) throw error
+          try { await bot.lookAt(new Vec3(next.x, base.y + 1.6, next.z), true) } catch { /* ignore */ }
+          try { bot.setControlState('forward', true); await sleep(400); bot.setControlState('forward', false) } catch { /* ignore */ }
+        }
+        done = step
+        const now = Date.now()
+        if (step % every === 0 || now - lastReportAt >= 10_000) {
+          lastReportAt = now
+          progress?.({ done, total: plan.length, direction: plan.direction, placed, position: currentPosition() })
+        }
+      }
+      progress?.({ done: plan.length, total: plan.length, direction: plan.direction, placed, position: currentPosition() })
+      emit('macro_done', { kind: 'bridge', done: plan.length, direction: plan.direction, placed })
+      return { done: plan.length, total: plan.length, direction: plan.direction, width: plan.width, material: support, placed }
+    }
+    if (task.kind === 'build') {
+      const rawBlueprint = typeof params.blueprint === 'string' ? JSON.parse(params.blueprint) : params.blueprint
+      const parsed = parseBlueprint(rawBlueprint)
+      const counts = inventoryCounts()
+      const materialCheck = checkBlueprintMaterials(rawBlueprint, counts)
+      if (!materialCheck.ok) {
+        throw taskFailure('build: needs-material', {
+          missing: materialCheck.missing,
+          suggestion: `材料不够：${materialCheck.missing.map((entry) => `${entry.name} 需 ${entry.need} 有 ${entry.have}`).join('、')}；先 collect 补料，或换 materialPolicy:"substitute"（明早支持）`,
+        })
+      }
+      let originPos = params.origin
+        ? { x: Math.floor(Number(params.origin.x)), y: Math.floor(Number(params.origin.y)), z: Math.floor(Number(params.origin.z)) }
+        : null
+      if (!originPos) {
+        const pos = currentPosition()
+        if (!pos) throw taskFailure('build: no-position', {})
+        originPos = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) }
+      }
+      const placements = parsed.placements
+        .map((entry) => ({ name: entry.name, pos: { x: originPos.x + entry.pos.x, y: originPos.y + entry.pos.y, z: originPos.z + entry.pos.z } }))
+        .sort((a, b) => a.pos.y - b.pos.y || a.pos.z - b.pos.z || a.pos.x - b.pos.x)
+      const total = placements.length
+      const every = progressEvery(total)
+      let placed = 0
+      let skipped = 0
+      let already = 0
+      let lastReportAt = 0
+      for (let index = 0; index < placements.length; index += 1) {
+        checkAbort(signal)
+        const target = placements[index]
+        const existing = bot.blockAt(new Vec3(target.pos.x, target.pos.y, target.pos.z))
+        if (existing && existing.name === target.name) { already += 1; continue }
+        let reachable = true
+        const pos = currentPosition()
+        if (pos && distanceTo(pos, new Vec3(target.pos.x, target.pos.y, target.pos.z)) > 4.5) {
+          try {
+            await gotoWithRecovery({ x: target.pos.x + 0.5, y: target.pos.y, z: target.pos.z + 0.5, range: 2, timeoutMs: 8000, stallMs: 2000 }, signal, null)
+          } catch (error) {
+            if (signal?.aborted) throw error
+            reachable = false
+          }
+        }
+        if (reachable) {
+          try {
+            await runOp('place', { pos: target.pos, item: target.name })
+            placed += 1
+          } catch { skipped += 1 }
+        } else { skipped += 1 }
+        const now = Date.now()
+        if (index % every === 0 || now - lastReportAt >= 10_000) {
+          lastReportAt = now
+          progress?.({ done: index + 1, total, placed, skipped, already, position: currentPosition() })
+        }
+      }
+      progress?.({ done: total, total, placed, skipped, already, position: currentPosition() })
+      emit('macro_done', { kind: 'build', placed, skipped, already, total })
+      return { placed, skipped, already, total, materials: parsed.materials, origin: originPos }
+    }
     throw new Error(`unsupported task: ${task.kind}`)
   }
 
@@ -2061,6 +2171,8 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+
 
 
 

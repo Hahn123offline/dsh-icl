@@ -127,3 +127,13 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 - `build`：`parseBlueprint(blueprint)` 校验 size/layers/palette 尺寸并展开 placements（相对坐标，从下往上 y）；`checkBlueprintMaterials(blueprint, counts)` 给 `{ok,missing[]}`；adapter 明早做：origin（默认玩家脚下方块）、可选 rotate、逐层放、超出 reach 4.5 记 skipped（有上限）、`strict` 材料不足立即 failed(needs-material)。
 - `shelter`：`shelterPlan({size,height})` 给出墙/顶/门占位（门在 z=0 中间、y0–1）；adapter 明早用 place 逐格放，材料不足 failed(needs-material)。
 - 单测：`test/macro.test.mjs` 已覆盖 bridgePlan/parseBlueprint/checkBlueprintMaterials/shelterPlan（45/45 mc-body 测试绿）。
+
+### 第二波 adapter 实现（2026-11-06 03:4x，比计划提前）
+
+- [x] `bridge`：已实现（`bridgePlan` + 逐格放支撑→前进；材料先按 `length*width` 校验，不足 `failed(needs-material)` 带需补数量；脚下已有实心则跳过）。
+- [x] `build`：已实现（`parseBlueprint` 校验 + `checkBlueprintMaterials` 预检；origin 默认脚下，也可传；逐层从下往上、超出 4.5 格先 goto 再放；同方块已在位计 `already`；放不上计 `skipped`；完成 progress `{done,total,placed,skipped,already}`）。
+- 真服 smoke（54839 干净平顶，产物 `.state/lab/mc-body-soak/build-smoke{,2}/`）：
+  - `collect dirt 20` → done 21（net 21）；
+  - `build` 3×1 dirt 蓝图 → done `{placed:1, skipped:0, already:2, total:3}`（2 格与地面重合计 already，1 格真实放置）；
+  - `bridge {direction:"east",length:3,support:"dirt"}` → done `{done:3,total:3,placed:0}`（平地已有支撑→跳过，只验证前进/材料校验路径）。
+- 未验/待补：bridge 真实断崖（需 normal 地形挖坑/沟）、build 旋转/`materialPolicy:"substitute"`、build 高层脚手架、sort/shelter/farm（明天实现）。
