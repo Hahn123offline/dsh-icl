@@ -137,3 +137,11 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
   - `build` 3×1 dirt 蓝图 → done `{placed:1, skipped:0, already:2, total:3}`（2 格与地面重合计 already，1 格真实放置）；
   - `bridge {direction:"east",length:3,support:"dirt"}` → done `{done:3,total:3,placed:0}`（平地已有支撑→跳过，只验证前进/材料校验路径）。
 - 未验/待补：bridge 真实断崖（需 normal 地形挖坑/沟）、build 旋转/`materialPolicy:"substitute"`、build 高层脚手架、sort/shelter/farm（明天实现）。
+
+### 补充（03:4x）：shelter / sort 实现 + partial 语义
+
+- `shelter`：已实现（`shelterPlan` 占位 → 材料预检 → 由内向外逐层 place；`already` 计同材质已在位、`skipped` 计被占/放不上）；**完成度 <80% 视为 `failed(shelter: partial)`**，不再误报 done。
+- `sort` / `deposit`：已实现为 `chest put/take` 包装（`sort {action:"put",all:false|true,items?,chest?}`；`deposit` 同）；真服 smoke 在无箱子场景返回可读失败“附近没有箱子”。
+- `build` 同理加 partial：`placed+already < total*0.8` → `failed(build: partial)`。
+- 真服 smoke（54839，`.state/lab/mc-body-soak/shelter-smoke/`）：collect dirt 26 → shelter 3×3×3 done `{placed:9, skipped:11, already:3, total:23}`（平地/斜坡部分格被地形占；已按新语义应判 partial，smoke 时旧码仍报 done，明早用新语义复测）。
+- 待办：farm（需锄/水/种子，明早）、build 旋转/替代材质、bridge 真实沟壑用例。

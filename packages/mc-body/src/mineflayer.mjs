@@ -1547,8 +1547,62 @@ export function createMineflayerAdapter({
         }
       }
       progress?.({ done: total, total, placed, skipped, already, position: currentPosition() })
+      if (placed + already < total * 0.8) {
+        emit('macro_done', { kind: 'build', placed, skipped, already, total, partial: true })
+        throw taskFailure('build: partial', { placed, skipped, already, total, suggestion: '部分方块放不上（悬空/超距/被占）：先垫脚或换低层蓝图，再重跑 build 补缺' })
+      }
       emit('macro_done', { kind: 'build', placed, skipped, already, total })
       return { placed, skipped, already, total, materials: parsed.materials, origin: originPos }
+    }
+    if (task.kind === 'shelter') {
+      const plan = shelterPlan(params)
+      const material = String(params.material ?? 'dirt')
+      const need = plan.cells.length
+      const have = Number(inventoryCounts()[material]) || 0
+      if (have < need) {
+        throw taskFailure('shelter: needs-material', {
+          material, need, have,
+          suggestion: `建 ${plan.size}×${plan.size} 避难所约需 ${material}×${need}，现有 ${have}；先 collect 补料或换 material（dirt/cobblestone/oak_planks）`,
+        })
+      }
+      const pos = currentPosition()
+      if (!pos) throw taskFailure('shelter: no-position', {})
+      const center = Math.floor(plan.size / 2)
+      const origin = { x: Math.floor(pos.x) - center, y: Math.floor(pos.y), z: Math.floor(pos.z) - center }
+      const placements = plan.cells
+        .map((cell) => ({ pos: { x: origin.x + cell.x, y: origin.y + cell.y, z: origin.z + cell.z } }))
+        .sort((a, b) => a.pos.y - b.pos.y)
+      const every = progressEvery(placements.length)
+      let placed = 0
+      let skipped = 0
+      let already = 0
+      for (let index = 0; index < placements.length; index += 1) {
+        checkAbort(signal)
+        const target = placements[index].pos
+        const existing = bot.blockAt(new Vec3(target.x, target.y, target.z))
+        if (existing && existing.name === material) { already += 1; continue }
+        if (existing && !/(^air$|cave_air|void_air)/.test(existing.name)) { skipped += 1; continue }
+        try {
+          await runOp('place', { pos: target, item: material })
+          placed += 1
+        } catch { skipped += 1 }
+        if (index % every === 0) progress?.({ done: index + 1, total: placements.length, placed, skipped, already, position: currentPosition() })
+      }
+      progress?.({ done: placements.length, total: placements.length, placed, skipped, already, position: currentPosition() })
+      if (placed + already < placements.length * 0.8) {
+        emit('macro_done', { kind: 'shelter', placed, skipped, already, total: placements.length, size: plan.size, partial: true })
+        throw taskFailure('shelter: partial', { placed, skipped, already, total: placements.length, size: plan.size, suggestion: '地形不平/贴墙导致部分放不上：先找平地或先挖平，再重跑 shelter' })
+      }
+      emit('macro_done', { kind: 'shelter', placed, skipped, already, total: placements.length, size: plan.size })
+      return { placed, skipped, already, total: placements.length, size: plan.size, height: plan.height, material, origin, door: plan.door }
+    }
+    if (task.kind === 'sort' || task.kind === 'deposit') {
+      const action = String(params.action ?? 'put')
+      const chestParams = { action, all: params.all === true, items: params.items ?? null }
+      if (params.chest) chestParams.pos = params.chest
+      const result = await runOp('chest', chestParams)
+      emit('macro_done', { kind: task.kind, action, result })
+      return { action, ...result }
     }
     throw new Error(`unsupported task: ${task.kind}`)
   }
