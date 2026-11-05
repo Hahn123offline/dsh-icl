@@ -111,6 +111,8 @@ const state = {
   loopBreakers: 0,
   forceLabRestart: false,
   progressProbe: null,
+  lastUnreachSteerAt: null,
+  prepSleptAt: null,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -459,7 +461,33 @@ function detectRepeatedFailure(events) {
   return null
 }
 
-/** 从 body 事件里判断"有没有实质推进"（mine/craft/place/task_done）。 */
+/** 最近的"目标不可达"信号（mc-body path_precheck reachable:false / degraded），用于提前换目标。 */
+function detectUnreachable(events) {
+  const results = events.filter((event) => event.type === 'tool/result').slice(-40)
+  const hits = results.filter((event) => /reachable["']?\s*:\s*false|degraded["']?\s*:\s*true|unreachable|path_precheck/i.test(String(event.data?.message?.content?.[0]?.text ?? '')))
+  return hits.length
+}
+
+/** time.json 里 night:main-sleep 的绝对时间（毫秒）；没有返回 null。 */
+function plannedSleepAt() {
+  try {
+    const data = readJson(path.join(runDir, 'state', cfg.preset, 'time.json'), null)
+    const schedule = (data?.schedules ?? []).find((item) => item.id === 'night:main-sleep')
+    const at = dateValue(schedule?.at)
+    return Number.isFinite(at) && at > 0 ? at : null
+  } catch { return null }
+}
+
+function dateValue(value) {
+  if (value == null) return NaN
+  if (typeof value === 'number') return value
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : NaN
+}
+
+function healthOfStatus(status) {
+  return status && typeof status === 'object' ? status : null
+}
 function hasProgress(events) {
   const rows = toolCallRows(events).slice(-80)
   return rows.some((row) => row.result && /mined|crafted|produced|placed|task_done|已挖|已放|已合/.test(String(row.result)))
@@ -1079,6 +1107,27 @@ async function main() {
         }
         state.progressProbe = { tools: stats.tools, position: bodyNow.position, task: bodyNow.task, inventory: invText, at: nowIso() }
       }
+    }
+
+    // 目标不可达（path_precheck reachable:false）提前换目标：比通用 no-progress 更早，且只在未睡眠时
+    const unreachableCount = detectUnreachable(events)
+    const lastUnreachSteerAt = state.lastUnreachSteerAt ? Date.parse(state.lastUnreachSteerAt) : 0
+    if (!sleeping && !state.restMode && unreachableCount >= 2 && nowMs - lastUnreachSteerAt > 10 * 60_000) {
+      state.lastUnreachSteerAt = nowIso()
+      recordStrategy('unreachable-steer', `最近工具结果里 ${unreachableCount} 次 reachable:false/degraded，判定目标不可达，要求换目标`, { unreachableCount })
+      try {
+        await sendPrompt('注意：你刚才的目标 stone 在当前地形不可达（path_precheck reachable:false）。别再试同一个目标，按顺序选一个：① 用 oak_log 做木板→木棍→木镐（工作台已放/再做一次）；② 先挖脚下方块向下走 2–3 格再试；③ 回安全点（17.5,65,-59）整理背包。只做一个动作，做完告诉我结果。', { timeoutSec: 300 })
+      } catch (error) { log(`unreachable steer 失败：${String(error?.message ?? error)}`) }
+    }
+
+    // 睡前准备：入睡前 20 分钟提醒回安全点/搭庇护所（只提醒一次）
+    const sleepAt = plannedSleepAt()
+    if (!sleeping && sleepAt && !state.prepSleptAt && nowMs > sleepAt - 20 * 60_000 && nowMs < sleepAt) {
+      state.prepSleptAt = nowIso()
+      recordStrategy('pre-sleep-prep', `距入睡 ${Math.round((sleepAt - nowMs) / 60000)} 分钟，提醒回安全点/搭庇护所准备睡觉`)
+      try {
+        await sendPrompt('快到你睡觉的时间了（约 20 分钟后）。现在开始收尾：把手上的事停一下，回刚才的安全点（或就近搭个能睡的庇护所），整理一下背包；到点就安排睡下（sleep 安排我已经帮你排好了，到点会生效）。', { timeoutSec: 300 })
+      } catch (error) { log(`pre-sleep 提示失败：${String(error?.message ?? error)}`) }
     }
 
     // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步；睡眠/休息期不催）
