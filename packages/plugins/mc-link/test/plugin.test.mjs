@@ -539,6 +539,33 @@ test('mcb_do：dig/place 的 pos 写成 [x,y,z] 也规整成 {x,y,z} 再交给 b
   }
 })
 
+test('门控：普通任务事件在 focus 里进积压，安全 alarm 能打断（mc-link 只标 tags，不自己做穿透）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    // 模拟模型在一个不相干的专注里（label 不是 'mc'）。
+    const lease = link.host.services.focus.enter({ label: 'act:reading', owner: 'focus', title: '在读东西' })
+    body.push({ type: 'task_done', data: { task: { id: 't-1', kind: 'mine', result: { mined: 1 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.equal(link.pushed.length, 0, '普通任务事件不该打断别的专注')
+    const backlog = link.host.services.focus.backlog()
+    assert.ok(backlog.some((row) => row.focus === 'mc'), `应进 mc 积压：${JSON.stringify(backlog)}`)
+
+    body.push({ type: 'safety_stop', data: { reason: 'low-health' } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /安全停止：血量过低/, '真危险事件要能进专注')
+    lease.release()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /积压/, '离开专注后应看到积压摘要')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
