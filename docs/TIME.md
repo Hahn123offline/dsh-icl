@@ -59,7 +59,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 | `since` | 最近一次阶段意义变化的时间戳（入睡/醒来/resume） |
 | `schedules` | 全部安排，持久；一次性安排响过即删，daily/weekly 保留 |
 | `spans` | 进行中的长日程 `{id, until, endMessage, sleep, silent, allow}` |
-| `queue` | 被拦下的积压 `{id, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota` |
+| `queue` | 被拦下的积压 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota`；`signalId` 保留原信号 id 供来源侧（QQ/MC）对账/去重，同 id 重复 offer 不重复入队 |
 | `goals` | `{id, theme, until, turnLimit, resumeLimit, resumes, focus, resumeOnStop, createdAt, lastResumeAt}` |
 | `fired` | 幂等键 `"<id>@<YYYY-MM-DD>" → ms`；负值表示"这天已处理但漏响" |
 | `sleepingId` / `sleepUntil` | 当前睡眠安排 id / 结束时刻（展示与后移用；判定读 `spans[].until`） |
@@ -135,8 +135,9 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 补充：
 - `allow: []` 表示**没有**白名单（除 time 自己和静音锁规则外全拦）；`allow:null` 才回落默认。
-- 积压有界：`maxQueue` 默认 500，超出丢最旧、`stats.dropped/overflow` 计数并 log。
-- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字）；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
+- 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（没有 `mention/at/private/direct/admin` 标签的），@/私聊优先保留；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
+- 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId`。
+- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
 - 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
 
 ### 4.1 静音锁（新）
@@ -147,6 +148,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 - 紧急事件 = 带 `tags` 里的 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 配置可把来源收敛成显式插件白名单（默认 null=不限制）。
 - 可查：`time_status` / `status().lock` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
 - 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason`、`time_list` 显示 `（sleeping）/（muted）/（muted-quota）`。
+- 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。
 - 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
 
 ### 4.2 穿透与伪造：风险边界
