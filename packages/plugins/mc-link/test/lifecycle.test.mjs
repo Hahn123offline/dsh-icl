@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createBodySupervisor } from '../src/lifecycle.mjs'
+import { createBodySupervisor, classifyExit } from '../src/lifecycle.mjs'
 
 class FakeChild extends EventEmitter {
   constructor(pid = 4242) {
@@ -251,4 +251,44 @@ test('lifecycle：body-exit.json 优先（带 status 快照），waitExit 能等
   assert.match(last.exitInfo?.detail ?? '', /boom/)
   assert.equal(last.exitInfo?.recentEvents?.length, 2)
   assert.deepEqual(last.exitInfo?.stderrTail, ['[mc-body] x'])
+})
+
+test('lifecycle：classifyExit——外部 /v1/shutdown 且 code 0 算 expected；崩溃/外部 SIGTERM 算 unexpected', () => {
+  assert.deepEqual(classifyExit({ stopping: false, code: 0, exitInfo: { reason: 'api-shutdown', exitCode: 0 } }), { expected: true, source: 'clean:api-shutdown' })
+  assert.deepEqual(classifyExit({ stopping: false, code: 0, exitInfo: { reason: 'clean-exit', exitCode: 0 } }), { expected: true, source: 'clean:clean-exit' })
+  assert.deepEqual(classifyExit({ stopping: false, code: 0 }), { expected: true, source: 'clean:code0' })
+  assert.deepEqual(classifyExit({ stopping: true, code: 0 }), { expected: true, source: 'self-stop' })
+  assert.equal(classifyExit({ stopping: false, code: 1, exitInfo: { reason: 'uncaught-exception', exitCode: 1 } }).expected, false)
+  assert.equal(classifyExit({ stopping: false, code: 0, exitInfo: { reason: 'sigterm', exitCode: 0 } }).expected, false, '外部 SIGTERM 不是 expected')
+  assert.equal(classifyExit({ stopping: false, signal: 'SIGKILL' }).expected, false)
+  assert.equal(classifyExit({ stopping: false, code: 0, exitInfo: { reason: 'api-shutdown', exitCode: 1 } }).expected, false, 'reason 对但 code 非 0 不算干净')
+})
+
+test('lifecycle：外部 POST /v1/shutdown（未自己 stop）→ body-exit 记为 expected，不触发崩溃路径', async () => {
+  const dir = tmpDir()
+  let child = null
+  let probes = 0
+  const events = []
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: dir,
+    startTimeoutMs: 3000,
+    spawnImpl: () => { child = new FakeChild(9008); return child },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+    onLifecycle: (event) => events.push(event),
+  })
+  await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
+  // 模拟外部管理面：写 body-exit.json 然后进程自己退出，supervisor 没有 stopping 标记。
+  fs.writeFileSync(path.join(dir, 'body-exit.json'), JSON.stringify({ reason: 'api-shutdown', exitCode: 0, at: Date.now(), status: { connected: true, paused: false, taskId: null, lastError: null } }), 'utf8')
+  child.emit('exit', 0, null)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const exit = events.find((event) => event.type === 'body-exit')
+  assert.ok(exit)
+  assert.equal(exit.expected, true, '外部干净关闭必须算 expected（睡眠期 leave 保命）')
+  assert.equal(exit.exitClass?.source, 'clean:api-shutdown')
+  assert.equal(supervisor.owns(), false)
+  const last = supervisor.lastExit()
+  assert.equal(last.expected, true)
+  assert.equal(last.exitClass?.source, 'clean:api-shutdown')
 })

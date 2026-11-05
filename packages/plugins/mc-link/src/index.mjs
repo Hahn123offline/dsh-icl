@@ -84,6 +84,8 @@ export function apply(ctx) {
   let lastExitAt = 0
   let lastLostReportAt = 0
   let exitTimes = []
+  /** 连续多少次 HTTP 状态失败：1 次不报警（外部干净关闭会先断 HTTP 再发 exit 事件）。 */
+  let lostStrikes = 0
   /** 本会话的退出原因账本：同因第 2 次起要在通知里说清楚，别让她重复踩同一个坑。 */
   let exitReasons = []
   let lastLan = []
@@ -207,22 +209,26 @@ export function apply(ctx) {
       const status = await call('/v1/status', { timeoutMs: 1500 })
       lastStatus = status
       sessionTouchedMc = true
+      lostStrikes = 0
       if (!reachable) { reachable = true; lastLostReportAt = 0 }
       return status
     } catch (error) {
       lastStatus = null
-      if (reachable) {
-        reachable = false
-        const quietSinceExit = lastExitAt && Date.now() - lastExitAt < 5000
-        const cooled = Date.now() - lastLostReportAt > 30_000
-        if (!quietSinceExit && cooled) {
-          lastLostReportAt = Date.now()
-          sendSignal({
-            kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
-            id: `mc:lost:${Date.now()}`,
-            text: `[MC] 连不上 body 了（${base}/v1/status 无响应）：身体可能被杀掉/崩了。先 mcb_status 看进程；要重连就 mcb_join。`,
-          })
-        }
+      lostStrikes += 1
+      // 单次 HTTP 失败先不下"身体可能崩了"的 alarm：外部 /v1/shutdown（睡眠期收身体）会有
+      // 亚秒级的 HTTP 先断、exit 事件后到，若第一次失败就报警，会把她从睡眠里拽起来。
+      // 连续 2 次失败（≥~2.4s）才报警；期间如果 body-exit 到了，exit 分支会自己说话（或 expected 沉默）。
+      const quietSinceExit = lastExitAt && Date.now() - lastExitAt < 5000
+      const cooled = Date.now() - lastLostReportAt > 30_000
+      const knownExit = supervisor.state().exitCode != null
+      if (reachable) reachable = false
+      if (lostStrikes >= 2 && !quietSinceExit && cooled && !knownExit) {
+        lastLostReportAt = Date.now()
+        sendSignal({
+          kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
+          id: `mc:lost:${Date.now()}`,
+          text: `[MC] 连不上 body 了（${base}/v1/status 无响应）：身体可能被杀掉/崩了。先 mcb_status 看进程；要重连就 mcb_join。`,
+        })
       }
       return null
     }
@@ -765,6 +771,15 @@ export function apply(ctx) {
         if (!status) {
           const lines = ['MC 身体：未连接（/v1/status 无响应）']
           lines.push(`进程：${own.owns ? `已启动 pid ${own.pid ?? '?'}${own.alive ? '（运行中）' : `（已退出：${describeExit(own.exitCode, own.exitSignal)}）`}` : '本会话没有启动 body'}`)
+          // 上次退出如果是外部/管理面干净关闭（例如睡眠期 /v1/shutdown），醒来第一眼就能看到，不会当成崩溃。
+          const last = supervisor.lastExit()
+          if (last) {
+            const clean = last.exitClass?.expected && String(last.exitClass?.source ?? '').startsWith('clean:')
+            const why = last.exitInfo?.reason
+              ? EXIT_REASON_TEXT[last.exitInfo.reason] ?? `退出原因 ${last.exitInfo.reason}`
+              : last.signal ? describeExit(last.code, last.signal) : last.code === 0 ? '正常退出' : '异常退出'
+            lines.push(`上次退出：${why}${clean ? '（预期内，不是崩溃）' : ''}${last.code != null ? `；code ${last.code}` : ''}`)
+          }
           if (own.stderrTail?.length) lines.push(`body 日志：${own.stderrTail.slice(-2).join(' / ')}`)
           lines.push('下一步：mcb_join 重连（会重新起进程）；不玩了用 mcb_leave 收尾。')
           return { text: lines.join('\n') }

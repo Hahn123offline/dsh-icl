@@ -68,4 +68,14 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 - reason 分类文案：`sigterm`/`sigint`/`api-shutdown`/`clean-exit`（主动停）、`idle-timeout`（暂停超时下线）、`reconnect-exhausted`（服务器/连接）、`uncaught-exception`/`unhandled-rejection`（body 崩溃，带栈首行）、`exit-code`（无栈非正常退出）、`startup-error`。
 - crash signal 内容：原因 + 退出码 + 本会话第 N 次退出 + 死时任务/位置/最后错误/栈首行/死前事件 + 下一步；**同因账本**按 `reason+taskId+pausedReason` 计数，第 2 次起标"本会话第 N 次同因退出"并按类给差异化建议。
 - `mcb_leave` 对本会话 spawn 的 body 先 `POST /v1/shutdown`（code 0 + 归因），2s 内没退才 SIGTERM；外部 body 只安全停止。
+- **expected vs unexpected（退出语义）**：`lifecycle.classifyExit`
+  - **expected**（按"正常结束"处理：不发崩溃告警、不触发重连/唤醒、状态行只显示未连接）：
+    本会话自己 `stop/leave`；`body-exit.json.reason ∈ {api-shutdown, clean-exit, idle-timeout}` 且 `exitCode=0`；
+    无归因、无信号、code 0。
+  - **unexpected**（走 crash 账本/告警）：`uncaught-exception`/`unhandled-rejection`/`exit-code`、外部 `sigterm`/`sigint`、
+    非零退出码、以及有 reason 但 code 非 0 的"假装干净"。
+  - 典型用例：睡眠/离线期管理面 `POST /v1/shutdown {reason:"sleep-safe"}` → expected，body 不会自己再起来；
+    醒来后会话 `mcb_join` 显式重连，`mcb_status` 会显示"上次退出：…（预期内，不是崩溃）"。
+- **单次 HTTP 失败不报警**：`/v1/status` 连续失败 2 次（≥~2.4s）才发"连不上 body"alarm——外部干净关闭会有 HTTP 先断、
+  exit 事件后到的亚秒空窗，第一次失败就报警会把她从睡眠里拽起来。
 - 时延埋点：`mc-link.jsonl` 的 `crash-detect {at, exitAt, latencyMs}` 与 `signal {at}`，可直接算 kill→检测→投递。

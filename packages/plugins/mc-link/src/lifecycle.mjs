@@ -20,6 +20,29 @@ import { spawn as nodeSpawn } from 'node:child_process'
 const STDERR_RING = 40
 const LINE_MAX = 400
 
+/** 外部/管理面干净关闭的 reason：算 expected，不按崩溃上报、也不该触发重连。 */
+export const CLEAN_EXIT_REASONS = Object.freeze(['api-shutdown', 'clean-exit', 'idle-timeout'])
+
+/**
+ * 退出分类：这次 body 退出是"预期内的结束"还是"异常/崩溃"。
+ *  - 本会话自己发起的 stop/leave → expected
+ *  - body-exit.json.reason ∈ {api-shutdown, clean-exit, idle-timeout} 且 exitCode=0 → expected
+ *    （例如睡眠期用 /v1/shutdown 主动收身体）
+ *  - 没有归因、无信号、code 0 → 视为干净退出（expected）
+ *  - 其它（crash / uncaught / 外部 SIGTERM / 非零码 / 无归因非零码）→ unexpected
+ * @returns {{expected:boolean, source:string}}
+ */
+export function classifyExit({ stopping = false, code = null, signal = null, exitInfo = null } = {}) {
+  if (stopping) return { expected: true, source: 'self-stop' }
+  const reason = exitInfo?.reason ? String(exitInfo.reason) : null
+  const exitCode = exitInfo?.exitCode == null ? code : exitInfo.exitCode
+  if (reason && CLEAN_EXIT_REASONS.includes(reason) && (exitCode == null || Number(exitCode) === 0)) {
+    return { expected: true, source: `clean:${reason}` }
+  }
+  if (!reason && !signal && Number(code) === 0) return { expected: true, source: 'clean:code0' }
+  return { expected: false, source: reason ? `unexpected:${reason}` : signal ? `unexpected:signal:${signal}` : `unexpected:code:${code}` }
+}
+
 /** body 的退出归因（mc-body 新版会写 body-exit.json + stderr 一行）；旧 body 读不到就返回 null。 */
 export function readExitInfo(stateDir, stderrTail = []) {
   const file = path.join(String(stateDir ?? '.'), 'body-exit.json')
@@ -103,7 +126,8 @@ export function createBodySupervisor({
       return {
         owns: false, alive: false, pid: null, host: null, port: null, username: null,
         exitCode: lastExit?.code ?? null, exitSignal: lastExit?.signal ?? null,
-        exitInfo: lastExit?.exitInfo ?? null, lastExitAt: lastExit?.at ?? null,
+        exitInfo: lastExit?.exitInfo ?? null, exitClass: lastExit?.exitClass ?? null,
+        lastExitAt: lastExit?.at ?? null,
         stderrTail: [], startedAt: null,
       }
     }
@@ -119,6 +143,7 @@ export function createBodySupervisor({
       exitCode: h.exitCode ?? null,
       exitSignal: h.exitSignal ?? null,
       exitInfo: h.exitInfo ?? null,
+      exitClass: h.exitClass ?? null,
       spawnError: h.spawnError ?? null,
       startedAt: h.startedAt,
       elapsedMs: h.startedAt ? Math.max(0, now() - h.startedAt) : null,
@@ -194,14 +219,18 @@ export function createBodySupervisor({
       const exitInfo = readExitInfo(stateDir, h.sink.tail(8))
       h.exitInfo = exitInfo
       const stopping = h.stopping
-      lastExit = { pid: h.pid, code: h.exitCode, signal: h.exitSignal, expected: stopping, exitInfo, at: now() }
+      // expected：自己停的 + 外部/管理面干净关闭（如睡眠期 POST /v1/shutdown）。
+      const verdict = classifyExit({ stopping, code: h.exitCode, signal: h.exitSignal, exitInfo })
+      h.exitClass = verdict
+      lastExit = { pid: h.pid, code: h.exitCode, signal: h.exitSignal, expected: verdict.expected, exitClass: verdict, exitInfo, at: now() }
       if (handle === h) clear()
       onLifecycle({
         type: 'body-exit',
         pid: h.pid,
         code: h.exitCode,
         signal: h.exitSignal,
-        expected: stopping,
+        expected: verdict.expected,
+        exitClass: verdict,
         exitInfo,
         stderrTail: h.sink.tail(3),
         at: now(),
