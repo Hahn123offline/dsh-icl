@@ -24,11 +24,14 @@ function isFunction(value) {
   return typeof value === 'function'
 }
 
-/** 进程怎么结束的，一句话给会话看。 */
+/** 进程怎么结束的，一句话给会话看（Windows 强杀会报 4294967295 这种无符号值）。 */
 export function describeExit(code, signal) {
   if (signal) return `被信号 ${signal} 结束`
-  if (code === 0) return '正常退出（code 0）'
-  return `退出码 ${code}`
+  const value = Number(code)
+  if (!Number.isFinite(value)) return '退出码未知'
+  if (value > 2147483647) return `退出码 ${value - 4294967296}（被强制结束：外部 kill 或崩溃）`
+  if (value === 0) return '正常退出（code 0）'
+  return `退出码 ${value}`
 }
 
 /** 把子进程输出写进状态目录，并留最后一小段在内存里用于报错。 */
@@ -101,10 +104,14 @@ export function createBodySupervisor({
     if (detail.spawnError) lines.push(`进程启动失败：${detail.spawnError}`)
     if (detail.exitCode != null || detail.exitSignal) lines.push(`进程${describeExit(detail.exitCode, detail.exitSignal)}`)
     const stderr = detail.stderrTail ?? []
-    // node 打的多行错误对象会混进 "syscall: 'connect'," 这种碎片；丢掉纯 JSON 行再挑关键词。
-    const meaningful = stderr.filter((line) => line && !/^\s*[{}\[\],]+\s*$/.test(line) && !/^\s*[a-z_]+:\s/.test(line))
+    // node 打的多行错误对象会混进 "syscall: 'connect'," 这种碎片；body 的 JSON 日志也很长。
+    const meaningful = stderr
+      .filter((line) => line && !/^\s*[{}\[\],]+\s*$/.test(line))
+      .filter((line) => !/^\s*[a-z_]+:\s/.test(line))
+      .filter((line) => !/^\[out\]\s*$/.test(line))
+      .map((line) => (line.length > 240 ? `${line.slice(0, 237)}…` : line))
     const preferred = meaningful.filter((line) => /ECONNREFUSED|EADDRINUSE|ERR_MODULE_NOT_FOUND|Cannot find module|connect failed|kicked|exhausted|timeout/i.test(line))
-    const picked = (preferred.length ? preferred : meaningful).slice(-2)
+    const picked = preferred.length ? preferred.slice(-2) : meaningful.slice(-1)
     if (picked.length) lines.push(`body 日志：${picked.join(' / ')}`)
     else if (stderr.length) lines.push(`body 日志最后一行：${stderr.slice(-1)[0]}`)
     if (!lines.length) lines.push('body 没有在限定时间内连上服务器（没有进程退出信息）')

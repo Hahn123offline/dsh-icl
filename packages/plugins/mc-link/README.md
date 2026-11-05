@@ -31,3 +31,21 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 - 只注册两个**事实**段：`mc:status`（≤1 行、≤120 字）、`mc:skills`（条件命中、≤2 行），order 900/901。
 - 不再有 `mc:play`/`mc:interaction` 教学段：操作流程在 `mcb_*` 的 description 与 `skills/play.md`，
   全局层（`prompts/sim.md`）只说"这些工具怎么配合"，不写参数。
+
+## body 事件 → 会话信号（outcome 对齐 mc-body e6fee4c）
+
+| body 事件 | 信号 | 说明 |
+|---|---|---|
+| `task_done` | notice | 真正达成；带 mined/arrived/result |
+| `task_failed` | notice | `error` 原因码（`mine: no-target/no-path/dig-failed/no-effect`、`routine: stuck`…）翻成下一步；带进度 |
+| `task_unknown` | notice | 超时/结果未知：**不当失败**，让她先 mcb_status/mcb_inventory 复核 |
+| `task_paused` | notice | 断线挂起（state=paused）：重连后要显式 `{"op":"resume"}` + `{"op":"resume","taskId"}` |
+| `task_resumed` | notice | 显式继续后的确认 |
+| `task_interrupted` / `task_cancelled` | notice | 中断/取消，不自动续跑 |
+| `safety_stop` | alarm（仅真危险） | death/low-health/low-oxygen/spawn-unsafe 带 `alarm`；disconnect/stuck 不带 |
+| `death` / `quarantine` | alarm | 死亡合并 60s；5 分钟 3 次额外升级提醒；隔离单独一条 |
+| `health_drop` | notice（合并 120s） | body 现在暂停后不再逐条发 |
+| `offline` / `disconnected` / `reconnecting` / `resume_required` | notice | 同一次断线合并；重连不自动续跑 |
+| `reconnect_exhausted` | alarm | 自动重连放弃，状态栏必须显示未连接 |
+| `kicked` | alarm | reason 是对象时给真实文本；同名/重复登录提示换 username |
+| `task_queued`/`started`/`progress`/`health`/`heartbeat`/`watchdog*` | 不投递 | 状态以 `/v1/status` 为准 |

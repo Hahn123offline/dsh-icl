@@ -15,6 +15,7 @@ const args = process.argv.slice(2)
 const arg = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback }
 const listenPort = Number(arg('--port', 54901))
 const serverName = String(arg('--server', 'flat'))
+const bodyEntry = arg('--body-entry', null)
 const root = path.resolve(arg('--state', path.join(import.meta.dirname, '..', '..', '..', '..', '.state', 'mc-link-verify')))
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -42,6 +43,7 @@ host.registerPlugin(manifest, mcLink, {
     stateDir: root,
     doTimeoutMs: 45_000,
     username: 'ICL-mclink-1',
+    ...(bodyEntry ? { bodyEntry } : {}),
   },
 })
 await host.enable('mc-link')

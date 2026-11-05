@@ -17,11 +17,16 @@ function statusBody(state) {
   return {
     ok: true,
     version: 'mc-body/v1',
+    connected: state.connected,
+    online: state.connected,
     paused: state.paused,
     pausedReason: state.pausedReason,
+    safety: { paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true },
     task: state.task,
     queue: [],
     eventsSeq: state.seq,
+    reconnect: state.reconnect ?? { attempts: 0, max: 3, exhausted: false, pending: false, lastError: null },
+    watchdog: { ticks: 5, alerts: 1, suppressed: state.suppressed ?? 0, healthDropSuppressed: 0 },
     adapter: {
       connected: state.connected,
       host: '127.0.0.1',
@@ -78,7 +83,12 @@ async function startFakeBody({ connected = true } = {}) {
           if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
           if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
           else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] })
-          else if (step.op === 'resume') { state.paused = false; state.pausedReason = null; results.push({ index: results.length, op: 'resume', result: { paused: false } }) }
+          else if (step.op === 'resume') {
+            state.paused = false
+            state.pausedReason = null
+            // 真 body：带 taskId 走 resumeTask 返回被恢复的任务；不带则是安全暂停的解除。
+            results.push({ index: results.length, op: 'resume', result: step.taskId ? { id: step.taskId, kind: 'mine', state: 'running' } : { paused: false } })
+          }
           else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
           else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
         }
@@ -343,18 +353,50 @@ test('事件→信号：掉血/死亡刷屏合并限流，一轮不刷屏', asyn
   }
 })
 
-test('事件→信号：task_done 带 reason 的消息说"没达成"而不是"完成"', async () => {
+test('事件→信号：task_failed 带原因码时消息给出失败原因与下一步', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
-    body.push({ type: 'task_done', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 0, reason: 'no-target' } } } })
+    body.push({ type: 'task_failed', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, state: 'failed', error: 'mine: no-target', result: { mined: 0 } } } })
     await link.api.poll()
     await link.adapter.drainOnce()
     const text = link.pushed.join('\n')
-    assert.match(text, /没达成/)
+    assert.match(text, /任务失败/)
     assert.match(text, /no-target/)
     assert.match(text, /radius/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：body 活着但没连上（重连中）时显示离线原因与重连次数，不假在线', async () => {
+  const body = await startFakeBody({ connected: false })
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.reconnect = { attempts: 2, max: 3, exhausted: false, pending: true, lastError: 'socketClosed' }
+    const out = await link.tools.mcb_status.execute({})
+    assert.match(out.text, /未连接/)
+    assert.doesNotMatch(out.text, /MC 身体：已连接/)
+    assert.match(out.text, /离线原因/)
+    assert.match(out.text, /重连：第 2\/3 次/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：resume 带 taskId 时显示被恢复的任务', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.doError = null
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'resume', taskId: 't-7' }] })
+    assert.match(out.text, /\[resume\]/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.taskId, 't-7')
+    assert.equal(sent.op, 'resume')
   } finally {
     await link.cleanup()
     await body.close()

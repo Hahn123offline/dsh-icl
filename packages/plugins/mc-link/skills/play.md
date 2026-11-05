@@ -20,13 +20,19 @@
 
 ## 读懂事件（它们不是用户对你说的话）
 
-- `[MC] 任务完成`：`task_done`。**如果带 `reason=no-target/no-path/dig-failed/no-effect`，意思是没达成**，不是成功。
-  背包有没有进东西，以 `mcb_inventory` 为准。
-- `[MC] 任务失败`：`task_failed`，看 error（timeout/未知方块/…）。
-- `[MC] 任务中断`：`task_interrupted`，通常因为死了/掉血/卡住/断线，任务不会自动续跑。
-- `[MC] 安全停止`：身体自己暂停了（death/health-drop/low-health/low-oxygen/stuck/disconnect）。暂停期间大部分动作会被拒绝。
-  恢复：`{"op":"resume"}`（队列已清空，要续做重新下任务）。不想硬撑就 `mcb_leave` 收尾。
+- `[MC] 任务完成`：`task_done`，body 判据真的达成（mine 是背包净增达标；routine 是时间到/数量达标）。
+- `[MC] 任务失败`：`task_failed`，`error` 里是原因码（`mine: no-target` / `no-path` / `dig-failed` / `no-effect`、
+  `routine: stuck`…），消息里已经写了下一步。不要原样重下，先按原因改参数或换目标。
+- `[MC] 任务超时，结果未知`：`task_unknown`。动作可能已生效——**不能当失败也不能当成功**，
+  先 `mcb_status`/`mcb_inventory` 复核再决定。
+- `[MC] 任务暂停（断线）`：`task_paused`。任务没失败，被挂起了；重连后身体仍是暂停状态，
+  先 `{"op":"resume"}` 解除暂停，再 `{"op":"resume","taskId":"t-x"}` 继续这个任务（不会自动续跑）。
+- `[MC] 任务中断`：`task_interrupted`（死亡/低血/卡住/断线触发安全停止）；任务不会自动续跑。
+- `[MC] 安全停止`：身体自己暂停了（death/health-drop/low-health/low-oxygen/stuck/disconnect）。暂停期间大部分动作会被拒绝；
+  恢复用 `{"op":"resume"}`。不想硬撑就 `mcb_leave` 收尾。
 - `[MC] 掉血/死亡`：同类事件会合并限流，不要因为没收到每一条就以为没发生；以 `mcb_status` 的血量为准。
+- `[MC] 身体离线/重连失败/恢复要求`：断线相关。`resume_required` 表示已重连但仍暂停；`reconnect_exhausted` 表示
+  自动重连放弃，要 `mcb_join` 才会重新起身体。
 - `[MC] Hahn123_：...`：玩家在游戏里说话。叫到你的名字时会穿过普通专注。
 
 ## 收尾（离开）
