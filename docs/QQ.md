@@ -23,9 +23,11 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 480 pass | `npm test` |
+| 全量测试 | ✅ 527 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
+| **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条）；图片真正进模型待 DSH attachment（单独申请） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
+| **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
 | **完整性差距研究（旧项目 vs 我们，P0/P1/P2 路线）** | ✅ 已完成 | [QQ-GAP.md](QQ-GAP.md) |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
@@ -58,7 +60,7 @@ phase 1 出站不变量（新增，见 §11.1）：
 |---|---|---|
 | `apps/dsh-icl/src/transports/contract.js` | 最小传输契约：`name/capabilities/normalize/send`；活动 id = `transport:scope:id`（`qq:group:<id>` / `qq:private:<id>`）；不支持的能力抛 `NotImplemented` | 采纳：活动 id 与 `focus` 命名空间直接用 `qq:private:<qq>`；**不采纳**"一个对象同时管收发"——本轮收发分开 |
 | `apps/dsh-icl/src/domain/qq-ws.js` | OneBot v11 正向 WS；`normalizeEvent` 把 message/notice/poke/upload 归一；echo 配对回执；重连退避 `[2s,5s,15s,30s,60s]`；`ev.time` 是秒 → `*1000` | 采纳：WS 正向连接、心跳、`time*1000`、退避；**不采纳** echo/动作（我们不发送，所以没有 pending） |
-| `apps/dsh-icl/src/domain/qq-poller.js` | 群游标用 `message_seq`（`message_id` 会变负数）；私聊默认 `pierce`，群普通 `ambient`、@ 才 `pierce`；`appendMessage` 记 `sent_at`/`received_at` 两个时间 | 采纳：私聊=pierce 的语义、消息时间与收到时间分开（我们的 `createdAt` vs `meta.qq.receivedAt`）；**不采纳** HTTP 轮询——私聊历史在 OneBot v11 没有可靠的补课接口 |
+| `apps/dsh-icl/src/domain/qq-poller.js` | 群游标用 `message_seq`（`message_id` 会变负数）；私聊默认 `pierce`，群普通 `ambient`、@ 才 `pierce`；`appendMessage` 记 `sent_at`/`received_at` 两个时间 | 采纳：两级语义、消息时间与收到时间分开（我们的 `createdAt` vs `meta.qq.receivedAt`）；**不采纳**"私聊=pierce"（红队修复后私聊默认 ambient，@ 才穿）、**不采纳** HTTP 轮询——补课改用 `get_friend_msg_history`（见 §7.3） |
 | `apps/dsh-icl/src/domain/qq-ledger.js` + `qq-delivery.js` | 一个账本 + 每个活动一个"看到过哪"水位；投递成功才推进；一次投全量；**三份状态（DB/内存 coalescer/events）是假未读与丢消息的根因** | 采纳教训：ICL 已经有唯一的 `signals + delivery` 出口，插件**不另建账本**；去重只做"入站幂等"这一件事 |
 | `apps/dsh-icl/src/domain/policy.js` | ambient/pierce 两级；停机→全静；不再任何活动→全穿；闹钟/admin 永穿；群静音把 pierce 降 ambient 但**@ 仍穿**；`sacred`（不可打断）把 pierce 降 ambient；预算用尽降 ambient | 采纳两级语义与"特权穿透"；ICL 的对齐点见 §6 |
 | `apps/dsh-icl/docs/MESSAGING-SUMMARY.md` | 压测数字与"未读不是债务，一次全量 + 一个水位"的决议；send 与 wait 的演化 | 采纳：不在 QQ 插件里做"未读逐条确认"；告警/摘要交给 time/focus 的积压 |
@@ -190,13 +192,19 @@ packages/plugins/qq/
   to: 'model',
   text: '主人：在吗',
   focus: 'qq:private:3429502459',             // 注意力空间 = 会话
-  tags: ['qq', 'private', 'mention'],         // mention → focus 按 pierce 处理
+  tags: ['qq', 'private'],                    // 默认 ambient：不自动 mention/at
   createdAt: <消息自己的时间>,
   expiresAt: <receivedAt + signalTtlMs>,
   meta: { qq: { scope:'private', peerId, senderId, senderName, messageId,
-                at, receivedAt, selfId, segments } }
+                at, receivedAt, selfId, segments,
+                media, files, forwardIds, replyId, atSelf } }
 }
 ```
+
+**焦点语义（2026-11-06 红队修复）**：私聊默认是 **ambient**（`tags:['qq','private']`），
+普通 focus 会把它拦进积压；只有**显式 @ 到自己**才加 `at` tag（按默认 `pierce:mention` 穿透）。
+`admin`/`alarm`/`safety` 是**其它来源的显式特权标签**（管理通道/紧急事件），QQ 不会自己授予；
+需要"私聊也叫醒"时用 time schedule 的 `allow` 表达，不要在 QQ 侧自造特权。
 
 **不做**：不 direct `delivery.push`、不 `setGate`、不 import time/focus 插件、不读写 SnowLuma 文件、
 不启动/停止 SnowLuma、不下载媒体、不发群、不发任何 OneBot 动作。
@@ -209,23 +217,24 @@ packages/plugins/qq/
 | 会话 | `qq:private:<peer>`；`focus` 字段同值 | 与 focus 命名空间一致；群 id 保留 `activityIdForGroup` 但本轮不用 |
 | 去重 | 本地按 `signal.id`（`message_id`）；可选 `dedupeFile` 持久化 | signals 层同一 id 24h 幂等；delivery 的 `exactlyOnce=false`（signals 投递的 `seq:null`），所以**不要指望第三层** |
 | 幂等 | 同一 `message_id` → 同一 id；没有 `message_id` 时用 `t:<消息时间>:<文本哈希>` 兜底 | 重启 + `dedupeFile` 后仍不重投（单测覆盖） |
-| 时间 | `createdAt = ev.time*1000`（消息自己的时间）；`meta.qq.receivedAt` 是我们收到的时间 | 超过 `maxStaleMs`（默认 10 分钟）默认丢弃；`deliverBackfill:true` 才放行补课 |
-| 优先级 | 私聊 = **pierce**（`tags:['qq','private','mention']`）；群 = 不接；本轮不产生 ambient | @ 的穿透要等接群（§6） |
+| 时间 | `createdAt = ev.time*1000`（消息自己的时间）；`meta.qq.receivedAt` 是我们收到的时间 | 实时超过 `maxStaleMs`（默认 10 分钟）默认丢弃；补课消息按 `maxBackfillAgeMs`（默认 6h）单独判 |
+| 优先级 | 私聊 = **ambient**（`tags:['qq','private']`）；显式 @ 到自己才加 `at`（pierce）；群 = 不接 | 管理员/告警只能由其它来源显式打 `admin`/`alarm`；QQ 不自动授予（红队修复 2026-11-06） |
 | 是否需要回复 | **没有** reply-required 字段；影子不能回（没有发送工具） | 下一阶段再加"回过没"水位；当前不要让模型以为已回 |
-| 富媒体 | 只留占位 `[图片]/[语音]/[视频]/[文件]/[表情]` + 来源引用 | 不下载、不展开合并转发 |
+| 富媒体 | 文本用可读占位：`[图片]`、`[语音]`、`[视频]`、`[文件：name（size）]`、`[合并转发 id=…]`、`[表情]`；引用解析后 `[引用 某人：原文]` | 媒体字节不下载进模型（P0-2 只做定位 meta）；图片真正进模型等 DSH attachment 通道 |
 | 文本 | `maxTextChars` 默认 2000；`${senderName}：${text}` | bridge summary 会再截 100 字 |
 | 通知类 | heartbeat/lifecycle 只计入 `meta` 计数，不生成 signal | `notice/request/poke` 本轮全部不接（未来另行设计） |
 
 一条消息的完整路径：
 
 ```text
-SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
+SnowLuma WS(3001) ─► connector.onEvent ─► （P0-2）引用解析/转发展开（HTTP get_msg/get_forward_msg，慢取缓存）
+                                             ─► gate.admit（富段→可读文本 + meta.qq 媒体/文件/转发/引用）
                                              ├─ 拒绝（群/白名单/自发/过旧/重复/限流）→ 计数 + 影子记录
-                                             └─ 接受 → ctx.signals.offer(signal)
+                                             └─ 接受 → 账本 append → ctx.signals.offer(signal)
                                                            ▼
                               time gate（sleeping/paused 拦截并抄进自己的积压）
                                                            ▼
-                              host.setDeliver → focus.admit（pierce/sacred）
+                              host.setDeliver → focus.admit（默认 ambient；@ 才 pierce）
                                                            ▼
                               delivery.push(batchKey=`signal:qq:<focus>`)
                                                            ▼
@@ -250,7 +259,8 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 | 情形 | 私聊会怎样 | 依据 |
 |---|---|---|
 | 她空闲（无 focus） | 直接投递，起一轮 | `focus.admit` 无 current → `deliver:true` |
-| 普通 focus（`interruptible:true`，`pierce:{}`） | **穿透**：`resolvePierce` 默认级别 `mention`，而私聊 tags 带 `mention` | `contracts.mjs:77-79` |
+| 普通 focus（`interruptible:true`，`pierce:{}`） | **被拦**（进 focus 积压）：私聊默认 ambient，不再自动带 `mention` | 红队修复 2026-11-06；`focus.admit` 默认 pierce 级别 `mention` |
+| 显式 @ 到自己（`tags` 带 `at`） | **穿透**普通 focus；sacred 仍拦 | `tags:['qq','private','at']` |
 | 她的 focus 显式 `pierce:{ 'qq:*':'never' }` | 进 focus 积压，离开时摘要 | `admit` → `defer` |
 | `interruptible:false`（sacred；例如 time 的睡眠租约） | 进 focus 积压，离开时摘要 | `admit` 的 `focus-sacred` |
 | time 正在睡/暂停 | **在到达 focus 之前**就被 time gate 拦下，进 time 的持久积压；醒来重放 | §6 |
@@ -260,15 +270,16 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 
 | 机制 | 谁拥有 | 形态 | 已知代价 |
 |---|---|---|---|
-| time 积压 | time 插件 | 持久（`time.json`）；条目 `{id, signalId, createdAt, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`（time W3 已收尾，**形状冻结**）；同一 `signal.id` 重复 offer **不重复入队**；醒来一条 `plugin:time` notice，正文 `· [qq/qq:private:<qq>] …`；溢出优先丢最旧 **ambient**，保护 `mention/at/private/direct/admin`（QQ 私聊 tags 含 `private`+`mention`）；`time_status` 暴露"丢弃：漏响/溢出/过期" | 一次重放后不可再重放；QQ 不该也不会重试 blocked |
+| time 积压 | time 插件 | 持久（`time.json`）；条目 `{id, signalId, createdAt, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`（time W3 已收尾，**形状冻结**）；同一 `signal.id` 重复 offer **不重复入队**；醒来一条 `plugin:time` notice，正文 `· [qq/qq:private:<qq>] …`；溢出优先丢最旧 **ambient**，保护 `at/private/direct/admin/...`（QQ 私聊有 `private`，显式 @ 时另有 `at`）；`time_status` 暴露"丢弃：漏响/溢出/过期" | 一次重放后不可再重放；QQ 不该也不会重试 blocked |
 | focus 积压 | core | 内存 + `focus.json`；按 `focus` 命名空间 `count/lastText/items(≤20)`；focus 释放时一条摘要 | `items` 只存最近 20 条、截 200 字；QQ 插件看不到这一层 |
 | QQ 重试队列 | qq 插件 | 内存，200 条上限，`deliver` 失败专用 | 进程重启即丢（影子阶段可接受，因为账本在 SnowLuma/后续补课另议） |
 
 紧急穿透的既有规则（core 层）：`from==='time'`、`tags` 含 `admin`/`alarm` 的信号 privileged → 一定穿透 focus。
-**私聊不是 privileged**，但因为有 `mention` tag，能穿普通 focus、不能穿 sacred/sleep。
+**私聊不是 privileged**，且默认 ambient → 普通 focus 会拦下；只有显式 @ 才按 `mention` 规则穿透，sacred/sleep 仍拦。
 如果用户明确希望"私聊在半梦半醒也能把我叫起来"，正确做法是给睡眠 schedule 配 `allow`，**不要**去改 focus/time 的全局特权列表：
-`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['mention']}]`）。
-⚠️ `tags:alarm` 的全局特权按 time 的 `docs/TIME.md §9` 是**已知风险，不是安全边界**——QQ/其它来源不要依赖它做"紧急穿透"。
+`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['at']}]`）。
+⚠️ `tags:alarm` 的全局特权按 time 的 `docs/TIME.md §9` 是**已知风险，不是安全边界**——QQ/其它来源不要依赖它做"紧急穿透"；
+QQ 私聊不自动带 `alarm`/`safety`。time 静音锁的紧急配额按 `alarm/safety/emergency` 标签放行，那些标签只能由真正的紧急来源提供。
 
 ## 6. 与 time 静音锁的接口（给 time owner 的对接点）
 
@@ -278,16 +289,17 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 
 | 级别 | 本轮由谁产生 | signal 形状 | time 醒着 | time 睡着/暂停 |
 |---|---|---|---|---|
-| **pierce**（该叫醒） | 私聊 | `kind:'notice'`, `from.plugin:'qq'`, `tags:['qq','private','mention']` | 放行 → focus 再裁决 | 默认**拦**（进 time 积压）；若 schedule `allow` 命中则穿 |
-| **ambient**（可攒着） | 本轮不产生（群整类忽略） | 未来接群时：`tags:['qq','group']`；@ 时加 `'at','mention'` | 放行 | 默认拦；`allow` 可配 |
+| **pierce**（该叫醒） | 显式 @ 到自己；管理员/告警由其它来源 | `tags:['qq','private','at']`；或 `tags:[...,'admin'/'alarm']` | 放行 → focus 再裁决 | 默认**拦**（进 time 积压）；若 schedule `allow` 命中则穿 |
+| **ambient**（可攒着） | 普通私聊（默认）；未来普通群消息 | `tags:['qq','private']` | 放行 → focus 默认拦 | 默认拦；`allow` 可配 |
 | 闹钟/特权 | time 自己 | `from.plugin:'time'`、`tags` 含 `alarm`/`admin` | 放行 | 放行（time 自己始终 accept） |
 
 ### 6.2 具体问答（lead 点名）
 
-- **@ 是否穿透？** 本轮**不适用**：群消息整类忽略，@ 不会被收到。未来接群时，@ 消息打 `tags:['qq','group','at','mention']`；
-  time 睡着时仍需 schedule 的 `allow` 命中才穿（默认 `allow=[{from:'admin'}]`）；普通群消息保持 ambient。
-- **私聊是否穿透？** 醒着：穿透普通 focus；睡着/暂停：**不穿透**（time 拦下、进它自己的积压，醒来重放）；
-  `interruptible:false` 的 sacred focus：不穿透（进 focus 积压）。这就是本轮实测的行为（见 §13 演练第 6–9 项）。
+- **@ 是否穿透？** 私聊里出现显式 @ 到自己时，`tags` 加 `at` → 普通 focus 按默认 `pierce:mention` 穿透；sacred 仍拦。
+  群消息本轮整类忽略；未来接群时，@ 消息打 `tags:['qq','group','at','mention']`（群 @ 才用 `mention`），
+  time 睡着时仍需 schedule 的 `allow` 命中才穿。
+- **私聊是否穿透？** 默认**不穿透**：普通私聊是 ambient，醒着也会进 focus 积压（红队修复 2026-11-06）；
+  显式 @ 才穿普通 focus；睡着/暂停一律由 time 拦下、进它自己的积压，醒来重放；`interruptible:false` 的 sacred focus 连 @ 也不穿。
   要显式允许"私聊穿睡眠"，由 sleep schedule 的 `allow` 表达：`time_arrange {sleep:true, allow:[{from:'qq'}]}`（精确调用口径由 time 提供）。
 - **QQ 怎么知道被拦了？** `signals.offer` 返回 `{blocked:true, reason}`；QQ 只计数（`blockedReasons`），**不重试**，
   把重放权留给 time。`qq_status` 会显示"被静音/睡眠锁拦下 N（已交给 time 的积压，不重试）"。
@@ -299,7 +311,7 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
 
 > 按 lead 决策已直接发给 time。time 实现了全部三条并确认 **backlog 形状冻结**（2026-11-05，W3/task-5 completed）：
 > 最终形状 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，
-> 重放前缀固定 `[plugin/activity]`，溢出"优先丢 ambient、保 `mention/at/private/direct/admin`"；没有继续改这三项的计划。
+> 重放前缀固定 `[plugin/activity]`，溢出"优先丢 ambient、保 `at/private/direct/admin` 等"；本次只把 QQ 私聊从 pierce 降为 ambient（带 `private` 仍受保护）。
 > `time_status` 暴露 `丢弃/溢出`，`time_list` 显示 `sig=`。来源侧不需要兜底暂存——gate 返回 blocked 前已 `enqueue()+persist()`。
 > 若 lead 合并 review 要求调整，time 会先通知 QQ 并同步 `docs/TIME.md §4/§11`；QQ 侧对应改本文 §6 与 drill 断言。
 
@@ -307,9 +319,9 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
    不重复入队。QQ 的 signal id 稳定为 `qq:private:<qq>:<message_id>`，drill 已严格断言 `queue()[0].signalId === 'qq:private:10001:1003'`。
 2. **重放前缀已保持 `[plugin/activity]`**：`buildBacklogText` 输出 `· [qq/qq:private:10001] 正文`，不会改；一次性合并成一条
    `plugin:time` notice 是有意的，QQ 不反对。
-3. **溢出策略已采纳**：满 `maxQueue` 时优先丢最旧 **ambient**（无 `mention/at/private/direct/admin` 标签的），全都受保护时才丢最旧；
-   `protectTags` 是 time 的 config 项，QQ 现有 tags 已被默认值覆盖，暂不需要额外配置。
-4. 若将来要"私聊穿睡眠"：用 sleep schedule 的 `allow` 表达——`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['mention']}]`），
+3. **溢出策略已采纳**：满 `maxQueue` 时优先丢最旧 **ambient**（无 `at/private/direct/admin` 等保护标签的），全都受保护时才丢最旧；
+   QQ 私聊有 `private`，仍受保护；显式 @ 另有 `at`。
+4. 若将来要"私聊穿睡眠"：用 sleep schedule 的 `allow` 表达——`time_arrange {sleep:true, allow:[{from:'qq'}]}`（或 `[{tags:['at']}]`），
    不要改全局特权列表。⚠️ `tags:alarm` 的全局特权按 `docs/TIME.md §9` 是已知风险、不是安全边界，QQ 不依赖它。
 
 ## 7. 私聊收发路径
@@ -373,6 +385,29 @@ WS 断线（connector 记下 disconnectedAt/downtime）
 - **群**：本轮仍不补（phase 2）；群游标用 `message_seq` 的接口在旧项目已成熟，届时复用。
 - 配置：`ledgerFile`、`httpUrl`/`httpToken`（不填则用 SnowLuma 发现的 `httpServers[0]`）、`backfillEnabled`、`backfillCount`、`maxBackfillAgeMs`、`backfillMaxPeers`。
 
+### 7.4 入站富内容（P0-2 纯函数层，已实现；图片真正进模型待 DSH attachment）
+
+```text
+OneBot 段 ──► rich.mjs（纯格式化）
+   ├─ text/at/face/mface/image/record/video/file/reply/forward/json/markdown
+   ├─ 文本：图片/语音/视频占位；文件带 name（size）；转发带 id；表情带 summary
+   ├─ meta.qq: media[] / files[] / forwardIds[] / replyId / atSelf
+   └─ 进闸门前（受配置控制，失败不阻塞消息）：
+        ├─ reply-cache.mjs：get_msg 慢取（后台 120s、收消息最多等 replyIngestWaitMs）
+        │     归属校验：私聊必须有 sender∈{peer,self} 且无 group_id；等不到放占位
+        ├─ forward.mjs：get_forward_msg 展开（≤2 层、≤12 条、≤1200 字；嵌套 id 递归）
+        └─ media.mjs：仅提供安全抓取/类型/大小校验（本轮**不投给模型**，也不落地）
+```
+
+**能力边界（写清，避免被当成"她能看图了"）**：
+- 现在模型看到的是**文本占位 + 结构 meta**，不是图片字节；图片/文件"真正进上下文"要等 DSH `ImageBlock`/attachment 通道（单独申请，按 CACHE-MODEL §7 约束）。
+- `media.mjs` 已具备：只允许 http(s)、拒绝 localhost/私网/带凭据 URL、8MB 上限、魔数嗅探 png/jpeg/gif/webp、`get_image` base64 兜底；后续接图片通道时直接复用。
+- 引用解析失败/慢：消息本身不丢，正文里是 `[引用消息 id=…（原消息加载较慢…）]`。
+- 转发展开失败：保留 `[合并转发 id=…]` 占位，不影响正文。
+- 富内容也在账本/补课路径里生效：补课消息同样走 `enrichInbound`（`backfilled:true`）。
+
+配置：`richEnabled`、`replyResolveEnabled`/`replyIngestWaitMs`/`replyResolveTtlMs`、`forwardExpandEnabled`/`forwardExpandMax`/`forwardExpandMaxChars`。
+
 ## 8. 权限与开关
 
 插件全部配置（`host.registerPlugin(... config)` / preset 的 `pluginConfig.qq`）：
@@ -411,6 +446,9 @@ WS 断线（connector 记下 disconnectedAt/downtime）
 | `ledgerFile` | `''` | 入站账本（SQLite） | 空：有 state 文件时用同目录 `qq-ledger.db`；否则内存模式（重启不保留，状态里会写明） |
 | `httpUrl` / `httpToken` | `''` / `''` | OneBot HTTP 动作端（补课/已读） | 空：用 SnowLuma 发现的 `httpServers[0]`；补课不可用时 gap 记 `unsupported` |
 | `backfillEnabled` / `backfillCount` / `maxBackfillAgeMs` / `backfillMaxPeers` | `true` / `50` / `21600000` / `5` | 补课开关/条数/最大年龄/会话数 | 补课失败只让 gap 可见，不影响实时入站；`mark_*_as_read` 不在 P0 调用 |
+| `richEnabled` | `true` | 入站富内容总开关 | 关：回到纯占位文本；开：引用/转发在闸门前慢取 |
+| `replyResolveEnabled` / `replyIngestWaitMs` / `replyResolveTtlMs` | `true` / `2000` / `1800000` | 引用解析开关/收消息等待/缓存 TTL | 等不到放占位，不阻塞；归属不符返回 null |
+| `forwardExpandEnabled` / `forwardExpandMax` / `forwardExpandMaxChars` | `true` / `2` / `1200` | 合并转发展开 | 深度/条数/字数都有上限；失败保留 id 占位 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -670,11 +708,12 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 480 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 527 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
 node --test packages/core/test/qq-backfill.test.mjs    # 6 pass（账本/补课契约/断线补回/gap）
+node --test packages/core/test/qq-rich.test.mjs        # 11 pass（富段/引用/转发/媒体安全/focus 语义）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -806,6 +845,19 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 - HTTP 客户端：返回 data 解析正确；retcode 非 0 抛错。
 - 真机验证（用户在场时）：`get_friend_msg_history` 的锚点/返回字段/是否含自己消息/双向语义；
   `mark_private_msg_as_read` 对用户其它客户端已读的影响（P0 不调用，只记录契约）。
+
+### 13.8 P0-2 入站富内容 + focus 语义（fake 已验证）
+
+`node --test packages/core/test/qq-rich.test.mjs` → **11 pass**：
+- 段→文本：图片/文件（name+size）/引用/转发 id/表情/@/markdown；提取 media/files/forwardIds/replyId；
+  转发 id 只留安全字符；`meta.qq` 富字段进闸门 signal。
+- 引用慢取：`get_msg` 命中与缓存；归属校验（群消息/他人消息 → null）；超时 → `pending` 占位，后台完成后可再取；
+  并发去重与负缓存 TTL。
+- 转发展开：节点形状兼容、嵌套递归（depth 2）、条数/字数上限/截断标记。
+- 图片安全抓取：file:// / localhost / 私网 / 带凭据 URL 拒绝；8MB 上限；魔数嗅探；`get_image` base64 兜底。
+- 插件集成：富消息（图片+文件+引用+转发）进 delivery，正文含 `[引用 测试：原话在这]` 与 `【转发展开 …】`。
+- **focus 语义（红队修复）**：纯函数断言私聊 tags 只有 `['qq','private']`，不自动 mention/admin/alarm/safety；
+  显式 @ 才加 `at`。集成断言普通私聊在 focus 下进积压、@ 才穿；admin/alarm 仍 privileged；sacred 连 @ 也不穿。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

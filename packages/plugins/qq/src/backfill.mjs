@@ -148,7 +148,7 @@ export function createBackfill({
           }
           const event = convertToEvent(item, { peerId: peer, selfId })
           let decision
-          try { decision = ingest(event, { backfilled: true }) } catch (error) {
+          try { decision = await ingest(event, { backfilled: true }) } catch (error) {
             failedHere += 1
             state.failed += 1
             state.lastError = String(error?.message ?? error)

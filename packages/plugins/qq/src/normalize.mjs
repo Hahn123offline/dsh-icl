@@ -8,6 +8,7 @@
 //
 // 参考实现（只读，不复制）：focus-core 的 domain/qq-ws.js + qq-poller.js、
 // dsh-qq/interface-platform 的 onebot-v11/mapping.mjs。
+import { RICH_LIMITS, hasAtSelf, segmentsToText, summarizeRich } from './rich.mjs'
 
 /** 群/私聊的活动 id：与 focus 的命名空间一致（transport:scope:id）。 */
 export function activityIdForPrivate(peerId) {
@@ -19,37 +20,21 @@ export function activityIdForGroup(groupId) {
 }
 
 /** 非文本段的占位：让模型知道"这里有个东西"，但不把二进制塞进上下文。 */
-const SEGMENT_PLACEHOLDER = Object.freeze({
-  image: '[图片]',
-  mface: '[表情]',
-  face: '[表情]',
-  record: '[语音]',
-  video: '[视频]',
-  file: '[文件]',
-  json: '[卡片]',
-  xml: '[卡片]',
-  forward: '[合并转发]',
-  node: '[合并转发]',
-  markdown: '[卡片]',
-  poke: '[戳一戳]',
-})
-
 function str(value) {
   return value == null ? '' : String(value)
 }
 
-/** OneBot 的 message 可能是 string 或 segment 数组；统一成 { segments, text }。 */
+/** OneBot 的 message 可能是 string 或 segment 数组；统一成 { segments, text, rich }。 */
 export function normalizeSegments(message, rawMessage = '') {
   if (typeof message === 'string') {
     const text = message.trim() ? message : str(rawMessage)
-    return { segments: text ? [{ type: 'text', text }] : [], text: text.trim() ? text : '' }
+    return { segments: text ? [{ type: 'text', text }] : [], text: text.trim() ? text : '', rich: emptyRich() }
   }
   if (!Array.isArray(message)) {
     const text = str(rawMessage).trim()
-    return { segments: text ? [{ type: 'text', text }] : [], text }
+    return { segments: text ? [{ type: 'text', text }] : [], text, rich: emptyRich() }
   }
   const segments = []
-  const parts = []
   for (const seg of message) {
     if (!seg || typeof seg !== 'object') continue
     const type = str(seg.type) || 'unknown'
@@ -58,7 +43,6 @@ export function normalizeSegments(message, rawMessage = '') {
       const text = str(data.text)
       if (!text) continue
       segments.push({ type: 'text', text })
-      parts.push(text)
       continue
     }
     if (type === 'at') {
@@ -71,14 +55,37 @@ export function normalizeSegments(message, rawMessage = '') {
       segments.push({ type: 'reply', messageId: str(data.id) })
       continue
     }
+    if (type === 'file') {
+      const size = Number(data.file_size ?? data.size ?? data.fileSize)
+      segments.push({
+        type: 'file',
+        ref: str(data.file_id ?? data.file ?? data.id ?? '') || null,
+        name: data.name == null ? null : str(data.name),
+        size: Number.isFinite(size) && size >= 0 ? size : null,
+      })
+      continue
+    }
     // 媒体段只保留来源引用与占位，不下载、不展开
     const ref = str(data.url || data.file || data.path || '')
     segments.push({ type, ref: ref || null, name: data.name == null ? null : str(data.name) })
-    const placeholder = SEGMENT_PLACEHOLDER[type] || `[${type}]`
-    parts.push(placeholder)
   }
-  return { segments, text: parts.join('').trim() }
+  // 文本由 rich.mjs 统一格式化：文件带 name/size、转发带 id、表情带 summary，图片仍是占位。
+  const text = segmentsToText(message).trim()
+  return { segments, text, rich: summarizeRich(message) }
 }
+
+function emptyRich() {
+  return { media: [], files: [], forwardIds: [], replyId: null, atSelf: false }
+}
+
+/** 给 buildPrivateSignal 用的富内容摘要（不含字节，只含定位信息）。 */
+export function richSummaryOf(message, selfId = null) {
+  const rich = Array.isArray(message) ? summarizeRich(message) : emptyRich()
+  rich.atSelf = Array.isArray(message) ? hasAtSelf(message, selfId) : false
+  return rich
+}
+
+export { RICH_LIMITS }
 
 /** 消息自己的发生时间（毫秒）。OneBot 的 time 是秒；没有就返回 null，由调用方决定。 */
 export function sentAtOf(event) {
@@ -125,7 +132,7 @@ export function signalIdFor({ scope = 'private', peerId, messageId = null, at = 
 export function buildPrivateSignal({
   peerId, senderId = null, senderName = '', text, segments = [],
   messageId = null, sentAt = null, receivedAt = Date.now(),
-  selfId = null, maxTextChars = 2000,
+  selfId = null, maxTextChars = 2000, rich = null,
 }) {
   const peer = String(peerId)
   const sender = senderId == null ? peer : String(senderId)
@@ -137,15 +144,19 @@ export function buildPrivateSignal({
   const body = clip(text)
   const at = Number.isFinite(Number(sentAt)) ? Number(sentAt) : receivedAt
   const activity = activityIdForPrivate(peer)
+  const richInfo = rich && typeof rich === 'object' ? rich : emptyRich()
+  // 私聊默认是 ambient：**不自动带 mention/at**，否则普通 focus 永远挡不住她（红队指出的语义 bug）。
+  // 只有显式 @ 到自己（rich.atSelf）才加 at；管理员/告警穿透必须由来源显式打 tags:['admin']/['alarm']。
+  const tags = ['qq', 'private']
+  if (richInfo.atSelf === true) tags.push('at')
   return {
     id: signalIdFor({ scope: 'private', peerId: peer, messageId, at, text: body }),
     from: { plugin: 'qq', activity },
     kind: 'notice',
     to: 'model',
-    // 私聊是"有人专门对她说"：文案带发言人，tags 带 mention 让 focus 按 pierce 处理。
     text: `${name}：${body}`,
     focus: activity,
-    tags: ['qq', 'private', 'mention'],
+    tags,
     createdAt: at,
     // expiresAt 由调用方按 TTL 设置（入站规范化只管形状）
     expiresAt: null,
@@ -160,6 +171,12 @@ export function buildPrivateSignal({
         receivedAt,
         selfId: selfId == null ? null : String(selfId),
         segments,
+        // P0-2 富内容：只存定位信息（图片/表情/文件/转发 id/引用 id），不存字节、不存 URL 给模型
+        media: richInfo.media ?? [],
+        files: richInfo.files ?? [],
+        forwardIds: richInfo.forwardIds ?? [],
+        replyId: richInfo.replyId ?? null,
+        atSelf: richInfo.atSelf === true,
       },
     },
   }

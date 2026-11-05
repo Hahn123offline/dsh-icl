@@ -242,7 +242,16 @@ export function createInboundConnector({
         return
       }
       state.lastEventAt = now()
-      try { onEvent(data) } catch (error) {
+      try {
+        const out = onEvent(data)
+        // onEvent 允许异步（P0-2 引用/转发展开可能 await 几百毫秒）；异常必须落到日志，不能变成未处理 rejection。
+        if (out && typeof out.then === 'function') {
+          out.catch((error) => {
+            state.lastError = String(error?.message ?? error)
+            log({ level: 'error', msg: 'qq.ws.handler-fail', error: state.lastError })
+          })
+        }
+      } catch (error) {
         state.lastError = String(error?.message ?? error)
         log({ level: 'error', msg: 'qq.ws.handler-fail', error: state.lastError })
       }

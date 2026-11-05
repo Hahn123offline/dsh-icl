@@ -126,7 +126,7 @@ test('规范化：私聊 → activity/text/tags/id，时间用消息自己的', 
   assert.equal(signal.from.activity, 'qq:private:10001')
   assert.equal(signal.focus, 'qq:private:10001')
   assert.equal(signal.text, '测试：晚上开会吗')
-  assert.deepEqual(signal.tags, ['qq', 'private', 'mention'])
+  assert.deepEqual(signal.tags, ['qq', 'private'])
   assert.equal(signal.createdAt, NOW)
   assert.equal(signal.meta.qq.messageId, '4242')
 })
