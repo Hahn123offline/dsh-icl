@@ -364,9 +364,21 @@ export function createPromptService({ onError = null } = {}) {
       if (text.length > maxChars) text = maxChars <= 1 ? '…'.slice(0, maxChars) : text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + '…'
       return text
     },
-    /** 装配：按 order 排序，跳过 when()===false 的段。 */
-    assemble(ctx = {}) {
-      const ordered = [...sections.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+    /**
+     * 装配：按 order 排序，跳过 when()===false 的段。
+     *
+     * `range` 是给前缀缓存用的**可选**切分：给 minOrder/maxOrder 就只取落在区间里的段。
+     * 默认不传 = 全部段，旧调用完全不变。
+     * 为什么要这个：本地模型引擎（NInfer/KVMem）按前缀保留会话，系统提示词只要有
+     * 一个字节变化就整条重算；所以 DSH 桥要把"静态段"（人格/仿真，order < 800）和
+     * "易变事实段"（时间/世界/focus/MC 状态，order ≥ 800）拆到两个通道去。
+     */
+    assemble(ctx = {}, range = null) {
+      const minOrder = range?.minOrder ?? -Infinity
+      const maxOrder = range?.maxOrder ?? Infinity
+      const ordered = [...sections.values()]
+        .filter((section) => section.order >= minOrder && section.order <= maxOrder)
+        .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
       const out = []
       for (const section of ordered) {
         try {

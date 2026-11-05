@@ -183,9 +183,10 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。协议：CLI 往 `time.inbox.jsonl` 追加一行 JSON，time 在 tick 里读、写 `time.outbox.jsonl` 回执（CLI 按 `id` 配对）。
 
-命令全集（`runCommand`）：`status/pause/resume/arrange/cancel/edit/skip/queue/mute/unmute/lock/wake/reset/goal_add/goal_remove/goal_list`。未列出的返回 `{ok:false,error:'未知命令：X'}`。
+命令全集（`runCommand`）：`status/pause/resume/arrange/cancel/edit/skip/queue/mute/unmute/lock/wake/clock/reset/goal_add/goal_remove/goal_list`。未列出的返回 `{ok:false,error:'未知命令：X'}`。
 
 - `cancel` 是 §2 的统一收尾（不再只删 schedules）。
+- `clock` **只在 `config.testClock:true` 的测试 preset 可用**（lab 的 `icl-lab` 已开）：平移 time 看到的时钟，用于跨小时/跨时段前缀复核、长夜压缩。参数 `{advanceMs|advanceMinutes|advanceHours}`、`{nextHour:true}`（跳到下一个整点+1 分钟）、`{nextPeriod:true}`（跳到时段边界 6/12/18/23 点+1 分钟）、`{reset:true}`；只影响 time 自己的时间视图（不改宿主墙钟），不落盘，重启恢复。
 - `reset`：释放全部 focus 租约、清空 schedules/queue/goals/spans/fired/lock/pausedAt，**保留 inboxOffset**（重启不重放旧命令）。
 - 回执：`{"id":..., "at":..., "ok":true, "result":{...}}` 或 `{"ok":false,"error":"..."}`。
 - 游标落盘（`state.inboxOffset`），文件被截断时自动归零并 log。
@@ -249,7 +250,7 @@ CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。
 |---|---|
 | `time.test.mjs` | 基本触发/睡眠拦截/白名单/醒来释放/暂停积压/inbox/silent 日历/fired 幂等/默认睡眠时长 |
 | `time-goal.test.mjs` | goal 创建、释放 focus、到期、turn-end 续推、turnLimit、时钟接管、取消睡眠 |
-| `time-lock.test.mjs` | **静音锁**（拦截/紧急配额/自动到期/手动解除/与 sleep 区分）、**防穿透**（delivery 直投/事件总线/focus 摘要）、积压有界/失败不丢/过期、一次性删除、daily 下一次、weekly、倒计时语法、pause 冻结、漏响计数、silent span、嵌套睡眠、goal 上限、统一取消、坏状态备份、inbox 游标、暂停中重启 |
+| `time-lock.test.mjs` | **静音锁**（拦截/紧急配额/自动到期/手动解除/与 sleep 区分）、**防穿透**（delivery 直投/事件总线/focus 摘要）、积压有界/失败不丢/过期/溢出保私聊、signalId 归因、一次性删除、daily 下一次、weekly、倒计时语法、pause 冻结、漏响计数、silent span、嵌套睡眠、goal 上限、统一取消、坏状态备份、inbox 游标、暂停中重启、四态可读状态行、测试时钟跨小时 |
 | `signals.test.mjs` | gate 只拦 to:model、addGate 组合、setGate 替换语义 |
 | `delivery-gate.test.mjs` | delivery push-time gate：拦/放/fail-open/卸载恢复/组合 |
 | `focus-semantics.test.mjs` | focus 闸门与积压摘要（本轮改走 signals.offer 后仍绿） |
@@ -286,6 +287,8 @@ S2 = 到点唤醒一次且多一轮（minTurns=2）；S4 = 睡眠拦截 + 醒来
 | S4 sleep | PASS | 2/2（醒来结束语 + 积压释放），turns 4，errors 0 |
 | S5 mute | PASS | 3/3（signalBlocked / 闹钟穿透 / 解除释放），turns 3，errors 0 |
 
+S6 hour（`loop-s6-hour.json`）用测试时钟跳到"下一个整点+1 分钟"，专门复核跨小时时 `时间：…时段` 的事实变化与前缀稳定性（2026-11-05 在 lab 跑通，见 §12.3）。
+
 产物：`.state/lab/time-3/loop-s2|loop-s4|loop-s5/{report.md,verdict.json,events.jsonl}`（worktree 内，不提交）。
 
 ### 前缀稳定性（misc 对表，2026-11-05）
@@ -311,3 +314,85 @@ S2 = 到点唤醒一次且多一轮（minTurns=2）；S4 = 睡眠拦截 + 醒来
 | 工具面 | 9 个 time 工具，manifest 与注册一致 |
 
 注：睡眠期 `delivery.pendingCount()` 可能为 1——那是"要睡了"唤醒通知本身，不是 turn-end 漏入；turn-end 前后 backlog/pending 都不变。
+
+
+---
+
+## 12. 怎么跑（下一任维护者的一键复跑）
+
+全部命令在 `C:\DSH\icl-wt\time`（或合并后的仓库根）执行；**不需要桌面 DSH、不需要重启任何用户进程**。
+依赖：Node ≥ 24（仓库用 `node --test`）；真实 lab 需要已安装的 `dsh`（`tools/lab.mjs` 会自动发现）和 web profile。
+
+### 12.1 纯单测（秒级，CI 用这个）
+
+```bash
+node --test packages/core/test packages/mc-body/test
+# 只跑 time 的契约测试：
+node --test packages/core/test/time.test.mjs packages/core/test/time-goal.test.mjs packages/core/test/time-lock.test.mjs
+# 只看信号/投递拦截：
+node --test packages/core/test/signals.test.mjs packages/core/test/delivery-gate.test.mjs packages/core/test/focus-semantics.test.mjs
+```
+
+期望：全绿。time-lock 覆盖静音锁/防穿透/积压可靠性/日程语义/测试时钟（33 条）。
+
+### 12.2 虚拟时钟闭环（不启 DSH，30 秒）
+
+```bash
+node tools/loop-host.mjs            # 基础 8 项
+node tools/loop-host.mjs --long     # 24 项：+30 分钟长跑 + 静音/防穿透/暂停/goal/提示词稳定性
+```
+
+期望：`checks: 24/24`，退出码 0；产物在 `.state/loop/host-runs/<ts>/{report.md,verdict.json}`。
+输入：`packages/plugins/time/src/index.mjs`、`tools/loop-host.mjs`（S5 段直接调 time API）。
+
+### 12.3 真实会话（lab，最终手感确认）
+
+```bash
+RUN=time-check
+node tools/lab.mjs up --preset icl-lab --port 57107 --run "$RUN"
+# 取 sessionId（loop 用 --session 复用同一条会话，不要每次新建）
+SID=$(node -e "console.log(require('./.state/lab/'+process.argv[1]+'/lab.json').sessionId)" "$RUN")
+STATE="C:/DSH/icl-wt/time/.state/lab/$RUN/state/icl-lab"
+
+for S in loop-s2-time loop-s4-sleep loop-s5-mute loop-s6-hour; do
+  node tools/loop.mjs --base http://127.0.0.1:57107 --state-dir "$STATE" \
+    --session "$SID" --scenario "tools/scenarios/$S.json" --out ".state/lab/$RUN/$S"
+done
+
+node tools/lab.mjs down --run "$RUN"
+```
+
+期望（2026-11-05 实测）：S2 PASS 2/2、S4 PASS 2/2、S5 PASS 3/3、S6 PASS（minTurns 3），`errors: 0`。
+- **模型必须显式钉住**：`tools/lab.mjs up` 默认 `deepseek-account/deepseek-flash`（`session/selectModel`）；不要依赖 `~/.dsh/profiles/**` 的默认模型（曾有事故）。
+- 端口按 TEAM-PLAN：time=57107；跑完必须 `lab.mjs down`，别留后台实例。
+- lab preset 已含 `loop-probe`（`tools/loop.mjs` 的 `reset`/`signal` 步骤依赖它）与 `pluginConfig.time.testClock: true`（S6/跨小时复核依赖）。
+
+### 12.4 输入文件（改行为时只需要看这几处）
+
+| 文件 | 作用 |
+|---|---|
+| `packages/plugins/time/src/index.mjs` | 全部时间逻辑（唯一实现） |
+| `packages/plugins/time/manifest.json` | 工具名清单（9 个，必须与注册一致） |
+| `packages/core/src/{signals,services,host}.mjs` | 拦截层/投递层接缝（gate 只拦 `to:'model'`、`addGate` 组合） |
+| `tools/scenarios/loop-s2-time.json` / `loop-s4-sleep.json` / `loop-s5-mute.json` / `loop-s6-hour.json` | 真实 lab 场景（数据，不是代码） |
+| `tools/loop-host.mjs` | 虚拟时钟闭环驱动 |
+| `packages/dsh-icl/presets/lab.patch.yml` | lab preset（`icl-lab` 含 loop-probe + testClock；`icl-mc-lab` 供 MC 场景） |
+
+状态文件：`<stateDir>/time.json`；控制后门：同目录 `time.inbox.jsonl` / `time.outbox.jsonl`；异常：`*.corrupt-<ts>` / `tick-error.json` / `inbox-error.json`。
+
+### 12.5 判读证据（不拿模型自述当证据）
+
+- `report.md` / `verdict.json`：断言与退出码。
+- `events.jsonl`：`turn/start|turn/end`、`user/message`（唤醒/积压到达）、`system/message`（提示词快照）。
+- `time.json`：`phase / spans / queue[].reason / lock / fired / stats`。
+- `context/turn-*.txt`：每轮系统提示词；跨小时复核（S6）看 `时间：…时段` 是否只在跨小时变化、`system/message` 是否只有一份（前缀稳定性）。
+
+### 12.6 快速排障
+
+| 现象 | 看哪里 |
+|---|---|
+| lab 场景 `等不到 loop.outbox 回执` | preset 里是否启用了 `loop-probe`；`stateDir` 是否指对 |
+| time 没响 | `time.json.fired` 是否已有当天键；`stats.missed`；`tick-error.json` |
+| 消息没到 | `signals.stats()`（blocked/gates）、`delivery.pendingCount()/blockedCount()`、`queue[].reason` |
+| 状态不对/卡住 | `time_status` 的"状态："行；`lastTickError`/`lastPersistError`；`phase` 是否 paused |
+| 前缀每轮变 | `time` 段是否又混进分钟级时间；world「日程」段是否相对时间抖动 |
