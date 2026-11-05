@@ -20,6 +20,28 @@ import { spawn as nodeSpawn } from 'node:child_process'
 const STDERR_RING = 40
 const LINE_MAX = 400
 
+/** body 的退出归因（mc-body 新版会写 body-exit.json + stderr 一行）；旧 body 读不到就返回 null。 */
+export function readExitInfo(stateDir, stderrTail = []) {
+  const file = path.join(String(stateDir ?? '.'), 'body-exit.json')
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (data && typeof data === 'object') {
+      return {
+        source: 'body-exit.json',
+        reason: data.reason == null ? null : String(data.reason),
+        at: Number(data.at) || null,
+        status: data.status && typeof data.status === 'object' ? data.status : null,
+      }
+    }
+  } catch { /* 旧 body 没有这个文件，或还没写 */ }
+  const line = [...stderrTail].reverse().map(String).find((row) => /exit reason=/i.test(row))
+  if (line) {
+    const match = line.match(/exit reason=([a-z][a-z-]*)/i)
+    if (match) return { source: 'stderr', reason: match[1].toLowerCase(), at: null, status: null }
+  }
+  return null
+}
+
 function isFunction(value) {
   return typeof value === 'function'
 }
@@ -68,14 +90,19 @@ export function createBodySupervisor({
 } = {}) {
   if (!bodyEntry) throw new Error('mc-link 需要 bodyEntry（packages/mc-body/src/cli.mjs）')
   let handle = null
-
-  function sink() {
-    return makeLogSink({ file: handle?.stderrFile ?? path.join(String(stateDir ?? '.'), 'body.stderr.log'), log })
-  }
+  /** 最近一次退出：进程清掉后还要能回答"它为什么死的、怎么死的"。 */
+  let lastExit = null
 
   function state() {
     const h = handle
-    if (!h) return { owns: false, alive: false, pid: null, host: null, port: null, username: null, exitCode: null, exitSignal: null, stderrTail: [], startedAt: null }
+    if (!h) {
+      return {
+        owns: false, alive: false, pid: null, host: null, port: null, username: null,
+        exitCode: lastExit?.code ?? null, exitSignal: lastExit?.signal ?? null,
+        exitInfo: lastExit?.exitInfo ?? null, lastExitAt: lastExit?.at ?? null,
+        stderrTail: [], startedAt: null,
+      }
+    }
     const alive = h.alive
     return {
       owns: true,
@@ -87,11 +114,22 @@ export function createBodySupervisor({
       listenPort: bodyPort,
       exitCode: h.exitCode ?? null,
       exitSignal: h.exitSignal ?? null,
+      exitInfo: h.exitInfo ?? null,
       spawnError: h.spawnError ?? null,
       startedAt: h.startedAt,
       elapsedMs: h.startedAt ? Math.max(0, now() - h.startedAt) : null,
       stderrTail: h.sink.tail(5),
     }
+  }
+
+  /** 等进程自己退出（用于 /v1/shutdown 主动关闭，别紧接着 kill 覆盖掉归因）。 */
+  async function waitExit(timeoutMs = 2000) {
+    const deadline = now() + Math.max(100, Number(timeoutMs) || 2000)
+    while (now() < deadline) {
+      if (!handle || !handle.alive) return true
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return !handle || !handle.alive
   }
 
   function clear() {
@@ -149,7 +187,10 @@ export function createBodySupervisor({
       h.alive = false
       h.exitCode = code ?? null
       h.exitSignal = signal ?? null
+      const exitInfo = readExitInfo(stateDir, h.sink.tail(8))
+      h.exitInfo = exitInfo
       const stopping = h.stopping
+      lastExit = { pid: h.pid, code: h.exitCode, signal: h.exitSignal, expected: stopping, exitInfo, at: now() }
       if (handle === h) clear()
       onLifecycle({
         type: 'body-exit',
@@ -157,6 +198,7 @@ export function createBodySupervisor({
         code: h.exitCode,
         signal: h.exitSignal,
         expected: stopping,
+        exitInfo,
         stderrTail: h.sink.tail(3),
         at: now(),
       })
@@ -317,6 +359,10 @@ export function createBodySupervisor({
     dispose,
     state,
     waitReady,
+    /** 等进程自己退出（/v1/shutdown 之后用；返回 true = 已退出）。 */
+    waitExit,
+    /** 最近一次退出（含归因）；进程清掉后仍可查。 */
+    lastExit: () => (lastExit ? { ...lastExit } : null),
     /** 探测当前 HTTP 状态（用于"外部 body 被 kill"的检测）。 */
     probe: () => fetchStatus(),
     owns: () => Boolean(handle && handle.alive),
