@@ -173,3 +173,20 @@
 - [ ] `farm`（需锄/水/种子，明早）
 - [ ] `build` 旋转/替代材质、`tunnel` stairs、bridge 真实沟壑用例（明早/现场）
 - 语义补充：`build`/`shelter` 完成度 <80% → `failed(partial)`（不再误报 done）。
+
+## 8. Top10 卡点状态更新（截至 2026-11-06 03:4x，night-1 第一夜）
+
+| # | 卡点 | 状态 | 证据/动作 |
+|---|---|---|---|
+| 1 | craft 无配方只说“缺材料”，模型跳过中间步骤 → 131× 重复 | **已修** | craft 报错给下一步链+库存（df2931e）；变体选择（cobblestone vs cobbled_deepslate）待明早修 |
+| 2 | 长任务 `mcb_do` 单步长 op（mine/goto）→ 120s 超时 + body 无互斥 → 并发互打 | **待修**（明早） | doPlan 单飞锁 409；今晚 supervisor 用 task 引导规避（seq 370/372→376/378） |
+| 3 | `goto` 到自身坐标“捡掉落”成功无用循环 96× | **已拦** | mc-lab 断路器（同 tool+args ≥5 无论成败）；body `pickup` op + entity 坐标明早补 |
+| 4 | 手动 `goto+dig` 失效坐标 `方块没有变化` 22× | **已修** | dig 精确报错（空/过期/太远/手持）39b232e，已合 master |
+| 5 | 模型不知道工具/装备，空手/泥土挖石头 | **已修+已部署** | 装备设计转向 b1fa2a8/347040a；night-1 seq390/391、726/727、773/774、370/372；auto_tool 20 次；needsTool 真服 smoke 证据 |
+| 6 | 逐方块重复劳动（10 分钟 mine/dig 22 次全 stone、task_progress 79、目的表述 0） | **已缓解** | 宏操作契约+实现（collect/tunnel/bridge/build/shelter/sort/deposit，45 测试绿，smoke 过）；mc-link 工具面已接 |
+| 7 | 夜间死亡循环（同代 8 死；低血 resume→再被打） | **运维缓解** | body safety 正常；mc-lab sleep-safe 收 body；supervisor 收紧低血 resume（待）；睡眠期临时复活已加 sleep-body-reap |
+| 8 | 睡眠期 body 被 in-flight `mcb_join` 复活 → 连死 3 次 | **已修** | mc-lab `sleep-body-reap` 5e2a6d1 + mc-link 睡眠 join 守卫 0a5a25b；body quarantine 自保正确 |
+| 9 | supervisor `sleep is not a function` 崩溃 | **已修** | mc-lab 修（sleepInfo 改名）并重启 |
+| 10 | 长任务等待只能 wait 轮询 | **教学已改** | mc-link 文档/描述“提交后别 wait”；宏 progress 限频（5–10%/10s） |
+
+未决（明早）：farm、build 旋转/替代材质、bridge 真实沟壑、tunnel stairs、pickup op、doPlan 单飞锁、craft 变体选择、低血 resume 策略。
