@@ -63,8 +63,7 @@ test('静音锁：外部消息进积压、time 自己的闹钟照常响、status
   const text = drainText(host)
   assert.match(text, /闹钟还是会响/, '静音不关自己的闹钟')
   assert.doesNotMatch(text, /外部消息一/, '外部消息仍被压着')
-  await host.services.signals.offer({}) // 无效信号不该炸
-  assert.ok(fs.existsSync(path.join(path.dirname(api.status().schedules.length ? 'x' : 'x'), 'x')) === false)
+  assert.doesNotThrow(() => host.services.signals.offer({}), '无效信号不该炸掉 gate')
 })
 
 test('静音锁：紧急标签有独立配额，超配额进积压', async () => {
