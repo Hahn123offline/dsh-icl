@@ -4,6 +4,9 @@
 > 内容由 `node packages/plugins/qq/tools/preflight.mjs --brief` 按**当时的真实检查结果**生成；
 > 完整证据在 `.state/qq-shadow/preflight/preflight-latest.md`。下面这份是 **2026-11-05 18:32 的本机快照**（含当时的 BLOCK 结论）。
 > 重新生成：`cd C:\DSH\icl-wt\qq; node packages/plugins/qq/tools/preflight.mjs --brief`
+>
+> ⏸ **当前状态（2026-11-05）：用户选择 B——本轮不做真实影子**（不在电脑前，无法启动 SnowLuma）。
+> 本页留作**下一轮**申请时使用；届时请先重跑 `preflight --brief` 取最新结论，再按 `docs/QQ.md §10` runbook 执行。
 
 ---
 
