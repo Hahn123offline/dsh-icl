@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, toolClassOfItem, toolTier,
+  chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, toolClassOfItem, toolTier,
 } from '../src/tools.mjs'
 
 test('tools：方块偏好的工具类', () => {
@@ -84,3 +84,23 @@ test('tools：缺工具建议是可执行链条', () => {
   assert.equal(axe.craft, 'wooden_axe')
   assert.equal(suggestToolCraft(null, 0).craft, null)
 })
+
+test('tools：多配方变体选缺料最少（oak 工具不再误报 pale_oak_planks）', () => {
+  const registryNames = { 1: 'oak_planks', 2: 'stick', 3: 'pale_oak_planks' }
+  const variants = [
+    { requiresTable: true, result: { count: 1 }, delta: [{ id: 3, count: -3 }, { id: 2, count: -2 }] }, // pale oak 变体
+    { requiresTable: true, result: { count: 1 }, delta: [{ id: 1, count: -3 }, { id: 2, count: -2 }] }, // oak 变体
+  ]
+  const nameOf = (id) => registryNames[id]
+  const counts = { oak_planks: 8, stick: 0, pale_oak_planks: 0 }
+  const countOf = (name) => counts[name] ?? 0
+  const best = chooseRecipeVariant(variants, { count: 1, nameOf, countOf })
+  assert.ok(best)
+  // oak 变体只缺 stick×2（short 2）；pale 变体缺 planks×3 + stick×2（short 5）→ 选 oak
+  assert.deepEqual(best.missing.map((entry) => [entry.name, entry.short]), [['stick', 2]])
+  assert.equal(best.short, 2)
+  // 都齐 → short 0
+  const complete = chooseRecipeVariant(variants, { count: 1, nameOf, countOf: (name) => (name === 'stick' ? 9 : counts[name] ?? 0) })
+  assert.equal(complete.short, 0)
+})
+

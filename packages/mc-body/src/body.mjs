@@ -85,6 +85,7 @@ export function createBody({
   let current = null
   let paused = false
   let pausedReason = null
+  let activeDo = null
   let closed = false
   let started = false
   let pumping = false
@@ -698,37 +699,49 @@ export function createBody({
 
   async function doPlan(steps, params = {}) {
     if (!Array.isArray(steps) || !steps.length) throw httpError('do 需要非空 steps', 400)
-    const results = []
-    for (const [index, step] of steps.entries()) {
-      const op = String(step?.op ?? '')
-      if (!op) throw httpError(`第 ${index + 1} 步缺少 op`, 400)
-      if (paused && !SAFE_WHILE_PAUSED.has(op)) {
-        throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 /v1/safety/resume，或只用 ${[...SAFE_WHILE_PAUSED].join('/')}`, 409)
-      }
-      if (op === 'task') {
-        const taskParams = step.params?.params ?? step.params ?? {}
-        const kind = step.kind ?? step.params?.kind
-        if (!kind) throw httpError('task op 需要 kind（如 kind:"mine"）', 400)
-        const task = createTask({ ...step, kind, params: taskParams })
-        return { ok: true, results, task }
-      }
-      if (op === 'cancel') { results.push({ index, op, result: cancelTask(step.taskId, step.reason) }); continue }
-      if (op === 'resume') {
-        const result = step.taskId ? resumeTask(step.taskId) : resume({ force: Boolean(step.force) })
-        results.push({ index, op, result })
-        continue
-      }
-      if (op === 'events') { results.push({ index, op, result: eventsSince(step.since ?? 0) }); continue }
-      if (op === 'tasks') { results.push({ index, op, result: listTasks(step.state ?? null) }); continue }
-      if (op === 'say') { results.push({ index, op, result: await chat(step.text) }); continue }
-      if (['look', 'inventory', 'scan', 'map'].includes(op)) {
-        results.push({ index, op, result: await inspect(op, step.params ?? step) })
-        continue
-      }
-      if (typeof adapter.runOp !== 'function') throw httpError('body adapter 不支持组合 op', 501)
-      results.push({ index, op, result: await adapter.runOp(op, step.params ?? step) })
+    // 单飞锁：长 op（mine/goto/dig/place/chest/...）执行期间不接第二个长 plan。
+    // 背景：mc-link 120s 超时后仍会再发，旧 body 无互斥 → 两个长 op 并发争 pathfinder/dig。
+    const NONBLOCKING = new Set(['task', 'cancel', 'resume', 'events', 'tasks', 'say', 'look', 'inventory', 'scan', 'map'])
+    const heavy = steps.some((step) => !NONBLOCKING.has(String(step?.op ?? '')))
+    if (heavy && activeDo) {
+      throw httpError(`上一个 do 动作还在执行（${activeDo.ops.join('/')}，已 ${Math.round((stamp() - activeDo.at) / 1000)}s）；先 mcb_status / tasks 查状态，长任务请用 {"op":"task"} 提交；不要并发发长动作`, 409)
     }
-    return { ok: true, results }
+    if (heavy) activeDo = { at: stamp(), ops: steps.map((step) => String(step?.op ?? '?')) }
+    try {
+      const results = []
+      for (const [index, step] of steps.entries()) {
+        const op = String(step?.op ?? '')
+        if (!op) throw httpError(`第 ${index + 1} 步缺少 op`, 400)
+        if (paused && !SAFE_WHILE_PAUSED.has(op)) {
+          throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 /v1/safety/resume，或只用 ${[...SAFE_WHILE_PAUSED].join('/')}`, 409)
+        }
+        if (op === 'task') {
+          const taskParams = step.params?.params ?? step.params ?? {}
+          const kind = step.kind ?? step.params?.kind
+          if (!kind) throw httpError('task op 需要 kind（如 kind:"mine"）', 400)
+          const task = createTask({ ...step, kind, params: taskParams })
+          return { ok: true, results, task }
+        }
+        if (op === 'cancel') { results.push({ index, op, result: cancelTask(step.taskId, step.reason) }); continue }
+        if (op === 'resume') {
+          const result = step.taskId ? resumeTask(step.taskId) : resume({ force: Boolean(step.force) })
+          results.push({ index, op, result })
+          continue
+        }
+        if (op === 'events') { results.push({ index, op, result: eventsSince(step.since ?? 0) }); continue }
+        if (op === 'tasks') { results.push({ index, op, result: listTasks(step.state ?? null) }); continue }
+        if (op === 'say') { results.push({ index, op, result: await chat(step.text) }); continue }
+        if (['look', 'inventory', 'scan', 'map'].includes(op)) {
+          results.push({ index, op, result: await inspect(op, step.params ?? step) })
+          continue
+        }
+        if (typeof adapter.runOp !== 'function') throw httpError('body adapter 不支持组合 op', 501)
+        results.push({ index, op, result: await adapter.runOp(op, step.params ?? step) })
+      }
+      return { ok: true, results }
+    } finally {
+      if (heavy) activeDo = null
+    }
   }
 
   async function chat(text) {

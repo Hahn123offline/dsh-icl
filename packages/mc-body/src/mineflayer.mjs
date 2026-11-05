@@ -4,7 +4,7 @@
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
 import {
-  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
+  chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
 
@@ -1929,6 +1929,37 @@ export function createMineflayerAdapter({
       await bot.toss(found.type, null, Math.max(1, Number(params.count) || 1))
       return { tossed: found.name }
     }
+    if (op === 'pickup') {
+      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标。
+      const radius = Math.max(1, Math.min(16, Number(params.radius) || 8))
+      const max = Math.max(1, Math.min(16, Number(params.max) || 8))
+      let picked = 0
+      const pickedNames = []
+      for (let index = 0; index < max; index += 1) {
+        const pos = currentPosition()
+        if (!pos) break
+        const drops = Object.values(bot.entities ?? {})
+          .filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(pos) <= radius)
+          .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))
+        const target = drops[0]
+        if (!target) break
+        const name = target.metadata?.item ? bot.registry.items?.[target.metadata.item]?.name ?? 'item' : 'item'
+        try {
+          await gotoWithRecovery({ x: target.position.x, y: target.position.y, z: target.position.z, range: 1, timeoutMs: 4000, stallMs: 2000 }, null, null)
+          await sleep(250)
+        } catch { /* 走不到就换下一个 */ }
+        if (!bot.entities?.[target.id]) {
+          picked += 1
+          pickedNames.push(name)
+        } else {
+          // 走不到/没吸到：标记跳过，换下一个
+          target.__skip = true
+          continue
+        }
+      }
+      const left = Object.values(bot.entities ?? {}).filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(currentPosition() ?? { x: 0, y: 0, z: 0 }) <= radius).length
+      return { picked, items: pickedNames, radius, left }
+    }
     if (op === 'attack') {
       const entity = resolveEntity(params.target ?? params)
       if (!entity) throw new Error('attack: 找不到目标')
@@ -1970,22 +2001,13 @@ export function createMineflayerAdapter({
         const hint = []
         let plan = null
         try {
-          const candidates = bot.recipesAll(def.id, null, table)
-          const noTable = bot.recipesAll(def.id, null, null)
-          const pick = candidates[0] ?? noTable[0] ?? null
-          if (pick) {
-            const craftCount = Math.max(1, Math.ceil(count / Math.max(1, Number(pick.result?.count) || 1)))
-            const missing = []
-            for (const entry of Array.isArray(pick.delta) ? pick.delta : []) {
-              if (Number(entry?.count) >= 0) continue
-              const itemName = bot.registry.items?.[entry.id]?.name
-              if (!itemName) continue
-              const need = Math.abs(Number(entry.count)) * craftCount
-              const have = countOf(itemName)
-              if (have < need) missing.push({ name: itemName, need, have, short: need - have })
-            }
-            plan = { requiresTable: Boolean(pick.requiresTable), missing }
-          }
+          // 多配方变体里选“缺料最少”的那个：避免明明有 oak/cobblestone，却提示缺 pale_oak_planks/cobbled_deepslate。
+          const variants = [...(bot.recipesAll(def.id, null, table) ?? []), ...(bot.recipesAll(def.id, null, null) ?? [])]
+          plan = chooseRecipeVariant(variants, {
+            count,
+            nameOf: (id) => bot.registry.items?.[id]?.name,
+            countOf,
+          })
         } catch { /* 拿不到配方明细就退回通用提示 */ }
         if (plan?.requiresTable && !table) hint.push('这个配方需要工作台：先 craft crafting_table（4 木板）并 place 到身边（4 格内）')
         if (table && plan?.requiresTable) hint.push('工作台在附近但可能够不到：先 goto 到工作台 4 格内')
@@ -2312,6 +2334,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 

@@ -139,3 +139,34 @@ export function suggestToolCraft(className, requiredTier, counts = {}) {
   return { craft: null, steps: [] }
 }
 
+
+/**
+ * 多配方变体里选“缺料最少”的那个（避免报错提示错误变体，如 oak 工具却提示缺 pale_oak_planks）。
+ * variants: [{ result:{count}, delta:[{id,count}], requiresTable }]
+ * 依赖 nameOf(id)->itemName 与 countOf(name)->have。
+ * 返回 {pick, missing:[{name,need,have,short}], short, requiresTable} 或 null。
+ */
+export function chooseRecipeVariant(variants, { count = 1, nameOf, countOf } = {}) {
+  let best = null
+  for (const pick of Array.isArray(variants) ? variants : []) {
+    if (!pick) continue
+    const craftCount = Math.max(1, Math.ceil(Number(count) / Math.max(1, Number(pick.result?.count) || 1)))
+    const missing = []
+    for (const entry of Array.isArray(pick.delta) ? pick.delta : []) {
+      if (Number(entry?.count) >= 0) continue
+      const name = nameOf?.(entry.id)
+      if (!name) continue
+      const need = Math.abs(Number(entry.count)) * craftCount
+      const have = Number(countOf?.(name)) || 0
+      if (have < need) missing.push({ name, need, have, short: need - have })
+    }
+    const short = missing.reduce((sum, entry) => sum + entry.short, 0)
+    const candidate = { pick, missing, short, requiresTable: Boolean(pick.requiresTable) }
+    if (!best
+      || short < best.short
+      || (short === best.short && best.requiresTable && !candidate.requiresTable)) {
+      best = candidate
+    }
+  }
+  return best
+}
