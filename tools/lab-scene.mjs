@@ -152,7 +152,7 @@ function assistantTextOf(window) {
   return text
 }
 
-/** 发一句话并等 turn/end；返回该轮窗口。 */
+/** 发一句话并等 turn/end；超时就 session/cancel（不再让场景被一个无界回合挂死），然后抛可读错误。 */
 export async function promptAndWait(api, meta, text, timeoutSec = 300) {
   const eventsFile = path.join(meta.runDir, 'events.jsonl')
   const baseline = countTurnEnds(eventsFile)
@@ -164,12 +164,57 @@ export async function promptAndWait(api, meta, text, timeoutSec = 300) {
     if (!isPidAlive(meta.pids?.dsh)) throw new Error('等待 turn/end 期间 dsh 进程退出')
     await sleep(300)
   }
-  if (countTurnEnds(eventsFile) <= baseline) throw new Error(`prompt 超时（${timeoutSec}s）：${text.slice(0, 40)}`)
-  return lastTurnWindow(eventsFile)
+  if (countTurnEnds(eventsFile) > baseline) return lastTurnWindow(eventsFile)
+  // 超时：取消当前回合，给 DSH 10s 收尾；记录证据后抛错（场景继续跑断言/三问）。
+  let cancelled = null
+  try {
+    const out = await api.callUnary('session/cancel', { sessionId: meta.sessionId }, undefined, 'long')
+    cancelled = out?.result?.ok ? 'ok' : JSON.stringify(out?.result?.error ?? out?.result)
+  } catch (error) { cancelled = `cancel-failed: ${String(error?.message ?? error)}` }
+  const cancelDeadline = Date.now() + 10_000
+  while (Date.now() < cancelDeadline && countTurnEnds(eventsFile) <= baseline) await sleep(300)
+  const turns = countTurnEnds(eventsFile) - baseline
+  throw new Error(`prompt 超时（${timeoutSec}s）：${text.slice(0, 40)}；session/cancel=${cancelled}；取消后新增 turn/end=${turns}`)
 }
 
 function fingerprint(msg) {
   return `命中 seq=${msg.seq}`
+}
+
+/** 事件里的"插件来源消息"：source.kind 不是 user、也不是 runtime-context（即 MC/时间/焦点通知）。 */
+function pluginNotices(window) {
+  return window
+    .filter((event) => event.type === 'user/message')
+    .map((event) => {
+      const kind = String(event.data?.source?.kind ?? 'user')
+      return { seq: event.seq, kind, text: textOfMessage(event.data), at: event.time }
+    })
+    .filter((row) => row.kind !== 'user' && row.kind !== 'runtime-context')
+}
+
+/**
+ * 信号自主唤醒的 turn：这一轮里没有人类用户消息、但有插件通知。
+ * mc-link 的 crash signal 会自己叫醒会话，她的 mcb_status/mcb_join 发生在 prompt 之外——
+ * 断言窗口必须把它算进去（2026-11-05 mc-link 在 C 里遇到的误判）。
+ */
+function autonomousTurnSeqs(window) {
+  const turns = []
+  let current = null
+  for (const event of window) {
+    if (event.type === 'turn/start') {
+      current = { turn: event.data?.turn, startSeq: event.seq, endSeq: null, human: false, notice: null }
+      turns.push(current)
+      continue
+    }
+    if (!current) continue
+    if (event.type === 'user/message') {
+      const kind = String(event.data?.source?.kind ?? 'user')
+      if (kind === 'user') current.human = true
+      else if (kind !== 'runtime-context') current.notice = textOfMessage(event.data).slice(0, 120)
+    }
+    if (event.type === 'turn/end') current.endSeq = event.seq
+  }
+  return turns.filter((turn) => !turn.human && turn.notice)
 }
 
 function evaluateAssertion(predicate, window, state) {
@@ -178,6 +223,16 @@ function evaluateAssertion(predicate, window, state) {
   const checks = []
   const add = (kind, ok, detail) => checks.push({ kind, ok, detail })
 
+  if (predicate.signalLogged) {
+    // 不依赖 DSH 投递时延：直接查 mc-link 自己的台账有没有产生这条 crash/safety 信号。
+    const needles = Array.isArray(predicate.signalLogged) ? predicate.signalLogged : [predicate.signalLogged]
+    const file = path.join(state?.meta?.runDir ?? '', 'state', String(state?.meta?.preset ?? ''), 'mc-link.jsonl')
+    const rows = readJsonl(file).slice(-80)
+    const hit = rows.find((row) => needles.some((needle) => JSON.stringify(row).includes(needle)))
+    add('signalLogged', Boolean(hit), hit
+      ? `mc-link.jsonl ${hit.type ?? hit.kind ?? '?'} @${hit.at ? new Date(hit.at).toISOString() : '?'} 含「${needles.find((n) => JSON.stringify(hit).includes(n))}」`
+      : `mc-link.jsonl 最近 80 行无匹配（${needles.join('/')}）`)
+  }
   if (predicate.toolAny) {
     const hit = tools.find((row) => predicate.toolAny.includes(row.name))
     add('toolAny', Boolean(hit), hit ? `${hit.name} @${hit.seq}` : `未调用任何：${predicate.toolAny.join('/')}`)
@@ -216,6 +271,16 @@ function evaluateAssertion(predicate, window, state) {
     const failed = tools.filter((row) => row.isError)
     add('noToolError', failed.length === 0, failed.length ? failed.map((row) => `${row.name}@${row.resultSeq}`).join(',') : '无工具错误')
   }
+  if (predicate.noticeContains) {
+    const needles = Array.isArray(predicate.noticeContains) ? predicate.noticeContains : [predicate.noticeContains]
+    const notices = pluginNotices(window)
+    const hit = notices.find((row) => needles.some((needle) => row.text.includes(needle)))
+    add('noticeContains', Boolean(hit), hit ? `通知 @${hit.seq}（${hit.kind}）含「${needles.find((n) => hit.text.includes(n))}」` : `无匹配通知（看到 ${notices.length} 条：${notices.map((row) => row.kind).join(',') || '无'}）`)
+  }
+  if (predicate.autonomousTurn) {
+    const turns = autonomousTurnSeqs(window)
+    add('autonomousTurn', turns.length > 0, turns.length ? `${turns.length} 个自主 turn（seq ${turns.map((turn) => turn.startSeq).join(',')}）` : '没有信号自主唤醒的 turn')
+  }
   if (predicate.bodyAlive != null) {
     add('bodyAlive', Boolean(state.bodyAlive) === predicate.bodyAlive, `body 进程 ${state.bodyCount} 个（pid ${state.bodyPids.join(',') || '无'}）`)
   }
@@ -227,11 +292,15 @@ function evaluateAssertion(predicate, window, state) {
  * 跑一个场景。
  * @returns {Promise<{ok:boolean, verdictFile:string, checks:object[]}>}
  */
-export async function runScene({ run, sceneFile, interview = true }) {
+export async function runScene({ run, sceneFile, interview = true, vars: inputVars = {} }) {
   const meta = { ...run.meta, runDir: run.runDir }
   if (!meta.sessionId) throw new Error('run 没有 sessionId；先 `lab up`')
   const scene = readJson(sceneFile, null)
   if (!scene) throw new Error(`读不到场景文件：${sceneFile}`)
+  // 场景变量：同一份 A/C/E 既能跑 flat 超平坦，也能跑 survival/normal 地形。
+  // 优先级：defaults < 命令行 --server/--username/--block。
+  const vars = { server: 'flat', username: 'ICL-mclab-1', block: 'dirt', ...(scene.defaults ?? {}), ...inputVars }
+  const subst = (text) => String(text ?? '').replace(/\{\{(\w+)\}\}/g, (match, key) => (vars[key] == null ? match : String(vars[key])))
   const eventsFile = path.join(run.runDir, 'events.jsonl')
   const api = apiFor(meta.port)
   const startedAt = nowIso()
@@ -241,8 +310,13 @@ export async function runScene({ run, sceneFile, interview = true }) {
   const checks = []
   const steps = []
   let bodyState = { bodyCount: 0, bodyPids: [], bodyAlive: false }
-  // 断言只看"最近一次 prompt 之前"发生的事件：每次 assert 都对应上一句话造成的动作。
-  let boundarySeq = startSeq
+  // 断言窗口：从"上一次断言之后"到"这次断言"，把两次断言之间所有 turn（含 crash signal 自主唤醒的 turn）都算进来。
+  // 断言窗口：从"上一个动作边界"（prompt / wait / kill-body）到本次断言。
+  // 断言本身不推进边界——一轮里多个 assert 都要看同一段链路（工具调用发生在 prompt 回合里，
+  // 若每个 assert 都推进边界，第二个 assert 就什么都看不到了；c2/c3 的 A 就是这样误判的）。
+  // 动作边界之后的自主 turn（crash signal 叫醒的那种）也会算进断言窗口（mc-link C 的诉求）。
+  let assertBoundarySeq = startSeq
+  let killBoundarySeq = null
   const lastSeqNow = () => Number(orderedEvents(eventsFile).at(-1)?.seq) || 0
 
   async function refreshBody() {
@@ -252,34 +326,41 @@ export async function runScene({ run, sceneFile, interview = true }) {
   }
 
   // 场景前置：清掉上一场/探测留下的 body，保证 A/C/E 每次从"未连接"开始，可连跑 3 次。
+  // 杀一遍不够：mc-link 会把"意外退出"自动重启，所以最多清 3 轮直到没有活 body。
   const preCleanup = { killedPids: [] }
-  await refreshBody()
-  if (bodyState.bodyCount) {
+  for (let round = 0; round < 3; round += 1) {
+    await refreshBody()
+    if (!bodyState.bodyCount) break
     for (const pid of bodyState.bodyPids) {
       await killPidTree(pid)
       preCleanup.killedPids.push(pid)
     }
-    await sleep(1500)
-    await refreshBody()
     preCleanup.forced = true
-    console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
+    await sleep(1500)
   }
+  await refreshBody()
+  if (preCleanup.forced) console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
 
-  const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, text, timeoutSec)
+  const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, subst(text), timeoutSec)
 
   for (const step of scene.steps ?? []) {
     const id = step.id ?? step.op
     const began = Date.now()
     try {
       if (step.op === 'prompt') {
-        boundarySeq = lastSeqNow()
+        assertBoundarySeq = lastSeqNow()
         const window = await say(step.text, Number(step.timeoutSec ?? 300))
-        steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: step.text, turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
+        steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: subst(step.text), turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
         console.log(`[scene] ${id} → turn ${window?.turn}，工具 [${(window?.tools ?? []).join(',')}]`)
       } else if (step.op === 'wait') {
         await sleep(Number(step.seconds ?? 1) * 1000)
+        assertBoundarySeq = lastSeqNow()
         steps.push({ id, op: 'wait', ok: true, ms: Date.now() - began })
       } else if (step.op === 'kill-body') {
+        // 先定格边界再杀：kill 之后 mc-link 的 crash notice / 自主 turn 都发生在几秒内，
+        // 边界若放在 sleep 之后就会把 notice 挤出断言窗口（c3 的 crash-notice 误判）。
+        assertBoundarySeq = lastSeqNow()
+        killBoundarySeq = assertBoundarySeq
         await refreshBody()
         const target = bodyState.bodyPids[0]
         if (!target) throw new Error('没有找到 mc-body 子进程（body 没起来或不是 lab 派生的）')
@@ -302,12 +383,14 @@ export async function runScene({ run, sceneFile, interview = true }) {
         steps.push({ id, op: 'snapshot', ok: true, ms: Date.now() - began, file })
       } else if (step.op === 'assert') {
         await refreshBody()
-        const windowForStep = eventWindow(eventsFile, boundarySeq)
-        const results = evaluateAssertion(step, windowForStep, bodyState)
+        // windowFrom:'kill' 用于"kill 之后发生的一切"（notice + 自主 turn + 后续 prompt 回合都算）。
+        const windowStart = step.windowFrom === 'kill' && killBoundarySeq != null ? killBoundarySeq : assertBoundarySeq
+        const windowForStep = eventWindow(eventsFile, windowStart)
+        const results = evaluateAssertion(step, windowForStep, { ...bodyState, meta })
         const required = step.required !== false
         const ok = results.every((row) => row.ok)
         for (const row of results) checks.push({ id, required, ok: row.ok, kind: row.kind, detail: row.detail })
-        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, checks: results })
+        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, windowStartSeq: windowStart, windowEndSeq: lastSeqNow(), checks: results })
         console.log(`[scene] ${id} ${ok ? '✓' : required ? '✗' : '⚠'} ${results.map((row) => `${row.kind}:${row.ok ? 'ok' : 'fail'}`).join(' ')}`)
       } else {
         throw new Error(`未知 op：${step.op}`)
@@ -341,7 +424,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
   const cleanup = { ran: false, reply: '', leftoverKilled: [] }
   if (scene.cleanup !== false) {
     const cleanupText = typeof scene.cleanup === 'string'
-      ? scene.cleanup
+      ? subst(scene.cleanup)
       : '这局先到这里：如果身体还连着，用 mcb_leave 退出 MC，然后一句话说明你现在在哪、身体是不是已经退出。'
     try {
       const window = await say(cleanupText, 180)
@@ -386,6 +469,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
     ok,
     checks,
     steps,
+    vars,
     preCleanup,
     body: bodyState,
     cleanup,
@@ -421,6 +505,7 @@ function renderVerdict(verdict, meta) {
   push()
   push(`- run：\`${verdict.runId}\` · preset：\`${verdict.preset}\` · 模型：${verdict.model?.provider ?? '?'} / ${verdict.model?.model ?? '?'}`)
   push(`- session：\`${verdict.sessionId}\` · 端口：${meta.port}`)
+  if (verdict.vars) push(`- 场景变量：server=${verdict.vars.server} · username=${verdict.vars.username} · block=${verdict.vars.block}`)
   push(`- 时间：${verdict.startedAt} → ${verdict.endedAt}（${(verdict.durationMs / 1000).toFixed(1)}s） · seq ${verdict.startSeq} → ${verdict.endSeq}`)
   if (verdict.preCleanup?.killedPids?.length) push(`- 前置清理：杀掉上一场残留 body pid ${verdict.preCleanup.killedPids.join(',')}（保证本场从"未连接"开始）`)
   push(`- 判据：docs/MC-ACCEPTANCE.md（机器断言=链路证据；三问=当事人自述，不算链路证据）`)

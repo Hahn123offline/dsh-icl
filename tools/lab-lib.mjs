@@ -136,18 +136,29 @@ export function writeRunMeta(runId, meta) {
  * 把 presets/lab.patch.yml 的占位符替换成本次 run 的绝对路径，写到 runDir 下。
  * 不能用静态文件直接 --patch：preset 的 config.plugins 不做相对路径锚定（见文件头注释）。
  */
+/** mc-lab 自己的正常地形验收服（fresh normal world，不进用户 survival，不碰 flat 54837）。 */
+export const LAB_MC_SERVER_PORT = Number(process.env.ICL_LAB_MC_SERVER_PORT ?? 54840)
+export const LAB_MC_SERVER_NAME = 'lab-normal'
+
 export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
+  // lab 的服务器清单（mc-link 会把它和插件自带 servers.json 合并）：正常地形验收服 + flat 调试服。
+  const serversFile = path.join(runDir, 'mc-servers.json')
+  fs.writeFileSync(serversFile, `${JSON.stringify([
+    { name: LAB_MC_SERVER_NAME, host: '127.0.0.1', port: LAB_MC_SERVER_PORT, note: 'lab 专用 normal 地形验收服（fresh world）' },
+    { name: 'flat', host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
+  ], null, 2)}\n`, 'utf8')
   const output = template
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
+    .replaceAll('__LAB_MC_SERVERS__', posix(serversFile))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')
@@ -166,6 +177,71 @@ export function gitCommit(short = true) {
   } catch {
     return null
   }
+}
+
+/* ── 残留 body 清理 ───────────────────────────────────── */
+
+/** 一整张 Windows 进程表（Get-CimInstance）；失败返回 []，不抛。 */
+export function listProcesses() {
+  if (process.platform !== 'win32') {
+    return new Promise((resolve) => {
+      const child = spawn('ps', ['-eo', 'pid=,ppid=,args='], { windowsHide: true })
+      let out = ''
+      child.stdout.on('data', (chunk) => { out += chunk })
+      child.on('close', () => {
+        const rows = []
+        for (const line of out.split('\n')) {
+          const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
+          if (match) rows.push({ ProcessId: Number(match[1]), ParentProcessId: Number(match[2]), CommandLine: match[3] })
+        }
+        resolve(rows)
+      })
+      child.on('error', () => resolve([]))
+    })
+  }
+  return new Promise((resolve) => {
+    const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress'
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.on('close', () => {
+      try {
+        const parsed = JSON.parse(out.trim() || '[]')
+        resolve(Array.isArray(parsed) ? parsed : [parsed])
+      } catch { resolve([]) }
+    })
+    child.on('error', () => resolve([]))
+  })
+}
+
+/**
+ * 找本 lab 用户名对应的 mc-body 进程（含被 kill 后 mc-link 自动重启的孤儿）。
+ * 只匹配命令行里同时有 mc-body 路径和用户名 token 的进程，不碰 mc-link/mc-body 的 bot。
+ */
+export async function findLabBodyPids(username) {
+  const rows = await listProcesses()
+  const needle = String(username ?? '')
+  return rows
+    .filter((row) => /mc-?body|cli\.mjs/i.test(String(row.CommandLine ?? '')))
+    .filter((row) => needle && String(row.CommandLine ?? '').includes(needle))
+    .map((row) => Number(row.ProcessId))
+    .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid)
+}
+
+/** 清掉本 lab 上一轮留下的 body（up 前 / down 后各清一次，避免同服同名互踢）。 */
+export async function cleanupStrayBodies({ username = 'ICL-mclab-1', timeoutMs = 3000 } = {}) {
+  const killed = []
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pids = await findLabBodyPids(username)
+    if (!pids.length) break
+    for (const pid of pids) {
+      await killPidTree(pid)
+      killed.push(pid)
+    }
+    await sleep(400)
+  }
+  return killed
 }
 
 /* ── dsh 进程 ─────────────────────────────────────────── */

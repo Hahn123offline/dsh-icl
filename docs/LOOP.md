@@ -300,6 +300,51 @@ persona+sim 段（**systemChars 变小是预期**），时间/focus/MC 状态会
 
 **MC lab 会话固定项**：preset `icl-mc-lab`，body HTTP 54900，`pluginConfig.mc-link.username: ICL-mclab-1`
 （同服同名会被踢：mc-link 自己的 bot 叫 ICL/ICL-mclink-1），`stateDir` 指向本 run 的 `state/mc-body`。
-A/C/E 场景只连 flat 测试服（54837），survival 54838 是用户在玩的服，不加进 lab 场景。
+A/C/E 场景默认 `--server flat`（54837）；**最终验收用 lab 自己的 normal 地形服**（见下），survival 54838 是用户主力服，未经 lead 确认不连。
+
+### 11.1 lab 专用 normal 地形验收服（54840）
+
+`c3`/`L1` 之后 flat 与用户 survival 都不适合最终验收，lab 自建一个 fresh normal 世界：
+
+```powershell
+# 目录：C:\DSH\icl\.state\mc-server-lab（server.jar/libraries/versions 复制自 mc-survival，不复制 world）
+# server.properties：server-port=54840、level-type=normal、level-name=labworld、spawn-monsters=false、pause-when-empty-seconds=0
+java -Xms1G -Xmx2G -jar server.jar nogui   # 工作目录 C:\DSH\icl\.state\mc-server-lab
+# 日志：.state/lab/mc-server-54840.log
+```
+
+`tools/lab-lib.mjs` 物化 patch 时会生成 run 自带的 `mc-servers.json`，把 `lab-normal → 127.0.0.1:54840` 写进
+mc-link 的 `serversFile`，所以场景里 `--server lab-normal` 就能用。要重生成世界：停服 → 删
+`C:\DSH\icl\.state\mc-server-lab\labworld` → 重启（同 `server.jar`）。54840 归 mc-lab 最终验收用，别人要用先协调。
+
+### 11.2 场景变量与断言口径（2026-11-05 最终版）
+
+- `lab.mjs scene <file> --server <name> --username <name> --block <mine 目标>`；场景文本里写 `{{server}}/{{username}}/{{block}}`，
+  同一份 A/C/E 既能跑 flat 也能跑 lab-normal（`{"defaults":{...}}` 可给场景默认值）。
+- 断言窗口 = 上一个**动作步骤**（prompt/wait/kill-body）到本次 assert；断言本身不推进窗口。
+  `windowFrom:"kill"` 表示"从 kill 那一刻起"（覆盖 mc-link crash notice + signal 自主唤醒的 turn）。
+- C 判 PASS 的三件必需事：`signalLogged`（查 `state/<preset>/mc-link.jsonl` 确有 crash/safety 信号）、
+  `responded-to-crash`（kill 后 15s 窗口内她做了 `mcb_status/mcb_look/mcb_join`）、`checked-after-crash`；
+  会话内 `plugin:mc` notice 只作软断言（DSH 的 steer 语义：她正在 turn 内时注入到下一个 step 边界，
+  mc-link 实测 kill→会话可见 166ms，但若在 turn 内会延后到 step 边界）。
+- 每场开始前清 stray body（最多 3 轮 kill，含 mc-link 自动重启的孤儿），`up`/`down` 也清；否则同服同名互踢
+  （`You logged in from another location`）会把 A 场景搞成假 FAIL。
+- prompt 超时会 `session/cancel` 并记录（本地模型曾 430s 超时一次），不再让场景被一个无界回合挂死。
+
+### 11.3 最终 3 连结果（2026-11-05，云端 deepseek-flash，54840 lab-normal）
+
+每 run = `up --run rN` → scene A → C → E → `down`；每 run 记录 `lab.json.commit` / 实际模型（transcript 首部）：
+
+| run | commit | A | C（必需 / 全部） | E | 备注 |
+|---|---|---|---|---|---|
+| r1 | 99d423d | PASS 7/7 | PASS 7/8 | PASS 6/6 | 旧 body（craft/health 修复前），流程证据 |
+| r2 | 99d423d | PASS 7/7 | PASS 9/9 | PASS 6/6 | 同上 |
+| r3 | 66820a5 | PASS 6/7（软：noToolError） | PASS 9/9 | PASS 6/6 | 仍可能被小掉血暂停 |
+| r4 | 73494e9 | PASS 7/7 | PASS 8/9（软：crash-notice 会话内投递） | PASS 6/6 | 含 craft/health 修复 |
+| r5 | 73494e9 | PASS 7/7 | PASS 9/9 | PASS 6/6 | 最终门：**A/C/E 全 PASS** |
+
+证据：`.state/lab/<run>/{transcript.md,events.jsonl,scenes/{A,C,E}/{verdict.md,verdict.json,interview.md}}`。
+三问原文在各 `interview.md`，是当事人自述，不算链路证据。
+
 
 
