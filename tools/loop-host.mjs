@@ -115,6 +115,70 @@ try {
   const dreamRuns = host.services.memory ? [] : []
   check('dream 至少执行过 job', true) // 产物质量由 dream-jobs 单测覆盖；这里只保证触发不抛
 
+  // ── S5 节奏边界（虚拟时钟）：静音锁/防穿透/暂停冻结/goal 生命周期/提示词稳定性 ──
+  const timeApi = host.shared.get('time')
+
+  // 静音：外部消息被拦下，自己的闹钟照常响
+  timeApi.mute({ minutes: 5, reason: 'host 静音', emergencyQuota: 1 })
+  timeApi.add({ id: 'mute-wake', in: '1m', mode: 'wake', message: 'host 静音中的闹钟' })
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'host 静音外部消息' })
+  await adapter.drainOnce()
+  const mutedDrain = drain()
+  check('静音：外部消息不投递', !mutedDrain.includes('host 静音外部消息'), mutedDrain.slice(0, 160))
+  check('静音：积压计入 status', timeApi.status().backlog >= 1 && Boolean(timeApi.status().lock), JSON.stringify({ backlog: timeApi.status().backlog }))
+  await tickTo(61_000)
+  await adapter.drainOnce()
+  const muteAlarm = drain()
+  check('静音：自己的闹钟照常响', muteAlarm.includes('host 静音中的闹钟'), muteAlarm.slice(0, 160))
+
+  // 紧急配额：第一条放行，第二条进积压
+  const emergency1 = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'host 紧急一', tags: ['mc', 'safety', 'alarm'] })
+  await adapter.drainOnce()
+  const emergencyDrain = drain()
+  const emergency2 = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'host 紧急二', tags: ['safety'] })
+  check('静音：紧急事件有独立配额', emergency1.accepted === true && emergency2.blocked === true && emergencyDrain.includes('host 紧急一'), JSON.stringify({ first: emergency1.accepted, second: emergency2.blocked }))
+
+  // 解除静音：积压一次释放（有界摘要）
+  timeApi.unmute('manual')
+  await adapter.drainOnce()
+  const unmuteDrain = drain()
+  check('静音：解除后积压一次释放', unmuteDrain.includes('host 静音外部消息'), unmuteDrain.slice(0, 200))
+
+  // 防穿透：直接 delivery.push 在睡眠中也被拦
+  await timeApi.sleep({ message: 'host 防穿透睡眠', durationMin: 1 })
+  const direct = host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: 'host 直投消息' } })
+  check('防穿透：delivery 直投被拦', direct.accepted === false && direct.blocked === true, JSON.stringify(direct))
+  await tickTo(61_000)
+  await adapter.drainOnce()
+  const bypassDrain = drain()
+  check('防穿透：直投消息醒来后释放', bypassDrain.includes('host 直投消息'), bypassDrain.slice(0, 200))
+
+  // 暂停只停计时：倒计时被冻结，恢复后不补响
+  timeApi.add({ id: 'pause-countdown', in: '1m', mode: 'wake', message: 'host 冻结的闹钟' })
+  timeApi.pause()
+  await tickTo(5 * 60_000)
+  await adapter.drainOnce()
+  check('暂停：倒计时不响', !drain().includes('host 冻结的闹钟'))
+  timeApi.resume()
+  await tickTo(70_000)
+  await adapter.drainOnce()
+  check('恢复：冻结后按原剩余时间响', drain().includes('host 冻结的闹钟'))
+
+  // goal 生命周期：turn-end 续推到上限后明确结束
+  timeApi.addGoal({ theme: 'host 目标', resumeLimit: 2 })
+  await adapter.drainOnce()
+  drain() // 清掉目标开始消息
+  for (let i = 0; i < 4; i += 1) { await adapter.drainOnce(); }
+  const goalDrain = drain()
+  check('goal：续推到上限后结束', goalDrain.includes('连续唤醒到上限 2 次'), goalDrain.slice(0, 240))
+  check('goal：id 可查可取消', timeApi.goals().length === 0 && typeof timeApi.statusText() === 'string')
+
+  // 提示词事实段：时间只到"日期+时段"（不分钟级抖动），且只有一处"时间："
+  const promptNow = adapter.systemPrompt()
+  const timeLines = promptNow.split('\n').filter((line) => line.startsWith('时间：'))
+  check('提示词：只有一个"时间："事实段', timeLines.length === 1, timeLines.join(' | ').slice(0, 200))
+  check('提示词：时间不精确到分钟', timeLines.every((line) => !/\d{2}:\d{2}/.test(line.replace(/（.*?）/g, ''))), timeLines[0]?.slice(0, 120))
+
   if (args.includes('--long')) {
     const stats = { delivered: 0, focusBacklog: 0, sleepBacklog: 0, texts: [] }
     for (let minute = 1; minute <= 30; minute += 1) {
