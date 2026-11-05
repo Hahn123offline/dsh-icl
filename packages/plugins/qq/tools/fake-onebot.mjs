@@ -17,6 +17,10 @@ import { pathToFileURL } from 'node:url'
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
+// 1x1 透明 PNG（给 get_image 契约用；不是真实 QQ 图片，只验字节路径）。
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const fakeImageBase64 = () => TINY_PNG_BASE64
+
 function frame(text, opcode = 0x1) {
   const payload = Buffer.from(String(text), 'utf8')
   const len = payload.length
@@ -80,6 +84,12 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
   let messageSeq = 7000
   const actions = []
   const history = []
+  const messageStore = new Map() // message_id -> 消息对象（给 get_msg 用）
+  const forwardStore = new Map() // forward id -> get_forward_msg 的 data
+  const remember = (item) => {
+    if (item?.message_id != null) messageStore.set(String(item.message_id), item)
+    return item
+  }
   const jsonResponse = (res, obj) => {
     try {
       const body = JSON.stringify(obj)
@@ -112,6 +122,22 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
           const limit = Math.max(1, Math.min(100, Number(params.count) || 20))
           const matched = history.filter((item) => String(item.user_id ?? item.sender?.user_id ?? '') === uid || String(item.peer_id ?? '') === uid)
           data = { messages: matched.slice(-limit) }
+        } else if (action === 'get_msg') {
+          const found = messageStore.get(String(params.message_id ?? '')) ?? history.find((item) => String(item.message_id) === String(params.message_id ?? ''))
+          if (!found) {
+            jsonResponse(res, { status: 'failed', retcode: 104, wording: 'no such message', data: null })
+            return
+          }
+          data = found
+        } else if (action === 'get_forward_msg') {
+          const found = forwardStore.get(String(params.id ?? ''))
+          if (!found) {
+            jsonResponse(res, { status: 'failed', retcode: 104, wording: 'no such forward', data: null })
+            return
+          }
+          data = found
+        } else if (action === 'get_image') {
+          data = { base64: fakeImageBase64() }
         } else if (/mark_.*as_read/.test(action)) {
           data = {}
         }
@@ -185,7 +211,7 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
   }
 
   function privateMessage({ from = 10001, name = '测试', text = '在吗', messageId = Date.now() % 1e9, time = Math.floor(Date.now() / 1000), selfId = 2593621742 } = {}) {
-    return sendJson({
+    const event = {
       post_type: 'message',
       message_type: 'private',
       sub_type: 'friend',
@@ -196,11 +222,33 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
       message: [{ type: 'text', data: { text: String(text) } }],
       raw_message: String(text),
       sender: { user_id: Number(from), nickname: String(name) },
-    })
+    }
+    remember(event)
+    sendJson(event)
+    return event
+  }
+
+  /** 发一条任意段的私聊消息（图片/文件/引用/转发/表情…），用于 P0-2 富内容测试。 */
+  function privateRichMessage({ from = 10001, name = '测试', segments = [], messageId = Date.now() % 1e9, time = Math.floor(Date.now() / 1000), selfId = 2593621742 } = {}) {
+    const event = {
+      post_type: 'message',
+      message_type: 'private',
+      sub_type: 'friend',
+      time,
+      self_id: selfId,
+      user_id: Number(from),
+      message_id: messageId,
+      message: Array.isArray(segments) ? segments : [],
+      raw_message: '',
+      sender: { user_id: Number(from), nickname: String(name) },
+    }
+    remember(event)
+    sendJson(event)
+    return event
   }
 
   function groupMessage({ groupId = 601357169, from = 10001, name = '测试', text = '群里说话', messageId = Date.now() % 1e9, selfId = 2593621742 } = {}) {
-    return sendJson({
+    const event = {
       post_type: 'message',
       message_type: 'group',
       sub_type: 'normal',
@@ -212,7 +260,10 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
       message: [{ type: 'text', data: { text: String(text) } }],
       raw_message: String(text),
       sender: { user_id: Number(from), nickname: String(name) },
-    })
+    }
+    remember(event)
+    sendJson(event)
+    return event
   }
 
   function heartbeat({ selfId = 2593621742, online = true, good = true } = {}) {
@@ -270,7 +321,14 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
       sender: { user_id: Number(from), nickname: String(name) },
     }
     history.push(item)
+    remember(item)
     return item
+  }
+
+  /** 注册一份 get_forward_msg 的假返回（id -> data）。 */
+  function addForward(id, data) {
+    forwardStore.set(String(id), data)
+    return String(id)
   }
 
   /** 往历史里塞一条"自己发出去的消息"（补课时应被忽略）。 */
@@ -298,6 +356,9 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
         history: () => history.map((row) => ({ ...row })),
         pushHistory,
         pushSelfHistory,
+        addForward,
+        privateRichMessage,
+        messageStore,
         dropConnections,
         httpUrl: `http://${host}:${actual}`,
         setActionMode(next) { mode = String(next) },

@@ -12,6 +12,7 @@
 import fsModule from 'node:fs'
 import pathModule from 'node:path'
 import { buildPrivateSignal, messageIdOf, normalizeSegments, senderIdOf, senderNameOf, sentAtOf } from './normalize.mjs'
+import { hasAtSelf } from './rich.mjs'
 
 export const DROP_CODES = Object.freeze([
   'invalid', 'not-message', 'meta', 'group', 'unsupported-message-type',
@@ -168,7 +169,7 @@ export function createInboundGate({
       // 白名单：空 = 一个都不收。默认安全，必须显式打开。
       if (!(allowAllPrivate === true || allow.has(senderId))) return drop('not-allowlisted')
 
-      const { segments, text } = normalizeSegments(event.message, event.raw_message)
+      const { segments, text, rich } = normalizeSegments(event.message, event.raw_message)
       if (!text.trim()) return drop('empty')
 
       const sentAt = sentAtOf(event)
@@ -196,6 +197,11 @@ export function createInboundGate({
         receivedAt,
         selfId,
         maxTextChars,
+        rich: {
+          ...(rich ?? {}),
+          replyId: rich?.replyId ?? (event.__qqReplyId ?? null),
+          atSelf: Array.isArray(event.message) && hasAtSelf(event.message, selfId),
+        },
       })
       if (backfilled) {
         signal.tags = [...signal.tags, 'backfill']
