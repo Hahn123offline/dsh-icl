@@ -1,8 +1,8 @@
 {
   "id": "qq",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "entry": "./src/index.mjs",
-  "tools": ["qq_status"],
+  "tools": ["qq_status", "qq_send"],
   "slots": [],
   "focus": {},
   "requires": {}

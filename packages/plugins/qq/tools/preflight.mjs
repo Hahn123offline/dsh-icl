@@ -150,6 +150,8 @@ export function findRunningShadows(root = REPO_ROOT, now = Date.now(), alive = n
       // 进程还活着才算"正在跑"；被 kill 的 lab 会留下 connected:true 的状态文件（没有 dispose）
       let meta = null
       try { meta = JSON.parse(fs.readFileSync(path.join(runDir, 'lab.json'), 'utf8')) } catch { meta = null }
+      // 已正常/失败结束的 run 直接跳过（pid 可能被系统复用，不能只看 isAlive）
+      if (meta?.endedAt || ['done', 'down', 'failed', 'stopped'].includes(String(meta?.status ?? ''))) continue
       const pid = meta?.pids?.dsh ?? null
       const running = pid != null ? isAlive(pid) : (now - at < 2 * 60_000)
       if (!running) continue
@@ -162,42 +164,67 @@ export function findRunningShadows(root = REPO_ROOT, now = Date.now(), alive = n
 /* ── 判定（纯函数：便于单测） ───────────────────────── */
 
 const CONSUMER_PATTERNS = Object.freeze([
-  { id: 'focus-core-old-app', re: /apps[\\/]+dsh-icl[\\/]+src[\\/]+main\.js/i, what: 'focus-core 旧应用', willConnect: true, willSend: true },
-  { id: 'dsh-qq-bridge', re: /dsh-qq[\\/]+(?:src[\\/]+bridge|control-center|launcher)|control-center-hidden/i, what: 'dsh-qq 桥接/控制中心', willConnect: true, willSend: true },
-  { id: 'interface-platform', re: /interface-platform/i, what: 'dsh-qq 接口平台（3120）', willConnect: true, willSend: true },
-  { id: 'snowluma-backend', re: /snowluma(?:-v[\d.]+)?[\\/].*\.exe|\bSnowLuma\.exe\b/i, what: 'SnowLuma 后端', willConnect: false, willSend: false },
-  { id: 'qq-client', re: /\bQQ\.exe\b|\bNapCat/i, what: 'QQ/NapCat 进程', willConnect: false, willSend: false },
-  { id: 'running-shadow', re: /lab-shadow\.mjs\s+--real/i, what: '已有的真实 shadow 进程', willConnect: true, willSend: false },
+  { id: 'focus-core-old-app', re: /apps[\\/]+dsh-icl[\\/]+src[\\/]+main\.js/i, what: 'focus-core 旧应用', willConnect: true, willSend: true, block: true },
+  { id: 'dsh-qq-bridge', re: /dsh-qq[\\/]+(?:src[\\/]+bridge|control-center|launcher)|control-center-hidden/i, what: 'dsh-qq 桥接/控制中心', willConnect: true, willSend: true, block: true },
+  { id: 'interface-platform', re: /interface-platform/i, what: 'dsh-qq 接口平台（3120）', willConnect: true, willSend: true, block: true },
+  { id: 'napcat', re: /\bNapCat/i, what: 'NapCat 后端', willConnect: true, willSend: true, block: true },
+  // SnowLuma 后端：shadow 期不该在跑（会叫醒旧消费者）；phase 1 期是预期的。
+  { id: 'snowluma-backend', re: /snowluma/i, what: 'SnowLuma 后端', willConnect: false, willSend: false, block: false },
+  // QQ.exe 是用户自己的客户端 / SnowLuma 的底层客户端，不是 OneBot 消费者：shadow 期只提示，phase 1 期正常。
+  { id: 'qq-client', re: /\bQQ\.exe\b/i, what: 'QQ 客户端（用户自己的）', willConnect: false, willSend: false, block: false },
+  { id: 'running-shadow', re: /lab-shadow\.mjs\s+--real/i, what: '已有的真实 shadow 进程', willConnect: true, willSend: false, block: true },
 ])
 
 export function classifyPreflight(data) {
   const checks = []
   const add = (id, level, title, detail, fix = null) => checks.push({ id, level, title, detail, fix })
+  const mode = data.mode === 'phase1' ? 'phase1' : 'shadow'
 
   // 1) 进程消费者
   const processes = data.processes ?? { ok: false, rows: [] }
   if (!processes.ok) {
     add('processes', 'unknown', '进程枚举', `拿不到进程列表：${processes.error ?? '未知'}`, '用管理员 PowerShell 重跑；或人工核对 docs/QQ.md §2.3')
   } else {
-    const found = []
+    const blocking = []
+    const snowBackend = []
+    const qqClients = []
     for (const row of processes.rows) {
       if (row.pid === process.pid) continue
+      const haystack = `${row.name} ${row.cmd}`
+      if (/preflight\.mjs/i.test(haystack)) continue // 本工具自己的命令行（可能带 SnowLuma 路径参数）
       for (const pattern of CONSUMER_PATTERNS) {
-        if (pattern.re.test(`${row.name} ${row.cmd}`)) found.push({ ...pattern, pid: row.pid, cmd: row.cmd.slice(0, 160) })
+        if (!pattern.re.test(haystack)) continue
+        const item = { ...pattern, pid: row.pid, cmd: row.cmd.slice(0, 160) }
+        if (pattern.id === 'qq-client') qqClients.push(item)
+        else if (pattern.id === 'snowluma-backend') { if (mode === 'phase1') snowBackend.push(item); else blocking.push(item) }
+        else blocking.push(item)
       }
     }
-    if (found.length) {
-      add('processes', 'block', '有会抢 QQ 连接的进程在跑', found.map((f) => `pid ${f.pid} ${f.what}（会连=${f.willConnect}，会发=${f.willSend}）`).join('；'), '时间窗前由用户确认停掉（不要静默 kill）；见 §10 第 2 步')
+    if (blocking.length) {
+      add('processes', 'block', '有会抢 QQ 连接的进程在跑', blocking.map((f) => `pid ${f.pid} ${f.what}（会连=${f.willConnect}，会发=${f.willSend}）`).join('；'), mode === 'phase1' ? 'phase 1 窗口前停掉这些旧消费者（不要静默 kill）' : '时间窗前由用户确认停掉（不要静默 kill）；见 §10 第 2 步')
+    } else if (mode === 'phase1' && snowBackend.length) {
+      add('processes', 'ok', 'SnowLuma 后端在跑（phase 1 预期）', snowBackend.map((f) => `pid ${f.pid}`).join('、'), '由用户手动启动；我们不启停它')
     } else {
-      add('processes', 'ok', '没有会抢 QQ 连接的进程', '已核对 focus-core 旧应用 / dsh-qq 桥 / 接口平台 / SnowLuma / 已有 shadow')
+      add('processes', 'ok', '没有会抢 QQ 连接的进程', '已核对 focus-core 旧应用 / dsh-qq 桥 / 接口平台 / NapCat / 已有 shadow')
+    }
+    if (qqClients.length) {
+      add('qq-client', 'ok', `检测到 QQ 客户端（${qqClients.map((f) => `pid ${f.pid}`).join('、')}）`, mode === 'phase1' ? 'phase 1 需要用户用 QQ 发消息，正常' : '它不提供 OneBot 接口，不影响影子；只是说明用户 QQ 开着')
     }
   }
 
   // 2) QQ 端口
   const ports = data.ports ?? []
   const listening = ports.filter((row) => row.listening)
-  if (listening.length) {
-    add('ports', 'block', 'QQ 相关端口已在监听', listening.map((row) => row.port).join('、'), '说明 SnowLuma/旧桥接已经起来；先确认是谁在跑')
+  const listeningPorts = new Set(listening.map((row) => Number(row.port)))
+  if (mode === 'phase1') {
+    const requiredUp = [3000, 3001]
+    const missing = requiredUp.filter((port) => !listeningPorts.has(port))
+    const unexpected = listening.filter((row) => ![3000, 3001, 5099].includes(Number(row.port)))
+    if (missing.length) add('ports', 'block', 'SnowLuma 没在监听', `缺 ${missing.join('、')}`, '请用户先手动启动 SnowLuma（我们不代启动）')
+    else if (unexpected.length) add('ports', 'block', '有额外的 QQ 相关端口在监听', unexpected.map((row) => row.port).join('、'), '确认没有旧桥接/接口平台在跑')
+    else add('ports', 'ok', 'SnowLuma 已就绪（3000/3001 在听）', listening.map((row) => row.port).join('、') + (listeningPorts.has(5099) ? '' : '（5099 WebUI 未开，可忽略）'))
+  } else if (listening.length) {
+    add('ports', 'block', 'QQ 相关端口已在监听', listening.map((row) => row.port).join('、'), '说明 SnowLuma/旧桥接已经起来；先确认是谁在跑（shadow 前应全空）')
   } else {
     add('ports', 'ok', 'QQ 相关端口都空闲', ports.map((row) => row.port).join('/'))
   }
@@ -253,10 +280,11 @@ export function classifyPreflight(data) {
 
 /* ── 组装报告 ─────────────────────────────────────── */
 
-export async function runPreflight({ home = DEFAULT_HOME, homeDir = os.homedir(), root = REPO_ROOT, exec = defaultExec, probe = probePort, now = () => Date.now() } = {}) {
+export async function runPreflight({ home = DEFAULT_HOME, homeDir = os.homedir(), root = REPO_ROOT, exec = defaultExec, probe = probePort, now = () => Date.now(), phaseOne = false } = {}) {
   const [ports] = await Promise.all([collectPorts(PORTS, probe)])
   const data = {
     at: now(),
+    mode: phaseOne ? 'phase1' : 'shadow',
     home,
     processes: collectProcesses(exec),
     tasks: collectScheduledTasks(exec),
@@ -342,6 +370,7 @@ function renderMarkdown(report) {
     '# QQ shadow preflight',
     '',
     `- 时间：${new Date(data.at).toISOString()}`,
+    `- 模式：${data.mode === 'phase1' ? 'phase 1（SnowLuma 应在跑；只回 owner 私聊）' : 'shadow（SnowLuma 不应在跑）'}`,
     `- SnowLuma 目录：\`${data.home}\``,
     `- **结论：${verdict}**（block ${report.blocks} / warn ${report.warns}${report.unknowns ? ` / unknown ${report.unknowns}` : ''}）`,
     '',
@@ -361,12 +390,13 @@ function renderMarkdown(report) {
 export async function runPreflightMain(args = [], deps = {}) {
   const json = args.includes('--json')
   const brief = args.includes('--brief')
+  const phaseOne = args.includes('--snowluma-up') || args.includes('--phase1')
   const home = (() => {
     const i = args.indexOf('--home')
     return i >= 0 && args[i + 1] ? args[i + 1] : (process.env.ICL_SNOWLUMA_HOME ?? DEFAULT_HOME)
   })()
   const root = deps.root ?? REPO_ROOT
-  const report = await runPreflight({ home, root, ...deps })
+  const report = await runPreflight({ home, root, phaseOne, ...deps })
   const outDir = path.join(root, '.state', 'qq-shadow', 'preflight')
   fs.mkdirSync(outDir, { recursive: true })
   const ts = new Date(report.data.at).toISOString().replace(/[:.]/g, '-')

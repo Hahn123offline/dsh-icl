@@ -59,9 +59,18 @@ const DEFAULTS = Object.freeze({
   reconnectMinMs: 1000,
   reconnectMaxMs: 30_000,
   heartbeatStaleMs: 95_000,
-  // 出站（双钥匙 + 明确批准；本轮不生效）
+  // 出站（phase 1「只回私聊」；默认全关）
   allowSend: false,
   sendApproval: '',
+  ownerQQ: null,
+  auditFile: '',
+  sendTimeoutMs: 15_000,
+  sendMinIntervalMs: 5000,
+  sendMaxPerMinute: 10,
+  sendSameTextWindowMs: 60_000,
+  maxSendsPerTurn: 1,
+  maxSendChars: 2000,
+  sensitivePatterns: null,
   // 测试/lab 注入点：默认用 globalThis.WebSocket
   webSocketImpl: null,
 })
@@ -83,7 +92,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -92,6 +101,9 @@ export function normalizeQqConfig(input = {}) {
   cfg.snowlumaHomeDir = String(cfg.snowlumaHomeDir ?? '')
   cfg.accountUin = cfg.accountUin == null ? null : String(cfg.accountUin)
   cfg.selfId = cfg.selfId == null ? null : String(cfg.selfId)
+  cfg.ownerQQ = cfg.ownerQQ == null || String(cfg.ownerQQ).trim() === '' ? null : String(cfg.ownerQQ).trim()
+  cfg.auditFile = String(cfg.auditFile ?? '')
+  cfg.sensitivePatterns = Array.isArray(input.sensitivePatterns) ? input.sensitivePatterns.map(String) : null
   cfg.dedupeFile = String(cfg.dedupeFile ?? '')
   cfg.recordFile = String(cfg.recordFile ?? '')
   cfg.statusFile = String(cfg.statusFile ?? '')
@@ -118,8 +130,10 @@ export function resolveEndpoint(cfg, log = () => {}) {
   return { ok: false, error: '没有可用的上游：配置 url 或 snowlumaHomeDir' }
 }
 
-export function apply(ctx) {
+export async function apply(ctx) {
   const cfg = normalizeQqConfig(ctx.config ?? {})
+  // 原始 config 引用：kill switch 每次调用重读它（运行中把 allowSend 改成 false 立即生效）
+  const liveConfig = ctx.config ?? {}
   const now = () => ctx.now()
   const dedupe = createDedupeStore({
     now,
@@ -164,6 +178,40 @@ export function apply(ctx) {
   let endpoint = null
   let retryTimer = null
   let disposed = false
+  // phase 1 出站：只有三把钥匙打开时才动态装配（index 不静态 import 发送实现）
+  let sendHandle = null
+
+  /** 三把钥匙是否打开；每次都重读 live config（kill switch 立即生效）。 */
+  function sendKeysNow() {
+    return sendEnabled({ enabled: liveConfig.enabled, allowSend: liveConfig.allowSend, sendApproval: liveConfig.sendApproval })
+  }
+
+  async function startSend() {
+    if (!sendKeysNow()) {
+      ctx.log({ msg: 'qq.send.disabled', reason: '三把钥匙未齐（enabled/allowSend/sendApproval）' })
+      return
+    }
+    if (!endpoint?.ok) {
+      ctx.log({ level: 'error', msg: 'qq.send.no-upstream', error: endpoint?.error ?? '没有上游端点' })
+      return
+    }
+    try {
+      const { registerSendTool } = await import('./send-tool.mjs')
+      sendHandle = await registerSendTool({
+        ctx,
+        cfg,
+        liveConfig,
+        endpoint,
+        now,
+        log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
+      })
+      ctx.log({ msg: 'qq.send.enabled', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate, audit: cfg.auditFile || null })
+    } catch (error) {
+      // 出站装配失败不拖垮只读入站；必须留痕（不能静默半残）
+      ctx.log({ level: 'error', msg: 'qq.send.start-fail', error: String(error?.stack ?? error) })
+      sendHandle = null
+    }
+  }
 
   const recordFile = cfg.recordFile ? resolvePath(cfg.recordFile) : ''
   const statusFile = cfg.statusFile ? resolvePath(cfg.statusFile) : ''
@@ -337,7 +385,7 @@ export function apply(ctx) {
       heartbeatStaleMs: cfg.heartbeatStaleMs,
     })
     connector.start()
-    ctx.log({ msg: 'qq.inbound-start', url: sanitizeUrl(endpoint.url), uin: endpoint.uin ?? null, source: endpoint.source, groups: 'ignored', send: 'disabled' })
+    ctx.log({ msg: 'qq.inbound-start', url: sanitizeUrl(endpoint.url), uin: endpoint.uin ?? null, source: endpoint.source, groups: 'ignored', send: sendKeysNow() ? 'enabled(phase1)' : 'disabled' })
     retryTimer = setInterval(retryTick, Math.max(200, cfg.retryTickMs))
     if (typeof retryTimer.unref === 'function') retryTimer.unref()
     if (statusFile) {
@@ -355,7 +403,8 @@ export function apply(ctx) {
     }
     return {
       enabled: cfg.enabled,
-      sendEnabled: sendEnabled(cfg),
+      sendEnabled: sendKeysNow(),
+      send: sendHandle ? sendHandle.status() : { registered: false, enabled: false },
       url: conn.url ? sanitizeUrl(conn.url) : null,
       connection: conn,
       selfId: cfg.selfId ?? conn.seenSelfId ?? null,
@@ -395,16 +444,28 @@ export function apply(ctx) {
     if (recent.lastBlocked) lines.push(`最近被 time 锁拦下：${stamp(recent.lastBlocked.at)}（${recent.lastBlocked.reason}）`)
     if (recent.lastDropped) lines.push(`最近被本地闸门丢弃：${stamp(recent.lastDropped.at)}（${recent.lastDropped.code}）`)
     if (s.recordFile) lines.push(`影子记录：${s.recordFile}（已写 ${s.stats.recorded} 行${s.stats.recordErrors ? `，写失败 ${s.stats.recordErrors}` : ''}）`)
-    lines.push(`出站：${s.sendEnabled ? '已启用（需 lead 批准的字面量）' : `关闭（双钥匙未齐：enabled+allowSend+sendApproval=${SEND_APPROVAL_TOKEN}）`}；本插件不含任何发送工具`)
-    lines.push(`只读不变量：客户端已发帧 ${s.connection.framesSent ?? 0}（应为 0）`)
+    const send = s.send ?? {}
+    if (send.registered) {
+      const recent = send.recent
+      const outcomeText = recent ? `最近一次发送：${stamp(recent.at)} → ${recent.peerId}，结果=${recent.outcome}${recent.messageId ? `，messageId=${recent.messageId}` : ''}${recent.error ? `（${recent.error}）` : ''}` : '最近一次发送：还没有'
+      const counts = send.counts ?? {}
+      lines.push(`出站：已启用（phase 1 只回 owner/白名单私聊；本轮已发 ${send.perTurn?.sent ?? 0}/${send.perTurn?.limit ?? '?'} 条；累计 ok ${counts.ok ?? 0} / rejected ${counts.rejected ?? 0} / unknown ${counts.unknown ?? 0} / 拒绝 ${counts.refused ?? 0}）`)
+      lines.push(`${outcomeText}${send.auditFile ? `；审计：${send.auditFile}` : ''}`)
+      if (send.transport) lines.push(`出站连接：${send.transport.connected ? '已连接' : send.transport.state}；客户端已发帧 ${send.transport.framesSent ?? 0}；在途 ${send.transport.pending ?? 0}`)
+    } else {
+      lines.push(`出站：关闭（三把钥匙未齐：enabled+allowSend+sendApproval=${SEND_APPROVAL_TOKEN}）；本插件不含发送工具`)
+    }
+    lines.push(`只读不变量：入站连接客户端已发帧 ${s.connection.framesSent ?? 0}（应为 0；出站连接单独统计）`)
     return lines.join('\n')
   }
 
   ctx.tools.register({
     name: 'qq_status',
-    summary: 'Check the read-only QQ shadow link: whether it is connected, what it received, what it dropped and why. It cannot send any QQ message.',
-    when: ['you want to know whether QQ private messages are reaching you', 'a QQ message seemed missing'],
-    avoid: ['expecting to reply through it - this shadow cannot send'],
+    summary: sendKeysNow()
+      ? 'Check the QQ link: connection, inbound receipt stats, and the last outbound send result (ok / rejected / unknown).'
+      : 'Check the read-only QQ link: whether it is connected, what it received, what it dropped and why.',
+    when: ['you want to know whether QQ private messages are reaching you', 'a QQ message seemed missing', 'you want to know whether your last QQ reply went out'],
+    avoid: ['expecting to send through this tool - sending is a separate qq_send tool'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() { return { text: statusText() } },
   })
@@ -412,7 +473,13 @@ export function apply(ctx) {
   // 给 driver / 测试读的共享能力（不暴露给模型）
   let offShared = null
   try {
-    offShared = ctx.services.provide('qq', { status, statusText, gateCounters: () => gate.counters() })
+    offShared = ctx.services.provide('qq', {
+      status,
+      statusText,
+      gateCounters: () => gate.counters(),
+      sendStatus: () => sendHandle?.status() ?? null,
+      killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
+    })
   } catch (error) {
     ctx.log({ level: 'warn', msg: 'qq.shared.provide-fail', error: String(error?.message ?? error) })
   }
@@ -424,17 +491,23 @@ export function apply(ctx) {
       text: () => {
         const s = status()
         if (!s.enabled || !s.connection.connected) return ''
+        if (s.send?.registered) return `QQ 已连接：本轮收到 ${s.stats.delivered} 条私聊；可以调用 qq_send 回一条（只能回 owner/白名单私聊，每轮最多 ${s.send.perTurn?.limit ?? 1} 条）。`
         return `QQ 只读影子：已连接，本轮收到 ${s.stats.delivered} 条私聊（不能回复）。`
       },
     })
   }
 
   start()
+  await startSend()
 
   ctx.onDispose(() => {
     disposed = true
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
+    try { sendHandle?.dispose() } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.send.dispose', error: String(error?.message ?? error) })
+    }
+    sendHandle = null
     try { connector?.stop() } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.connector.stop', error: String(error?.message ?? error) })
     }
@@ -446,5 +519,5 @@ export function apply(ctx) {
     ctx.log({ msg: 'qq.disposed', delivered: stats.delivered, blocked: stats.blocked, dropped: gate.counters().byCode })
   })
 
-  return { status, statusText }
+  return { status, statusText, sendStatus: () => sendHandle?.status() ?? null, killSend: (reason) => sendHandle?.killSwitch(reason) ?? null }
 }

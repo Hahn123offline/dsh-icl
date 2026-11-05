@@ -34,12 +34,14 @@ if (flag('preflight')) {
 }
 
 const REAL = flag('real')
+const SEND = flag('send')
 const APPROVAL = String(arg('--approval', ''))
 const PORT = Number(arg('--port', 57108))
-const RUN_ID = String(arg('--run', `${REAL ? 'qq-real' : 'qq-fake'}-${tsSlug()}`))
+const RUN_ID = String(arg('--run', `${REAL ? 'qq-real' : 'qq-fake'}${SEND ? '-send' : ''}-${tsSlug()}`))
 const PRESET = 'icl-lab'
 const TOKEN = 'lab-shadow-token'
 const PEER = String(arg('--peer', REAL ? '3429502459' : '10001'))
+const OWNER = String(arg('--owner', PEER))
 const SNOWLUMA_HOME = String(arg('--home', 'C:/Users/ai_admin/Downloads/SnowLuma-v2.1.1-win-x64-lite'))
 const BOT_UIN = String(arg('--bot', '2593621742'))
 const WAIT_MS = Number(arg('--wait-ms', REAL ? 900_000 : 45_000))
@@ -51,6 +53,10 @@ const MODEL = String(arg('--model', 'deepseek-flash'))
 
 if (REAL && APPROVAL !== 'lead-approved') {
   console.error('[qq-lab] 拒绝：--real 需要 --approval lead-approved（真实影子要 lead 与用户明确批准）')
+  process.exit(2)
+}
+if (SEND && !PEER) {
+  console.error('[qq-lab] 拒绝：--send 需要 --peer（owner 私聊）')
   process.exit(2)
 }
 if (await portBusy(PORT)) {
@@ -86,6 +92,21 @@ function qqPluginBlock() {
     `                  dedupeFile: '${posix(path.join(runDir, 'qq-shadow', 'dedupe.json'))}'`,
     '                  retryTickMs: 20',
   ]
+  if (SEND) {
+    // phase 1：只回 owner 私聊。三把钥匙必须同时出现；每轮最多 1 条；审计只存 hash。
+    common.push(
+      '                  allowSend: true',
+      "                  sendApproval: 'lead-approved'",
+      `                  ownerQQ: '${OWNER}'`,
+      `                  auditFile: '${posix(path.join(runDir, 'qq-shadow', 'send-audit.jsonl'))}'`,
+      '                  maxSendsPerTurn: 1',
+      '                  sendMinIntervalMs: 5000',
+      '                  sendMaxPerMinute: 10',
+      '                  sendSameTextWindowMs: 60000',
+      '                  maxSendChars: 2000',
+      '                  sendTimeoutMs: 15000',
+    )
+  }
   if (REAL) {
     // 端点与 token 由插件在运行时从 SnowLuma 的 onebot_<uin>.json 只读发现；
     // patch 里只有目录与账号，没有密钥。
@@ -216,6 +237,28 @@ try {
       check('notice 的 summary 可追溯来源', summary.includes('QQ') || summary.includes('外部消息'), summary.slice(0, 120))
     }
 
+    // phase 1：等出站回执（她调用 qq_send 之后状态文件/审计里会出现 send.recent）
+    let sendStatus = null
+    let auditRows = []
+    if (SEND) {
+      const sendDeadline = Date.now() + (REAL ? 180_000 : 30_000)
+      console.log(`[qq-lab] phase 1 出站已开启：等待她调用 qq_send 回一条（只回 owner ${OWNER}，每轮最多 1 条）…`)
+      while (Date.now() < sendDeadline) {
+        const st = readJson(statusFile, null)
+        if (st?.send?.recent) { sendStatus = st.send; break }
+        await sleep(500)
+      }
+      auditRows = readJsonl(path.join(runDir, 'qq-shadow', 'send-audit.jsonl'))
+      check('qq_send 有发送记录（send.recent）', Boolean(sendStatus?.recent), sendStatus?.recent ? `outcome=${sendStatus.recent.outcome}` : '等待超时')
+      check('最近一次发送结果 ok', sendStatus?.recent?.outcome === 'ok', String(sendStatus?.recent?.outcome ?? '无'))
+      check('审计有发送记录且只对 owner', auditRows.length >= 1 && auditRows.every((row) => String(row.peerId) === OWNER), `rows=${auditRows.length}`)
+      check('审计不存正文全文（只有 hash/长度）', auditRows.every((row) => !row.text && typeof row.textHash === 'string' && Number.isFinite(row.chars)))
+      if (!REAL) {
+        const sends = fake.sendActions()
+        check('假后端只收到 send_private_msg（没有 send_group_msg）', sends.length === 1 && sends.every((row) => row.action === 'send_private_msg'), `actions=${sends.map((row) => row.action).join(',') || '无'}`)
+      }
+    }
+
     // qq 插件自己的影子记录
     const recordFile = path.join(runDir, 'qq-shadow', 'inbound.jsonl')
     const rows = readJsonl(recordFile)
@@ -226,7 +269,8 @@ try {
     } else {
       check('影子记录：accepted 只有 1 条（重复被去重）', accepted.length === 1, `accepted=${accepted.length} rows=${rows.length}`)
       check('影子记录不含群文本', !rows.some((row) => String(row.text ?? '').includes('群消息必须整类忽略')))
-      check('客户端零出站字节', fake.clientDataChunks() === 0, `chunks=${fake.clientDataChunks()}`)
+      check('入站连接没发帧（影子仍只读）', shadowStatus?.connection?.framesSent === 0, `framesSent=${shadowStatus?.connection?.framesSent ?? '?'}`)
+      check('客户端出站字节只来自 send 动作', !SEND ? fake.clientDataChunks() === 0 : fake.clientDataChunks() > 0, `chunks=${fake.clientDataChunks()}`)
     }
     if (hit) {
       const transcript = rebuildTranscript(runDir)
@@ -237,9 +281,10 @@ try {
         '# QQ 只读影子：真实 lab 验证',
         '',
         `- 时间：${new Date().toISOString()}`,
-        `- 模式：${meta.mode}（${REAL ? `上游=真实 SnowLuma（只读发现），等待用户私聊 ${PEER}` : `上游=假 OneBot ws://127.0.0.1:${fake.port}/`}）`,
+        `- 模式：${meta.mode}${SEND ? ' + phase1 出站（只回 owner）' : '（只读影子）'}（${REAL ? `上游=真实 SnowLuma（只读发现），等待用户私聊 ${PEER}` : `上游=假 OneBot ws://127.0.0.1:${fake.port}/`}）`,
         `- 模型：${meta.model?.provider ?? '?'}/${meta.model?.model ?? '?'}（显式 selectModel，不用 profile 默认）`,
         `- lab：port=${PORT} preset=${PRESET} session=${sessionId}`,
+        ...(SEND ? [`- 出站：qq_send 只回 owner ${OWNER}；最近结果=${sendStatus?.recent?.outcome ?? '无'}；审计 ${posix(path.join(runDir, 'qq-shadow', 'send-audit.jsonl'))}（${auditRows.length} 行，不存正文）`] : []),
         `- 结果：${checks.every((c) => c.ok) ? '全过' : '有失败'}`,
         '',
         '| 检查 | 结果 | 证据 |',
@@ -249,8 +294,10 @@ try {
         `- 事件账本：${posix(eventsFile)}`,
         `- 影子记录：${posix(recordFile)}`,
         '',
-        '> 真实模式的安全口径：不启动 SnowLuma、不调任何 OneBot 动作、不发任何 QQ 消息；',
-        '> 群消息在本地闸门整类拒绝并只计数。零出站帧由代码不变量与单元测试保证（见 docs/QQ.md §10）。',
+        '> 安全口径：' + (SEND
+          ? 'phase 1 只回 owner 私聊；qq_send 是唯一入口；群发送代码不存在；审计只存 hash/长度。'
+          : '真实模式不启动 SnowLuma、不调任何 OneBot 动作、不发任何 QQ 消息；群消息在本地闸门整类拒绝并只计数。'),
+        '> 零出站帧由代码不变量与单元测试保证（见 docs/QQ.md §11.1 / §13）。',
         '',
       ].join('\n'), 'utf8')
       console.log(`\n报告：${path.join(runDir, 'report.md')}`)
