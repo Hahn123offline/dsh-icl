@@ -6,6 +6,7 @@ import { createProgressTracker, isDangerousBlock, recoveryStep } from './recover
 import {
   describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
+import { clampMacroNumbers, collectBlockCandidates, directionVector, progressEvery } from './macro.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -1352,6 +1353,93 @@ export function createMineflayerAdapter({
     }
     if (task.kind === 'chat') { await chat(String(params.text ?? '')); return { sent: true } }
     if (task.kind === 'routine') return routine(params, signal, progress)
+    // ---- 宏操作（docs/MC-MACRO.md）：模型只下一条宏，body 逐方块执行 ----------------
+    if (task.kind === 'collect') {
+      const item = String(params.item ?? params.block ?? '')
+      const count = Math.max(1, Math.min(256, Number(params.count) || 1))
+      const radius = Math.max(2, Math.min(48, Number(params.radius) || 16))
+      const candidates = collectBlockCandidates(item)
+      if (!candidates.length) throw taskFailure('collect: no-target', { item, suggestion: 'item 用方块名（oak_log/stone）或常见掉落名（cobblestone/coal/raw_iron）' })
+      let lastError = null
+      for (const block of candidates) {
+        if (!bot.registry.blocksByName[block]) continue
+        try {
+          const result = await runTask({ kind: 'mine', params: { block, count, radius, autoTool: params.autoTool } }, { signal, progress })
+          const collected = Number(result?.net ?? result?.mined ?? 0)
+          let returned = null
+          if (params.returnToSafe) returned = await returnToSafe().catch(() => null)
+          let deposited = null
+          if (params.deposit) deposited = await runOp('chest', { action: 'put', all: true }).catch((error) => ({ error: String(error?.message ?? error) }))
+          emit('macro_done', { kind: 'collect', item, block, collected, returned, deposited })
+          return { collected, item, block, requested: count, source: result, returned, deposited }
+        } catch (error) {
+          if (signal?.aborted) throw error
+          lastError = error
+        }
+      }
+      throw lastError ?? taskFailure('collect: no-target', { item, suggestion: '附近没有该资源；换 item/调大 radius，或先走到有资源的地方' })
+    }
+    if (task.kind === 'tunnel') {
+      const dir = directionVector(params)
+      const opts = clampMacroNumbers(params)
+      const total = opts.length
+      const every = progressEvery(total)
+      let lastReportAt = 0
+      let torches = 0
+      for (let step = 1; step <= total; step += 1) {
+        checkAbort(signal)
+        const pos = currentPosition()
+        if (!pos) throw taskFailure('tunnel: no-position', {})
+        const base = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) }
+        // 先挖头再挖脚（height=2 即 1×2 通道）；前方流体/基岩立刻停并报告。
+        for (let dy = opts.height - 1; dy >= 0; dy -= 1) {
+          const targetPos = new Vec3(base.x + dir.x, base.y + dy, base.z + dir.z)
+          const block = bot.blockAt(targetPos)
+          if (!block || /(^air$|cave_air|void_air)/.test(block.name)) continue
+          if (/(water|lava|bedrock|barrier|flowing_)/.test(block.name)) {
+            emit('macro_blocked', { kind: 'tunnel', block: block.name, position: targetPos })
+            throw taskFailure('tunnel: blocked', { done: step - 1, total, block: block.name, at: targetPos, suggestion: '前方是流体/基岩；换方向或绕开，别硬挖' })
+          }
+          const unsafe = digSafetyError(block)
+          if (unsafe) {
+            emit('macro_blocked', { kind: 'tunnel', block: block.name, position: targetPos, reason: unsafe })
+            throw taskFailure('tunnel: unsafe', { done: step - 1, total, block: block.name, detail: unsafe })
+          }
+          const toolCheck = await ensureToolFor(block, { signal, autoTool: params.autoTool })
+          if (!toolCheck.ok && toolCheck.requiredClass) throw needsToolError('tunnel', toolCheck)
+          await faceBlock(block)
+          await digBlock(block, signal)
+          await sleep(50)
+        }
+        const next = { x: base.x + dir.x + 0.5, y: base.y, z: base.z + dir.z + 0.5 }
+        try {
+          await walkOnce(makeGoal(next, 0.8), next, { signal, progress: null, stallMs: 1500, timeoutMs: 5000, arriveRange: 1.2 })
+        } catch (error) {
+          if (signal?.aborted) throw error
+          try { await bot.lookAt(new Vec3(next.x, base.y + 1.6, next.z), true) } catch { /* ignore */ }
+          try { bot.setControlState('forward', true); await sleep(450); bot.setControlState('forward', false) } catch { /* ignore */ }
+        }
+        const now = Date.now()
+        if (step % every === 0 || now - lastReportAt >= 10_000) {
+          lastReportAt = now
+          progress?.({ done: step, total, direction: dir.name, position: currentPosition(), torches })
+        }
+        if (opts.torchEvery > 0 && step % opts.torchEvery === 0) {
+          try {
+            const torch = (bot.inventory?.items?.() ?? []).find((item) => item.name === 'torch')
+            if (torch) {
+              await bot.equip(torch, 'hand')
+              const spot = { x: base.x + dir.x, y: base.y, z: base.z + dir.z }
+              const placed = await runOp('place', { pos: spot, item: 'torch' }).catch(() => null)
+              if (placed) torches += 1
+            }
+          } catch { /* 火把只是锦上添花，不阻塞隧道 */ }
+        }
+      }
+      progress?.({ done: total, total, direction: dir.name, position: currentPosition(), torches })
+      emit('macro_done', { kind: 'tunnel', done: total, direction: dir.name, torches })
+      return { done: total, total, direction: dir.name, height: opts.height, torches }
+    }
     throw new Error(`unsupported task: ${task.kind}`)
   }
 
@@ -1973,6 +2061,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 
