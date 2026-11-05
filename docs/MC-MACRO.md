@@ -103,8 +103,15 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 ## 7. 实现状态
 
 - [x] 契约草案（本文）
-- [ ] `collect`（今晚最小实现，复用 mine 净增/自动工具/掉落继续收；可选 returnToSafe/deposit）
+- [x] `collect`（已实现 + 真服 smoke 通过，见上）；- [x] `tunnel`（已实现 + 真服 smoke 通过，见上）
 - [ ] `tunnel`（今晚若时间允许；否则明早）
 - [ ] `bridge` / `build` / `sort` / `shelter` / `farm`（明早）
 
 > 维护约定：宏的**行为契约**在本文；body 实现细节在 `packages/mc-body/README.md`；模型教学放 `packages/plugins/mc-link/skills/*.md`（macro 技能明早加）。
+
+### 真服 smoke 证据（2026-11-06 01:5x，54839 干净平顶；产物 `C:/DSH/icl/.state/lab/mc-body-soak/macro-smoke/`）
+
+- `collect {item:"dirt",count:3,radius:8}` → `t-1 done`（6.0s）：`result {collected:3,item:"dirt",block:"dirt",source:{mined:3,net:3,reason:"net-target"}}`，progress 带 `done/total/net/tool`。
+- `tunnel {direction:"east",length:5,height:2}` → `t-2 done`（4.4s）：`result {done:5,total:5,direction:"east",height:2,torches:0}`，位置从 x≈-6.5 前进到 x=-1.5（5 格），血 20、body 未暂停。
+- 未拿到证据：`blocked`（前方水/岩浆）与 torch 放置（flat 无流体/无火把）——明早在 normal 地形补；`bridge/build/sort/shelter/farm` 未实现。
+
