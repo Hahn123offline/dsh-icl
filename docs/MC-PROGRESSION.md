@@ -195,3 +195,10 @@
 - 宏：`collect/tunnel/bridge/build/shelter/sort/deposit/farm` **全部已实现**；真服 smoke 覆盖 collect/tunnel/bridge/build/shelter + tunnel stairs + sort 失败路径；`build`/`shelter` 加 `<80% → failed(partial)`；剩余：build 旋转/替代材质、bridge 真实沟壑、farm 真实水源/种子（beta，lab 重启后验）。
 - body 侧仍未做（明早）：`doPlan` 单飞锁、`pickup` op、craft 变体选择、low-health resume 策略（supervisor 侧）。
 - 文档/技能：MC-MACRO.md 契约+证据齐全；mc-link 宏工具面/skills 已接（`ab3c076`/`4a4e003`），lab 重启后生效。
+
+### 补充完成（07:0x，body 侧三项明早任务提前做完）
+
+- `doPlan` **单飞锁**：长 op 执行中再发长 op → 409（“上一个 do 动作还在执行…长任务用 task”）；查询/任务提交/取消不受限；单测覆盖（并发 409 + 查询放行 + 完成后放行）。
+- `pickup` op：找最近 item 实体→走过去→统计 picked/items/left（真服 smoke：toss 4 dirt → pickup picked 1 stack，背包恢复 7；`items` 名称解析 cosmetic，待修）。
+- craft 无配方 hint **选缺料最少变体**：`chooseRecipeVariant`（oak 工具不再误报缺 pale_oak_planks/cobbled_deepslate），单测覆盖。
+- 测试 47/47 mc-body 绿；commits：73a209d + docs。mc-link 需把 `pickup` 加进 OPS（否则 mcb_do 用不到）。
