@@ -4,7 +4,7 @@
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
 import {
-  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassOfItem, toolTier,
+  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 
 const require = createRequire(import.meta.url)
@@ -866,9 +866,8 @@ export function createMineflayerAdapter({
     }
     // 判定为“不能挖”：必须给非空原因与下一步
     const suggestCraft = requirement.requiredClass ? suggestToolCraft(requirement.requiredClass, Math.max(1, requirement.requiredTier), requirement.counts) : null
-    const neededToolText = requirement.requiredClass
-      ? `${requirement.requiredTierName ?? ''}${requirement.requiredClass}`.trim()
-      : (requirement.className ?? '合适工具')
+    const neededToolText = toolClassNameCn(requirement.requiredClass ?? requirement.className)
+    const tierSuffix = requirement.requiredTier > 0 ? `（最低 ${requirement.requiredTierName ?? '木/金'} 等级）` : ''
     return {
       ok: false,
       ...requirement,
@@ -876,7 +875,7 @@ export function createMineflayerAdapter({
       neededTool: neededToolText,
       suggestCraft,
       reason: requirement.requiredClass
-        ? `当前手持 ${requirement.held.name ?? '空手'}，挖 ${requirement.blockName} 需要 ${neededToolText}${requirement.best?.item ? `（你有 ${requirement.best.item.name}，但等级不够）` : '（背包里没有可用工具）'}`
+        ? `当前手持 ${requirement.held.name ?? '空手'}，挖 ${requirement.blockName} 需要${neededToolText}${tierSuffix}${requirement.best?.item ? `（你有 ${requirement.best.item.name}，但等级不够）` : '（背包里没有可用工具）'}`
         : `当前手持 ${requirement.held.name ?? '空手'}，挖 ${requirement.blockName} 不是最佳工具（有 ${requirement.best?.item?.name ?? '无'} 可以换）`,
     }
   }
@@ -1974,6 +1973,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 

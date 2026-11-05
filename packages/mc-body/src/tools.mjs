@@ -95,6 +95,11 @@ export function requiredTierName(blockName) {
   return tier > 0 ? (TIER_NAME[tier] ?? String(tier)) : null
 }
 
+/** 工具类的中文名（给模型看的错误文案）。 */
+export function toolClassNameCn(className) {
+  return ({ pickaxe: '镐', axe: '斧', shovel: '锹', shears: '剪刀', hoe: '锄', sword: '剑' })[className] ?? '工具'
+}
+
 /**
  * 缺工具时给“下一步做什么”（可执行、别让她原地重试）。
  * counts: { oak_log: 8, cobblestone: 2, ... } 之类的库存计数（可选，用于判断能不能现做）。
@@ -106,19 +111,31 @@ export function suggestToolCraft(className, requiredTier, counts = {}) {
     if (tier === 1) {
       return {
         craft: 'wooden_pickaxe',
-        steps: ['先确认背包有 oak_log/planks + stick', '没有木板：craft oak_planks（1 原木=4 木板）', '没有木棍：craft stick（2 木板=4 木棍）', 'craft wooden_pickaxe', '再 mcb_do equip 换上镐'],
+        steps: [
+          '没有木板/木棍就先补：craft oak_planks（1 原木=4 木板）→ craft stick（2 木板=4 木棍）',
+          'craft wooden_pickaxe（3 木板+2 木棍）',
+          'mcb_do equip {"item":"wooden_pickaxe"} 换上镐再回来',
+        ],
       }
     }
     if (tier === 2) {
-      return { craft: 'stone_pickaxe', steps: ['先 mine stone 拿 cobblestone（镐挖，木镐就行）', 'craft stick（2 木板=4 木棍）', 'craft stone_pickaxe（3 cobblestone+2 stick）', 'mcb_do equip 换上石镐'] }
+      return {
+        craft: 'stone_pickaxe',
+        steps: [
+          '先用木镐 mine stone 拿 cobblestone（3 个）',
+          'craft stone_pickaxe（3 cobblestone+2 stick；没有木棍先 craft stick）',
+          'mcb_do equip {"item":"stone_pickaxe"} 换上石镐',
+        ],
+      }
     }
     if (tier === 3) {
-      return { craft: 'iron_pickaxe', steps: ['先 mine iron_ore（需要石镐）', '用 furnace 烧 raw_iron + coal 成 iron_ingot', 'craft iron_pickaxe（3 iron_ingot+2 stick）'] }
+      return { craft: 'iron_pickaxe', steps: ['先 mine iron_ore（需要石镐）', 'furnace 烧 raw_iron + coal 成 iron_ingot', 'craft iron_pickaxe（3 iron_ingot+2 stick）'] }
     }
     return { craft: 'diamond_pickaxe', steps: ['需要钻石镐（钻石+木棍）或换目标方块'] }
   }
-  if (className === 'axe') return { craft: `${tierPrefix}_axe`, steps: ['备好木板/木棍/材料', `craft ${tierPrefix}_axe`, 'mcb_do equip 换上斧'] }
+  if (className === 'axe') return { craft: `${tierPrefix}_axe`, steps: [`craft ${tierPrefix}_axe`, 'mcb_do equip 换上斧', '再回来挖木头'] }
   if (className === 'shovel') return { craft: `${tierPrefix}_shovel`, steps: [`craft ${tierPrefix}_shovel`, 'mcb_do equip 换上锹'] }
   if (className === 'shears') return { craft: 'shears', steps: ['craft shears（2 iron_ingot）或空手挖'] }
   return { craft: null, steps: [] }
 }
+
