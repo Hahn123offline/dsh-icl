@@ -152,7 +152,7 @@ function assistantTextOf(window) {
   return text
 }
 
-/** 发一句话并等 turn/end；返回该轮窗口。 */
+/** 发一句话并等 turn/end；超时就 session/cancel（不再让场景被一个无界回合挂死），然后抛可读错误。 */
 export async function promptAndWait(api, meta, text, timeoutSec = 300) {
   const eventsFile = path.join(meta.runDir, 'events.jsonl')
   const baseline = countTurnEnds(eventsFile)
@@ -164,12 +164,57 @@ export async function promptAndWait(api, meta, text, timeoutSec = 300) {
     if (!isPidAlive(meta.pids?.dsh)) throw new Error('等待 turn/end 期间 dsh 进程退出')
     await sleep(300)
   }
-  if (countTurnEnds(eventsFile) <= baseline) throw new Error(`prompt 超时（${timeoutSec}s）：${text.slice(0, 40)}`)
-  return lastTurnWindow(eventsFile)
+  if (countTurnEnds(eventsFile) > baseline) return lastTurnWindow(eventsFile)
+  // 超时：取消当前回合，给 DSH 10s 收尾；记录证据后抛错（场景继续跑断言/三问）。
+  let cancelled = null
+  try {
+    const out = await api.callUnary('session/cancel', { sessionId: meta.sessionId }, undefined, 'long')
+    cancelled = out?.result?.ok ? 'ok' : JSON.stringify(out?.result?.error ?? out?.result)
+  } catch (error) { cancelled = `cancel-failed: ${String(error?.message ?? error)}` }
+  const cancelDeadline = Date.now() + 10_000
+  while (Date.now() < cancelDeadline && countTurnEnds(eventsFile) <= baseline) await sleep(300)
+  const turns = countTurnEnds(eventsFile) - baseline
+  throw new Error(`prompt 超时（${timeoutSec}s）：${text.slice(0, 40)}；session/cancel=${cancelled}；取消后新增 turn/end=${turns}`)
 }
 
 function fingerprint(msg) {
   return `命中 seq=${msg.seq}`
+}
+
+/** 事件里的"插件来源消息"：source.kind 不是 user、也不是 runtime-context（即 MC/时间/焦点通知）。 */
+function pluginNotices(window) {
+  return window
+    .filter((event) => event.type === 'user/message')
+    .map((event) => {
+      const kind = String(event.data?.source?.kind ?? 'user')
+      return { seq: event.seq, kind, text: textOfMessage(event.data), at: event.time }
+    })
+    .filter((row) => row.kind !== 'user' && row.kind !== 'runtime-context')
+}
+
+/**
+ * 信号自主唤醒的 turn：这一轮里没有人类用户消息、但有插件通知。
+ * mc-link 的 crash signal 会自己叫醒会话，她的 mcb_status/mcb_join 发生在 prompt 之外——
+ * 断言窗口必须把它算进去（2026-11-05 mc-link 在 C 里遇到的误判）。
+ */
+function autonomousTurnSeqs(window) {
+  const turns = []
+  let current = null
+  for (const event of window) {
+    if (event.type === 'turn/start') {
+      current = { turn: event.data?.turn, startSeq: event.seq, endSeq: null, human: false, notice: null }
+      turns.push(current)
+      continue
+    }
+    if (!current) continue
+    if (event.type === 'user/message') {
+      const kind = String(event.data?.source?.kind ?? 'user')
+      if (kind === 'user') current.human = true
+      else if (kind !== 'runtime-context') current.notice = textOfMessage(event.data).slice(0, 120)
+    }
+    if (event.type === 'turn/end') current.endSeq = event.seq
+  }
+  return turns.filter((turn) => !turn.human && turn.notice)
 }
 
 function evaluateAssertion(predicate, window, state) {
@@ -216,6 +261,16 @@ function evaluateAssertion(predicate, window, state) {
     const failed = tools.filter((row) => row.isError)
     add('noToolError', failed.length === 0, failed.length ? failed.map((row) => `${row.name}@${row.resultSeq}`).join(',') : '无工具错误')
   }
+  if (predicate.noticeContains) {
+    const needles = Array.isArray(predicate.noticeContains) ? predicate.noticeContains : [predicate.noticeContains]
+    const notices = pluginNotices(window)
+    const hit = notices.find((row) => needles.some((needle) => row.text.includes(needle)))
+    add('noticeContains', Boolean(hit), hit ? `通知 @${hit.seq}（${hit.kind}）含「${needles.find((n) => hit.text.includes(n))}」` : `无匹配通知（看到 ${notices.length} 条：${notices.map((row) => row.kind).join(',') || '无'}）`)
+  }
+  if (predicate.autonomousTurn) {
+    const turns = autonomousTurnSeqs(window)
+    add('autonomousTurn', turns.length > 0, turns.length ? `${turns.length} 个自主 turn（seq ${turns.map((turn) => turn.startSeq).join(',')}）` : '没有信号自主唤醒的 turn')
+  }
   if (predicate.bodyAlive != null) {
     add('bodyAlive', Boolean(state.bodyAlive) === predicate.bodyAlive, `body 进程 ${state.bodyCount} 个（pid ${state.bodyPids.join(',') || '无'}）`)
   }
@@ -245,8 +300,8 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
   const checks = []
   const steps = []
   let bodyState = { bodyCount: 0, bodyPids: [], bodyAlive: false }
-  // 断言只看"最近一次 prompt 之前"发生的事件：每次 assert 都对应上一句话造成的动作。
-  let boundarySeq = startSeq
+  // 断言窗口：从"上一次断言之后"到"这次断言"，把两次断言之间所有 turn（含 crash signal 自主唤醒的 turn）都算进来。
+  let assertBoundarySeq = startSeq
   const lastSeqNow = () => Number(orderedEvents(eventsFile).at(-1)?.seq) || 0
 
   async function refreshBody() {
@@ -276,7 +331,6 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
     const began = Date.now()
     try {
       if (step.op === 'prompt') {
-        boundarySeq = lastSeqNow()
         const window = await say(step.text, Number(step.timeoutSec ?? 300))
         steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: subst(step.text), turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
         console.log(`[scene] ${id} → turn ${window?.turn}，工具 [${(window?.tools ?? []).join(',')}]`)
@@ -306,13 +360,15 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         steps.push({ id, op: 'snapshot', ok: true, ms: Date.now() - began, file })
       } else if (step.op === 'assert') {
         await refreshBody()
-        const windowForStep = eventWindow(eventsFile, boundarySeq)
+        const windowForStep = eventWindow(eventsFile, assertBoundarySeq)
         const results = evaluateAssertion(step, windowForStep, bodyState)
         const required = step.required !== false
         const ok = results.every((row) => row.ok)
         for (const row of results) checks.push({ id, required, ok: row.ok, kind: row.kind, detail: row.detail })
-        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, checks: results })
+        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, windowStartSeq: assertBoundarySeq, windowEndSeq: lastSeqNow(), checks: results })
         console.log(`[scene] ${id} ${ok ? '✓' : required ? '✗' : '⚠'} ${results.map((row) => `${row.kind}:${row.ok ? 'ok' : 'fail'}`).join(' ')}`)
+        // 断言窗口是滚动前进的：下一次 assert 从此刻开始，避免把更早的调用重复算进来。
+        assertBoundarySeq = lastSeqNow()
       } else {
         throw new Error(`未知 op：${step.op}`)
       }
