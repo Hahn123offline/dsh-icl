@@ -524,11 +524,11 @@ export function createBody({
     }
     if (previous != null && value < previous) {
       const drop = previous - value
-      // 小掉血（摔一下 1–3 点、挖树/走路蹭伤）是正常玩法：只记录，不暂停。
-      // 只有“单次掉 >3”或“已到低血线以下”才接管，避免正常采集被 health-drop 频繁打断。
+      // 掉血分级：1–5 点（摔一下/挖树/走路蹭伤）是正常玩法，只记录不暂停；
+      // 单次 >=6 或已到低血线才接管。避免“挖树落地掉 4 血 → 身体暂停 → 整条合成链 409”。
       if (!paused) push('health_drop', { from: previous, to: value, drop })
       else watchdogStats.healthDropSuppressed = (watchdogStats.healthDropSuppressed ?? 0) + 1
-      if (drop > 3) {
+      if (drop >= 6) {
         alertWatchdog('danger', 'health-drop', { from: previous, to: value, drop }, () => safetyStop('health-drop'))
       } else {
         alertWatchdog('idle', 'health-drop-minor', { from: previous, to: value, drop })

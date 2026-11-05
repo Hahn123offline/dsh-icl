@@ -1013,10 +1013,19 @@ export function createMineflayerAdapter({
         })
       }
 
-      while (mined < count) {
+      // 循环条件是“背包净增 < count”而不是“已挖 < count”：
+      // 掉落物没进包时继续挖/再收，直到净增达标（有 attempts 上限防止无限追）。
+      while (!completed()) {
         checkAbort(signal)
-        // 净增已达标立刻收工：count=1 时背包已经有 6 个还继续追下一个目标，是当事人报过的坏行为。
         if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
+        // 已经挖够 count 个但掉落还没进包：等最多 3s 并再收一次（树叶/树上/坡地掉落会飘）。
+        if (mined >= count) {
+          for (let i = 0; i < 6 && !completed(); i += 1) {
+            await sleep(500)
+            if (i === 2) { try { await pickupNearby(signal, progress) } catch (error) { if (signal?.aborted) throw error } }
+          }
+          if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
+        }
         if (attempts >= count * 4 + 4) {
           throw taskFailure('mine: drops-missing', {
             mined, net: net(), requested: count, item: dropItemName,
