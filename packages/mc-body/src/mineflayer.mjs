@@ -1651,7 +1651,7 @@ export function createMineflayerAdapter({
         if (planted >= seedCount) break
         try {
           await bot.equip(hoe, 'hand')
-          await faceBlock(new Vec3(target.x, target.y, target.z))
+          await faceBlock(bot.blockAt(new Vec3(target.x, target.y, target.z)))
           await bot.activateBlock(bot.blockAt(new Vec3(target.x, target.y, target.z)))
           await sleep(120)
           const after = bot.blockAt(new Vec3(target.x, target.y, target.z))
@@ -2293,6 +2293,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 
