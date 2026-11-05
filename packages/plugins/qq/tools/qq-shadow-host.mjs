@@ -108,12 +108,20 @@ try {
   check('睡眠锁拦下私聊', qqStatus.stats.blocked >= 1 && (qqStatus.stats.blockedReasons.sleeping ?? 0) >= 1, JSON.stringify(qqStatus.stats.blockedReasons))
   check('被拦下时不进 delivery', drain().length === 0)
   check('time 侧确实记了积压', time.queue().length >= 1, `queue=${time.queue().length}`)
+  // time >= 05c4d19 会给积压条目存 signalId（来源归因/去重锚点）；更旧的版本没有这个字段。
+  const queued = time.queue()[0] ?? {}
+  const expectSignalId = 'qq:private:10001:1003'
+  const hasSignalId = queued.signalId != null
+  check('time 积压保留 signalId 归因（time>=05c4d19）', hasSignalId ? queued.signalId === expectSignalId : true,
+    hasSignalId ? `signalId=${queued.signalId}` : '当前 time 版本无 signalId（等 lead 合并 time 05c4d19 后此项转严格断言）')
 
   // 4) 醒来：time 把积压重放成一条 plugin:time 通知
   await time.wake()
   await waitFor(() => host.services.delivery.pendingCount() > 0)
   const replay = drain()
   check('time 醒来后重放积压', replay.length === 1 && replay[0].text.includes('睡着时来的'), replay[0]?.text?.replace(/\s+/g, ' ') ?? '(空)')
+  // time >= 05c4d19 的前缀是 [qq/qq:private:10001]；更旧版本是 [qq]
+  check('重放文本带来源前缀（[qq/…] 或 [qq]）', /\[qq(?:\/qq:private:10001)?\]/.test(replay[0]?.text ?? ''))
 
   // 5) 只读不变量
   qqStatus = qq.status()
