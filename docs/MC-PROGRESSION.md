@@ -202,3 +202,13 @@
 - `pickup` op：找最近 item 实体→走过去→统计 picked/items/left（真服 smoke：toss 4 dirt → pickup picked 1 stack，背包恢复 7；`items` 名称解析 cosmetic，待修）。
 - craft 无配方 hint **选缺料最少变体**：`chooseRecipeVariant`（oak 工具不再误报缺 pale_oak_planks/cobbled_deepslate），单测覆盖。
 - 测试 47/47 mc-body 绿；commits：73a209d + docs。mc-link 需把 `pickup` 加进 OPS（否则 mcb_do 用不到）。
+
+## 9. night-1 终局数字（06:51 结束，supervisor 脚手架 bug，非 body/产品代码）
+
+- 实际窗口 00:22:17→06:51:12（6h29m，预算 480min 未跑满）；原因 supervisor TDZ `nowMs`（mc-lab `6218391` 已修 + tdz-smoke 验证）。lab 代 6、supervisor adopt 11、lab 自愈重启 3、服务器重启 0、根锁已释放、用户客户端未触碰。
+- 累计 **64 turns / 1182 tool calls / 281 tool errors（23.8%）**；主要错误：`dig: 方块没有变化`（旧坐标/工具）、`place 被占/无附着面`、`craft 无可用配方`、`tool call aborted`（长 op 并发/取消）。
+- 自愈：loop-breaker 20 / no-progress 9 / death 提示 21 / paused-resume 8 / turn-timeout 9 / error-loop 3 / survival-mode 7 / lab-restart 3。
+- 死亡：body.jsonl death 19、quarantine 相关 12；body 反射正常，主因夜间怪多 + 低血 resume 策略（已列改进）。
+- 睡眠/醒来/dream/dawn 全链路一致（02:09:06→06:39:06→dream wash 1119 行→dawn 06:49 一次）；睡眠期外部直投 9 次全在 02:09:56–02:11:56，之后 0 活动。
+- 装备转向已部署真服验证（seq 390/391、726/727、773/774、370/372）；宏转向 body 已实现 8 op、今晚未部署，明早验收只算 collect/tunnel，其余 beta。
+- **body 侧三项明早任务已在 07:0x 提前完成**：doPlan 单飞锁（409）、`pickup` op、craft 无配方“缺料最少变体”选择；47/47 测试绿（73a209d）。
