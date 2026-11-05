@@ -269,26 +269,28 @@ export function apply(ctx) {
       // 500 条只够几个月的事件块；默认放到 5000（个人库约数年），避免老记忆直接从检索里消失。
       const scanLimit = Math.max(100, Number(ctx.config.scanLimit ?? 5000))
       let rows = db.prepare(`SELECT * FROM mem_items WHERE namespace IN (${placeholders}) ORDER BY created_at DESC LIMIT ?`).all(...nsIds, scanLimit)
+      // data 每行只解析一次：eager-recall 挂在每条用户消息上，这里多一次 JSON.parse × 5000 行
+      // 就是每轮白烧的 CPU（旧写法最多解析三次）。
+      const dataOf = new Map()
+      const parsedData = (row) => {
+        if (dataOf.has(row.id)) return dataOf.get(row.id)
+        let data = null
+        try { data = row.data ? JSON.parse(row.data) : null } catch { data = null }
+        dataOf.set(row.id, data)
+        return data
+      }
       // 被整理轮合并掉的块不再被回忆（软删：行还在，可追溯）。
-      rows = rows.filter((row) => {
-        if (!row.data) return true
-        try { return JSON.parse(row.data)?.superseded !== true } catch { return true }
-      })
+      rows = rows.filter((row) => row.data == null || parsedData(row)?.superseded !== true)
       if (!rows.length) return []
       // 标签只做"缩小范围"，不参与打分——否则调用方可以靠堆标签把相关度刷上去。
       const wantedTags = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()).filter(Boolean) : null
       if (conv) {
-        rows = rows.filter((row) => {
-          if (!row.data) return false
-          try { return JSON.parse(row.data)?.origin?.conv === String(conv) } catch { return false }
-        })
+        rows = rows.filter((row) => row.data != null && parsedData(row)?.origin?.conv === String(conv))
         if (!rows.length) return []
       }
       if (wantedTags && wantedTags.length) {
         rows = rows.filter((row) => {
-          let data = null
-          try { data = row.data ? JSON.parse(row.data) : null } catch { data = null }
-          const have = new Set((data?.tags ?? []).map((x) => String(x).toLowerCase()))
+          const have = new Set((parsedData(row)?.tags ?? []).map((x) => String(x).toLowerCase()))
           return tagMode === 'all' ? wantedTags.every((x) => have.has(x)) : wantedTags.some((x) => have.has(x))
         })
         if (!rows.length) return []

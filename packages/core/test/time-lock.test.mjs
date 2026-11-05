@@ -118,8 +118,8 @@ test('静音与睡眠在状态/积压里可区分；静音优先', async () => {
   host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '静音消息' })
   assert.equal(api.queue()[1].reason, 'muted', '静音优先于睡眠白名单')
   const list = api.listText()
-  assert.match(list, /睡眠消息（sleeping）/)
-  assert.match(list, /静音消息（muted）/)
+  assert.match(list, /睡眠消息（sleeping，/)
+  assert.match(list, /静音消息（muted，/)
   api.unmute('manual')
 })
 
@@ -174,6 +174,42 @@ test('睡眠中释放 focus 租约不会把摘要直接塞进会话', async () =
 })
 
 /* ───────────────────────── 积压可靠性 ───────────────────────── */
+
+test('积压溢出优先丢 ambient，@/私聊消息保留', async () => {
+  const { host, api } = await boot({ config: { maxQueue: 3 } })
+  api.mute({ minutes: 30 })
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'ambient-a' })
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '私聊一', tags: ['qq', 'private', 'mention'] })
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'ambient-b' })
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '私聊二', tags: ['private', 'mention'] })
+  const texts = api.queue().map((item) => item.text)
+  assert.deepEqual(texts, ['私聊一', 'ambient-b', '私聊二'], '溢出时先丢 ambient（最旧的普通消息）')
+  assert.equal(api.status().overflow, 1)
+})
+
+test('积压条目保留 signalId/from 归因，同一 blocked 信号不重复入队', async () => {
+  const { host, api } = await boot()
+  api.mute({ minutes: 30 })
+  const signal = {
+    id: 'qq:private:10001:42',
+    from: { plugin: 'qq', activity: 'qq:private:10001' },
+    kind: 'notice',
+    text: '睡着时来的',
+    tags: ['qq', 'private', 'mention'],
+  }
+  host.services.signals.offer(signal) // 第一次被拦
+  host.services.signals.offer(signal) // QQ 侧不重试，但重复 offer 也不能重复入队
+  const [item] = api.queue()
+  assert.equal(api.status().backlog, 1)
+  assert.equal(item.signalId, 'qq:private:10001:42')
+  assert.equal(item.from.plugin, 'qq')
+  assert.equal(item.from.activity, 'qq:private:10001')
+  assert.match(api.listText(), /qq:private:10001/)
+  assert.match(api.listText(), /sig=qq:private:10001:42/)
+  api.unmute('manual')
+  const text = host.services.delivery.drain('session').map((batch) => batch.text).join('\n')
+  assert.match(text, /\[qq\/qq:private:10001\]/)
+})
 
 test('积压溢出丢最旧并计数', async () => {
   const { host, api } = await boot({ config: { maxQueue: 3 } })
