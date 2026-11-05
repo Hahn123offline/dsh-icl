@@ -1030,6 +1030,8 @@ export function apply(ctx) {
   async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false } = {}) {
     const day = dayKey(now, tzOf())
     const results = []
+    // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
+    askedThisRun.clear()
     for (const name of jobs) {
       const job = JOBS[name]
       if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
@@ -1040,10 +1042,35 @@ export function apply(ctx) {
     return { ok, day, results, pruned }
   }
 
+  /**
+   * 由信号触发的跑法：结果必须落日志。
+   * 旧实现是 `void run(...)`——job 失败（例如模型插槽没绑）连一行字都不留，
+   * 于是"昨晚上没整理"永远查不到原因；promise 被拒时还会变成未处理拒绝。
+   */
+  function runFromSignal({ now = ctx.now(), reason = 'signal' } = {}) {
+    return run({ now })
+      .then((result) => {
+        const failed = result.results.filter((row) => row.ok === false)
+        ctx.log({
+          level: failed.length ? 'warn' : 'info',
+          msg: 'dream.run',
+          reason,
+          day: result.day,
+          ok: result.ok,
+          jobs: result.results.map((row) => `${row.job}:${row.ok === false ? `fail(${row.error ?? ''})` : row.skipped ? `skip(${row.skipped})` : 'ok'}`).join(','),
+        })
+        return result
+      })
+      .catch((error) => {
+        ctx.log({ level: 'warn', msg: 'dream.run-fail', reason, error: String(error?.message ?? error) })
+        return { ok: false, day: null, results: [], error: String(error?.message ?? error) }
+      })
+  }
+
   // 与时间模块的轻耦合：睡觉开始时收到事件就跑一轮（rhythm 是旧兼容，可以没有）
   try {
     const off = ctx.signals.on({ kind: 'event', tags: ['sleep'] }, (signal) => {
-      if (signal.text === 'sleep-start') void run({ now: signal.createdAt ?? ctx.now() })
+      if (signal.text === 'sleep-start') runFromSignal({ now: signal.createdAt ?? ctx.now(), reason: 'sleep-start' })
     })
     ctx.onDispose(off)
   } catch { /* 没有信号服务时退化为纯手动 */ }
@@ -1064,12 +1091,12 @@ export function apply(ctx) {
 
   try {
     const off = ctx.signals.on({ kind: 'event', tags: ['dream'] }, (signal) => {
-      void run({ now: signal.createdAt ?? ctx.now() })
+      runFromSignal({ now: signal.createdAt ?? ctx.now(), reason: 'dream-schedule' })
     })
     ctx.onDispose(off)
   } catch { /* 没有信号服务时退化为纯手动 */ }
 
-  ctx.services.provide('dream', { run, jobs: Object.keys(JOBS), slot, persona })
+  ctx.services.provide('dream', { run, runFromSignal, jobs: Object.keys(JOBS), slot, persona })
   ctx.log({ msg: 'dream.ready', slot, jobs: Object.keys(JOBS), hasPersona: Boolean(persona) })
 }
 

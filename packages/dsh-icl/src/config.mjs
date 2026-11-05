@@ -3,10 +3,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { REPO_ROOT, defaultStateDir, dshHome, resolvePath } from './paths.mjs'
 
-/** 默认启用的插件。dsh-raw 默认关：DSH 桥直接喂实时 session 事件，文件扫描是旧路。 */
+/** 默认启用的插件。dsh-raw 默认关：DSH 桥直接喂实时 session 事件，文件扫描是旧路。
+ *  compaction 默认关（2026-11-05 决策）：它只注入摘要、不替换历史（纯加法），且 DSH 自带
+ *  checkpoint/压缩；留着会与 dream 的原文输入冲突。要实验时在 preset 里显式列出。 */
 export const DEFAULT_PLUGINS = Object.freeze([
   'memory', 'world-state', 'recall', 'note', 'lexicon', 'whois', 'persona', 'focus',
-  'eager-recall', 'model-manager', 'time', 'dream', 'compaction', 'editor', 'bili', 'mc-link',
+  'eager-recall', 'model-manager', 'time', 'dream', 'editor', 'bili', 'mc-link',
 ])
 
 function readText(file, fallback = '') {
