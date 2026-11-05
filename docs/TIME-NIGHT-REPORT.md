@@ -3,7 +3,7 @@
 > 读者：判断时间模块在真实 8h 生存长测里是否按契约工作的人。
 > 数据源：只读 `time.json` / `transcript.md` / `events.jsonl` / `memory.db`（拷贝扫描）+ mc-lab supervisor metrics；
 > time 侧独立巡检脚本 `tools/time-night-check.mjs`（OS watcher，每 5 分钟）。
-> 核对时间：2026-11-06 06:55。最终 08:28 长测收尾后只在"长测尾部"补数字，不改已有结论。
+> 核对时间：2026-11-06 06:55。**实际 06:51 提前结束**（supervisor 脚手架 TDZ，已修 `6218391`；8h 未跑满，实际 00:26–06:51 ≈ 6h25m），睡眠/醒来/dawn 窗口完整覆盖；本文按实际结束定稿。
 
 ## 0. 长测元信息
 
@@ -14,7 +14,9 @@
 | 模型 | 本地 `ninfer/coder390-27b-q3-df-4x500` |
 | 会话 | 起跑 00:26:02；两次重启后 `session-5d3e76be`（01:35:55，commit ca01099） |
 | time 文件 | `state/icl-mc-lab/time.json`；控制后门 inbox/outbox 同目录；旧构建无 `time-events.jsonl` |
-| 期望窗口 | 02:09:05 入睡 → 06:39:06 醒 → 06:49:05 dawn |
+| 期望窗口 | 02:09:05 入睡 → 06:39:06 醒 → 06:49:05 dawn（全部按时发生） |
+| mc-lab 终稿 | `night-1/morning-report.md`（+ `final-summary.json`/`validity-awake.json`）；醒着 validity：活跃 81.4% / 等待 19.3% |
+| 实际结束 | **06:51 提前结束**（supervisor 脚手架 TDZ，mc-lab 修 `6218391`；8h 未跑满 ≈6h25m）。资源已收：lab/observer/body 停、57101/54902 无监听；用户 Fabric 客户端未触碰 |
 
 ## 1. 四问结论（全部通过）
 
@@ -66,9 +68,9 @@ mc-lab 侧同源确认。结论：**睡眠触发 dream 的接缝正常**；consu
 | dream 接缝 | ✅ 入睡即跑 |
 | 日志可诊断 | ✅ 无 error 文件；watcher 51+ tick |
 
-## 7. 待办（08:28 收尾后 / 部署后）
+## 7. 待办（测试已结束 / 部署后）
 
-- 08:28 长测结束：补"长测尾部"段（是否需要，取决于 06:55–08:28 是否出现 time 异常；目前 06:49 后无计划内 time 事件）。
+- **8h 未跑满**：00:26–06:51 提前结束（supervisor 脚手架 TDZ，非 time 问题）。睡眠/醒来/dawn 核心窗口已完整覆盖；若需要完整 8h soak，在 mc-lab 修复后补跑一次即可，time 侧无改动需求（部署后顺带验证 awake-tick 连续循环）。
 - **部署**（mc-lab 醒来后一次性重启合并）：awake-tick（清醒节拍）、`turn-start` bridge 事件、`sleepBoundary` + `time-events.jsonl`、`sleepGraceSec=120` —— 然后在真实会话验证"醒着连续调用/无静默等待"与边界事件消费。
 - 产品化建议：所有外部注入方直投前读 `time.status().phase` + `lock`；supervisor 消费 `sleep-boundary-overrun` 只记 anomalies、cancel 由本地 grace 触发一次。
 
