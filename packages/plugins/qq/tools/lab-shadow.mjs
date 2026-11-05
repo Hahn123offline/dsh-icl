@@ -15,7 +15,7 @@ import path from 'node:path'
 import {
   REPO_ROOT, STATE_ROOT, apiFor, clearCurrent, createLabSession, discoverDshBin, ensureDir,
   isPidAlive, killPidTree, materializePatch, portBusy, readJson, readJsonl, rebuildTranscript,
-  saveCurrent, sleep, spawnDsh, spawnObserver, tsSlug, waitApiReady, writeJson, writeRunMeta,
+  saveCurrent, selectModel, sleep, spawnDsh, spawnObserver, tsSlug, waitApiReady, writeJson, writeRunMeta,
 } from '../../../../tools/lab-lib.mjs'
 import { createFakeOneBot } from './fake-onebot.mjs'
 
@@ -44,6 +44,10 @@ const SNOWLUMA_HOME = String(arg('--home', 'C:/Users/ai_admin/Downloads/SnowLuma
 const BOT_UIN = String(arg('--bot', '2593621742'))
 const WAIT_MS = Number(arg('--wait-ms', REAL ? 900_000 : 45_000))
 const DRY_RUN = flag('dry-run')
+// lab 模型**一律显式 selectModel**，绝不依赖 profile 的 agent-default-model：
+// 2026-11-05 18:2x 的教训——web profile 默认被改成 ninfer/coder390，沿用默认的 lab 会吃本地 GPU。
+const PROVIDER = String(arg('--provider', 'deepseek-account'))
+const MODEL = String(arg('--model', 'deepseek-flash'))
 
 if (REAL && APPROVAL !== 'lead-approved') {
   console.error('[qq-lab] 拒绝：--real 需要 --approval lead-approved（真实影子要 lead 与用户明确批准）')
@@ -143,8 +147,11 @@ try {
     await waitApiReady(api, { timeoutMs: 180_000, shouldAbort: () => !isPidAlive(dsh.pid) })
     const created = await createLabSession(api, { preset: PRESET, workspace: path.join(runDir, 'workspace'), title: `QQ shadow lab ${RUN_ID}` })
     sessionId = created.sessionId
+    // 显式指定模型：不继承 profile 默认（避免误用本地 GPU；本地模型实验必须走 lead 的 llama 锁）
+    await selectModel(api, sessionId, { provider: PROVIDER, model: MODEL })
     meta.sessionId = sessionId
     meta.workspaceId = created.workspaceId
+    meta.model = { provider: PROVIDER, model: MODEL, source: 'selectModel' }
     meta.status = 'running'
     writeRunMeta(RUN_ID, meta)
 
@@ -225,6 +232,7 @@ try {
         '',
         `- 时间：${new Date().toISOString()}`,
         `- 模式：${meta.mode}（${REAL ? `上游=真实 SnowLuma（只读发现），等待用户私聊 ${PEER}` : `上游=假 OneBot ws://127.0.0.1:${fake.port}/`}）`,
+        `- 模型：${meta.model?.provider ?? '?'}/${meta.model?.model ?? '?'}（显式 selectModel，不用 profile 默认）`,
         `- lab：port=${PORT} preset=${PRESET} session=${sessionId}`,
         `- 结果：${checks.every((c) => c.ok) ? '全过' : '有失败'}`,
         '',

@@ -21,7 +21,7 @@
 | shadow preflight（谁可能抢连接，一条命令出结论） | ✅ 8 条判定单测 + 真机 BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 全量测试 | ✅ 340 pass | `node --test packages/core/test packages/mc-body/test` |
 | 进程内演练（含 time 睡眠锁） | ✅ 12/12 | `.state/qq-shadow/fake-2026-11-05T10-14-11-098Z/report.md` |
-| 真实 lab 验证（假上游，端口 57108） | ✅ 10/10 | `.state/lab/qq-5/report.md` |
+| 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
 | 真实 SnowLuma 影子 | ⏸ 未跑，等用户时间窗 | §10 runbook |
 
 三条不变量（任何后续改动都不能破坏）：
@@ -455,7 +455,8 @@ node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved `
 ```
 
 它做的事：物化 lab patch（只给 `icl-lab` 加 `qq` 插件、`enabled:true`、`snowlumaHomeDir` 只读发现、
-`allowPrivate:['3429502459']`）→ 起独立 DSH web 实例（57108）→ 等 **owner 发一条私聊** → 抓
+`allowPrivate:['3429502459']`）→ 起独立 DSH web 实例（57108）→ **显式 `selectModel(deepseek-account/deepseek-flash)`**
+（不继承 profile 的 `agent-default-model`；本地模型实验必须走 lead 的 llama 锁）→ 等 **owner 发一条私聊** → 抓
 `user/message(source.kind=plugin:qq)` → 写报告 → 自动停 lab。
 
 ### 第 5 步：前 5 分钟看什么
