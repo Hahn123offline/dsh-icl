@@ -288,6 +288,15 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 > 对照：before 每轮 system 被 replace 一次 → 每轮一次 8.3k 全量 prefill；
 > after 每轮 prefill ≈240 tok（= 新增的用户消息 + 事实快照 + 助手回复的增量）。
 
+#### 合并后 sanity（`d1574d5` + 云端 deepseek-flash，不占 GPU）
+
+把 B 合到最新 master 后，用 `icl-lab` preset + `deepseek-account/deepseek-flash` 跑了 3 轮
+（`cache-sanity-cloud`，端口 57104，无本地模型）：
+
+- `system/message` 全程只有 **1 条 append**（5014 字符，`hasFacts=false`），5 个 step 相邻 `firstDiff=-1`；
+- 事实快照消息的 `source.sections = ["sandbox:policy","approval:policy","icl:facts"]` ——
+  ICL 事实与 DSH 自身策略合并成**同一条** runtime-context 快照（符合"一次快照包含全部动态事实"的要求）。
+
 ### 5.4 数字表
 
 | 指标 | before（事实在 system） | after（事实走 runtime-context） | 变化 |
@@ -414,7 +423,8 @@ node tools/cache-probe.mjs run --scenario tools/scenarios/cache-facts-6.json \
 - 引擎请求日志：`C:\DSH\moe_streaming\logs\ninfer-coder390-q3-df2-4x500.requests.jsonl`
 - lab 产物：`.state/lab/cache-bf2/`（before）、`.state/lab/cache-af2/`（after）——各含 `cache-probe.json`/`cache-probe-engine.jsonl`/`events.jsonl`/`rounds.jsonl`/`cache-diff.jsonl`
 - 真实会话样本：`~/.dsh/sessions/--C-DSH-icl--/session-737ec994-…/session.v4.jsonl.zstd`
-- 关键 commit：B 实现（本 worktree `wt/cache`）；对照基线 `fa890ab`（focus 修复前）、`2375080`（focus 875）、`e3d78bb`/`4499e8b`（提示词分层）。
+- 关键 commit：B 实现 `ff44c00`（wt/cache），文档 `c06ad2c`，合并 master `d1574d5`；对照基线 `fa890ab`（focus 修复前）、`2375080`（focus 875）、`4499e8b`（提示词分层）。
+- 合并后 sanity：`.state/lab/cache-sanity-cloud/`（云端 3 轮，system 1 append / facts 快照含 icl:facts）。
 
 ## 附录 B：改提示词/layout 的自检清单
 
