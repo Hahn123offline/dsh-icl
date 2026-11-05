@@ -253,6 +253,14 @@ export function createMineflayerAdapter({
       spawned = false
       const b = mineflayer.createBot({ host, port, username, auth: 'offline', version: false })
       bot = b
+      // pathfinder 必须显式挂上；挂了才有 goto/脱困。失败要留痕，不能变成“身体走不了路但没人知道”。
+      try {
+        b.loadPlugin(pathfinder)
+      } catch (error) {
+        lastError = `pathfinder unavailable: ${error?.message ?? error}`
+        log(lastError)
+        emit('body_error', { message: lastError })
+      }
       let settled = false
       const timer = setTimeout(() => {
         lastError = 'connect timeout'
@@ -454,7 +462,8 @@ export function createMineflayerAdapter({
       const remaining = timeoutMs - (Date.now() - startedAt)
       if (remaining <= 800) break
       if (action === 'repath') {
-        pathStats.resets += 1
+        // 首次 setGoal 不算 reset；只有被判定卡住后的重算才计入 pathResets。
+        if (index > 0) pathStats.resets += 1
         stopPath()
       } else if (action === 'jump') {
         await jumpOnce(signal)
@@ -474,8 +483,10 @@ export function createMineflayerAdapter({
         timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
       })
       if (outcome.arrived) {
-        if (index > 0) pathStats.recoveries += 1
-        emit('path_recovered', { target, attempts, pathResets: pathStats.resets, distance: round1(outcome.distance) })
+        if (index > 0) {
+          pathStats.recoveries += 1
+          emit('path_recovered', { target, attempts, pathResets: pathStats.resets, distance: round1(outcome.distance) })
+        }
         return { arrived: true, distance: round1(outcome.distance), attempts, pathResets: pathStats.resets }
       }
       lastDistance = round1(outcome.distance) ?? lastDistance
@@ -501,6 +512,27 @@ export function createMineflayerAdapter({
     } catch (error) {
       if (error?.name === 'PathStuckError') emit('stuck', { target: { x: params.x, y: params.y, z: params.z }, distance: error.result?.distance, pathResets: error.result?.pathResets })
       throw error
+    }
+  }
+
+  // 真实 dig 可能永远等不到 blockUpdate（断线/假死）：用 abort/timeout 抢跑，保证任务能退出。
+  async function digBlock(block, signal, timeoutMs = 8000) {
+    checkAbort(signal)
+    let timer = null
+    let onAbort = null
+    try {
+      await Promise.race([
+        bot.dig(block, true),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('dig timeout')), Math.max(1000, Number(timeoutMs) || 8000))
+          if (typeof timer.unref === 'function') timer.unref()
+          onAbort = () => reject(abortReason(signal))
+          signal?.addEventListener?.('abort', onAbort, { once: true })
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (onAbort) signal?.removeEventListener?.('abort', onAbort)
     }
   }
 
@@ -534,14 +566,7 @@ export function createMineflayerAdapter({
     try {
       await equipBestTool(block, signal)
       await faceBlock(block)
-      await Promise.race([
-        bot.dig(block, true),
-        new Promise((_, reject) => {
-          const timer = setTimeout(() => reject(new Error('dig timeout')), 8000)
-          if (typeof timer.unref === 'function') timer.unref()
-          signal?.addEventListener?.('abort', () => { clearTimeout(timer); reject(abortReason(signal)) }, { once: true })
-        }),
-      ])
+      await digBlock(block, signal)
       await sleep(120)
       return true
     } catch (error) {
@@ -689,7 +714,7 @@ export function createMineflayerAdapter({
         try {
           await equipBestTool(block, signal)
           await faceBlock(block)
-          await bot.dig(block, true)
+          await digBlock(block, signal)
           await sleep(150)
           const after = bot.blockAt(block.position)
           if (before && after && after.name === before.name) {
@@ -842,7 +867,7 @@ export function createMineflayerAdapter({
         const tool = await equipBestTool(block, signal)
         await faceBlock(block)
         try {
-          await bot.dig(block, true)
+          await digBlock(block, signal)
         } catch (error) {
           if (signal?.aborted) throw error
           skipped.add(blockKey(block.position))
@@ -981,7 +1006,7 @@ export function createMineflayerAdapter({
       const before = bot.blockAt(block.position)
       const tool = await equipBestTool(block, new AbortController().signal)
       await faceBlock(block)
-      await bot.dig(block, true)
+      await digBlock(block, new AbortController().signal)
       await sleep(200)
       const after = bot.blockAt(block.position)
       if (before && after && after.name === before.name) throw new Error('dig: 方块没有变化（可能太远/工具不对）')
