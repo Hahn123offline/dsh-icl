@@ -38,6 +38,7 @@ const adapter = createMineflayerAdapter({
   autoReconnect: !flag('--no-reconnect'),
   maxReconnect: Number(arg('--max-reconnect', 5)),
   reconnectBaseMs: Number(arg('--reconnect-base-ms', 2000)),
+  reconnectMaxDelayMs: Number(arg('--reconnect-max-delay-ms', 30_000)),
   connectTimeoutMs: Number(arg('--connect-timeout-ms', 15_000)),
   pathStallMs: Number(arg('--path-stall-ms', 3500)),
 })
