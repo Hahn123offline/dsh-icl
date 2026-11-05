@@ -294,6 +294,10 @@ S6 hour（`loop-s6-hour.json`）用测试时钟跳到"下一个整点+1 分钟"�
 
 产物：`.state/lab/time-3/loop-s2|loop-s4|loop-s5/{report.md,verdict.json,events.jsonl}`（worktree 内，不提交）。
 
+### 真实 8h 生存长测（night-1，2026-11-06 02:09–06:49）
+
+完整证据与结论见 **[TIME-NIGHT-REPORT.md](TIME-NIGHT-REPORT.md)**。摘要：入睡/醒来/dawn 均按计划（02:09:05 → 06:39:06 → 06:49:05，dawn 只响一次）；睡眠期 17 条外部消息全部进积压（reason=sleeping），醒来一条合并消息按"结束语→积压摘要"释放且计数一致；dream 在入睡瞬间跑完（wash 1119 行）；两次 lab 重启后 schedules/fired/queue 原样保留（`loop-probe.resetOnStart:false` 后）。事故三条：测试脚手架 startupReset 清 time state（已修）、睡眠期 9 条 supervisor 直投（DSH 队列残余，修复后 0）、睡眠边界 in-flight turn（语义 B+有界兜底，time/supervisor 均已实现，待合并部署）。
+
 ### 前缀稳定性（misc 对表，2026-11-05）
 
 同一 lab 流程 + `tools/scenarios/cache-10.json`（cloud deepseek-flash，显式 provider/model）：
@@ -573,9 +577,10 @@ node tools/lab.mjs down --run "$RUN"
   {"at":1793…,"iso":"…","type":"sleep-start","sleepingId":"…","sleepUntil":1793…}
   {"at":1793…,"iso":"…","type":"sleep-end","sleepingId":"…","released":3,"boundary":{...}}
   ```
-  配置 `config.eventsFile` 可改路径；文件只追加（事件稀疏，不做轮转）。supervisor 读它做 anomalies 双证据即可。
+  配置 `config.eventsFile` 可改路径；文件只追加（事件稀疏，不做轮转）。supervisor 读它做 anomalies 双证据即可——night-1 supervisor 已实现增量消费（commit `4ea7a2b`：offset 落 `time-events.offset`、已消费行另存 `time-events-consumed.jsonl`，映射进 anomalies/strategy）。
 
 ### 14.4 测试
 
 `time-lock.test.mjs`：入睡时在飞回合被记录（`inFlight/turnAgeAtEntrySec`）、grace 内结束归档为合法收尾、
 超过 grace 只发一次 `sleep-boundary-overrun`、入睡后新 turn 标 `postSleepTurn` 并发事件、醒后 `lastSleepBoundary` 可查。
+
