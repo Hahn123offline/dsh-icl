@@ -113,6 +113,15 @@ const state = {
   progressProbe: null,
   lastUnreachSteerAt: null,
   prepSleptAt: null,
+  lastPosition: null,
+  positionChangedAt: null,
+  lastToolCallAt: null,
+  lastTurnEndAt: null,
+  lastModelActivityAt: null,
+  awakeIdleStrikes: 0,
+  lastIdleNudgeAt: null,
+  lastAlarmAt: {},
+  lastMetricsTickAt: null,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -469,6 +478,28 @@ function detectUnreachable(events) {
 }
 
 /** time.json 里 night:main-sleep 的绝对时间（毫秒）；没有返回 null。 */
+function appendAnomaly(type, threshold, evidence) {
+  const row = { at: nowIso(), type, threshold, evidence, mode: state.mode, sessionId: labMeta()?.sessionId ?? null }
+  try { fs.appendFileSync(path.join(runDir, 'anomalies.jsonl'), `${JSON.stringify(row)}\n`) } catch { /* ignore */ }
+  log(`ALARM ${type}（阈值 ${threshold}）：${JSON.stringify(evidence).slice(0, 220)}`)
+  return row
+}
+
+/** 从事件里推断细粒度心跳的时间戳（测试有效性指标）。 */
+function heartbeatFromEvents(events) {
+  let lastToolCallAt = null
+  let lastTurnEndAt = null
+  let lastModelActivityAt = null
+  for (const event of events) {
+    const time = Number(event.time)
+    if (!Number.isFinite(time) || time <= 0) continue
+    if (event.type === 'tool/call') { lastToolCallAt = time; lastModelActivityAt = Math.max(lastModelActivityAt ?? 0, time) }
+    if (event.type === 'turn/end') lastTurnEndAt = time
+    if (['assistant/message', 'step/start', 'turn/start'].includes(event.type)) lastModelActivityAt = Math.max(lastModelActivityAt ?? 0, time)
+  }
+  return { lastToolCallAt, lastTurnEndAt, lastModelActivityAt }
+}
+
 function plannedSleepAt() {
   try {
     const data = readJson(path.join(runDir, 'state', cfg.preset, 'time.json'), null)
@@ -1180,6 +1211,70 @@ async function main() {
         state.badWindows = 0
       }
       if (state.badWindows >= 3) { await shutdown('连续 3 个 10 分钟窗口错误率 >70% 且无里程碑推进，判定空转'); break }
+    }
+
+    // 细粒度心跳 + 异常报警（测试有效性指标：醒着是否持续有模型活动 / 等待时间占比；睡眠期只记录不打扰）
+    const hb = heartbeatFromEvents(events)
+    if (bodyNow.position && bodyNow.position !== state.lastPosition) {
+      state.lastPosition = bodyNow.position
+      state.positionChangedAt = nowIso()
+    }
+    const toolCallGapSec = hb.lastToolCallAt ? Math.round((nowMs - hb.lastToolCallAt) / 1000) : null
+    const modelIdleSec = hb.lastModelActivityAt ? Math.round((nowMs - hb.lastModelActivityAt) / 1000) : null
+    const turnEndGapSec = !stats.inTurn && hb.lastTurnEndAt ? Math.round((nowMs - hb.lastTurnEndAt) / 1000) : null
+    const positionStaticSec = state.positionChangedAt ? Math.round((nowMs - Date.parse(state.positionChangedAt)) / 1000) : null
+    const hasActiveTask = Boolean(bodyNow.task && !/空闲/.test(String(bodyNow.task)))
+    const sleepIdleSec = sleeping && hb.lastModelActivityAt ? Math.round((nowMs - hb.lastModelActivityAt) / 1000) : null
+    if (!state.lastMetricsTickAt || nowMs - Date.parse(state.lastMetricsTickAt) >= 60_000) {
+      state.lastMetricsTickAt = nowIso()
+      appendRow(metricsFile, {
+        at: nowIso(),
+        kind: 'heartbeat',
+        uptimeMin: Math.round((nowMs - startedAt) / 60000),
+        mode: state.mode,
+        sleeping,
+        inTurn: stats.inTurn,
+        lastToolCallAt: hb.lastToolCallAt ? new Date(hb.lastToolCallAt).toISOString() : null,
+        lastTurnEndAt: hb.lastTurnEndAt ? new Date(hb.lastTurnEndAt).toISOString() : null,
+        lastModelActivityAt: hb.lastModelActivityAt ? new Date(hb.lastModelActivityAt).toISOString() : null,
+        toolCallGapSec,
+        turnEndGapSec,
+        positionStaticSec,
+        awakeIdleSec: sleeping ? null : modelIdleSec,
+        sleepIdleSec,
+        position: bodyNow.position,
+        task: bodyNow.task,
+        turns: stats.turns,
+        tools: stats.tools,
+        errors: stats.toolErrors,
+      })
+    }
+    if (!sleeping) {
+      const alarmAllowed = (key, ms = 10 * 60_000) => {
+        const last = state.lastAlarmAt[key] ? Date.parse(state.lastAlarmAt[key]) : 0
+        if (nowMs - last < ms) return false
+        state.lastAlarmAt[key] = nowIso()
+        return true
+      }
+      if (modelIdleSec != null && modelIdleSec > 120) {
+        if (alarmAllowed('awake-idle-120s')) {
+          state.awakeIdleStrikes += 1
+          appendAnomaly('awake-idle-120s', 120, { modelIdleSec, toolCallGapSec, inTurn: stats.inTurn, position: bodyNow.position })
+          if (state.awakeIdleStrikes >= 2) {
+            state.awakeIdleStrikes = 0
+            try { await sendPrompt('你醒着却闲置了（2 次报警）：做一件小事（整理背包/看时间/去某处看看）或安排睡觉；不要空等。', { timeoutSec: 300 }) } catch (error) { log(`idle nudge 失败：${String(error?.message ?? error)}`) }
+          }
+        }
+      } else {
+        state.awakeIdleStrikes = 0
+      }
+      if (positionStaticSec != null && positionStaticSec > 180 && !hasActiveTask && alarmAllowed('static-180s')) {
+        appendAnomaly('static-180s', 180, { positionStaticSec, position: bodyNow.position, task: bodyNow.task })
+        try { await sendPrompt('你位置 3 分钟没动、也没有进行中的任务：做一件小事或换个地方，别定在原地空等。', { timeoutSec: 300 }) } catch (error) { log(`static nudge 失败：${String(error?.message ?? error)}`) }
+      }
+      if (turnEndGapSec != null && turnEndGapSec > 90 && alarmAllowed('turn-gap-90s')) {
+        appendAnomaly('turn-gap-90s', 90, { turnEndGapSec, inTurn: stats.inTurn })
+      }
     }
 
     // 死亡探测：body 的 death 事件（不再让她在"我是不是死了"上打转）
