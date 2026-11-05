@@ -27,6 +27,12 @@ const arg = (name, fallback = null) => {
 }
 const flag = (name) => args.includes(dash(name))
 
+// `--preflight`：shadow 前的一条只读取证（委派给 tools/preflight.mjs）
+if (flag('preflight')) {
+  const { runPreflightMain } = await import('./preflight.mjs')
+  process.exit(await runPreflightMain(args))
+}
+
 const REAL = flag('real')
 const APPROVAL = String(arg('--approval', ''))
 const PORT = Number(arg('--port', 57108))

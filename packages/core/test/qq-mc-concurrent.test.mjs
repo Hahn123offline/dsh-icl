@@ -154,8 +154,9 @@ test('T3 time 睡眠：两条来源都进 time 积压，醒来一次重放且带
     await time.wake()
     const batches = host.services.delivery.drain('session')
     assert.equal(batches.length, 1, '醒来应合成一条 time 通知')
-    assert.match(batches[0].text, /\[qq\] 主人：睡着时来的私聊/)
-    assert.match(batches[0].text, /\[mc\] \[MC\] 任务完成：mine t-3/)
+    // time 的 backlog 现在保留 from.plugin/activity，前缀形如 [qq/qq:private:10001] / [mc/event]
+    assert.match(batches[0].text, /\[qq\/qq:private:10001\] 主人：睡着时来的私聊/)
+    assert.match(batches[0].text, /\[mc\/event\] \[MC\] 任务完成：mine t-3/)
     assert.equal(batches[0].entries[0].source.plugin, 'time')
   } finally { await cleanup() }
 })
