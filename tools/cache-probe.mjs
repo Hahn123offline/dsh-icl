@@ -350,6 +350,8 @@ function joinRounds(runId, engineRows) {
       turn: round.turn,
       turnMs: round.turnMs,
       systemChars: round.systemChars,
+      systemBytes: step ? byteLength(step.system ?? '') : null,
+      systemUpdates: step?.systemUpdates ?? [],
       contextChars: round.contextChars ?? 0,
       iclContextChars: round.iclContextChars ?? 0,
       promptTokens: promptRows.reduce((sum, row) => sum + Number(row.promptTokens ?? 0), 0),
@@ -366,14 +368,35 @@ function joinRounds(runId, engineRows) {
   })
 }
 
+/** 第一次 request/header 里的工具面指纹：工具名+描述+参数规范化后哈希。 */
+function toolsFingerprint(runId) {
+  for (const event of readEventFile(eventsPath(runId))) {
+    if (event?.type !== 'request/header') continue
+    const header = event.data?.header ?? event.data ?? {}
+    const tools = header.tools ?? []
+    if (!Array.isArray(tools) || !tools.length) continue
+    const canonical = tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    const json = JSON.stringify(canonical)
+    return {
+      count: tools.length,
+      chars: json.length,
+      hash: createHash('sha1').update(json).digest('hex').slice(0, 12),
+      names: tools.map((tool) => tool.name).sort(),
+    }
+  }
+  return null
+}
+
 function printRoundTable(rows) {
-  console.log(['round', 'turn', 'turnMs', 'sysCh', 'ctxCh', 'prompt', 'prefill', 'hit', 'hit%', 'ttft_s', 'fullInv', 'engineReq'].join('\t'))
+  console.log(['round', 'turn', 'turnMs', 'sysB', 'sysUpdates', 'ctxCh', 'prompt', 'prefill', 'hit', 'hit%', 'ttft_s', 'fullInv', 'engineReq'].join('\t'))
   for (const row of rows) {
     console.log([
       row.id ?? '?',
       row.turn ?? '?',
       row.turnMs ?? '?',
-      row.systemChars ?? '?',
+      row.systemBytes ?? '?',
+      (row.systemUpdates ?? []).map((update) => `${update.mode}:${update.chars}`).join(',') || '-',
       row.contextChars ?? '?',
       row.promptTokens,
       row.prefillTokens,
@@ -476,17 +499,30 @@ async function cmdRun() {
   const port = Number(arg('--port', '57104'))
   const model = String(arg('--model', 'local'))
   const gap = String(arg('--gap', '1'))
+  const roundsArg = arg('--rounds', null)
   const runId = String(arg('--run', `cache-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`))
   const runDir = runDirOf(runId)
   const offsetBefore = logSize()
-  const record = { runId, port, model, scenario, startedAt: new Date().toISOString(), offsetBefore, engineLog: ENGINE_LOG, steps: [] }
+  const commit = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout?.trim() ?? null
+  const record = {
+    runId,
+    port,
+    model,
+    scenario,
+    commit,
+    factsInSystem: process.env.ICL_FACTS_IN_SYSTEM === '1',
+    startedAt: new Date().toISOString(),
+    offsetBefore,
+    engineLog: ENGINE_LOG,
+    steps: [],
+  }
   const run = (args) => {
     const result = spawnSync('node', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: 'inherit' })
     if (result.status !== 0) throw new Error(`命令失败（${result.status}）：node ${args.join(' ')}`)
   }
   try {
     run(['tools/lab.mjs', 'up', '--preset', 'icl-lab', '--port', String(port), '--run', runId, '--model', model])
-    run(['tools/lab.mjs', 'script', '--file', scenario, '--gap', gap, '--port', String(port)])
+    run(['tools/lab.mjs', 'script', '--file', scenario, '--gap', gap, ...(roundsArg ? ['--rounds', roundsArg] : []), '--port', String(port)])
     run(['tools/lab.mjs', 'export', '--port', String(port)])
   } finally {
     if (!flag('--no-down')) {
@@ -495,14 +531,16 @@ async function cmdRun() {
   }
   record.offsetAfter = logSize()
   record.engineRows = doneRecords(readLogFrom(offsetBefore))
+  record.tools = toolsFingerprint(runId)
   record.rounds = joinRounds(runId, record.engineRows)
   record.steps = diffRun(runId)
-  record.summary = summarize(record.engineRows)
+  record.summary = summarize(record.engineRows.filter((row) => Number(row.toolCount ?? 0) > 0))
   record.roundSummary = printRoundTable(record.rounds)
   ensureDir(runDir)
   fs.writeFileSync(path.join(runDir, 'cache-probe.json'), JSON.stringify(record, null, 1), 'utf8')
   fs.writeFileSync(path.join(runDir, 'cache-probe-engine.jsonl'), record.engineRows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8')
-  console.log(`\n证据：${path.join(runDir, 'cache-probe.json')}`)
+  console.log(`\ncommit=${record.commit} factsInSystem=${record.factsInSystem} tools=${record.tools?.count ?? '?'} hash=${record.tools?.hash ?? '?'}`)
+  console.log(`证据：${path.join(runDir, 'cache-probe.json')}`)
 }
 
 async function cmdReport() {
@@ -521,24 +559,53 @@ async function cmdReport() {
   }
 }
 
+/** 从一次 lab run 里取"真实 payload"：第一步的系统提示词全文 + 第一次 request/header 的工具面。 */
+function realPayload(runId) {
+  const events = [...readEventFile(eventsPath(runId))]
+  const steps = reconstructSteps(events)
+  const system = steps[0]?.system ?? ''
+  let tools = null
+  for (const event of events) {
+    if (event?.type !== 'request/header') continue
+    const header = event.data?.header ?? event.data ?? {}
+    if (Array.isArray(header.tools) && header.tools.length) { tools = header.tools; break }
+  }
+  return {
+    system,
+    tools: tools ? tools.map((tool) => ({
+      type: 'function',
+      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+    })) : null,
+    toolCount: tools?.length ?? 0,
+    systemChars: system.length,
+    systemBytes: byteLength(system),
+  }
+}
+
 async function cmdApi() {
   // 裸 API 对照：不经过 DSH，直接构造"每轮末尾追加一条用户消息"的多轮前缀。
   // 三种变体：
-  //   stable    —— 系统提示词完全不变（理论最优）
-  //   clock     —— 系统提示词尾部带分钟级时间（模拟 ICL 现状）
-  //   headclock —— 时间放在系统提示词开头（模拟 focus order 15 的旧 bug）
+  //   stable     —— 系统提示词完全不变（理论最优）
+  //   tailclock  —— 系统提示词尾部带每轮变化的事实（ICL 旧布局）
+  //   headclock  —— 事实放在系统提示词开头（模拟 focus order 15 的旧 bug）
+  //   facts-tail —— 优化 B：系统完全静态，事实作为尾部 runtime-context 消息
+  // 用 --from-run <labRunId> 可以拿某次 lab 的真实 system 文本与工具 schema 做（更接近线上）。
   const turns = Number(arg('--turns', '5'))
   const filler = String(arg('--filler', 'x')).repeat(Number(arg('--filler-chars', '4000')))
   const maxTokens = Number(arg('--max-tokens', '8'))
+  const fromRun = arg('--from-run', null)
+  const real = fromRun ? realPayload(fromRun) : null
   const includeTools = !flag('--no-tools')
-  const tools = includeTools ? Array.from({ length: 6 }, (_, index) => ({
-    type: 'function',
-    function: {
-      name: `probe_tool_${index}`,
-      description: 'probe tool for prefix-cache measurement; stable schema across turns',
-      parameters: { type: 'object', properties: { text: { type: 'string' } }, additionalProperties: false },
-    },
-  })) : undefined
+  const tools = includeTools
+    ? (real?.tools ?? Array.from({ length: 6 }, (_, index) => ({
+      type: 'function',
+      function: {
+        name: `probe_tool_${index}`,
+        description: 'probe tool for prefix-cache measurement; stable schema across turns',
+        parameters: { type: 'object', properties: { text: { type: 'string' } }, additionalProperties: false },
+      },
+    })))
+    : undefined
   // 每轮都真的变：只用时钟分钟会在 <1 分钟的短测试里假阴性（第一版踩过）。
   const dynamicChars = Number(arg('--dynamic-chars', '0'))
   const clock = (turn) => `2026-11-05 18:${String(20 + turn).padStart(2, '0')}:${String((turn * 17) % 60).padStart(2, '0')}`
@@ -550,16 +617,17 @@ async function cmdApi() {
   // tailclock = ICL 现状（动态事实在系统提示词尾部）；headclock = 旧 focus order 15；
   // facts-tail = 优化 B（动态事实完全移出系统提示词，只作为尾部消息）。
   const variants = {
-    stable: () => ({ system: `You are a stable prefix probe. filler:${filler}\nsession-fixed.` }),
-    tailclock: (turn) => ({ system: `You are a stable prefix probe. filler:${filler}\n${dynamicBlock(turn)}` }),
-    headclock: (turn) => ({ system: `${dynamicBlock(turn)}\nYou are a stable prefix probe. filler:${filler}` }),
+    stable: () => ({ system: real ? real.system : `You are a stable prefix probe. filler:${filler}\nsession-fixed.` }),
+    tailclock: (turn) => ({ system: `${real ? real.system : `You are a stable prefix probe. filler:${filler}`}\n${dynamicBlock(turn)}` }),
+    headclock: (turn) => ({ system: `${dynamicBlock(turn)}\n${real ? real.system : `You are a stable prefix probe. filler:${filler}`}` }),
     // 优化 B：系统提示词整场静态；动态事实作为"运行时上下文"消息追加在本轮用户消息之后。
     'facts-tail': (turn) => ({
-      system: `You are a stable prefix probe. filler:${filler}\nsession-fixed.`,
+      system: real ? real.system : `You are a stable prefix probe. filler:${filler}\nsession-fixed.`,
       after: [`<runtime-context>\n${dynamicBlock(turn)}\n</runtime-context>`],
     }),
   }
   const messages = [{ role: 'user', content: '开始。' }, { role: 'assistant', content: '好。' }]
+  if (real) console.log(`# real payload from ${fromRun}: systemChars=${real.systemChars} systemBytes=${real.systemBytes} tools=${real.toolCount}`)
   console.log(['variant', 'turn', 'prompt', 'prefill', 'hit', 'hit%', 'ttft_s', 'prefill_s'].join('\t'))
   for (const [name, planOf] of Object.entries(variants)) {
     const history = [...messages]

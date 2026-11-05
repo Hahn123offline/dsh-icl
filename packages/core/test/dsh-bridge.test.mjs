@@ -22,9 +22,10 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import noteManifest from '../../plugins/note/manifest.json' with { type: 'json' }
 
-function fakeCtx() {
+function fakeCtx({ withContext = true } = {}) {
   const tools = new Map()
   const sections = new Map()
+  const contexts = new Map()
   const handlers = new Map()
   const logs = []
   const logger = {
@@ -69,7 +70,16 @@ function fakeCtx() {
     async fireAsync(event, ...args) {
       for (const handler of handlers.get(event) ?? []) await handler(...args)
     },
-    tools_: tools, sections_: sections, handlers_: handlers, logs,
+    tools_: tools, sections_: sections, contexts_: contexts, handlers_: handlers, logs,
+  }
+  // 真 DSH 的 SystemPrompt 有 context()（运行时上下文快照通道）；旧宿主没有。
+  // 两种都要覆盖：有 → 静/动拆开；没有 → 退回单 section 全量。
+  if (withContext) {
+    ctx.systemPrompt.context = (sec) => {
+      assert.equal(typeof sec.text, 'function')
+      contexts.set(sec.name, sec)
+      return () => contexts.delete(sec.name)
+    }
   }
   return ctx
 }
@@ -171,6 +181,71 @@ test('桥：工具面带 output，能真的执行', async () => {
   const out = await ctx.tools_.get('memo').execute({ text: '明天问她' })
   assert.deepEqual(out, { text: '记下了。' })
   bridge.dispose()
+})
+
+test('桥：系统段只含静态段，动态事实走 systemPrompt.context', async () => {
+  const root = tempRoot('layout')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let minute = '18:00'
+  host.services.prompt.section({ name: 'probe-static', order: 20, text: () => '你是小千。' })
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => `时间：${minute}` })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+
+  const core = ctx.sections_.get('icl:core')
+  const facts = ctx.contexts_.get('icl:facts')
+  assert.ok(core, '静态段仍然注册成 systemPrompt.section')
+  assert.ok(facts, '动态段注册成 systemPrompt.context（运行时上下文快照）')
+  assert.equal(facts.order, 850)
+  assert.equal(core.text({}), '你是小千。')
+  assert.equal(facts.text({}), '时间：18:00')
+  assert.equal(bridge.status().stats.factsInContext, true)
+
+  // 时间变了：系统提示词必须一个字节都不变（前缀缓存靠这个）。
+  minute = '18:01'
+  assert.equal(core.text({}), '你是小千。', '动态事实不得回流进系统提示词')
+  assert.equal(facts.text({}), '时间：18:01')
+  bridge.dispose()
+  assert.equal(ctx.contexts_.size, 0, 'dispose 要撤掉 facts context')
+  assert.equal(ctx.sections_.size, 0)
+})
+
+test('桥：没有动态事实时 facts context 返回空（DSH 会跳过空段）', async () => {
+  const root = tempRoot('layout-empty')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  host.services.prompt.section({ name: 'probe-static', order: 20, text: () => '你是小千。' })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  assert.equal(ctx.sections_.get('icl:core').text({}), '你是小千。')
+  assert.equal(ctx.contexts_.get('icl:facts').text({}), '')
+  bridge.dispose()
+})
+
+test('桥：宿主没有 systemPrompt.context 时退回单 section 全量（含动态事实）', async () => {
+  const root = tempRoot('layout-fallback')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx({ withContext: false })
+  host.services.prompt.section({ name: 'probe-static', order: 20, text: () => '你是小千。' })
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => '时间：18:00' })
+  const logs = []
+  const bridge = createDshBridge({ ctx, host, log: (entry) => logs.push(entry), config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  assert.equal(ctx.sections_.get('icl:core').text({}), '你是小千。\n\n时间：18:00', '降级路径不能丢事实')
+  assert.equal(bridge.status().stats.factsInContext, false)
+  assert.ok(logs.some((entry) => entry.msg === 'icl.prompt-layout' && entry.layout === 'single-section'), '降级要留日志')
+  bridge.dispose()
+})
+
+test('prompt.assemble 支持 minOrder/maxOrder 过滤，默认全量不变', () => {
+  const host = createHost({ log: () => {} })
+  host.services.prompt.section({ name: 'static', order: 20, text: () => '静态' })
+  host.services.prompt.section({ name: 'facts', order: 880, text: () => '动态' })
+  assert.equal(host.services.prompt.assemble({}), '静态\n\n动态')
+  assert.equal(host.services.prompt.assemble({}, { maxOrder: 799 }), '静态')
+  assert.equal(host.services.prompt.assemble({}, { minOrder: 800 }), '动态')
+  assert.equal(host.services.prompt.assemble({}, { minOrder: 100, maxOrder: 200 }), '')
 })
 
 test('桥：绑定新会话清空旧投递队列', async () => {
