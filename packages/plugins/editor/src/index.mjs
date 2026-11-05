@@ -24,9 +24,12 @@ export function apply(ctx) {
       if (!full) return { text: '不在工作区里。' }
       try {
         const st = fs.statSync(full)
-        if (st.size > maxBytes) return { text: '文件太大。' }
-        return { text: fs.readFileSync(full, 'utf8').slice(0, 20000) }
-      } catch { return { text: '读不到这个文件。' } }
+        if (st.size > maxBytes) return { text: `文件太大（${st.size} 字节 > ${maxBytes}）。` }
+        const body = fs.readFileSync(full, 'utf8')
+        // 截断必须说出来，否则模型会以为读到了全文。
+        if (body.length > 20000) return { text: `${body.slice(0, 20000)}\n…（已截断：文件还有 ${body.length - 20000} 字）` }
+        return { text: body }
+      } catch (error) { return { text: `读不到这个文件：${String(error?.code ?? error?.message ?? error)}` } }
     },
   })
 
@@ -47,7 +50,7 @@ export function apply(ctx) {
         if (append) fs.appendFileSync(full, String(text ?? ''), 'utf8')
         else fs.writeFileSync(full, String(text ?? ''), 'utf8')
         return { text: append ? '追加好了。' : '写好了。' }
-      } catch { return { text: '写不进去。' } }
+      } catch (error) { return { text: `写不进去：${String(error?.code ?? error?.message ?? error)}` } }
     },
   })
 
@@ -61,9 +64,12 @@ export function apply(ctx) {
       const full = inside(p)
       if (!full) return { text: '不在工作区里。' }
       try {
-        const entries = fs.readdirSync(full, { withFileTypes: true }).slice(0, 100)
-        return { text: entries.map((e) => `${e.isDirectory() ? 'd' : 'f'} ${e.name}`).join('\n') || '空目录。' }
-      } catch { return { text: '打不开这个目录。' } }
+        const all = fs.readdirSync(full, { withFileTypes: true })
+        const entries = all.slice(0, 100)
+        const lines = entries.map((e) => `${e.isDirectory() ? 'd' : 'f'} ${e.name}`).join('\n')
+        if (!lines) return { text: '空目录。' }
+        return { text: all.length > entries.length ? `${lines}\n…（还有 ${all.length - entries.length} 项没列）` : lines }
+      } catch (error) { return { text: `打不开这个目录：${String(error?.code ?? error?.message ?? error)}` } }
     },
   })
 

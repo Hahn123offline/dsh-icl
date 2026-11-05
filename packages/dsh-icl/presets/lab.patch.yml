@@ -1,0 +1,106 @@
+# ICL lab 覆盖层（--patch 用）：一条常驻、可控、可复跑的受试会话，不碰 desktop。
+#
+# 用法（不要手工 edit 后直接喂 dsh：这是模板，`__LAB_*__` 是占位符）：
+#   node tools/lab.mjs up --preset icl-lab --port 57101
+# `tools/lab.mjs` 会把占位符替换成当前 worktree 的绝对路径，物化到
+# `.state/lab/<runId>/lab.patch.yml`，再以
+#   dsh --profile web --patch <runDir>/lab.patch.yml --port <port> --no-open
+# 启动一个**第二个 Web 实例**（独立进程、独立端口、独立 stateDir）。
+#
+# 为什么要物化：`--patch` 里 insert 的相对路径会锚定在 patch 文件旁边，
+# 但 preset 的 `config.plugins` 是嵌套 entry list，Loader 不再做这个锚定，
+# 所以 dsh-icl 的模块必须写成 file:// 绝对 URL。stateDir 也必须每次 run 独立。
+# 直接安装成本 profile bundle 时（plugin manager）这些占位符由安装流程替换，
+# 未替换的模板不可直接安装。
+- insert:
+    - id: dsh-icl-lab-host
+      name: '__LAB_ICL_HOST__'
+    # 第一里程碑用的全量 ICL 预设：不含 mc-link，先证明"能聊、能记、能看状态"。
+    - id: preset-icl-lab
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-lab
+        name: ICL Lab
+        description: 实验/受试会话：独立状态、秒级 tick、ICL 全套插件（不含 MC）。
+        order: 31
+        plugins:
+          - id: icl-lab-core
+            name: '__LAB_ICL_CORE__'
+            config:
+              presetId: icl-lab
+              stateDir: '__LAB_STATE__/icl-lab'
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
+              tickMs: 200
+              timeTickMs: 1000
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - dream                - editor
+                - bili
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
+    # 第二里程碑：在上面的基础上加 mc-link；body 用 mc-lab 自己的端口（54900），
+    # bot 名与服务器由 mc-link/mc-body 的配置决定，不共用用户账号 Hahn123_。
+    - id: preset-icl-mc-lab
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-mc-lab
+        name: ICL MC Lab
+        description: lab 里的 MC 受试会话：独立状态 + mc-link，body 独立端口。
+        order: 32
+        plugins:
+          - id: icl-mc-lab-core
+            name: '__LAB_ICL_CORE__'
+            config:
+              presetId: icl-mc-lab
+              stateDir: '__LAB_STATE__/icl-mc-lab'
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
+              tickMs: 200
+              timeTickMs: 1000
+              mcBaseUrl: '__LAB_MC_BASE__'
+              pluginConfig:
+                mc-link:
+                  listenPort: __LAB_MC_PORT__
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - dream                - editor
+                - mc-link
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'

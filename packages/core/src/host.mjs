@@ -55,6 +55,8 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     return { delivered: true, reason: decision.reason }
   })
   // 焦点释放/切换：把积压一次性交给她（不是逐条推送）。
+  // 走 signals.offer 而不是 delivery.push：这样静音/睡眠 gate 与 focus.admit 都能裁决，
+  // 睡眠中释放焦点不会把摘要直接塞进会话（会进积压，醒来再放）。
   focus.onChange(() => {
     const rows = focus.drainBacklog()
     if (!rows.length) return
@@ -62,13 +64,11 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     const body = rows
       .map((row) => `· [${row.focus}] +${row.count}${row.lastText ? `：${row.lastText}` : ''}`)
       .join('\n')
-    delivery.push({
-      to: 'session',
-      channel: 'focus-backlog',
-      source: { plugin: 'focus', activity: 'backlog', seq: null },
-      content: { text: `你离开焦点期间，别处积压了 ${total} 条：\n${body}` },
-      batchKey: 'focus:backlog',
-      exactlyOnce: false,
+    signals.offer({
+      from: { plugin: 'focus', activity: 'backlog' },
+      kind: 'notice',
+      text: `你离开焦点期间，别处积压了 ${total} 条：\n${body}`,
+      tags: ['focus-backlog'],
     })
   })
 
@@ -138,6 +138,23 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       delivery: {
         push: (input) => delivery.push({ ...input, source: { plugin: pluginId, ...(input?.source ?? {}) } }),
         clear: () => delivery.clear(),
+        /**
+         * 安装 push-time gate（时间模块的睡眠/静音拦截）。
+         * 旧接口：替换全部 gate；卸载时恢复上一个，而不是一律置空。
+         */
+        setGate(fn) {
+          const previous = delivery.setGate(fn)
+          record.dispose.push(() => delivery.setGate(previous))
+          return previous
+        },
+        /** 组合式 gate（推荐）：卸载时只摘掉自己那一层，不覆盖别人。 */
+        addGate(fn) {
+          const off = delivery.addGate(fn)
+          record.dispose.push(off)
+          return off
+        },
+        blockedCount: () => delivery.blockedCount(),
+        gateCount: () => delivery.gateCount(),
       },
       slots: {
         declare(slot) {
@@ -161,6 +178,8 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
         emit: (signal) => signals.emit(signal),
         on: (filter, fn) => { const off = signals.on(filter, fn); record.dispose.push(off); return off },
         setGate: (fn) => signals.setGate(fn),
+        /** 组合式 gate（推荐）：多个来源的拦截规则叠加，卸载时自动摘掉自己的那层。 */
+        addGate: (fn) => { const off = signals.addGate(fn); record.dispose.push(off); return off },
         stats: () => signals.stats(),
       },
       services: {

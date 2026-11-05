@@ -1,6 +1,6 @@
 {
   "id": "time",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "entry": "./src/index.mjs",
   "tools": [
     "time_status",
@@ -9,7 +9,9 @@
     "time_edit",
     "time_cancel",
     "time_pause",
-    "time_resume"
+    "time_resume",
+    "time_mute",
+    "time_unmute"
   ],
   "slots": [],
   "focus": {},

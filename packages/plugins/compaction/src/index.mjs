@@ -37,7 +37,12 @@ export function apply(ctx) {
         maxTokens: 600,
       })
       return String(out ?? '').trim().slice(0, maxChars)
-    } catch { return '' }
+    } catch (error) {
+      // 压不动要留证据：插槽没绑、网关 500、超时都会走到这里，
+      // 吞掉的话外面只看到 "empty-summary"，查不出是谁坏了。
+      ctx.log({ level: 'warn', msg: 'compaction.summarize-fail', error: String(error?.message ?? error) })
+      return ''
+    }
   }
 
   // 压缩实现：切掉最近 keepRecent 条，把更早的压成摘要

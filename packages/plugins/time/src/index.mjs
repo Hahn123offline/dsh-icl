@@ -1,63 +1,229 @@
 // 时间模块：会话的唯一时钟、唯一唤醒者、唯一纵向拦截层。
 //
-// 设计见 docs/TIME-MODULE.md。
+// 契约见 docs/TIME.md（状态机、四问、控制后门、验收场景都在那份文件里）。
+// 本文件只回答四件事：
+//   1. 我什么时候被唤醒 —— schedules：single（一次性）/ daily（HH:mm）/ weekly（周一 07:30）/
+//      倒计时（in），到点发 wake；跨重启用 fired 去重；倒计时与长日程会被 pause 冻结。
+//   2. 醒了要干什么 —— 醒来消息、备注、标签、静音；睡眠/暂停/静音期间外部信号进有界积压，
+//      醒来按"结束语 + 积压摘要"成批释放，失败不丢、过期有计数。
+//   3. 接下来如何行动 —— goals：time_arrange {mode:'goal'} 或 goal_add；turn-end 续推，
+//      支持 turnLimit / until / 续推上限；time_cancel 统一收尾并释放 focus 租约。
+//   4. 长期日程 —— 每天/每周重复、编辑、取消、清单（相对时间、下次触发、可读 id）。
 //
-// 安排（schedule）只有两个正交维度：
-//   mode = wake | goal    —— 这次唤醒是"叫她一声"还是"让她持续做一件事"
-//   kind = single | span  —— 单发（一次消息）还是长日程（有开始和结束）
-// 起点：at（HH:mm / ISO / now）或 in（如 10m / 2h）
+// 拦截：signals 的 gate 是唯一纵向拦截层。放行规则只有三类：
+//   · time 自己的信号（闹钟/结束语/目标续推）——静音不关自己的闹钟（FOCUS.md §1.6）；
+//   · 睡眠白名单 allow；
+//   · 静音锁 lock 的白名单 + 独立紧急配额（tags alarm/safety/emergency）。
+// 事件总线（to:'plugin'）不进人门：它不是给模型的消息，不能被积压成"用户消息"。
 //
-// 四种组合：
-//   wake+single  = 到点发一条消息
-//   wake+span    = 开始时一条、结束时一条（睡觉就是它，多带 sleep 标记）
-//   goal+single  = 自动化任务，只有轮次上限（等价 DSH goal）
-//   goal+span    = 带时间上限的目标
+// 不静默失败：坏状态文件先备份再回落、原子写落盘、tick 重入保护、每次丢弃/漏响/积压溢出
+// 都有计数与日志；状态里带 lastTickError / lastPersistError 供控制后门查。
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 export const name = 'time'
 
+const PHASES = Object.freeze(['awake', 'sleeping', 'paused'])
 const DEFAULT_ALLOW = Object.freeze([{ from: 'admin' }])
-const PHASES = ['awake', 'sleeping', 'paused']
+const WEEKDAYS_ZH = ['一', '二', '三', '四', '五', '六', '日']
+const WEEKDAY_ALIASES = Object.freeze({
+  一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7,
+  1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7,
+  mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7,
+})
 
-function dayKey(at) {
-  const d = new Date(at)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+/* ───────────────────────── 时区与时间解析 ───────────────────────── */
+
+const formatterCache = new Map()
+
+function dateFormatter(timeZone, withWeekday) {
+  const key = `${timeZone ?? ''}|${withWeekday ? 1 : 0}`
+  let fmt = formatterCache.get(key)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('zh-CN', {
+      ...(timeZone ? { timeZone } : {}),
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      ...(withWeekday ? { weekday: 'short' } : {}),
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    })
+    formatterCache.set(key, fmt)
+  }
+  return fmt
 }
 
-function stampAt(at) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date(at))
+/** 日历字段（在指定时区里）。纯本地时间用 timeZone=null（宿主时区）。 */
+function partsOf(at, timeZone = null) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    ...(timeZone ? { timeZone } : {}),
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+  const out = {}
+  for (const part of fmt.formatToParts(new Date(at))) if (part.type !== 'literal') out[part.type] = part.value
+  const hour = Number(out.hour) === 24 ? 0 : Number(out.hour)
+  return { y: Number(out.year), m: Number(out.month), d: Number(out.day), h: hour, min: Number(out.minute), s: Number(out.second) }
 }
 
-function parseAt(value, now = Date.now()) {
+/** 时区里的日历时间 → epoch 毫秒（两轮迭代覆盖 DST）。 */
+function zonedEpoch(fields, timeZone = null) {
+  // 无时区配置时按宿主本地时间解释（Date 构造器本来就吃本地字段）。
+  if (!timeZone) return new Date(fields.y, fields.m - 1, fields.d, fields.h ?? 0, fields.min ?? 0, fields.s ?? 0).getTime()
+  const asUtc = Date.UTC(fields.y, fields.m - 1, fields.d, fields.h ?? 0, fields.min ?? 0, fields.s ?? 0)
+  let guess = asUtc
+  for (let i = 0; i < 2; i += 1) {
+    const p = partsOf(guess, timeZone)
+    const local = Date.UTC(p.y, p.m - 1, p.d, p.h, p.min, p.s)
+    guess = asUtc - (local - guess)
+  }
+  return guess
+}
+
+function pad2(n) { return String(n).padStart(2, '0') }
+
+function dayKey(at, timeZone = null) {
+  const p = partsOf(at, timeZone)
+  return `${p.y}-${pad2(p.m)}-${pad2(p.d)}`
+}
+
+function stampAt(at, timeZone = null) {
+  return dateFormatter(timeZone, true).format(new Date(at))
+}
+
+function timeOnly(at, timeZone = null) {
+  const p = partsOf(at, timeZone)
+  return `${pad2(p.h)}:${pad2(p.min)}`
+}
+
+function addDays(fields, delta) {
+  const t = new Date(Date.UTC(fields.y, fields.m - 1, fields.d + delta))
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() }
+}
+
+/** 指定时区里某天的某个 HH:mm。 */
+function pointOnDay(fields, hour, minute, timeZone) {
+  return zonedEpoch({ y: fields.y, m: fields.m, d: fields.d, h: hour, min: minute }, timeZone)
+}
+
+function isoWeekday(at, timeZone = null) {
+  const p = partsOf(at, timeZone)
+  const dow = new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay() // 0=周日
+  return dow === 0 ? 7 : dow
+}
+
+function weekdayNumber(token) {
+  let key = String(token ?? '').trim().toLowerCase()
+  while (/^(每|周|星期)/.test(key)) key = key.replace(/^(每|周|星期)/, '')
+  return WEEKDAY_ALIASES[key] ?? null
+}
+
+function fmtDuration(ms) {
+  const totalMin = Math.max(0, Math.round(Number(ms) / 60_000))
+  if (totalMin < 60) return `${Math.max(1, totalMin)} 分钟`
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return m ? `${h} 小时 ${m} 分` : `${h} 小时`
+}
+
+function fmtRelative(at, now) {
+  const diff = at - now
+  const abs = Math.abs(diff)
+  const text = fmtDuration(abs)
+  return diff >= 0 ? `还有 ${text}` : `已过 ${text}`
+}
+
+function validHourMinute(hour, minute) {
+  return Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+}
+
+function parseWeekly(raw) {
+  const tokens = String(raw ?? '').trim().split(/\s+/).filter(Boolean)
+  if (tokens.length < 2) return null
+  const timeToken = tokens[tokens.length - 1]
+  const hm = /^(\d{1,2}):(\d{2})$/.exec(timeToken)
+  if (!hm) return null
+  const weekdays = []
+  for (const chunk of tokens.slice(0, -1)) {
+    for (const token of chunk.split(/[,，、/]+/).filter(Boolean)) {
+      const n = weekdayNumber(token)
+      if (!n) return null
+      if (!weekdays.includes(n)) weekdays.push(n)
+    }
+  }
+  const hour = Number(hm[1])
+  const minute = Number(hm[2])
+  if (!weekdays.length || !validHourMinute(hour, minute)) return null
+  return { kind: 'weekly', weekdays: weekdays.sort((a, b) => a - b), hour, minute }
+}
+
+/**
+ * at 语法：
+ *   'now'                → 立刻（下一个 tick）
+ *   'HH:mm'              → 每天
+ *   '周一 07:30' / 'mon,wed 07:30' / '一、三 07:30' → 每周
+ *   'YYYY-MM-DD'         → 那一天 00:00（配置时区）
+ *   ISO 日期时间          → 一次性
+ */
+function parseAt(value, now = Date.now(), timeZone = null) {
   const raw = String(value ?? '').trim()
   if (!raw) return null
   if (raw === 'now') return { kind: 'once', at: now }
   const hm = /^(\d{1,2}):(\d{2})$/.exec(raw)
-  if (hm) return { kind: 'daily', hour: Number(hm[1]), minute: Number(hm[2]) }
+  if (hm) {
+    const hour = Number(hm[1])
+    const minute = Number(hm[2])
+    if (!validHourMinute(hour, minute)) throw new Error(`at 的时刻不合法（HH:mm 里 0–23 / 0–59）：${raw}`)
+    return { kind: 'daily', hour, minute }
+  }
+  const weekly = parseWeekly(raw)
+  if (weekly) return weekly
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (dateOnly) {
+    const at = zonedEpoch({ y: Number(dateOnly[1]), m: Number(dateOnly[2]), d: Number(dateOnly[3]), h: 0, min: 0 }, timeZone)
+    if (!Number.isFinite(at)) throw new Error(`at 的日期不合法：${raw}`)
+    return { kind: 'once', at }
+  }
   const iso = Date.parse(raw)
   if (Number.isFinite(iso)) return { kind: 'once', at: iso }
-  throw new Error(`at 格式应为 HH:mm、ISO 或 now：${raw}`)
+  throw new Error(`at 格式应为 HH:mm、周一 HH:mm、ISO 或 now：${raw}`)
 }
 
+/** 时长/倒计时语法：'10m' / '2h' / '1d' / '1h30m' / 数字=分钟。返回毫秒或 null。 */
 function parseIn(value) {
   if (value == null) return null
   if (typeof value === 'number') return Math.max(0, value) * 60_000
-  const m = /^(\d+(?:\.\d+)?)\s*(m|min|分钟|h|小时)?$/.exec(String(value).trim())
-  if (!m) return null
-  const n = Number(m[1])
-  return (m[2] === 'h' || m[2] === '小时' ? n * 60 : n) * 60_000
+  const raw = String(value).trim().toLowerCase()
+  if (!raw) return null
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return Math.round(Number(raw) * 60_000)
+  const unitMs = { s: 1000, sec: 1000, 秒: 1000, m: 60_000, min: 60_000, 分钟: 60_000, h: 3_600_000, 小时: 3_600_000, d: 86_400_000, 天: 86_400_000, 日: 86_400_000 }
+  let total = 0
+  let index = 0
+  let matched = 0
+  const re = /(\d+(?:\.\d+)?)\s*(s|sec|秒|m|min|分钟|h|小时|d|天|日)/g
+  let m
+  while ((m = re.exec(raw))) {
+    total += Number(m[1]) * unitMs[m[2]]
+    index = re.lastIndex
+    matched += 1
+  }
+  if (!matched || raw.slice(index).trim()) return null
+  return Math.round(total)
 }
 
-function pointOf(schedule, now) {
-  const parsed = schedule.__parsed ?? parseAt(schedule.at, now)
-  if (parsed.kind === 'once') return parsed.at
-  const d = new Date(now)
-  d.setHours(parsed.hour, parsed.minute, 0, 0)
-  return d.getTime()
+function normalizeWeekdays(value) {
+  if (value == null) return null
+  const out = []
+  for (const chunk of [].concat(value)) {
+    for (const token of String(chunk).split(/[,，、/\s]+/).filter(Boolean)) {
+      const n = weekdayNumber(token)
+      if (!n) throw new Error(`weekdays 里的星期不合法：${token}（用 1–7 或 周一/一/mon）`)
+      if (!out.includes(n)) out.push(n)
+    }
+  }
+  return out.length ? out.sort((a, b) => a - b) : null
 }
+
+/* ───────────────────────── 安排规整 ───────────────────────── */
 
 /** 声明式白名单：任一条规则的全部字段匹配即放行。 */
 export function allowMatch(allow, signal) {
@@ -67,33 +233,60 @@ export function allowMatch(allow, signal) {
     if (!rule || typeof rule !== 'object') continue
     if (rule.from != null && String(rule.from) !== String(signal.from?.plugin)) continue
     if (rule.kinds != null && ![].concat(rule.kinds).includes(String(signal.kind))) continue
-    if (rule.tags != null && !rule.tags.some((t) => signal.tags?.includes(String(t)))) continue
+    if (rule.tags != null && !rule.tags.some((tag) => signal.tags?.includes(String(tag)))) continue
     if (rule.any != null && !rule.any.some((word) => text.includes(String(word).toLowerCase()))) continue
     return true
   }
   return false
 }
 
-/** 把工具/API 的入参规整成一条安排。 */
-export function normalizeSchedule(input = {}, now = Date.now()) {
+let scheduleSeq = 0
+function nextScheduleId() {
+  scheduleSeq += 1
+  return `s-${Date.now().toString(36)}-${scheduleSeq}`
+}
+
+/**
+ * 把工具/API 的入参规整成一条安排。
+ * 返回的对象里 __parsed 只在内存里用，落盘时会剥掉。
+ */
+export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
+  const timeZone = options?.timeZone ?? null
   const mode = input.mode === 'goal' ? 'goal' : 'wake'
+
+  // in 与 at 同给时 at 优先；但 edit 想用 in 改期时会把 at 显式清掉。
   const inMs = parseIn(input.in ?? input.inMinutes ?? null)
-  const startAt = input.at != null ? String(input.at) : (inMs != null ? new Date(now + inMs).toISOString() : null)
-  if (!startAt) throw new Error('安排需要 at（HH:mm / ISO / now）或 in（如 10m）')
-  const parsed = parseAt(startAt, now)
-  const endMs = parseIn(input.duration ?? input.durationMin ?? null)
-  const untilRaw = input.until ?? null
-  const untilAt = untilRaw != null && Number.isFinite(Date.parse(String(untilRaw))) ? Date.parse(String(untilRaw)) : null
-  const kind = input.sleep === true || input.kind === 'span' || endMs != null || untilAt != null ? 'span' : 'single'
+  let startRaw = input.at != null ? String(input.at) : (inMs != null ? new Date(now + inMs).toISOString() : null)
+  if (!startRaw) throw new Error('安排需要 at（HH:mm / 周一 HH:mm / ISO / now）或 in（如 10m / 1d）')
+  let parsed = parseAt(startRaw, now, timeZone)
+
+  const weekdays = normalizeWeekdays(input.weekdays ?? input.days ?? null)
+  if (weekdays) {
+    if (parsed.kind !== 'daily') throw new Error('weekdays 需要配合 HH:mm 使用（如 at:"07:30", weekdays:[1,3,5]）')
+    parsed = { kind: 'weekly', weekdays, hour: parsed.hour, minute: parsed.minute }
+  }
+
+  const durationMs = parseIn(input.duration ?? input.durationMin ?? null)
+  let untilAt = null
+  if (input.until != null) {
+    const parsedUntil = parseUntil(input.until, now, timeZone)
+    if (parsedUntil == null) throw new Error(`until 格式应为 ISO、HH:mm 或 in 式时长：${input.until}`)
+    untilAt = parsedUntil
+  }
+  const kind = input.sleep === true || input.kind === 'span' || durationMs != null || untilAt != null ? 'span' : 'single'
   // 睡眠必须有终点；只给 sleep:true 没给时长时默认 3 分钟，和提示词"三分钟后回来"一致。
-  const durationMin = endMs != null
-    ? Math.round(endMs / 60_000)
+  const durationMin = durationMs != null
+    ? Math.max(1, Math.round(durationMs / 60_000))
     : (input.sleep === true && untilAt == null ? 3 : null)
+
+  const turnLimit = input.turnLimit == null ? null : Math.max(1, Number(input.turnLimit) || 1)
+  const resumeLimit = input.resumeLimit == null ? null : Math.max(1, Number(input.resumeLimit) || 1)
   return {
-    id: String(input.id ?? `s-${Date.now().toString(36)}`),
+    id: String(input.id ?? nextScheduleId()),
     mode,
     kind,
-    at: startAt,
+    at: startRaw,
+    weekdays: parsed.kind === 'weekly' ? parsed.weekdays : null,
     durationMin,
     until: untilAt,
     message: String(input.message ?? ''),
@@ -103,122 +296,491 @@ export function normalizeSchedule(input = {}, now = Date.now()) {
     tags: Array.isArray(input.tags) ? input.tags.map(String).slice(0, 8) : [],
     focus: input.focus == null ? null : String(input.focus),
     allow: Array.isArray(input.allow) ? input.allow : null,
-    turnLimit: input.turnLimit == null ? null : Math.max(1, Number(input.turnLimit) || 1),
+    turnLimit,
+    resumeLimit,
     __parsed: parsed,
   }
 }
 
+/** until 语法：ISO / HH:mm（下一个该时刻）/ in 式时长（从 now 起）。 */
+function parseUntil(value, now, timeZone) {
+  if (value == null) return null
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null
+    return value > 1e12 ? value : now + value * 60_000
+  }
+  const raw = String(value).trim()
+  if (!raw) return null
+  const rel = parseIn(raw)
+  if (rel != null && /^\d/.test(raw) && !/^\d{4}-\d{2}-\d{2}/.test(raw)) return now + rel
+  try {
+    const parsed = parseAt(raw, now, timeZone)
+    if (parsed.kind === 'once') return parsed.at
+    return nextOccurrence(parsed, now, timeZone)
+  } catch { return null }
+}
+
+/** 安排里的解析结果（跨重启后从 at/weekdays 重建）。 */
+function parsedOf(schedule, now, timeZone) {
+  if (schedule.__parsed) return schedule.__parsed
+  let parsed = parseAt(schedule.at, now, timeZone)
+  if (Array.isArray(schedule.weekdays) && schedule.weekdays.length && parsed.kind === 'daily') {
+    parsed = { kind: 'weekly', weekdays: schedule.weekdays.slice().sort((a, b) => a - b), hour: parsed.hour, minute: parsed.minute }
+  }
+  return parsed
+}
+
+/** 已经到达、且是"最近一次"的触发点（用于 tick 的到点判定）。 */
+export function occurrenceAt(parsed, now, timeZone = null) {
+  if (!parsed) return null
+  if (parsed.kind === 'once') return parsed.at
+  if (parsed.kind === 'daily') {
+    const p = partsOf(now, timeZone)
+    return pointOnDay(p, parsed.hour, parsed.minute, timeZone)
+  }
+  if (parsed.kind === 'weekly') {
+    const p = partsOf(now, timeZone)
+    const today = isoWeekday(now, timeZone)
+    for (let back = 0; back <= 6; back += 1) {
+      const day = addDays(p, -back)
+      const dow = new Date(Date.UTC(day.y, day.m - 1, day.d)).getUTCDay()
+      const weekday = dow === 0 ? 7 : dow
+      if (!parsed.weekdays.includes(weekday)) continue
+      const point = pointOnDay(day, parsed.hour, parsed.minute, timeZone)
+      if (point <= now || back > 0) return point
+      // back===0 且今天还没到点：没有更近的过去触发点，直接返回今天这个未来点（调用方会因 at<point 跳过）
+      return point
+    }
+    return null
+  }
+  return null
+}
+
+/** 下一个未来的触发点（用于清单/世界状态展示）。 */
+export function nextOccurrence(parsed, now, timeZone = null) {
+  if (!parsed) return null
+  if (parsed.kind === 'once') return parsed.at > now ? parsed.at : null
+  const p = partsOf(now, timeZone)
+  if (parsed.kind === 'daily') {
+    const today = pointOnDay(p, parsed.hour, parsed.minute, timeZone)
+    if (today > now) return today
+    return pointOnDay(addDays(p, 1), parsed.hour, parsed.minute, timeZone)
+  }
+  if (parsed.kind === 'weekly') {
+    for (let ahead = 0; ahead <= 7; ahead += 1) {
+      const day = addDays(p, ahead)
+      const dow = new Date(Date.UTC(day.y, day.m - 1, day.d)).getUTCDay()
+      const weekday = dow === 0 ? 7 : dow
+      if (!parsed.weekdays.includes(weekday)) continue
+      const point = pointOnDay(day, parsed.hour, parsed.minute, timeZone)
+      if (point > now) return point
+    }
+  }
+  return null
+}
+
+/** 人读的时间描述（清单/世界状态用）。 */
+export function describeParsed(parsed) {
+  if (!parsed) return '(无法解析)'
+  if (parsed.kind === 'once') return '一次'
+  if (parsed.kind === 'daily') return `每天 ${pad2(parsed.hour)}:${pad2(parsed.minute)}`
+  const days = parsed.weekdays.map((n) => WEEKDAYS_ZH[n - 1]).join('、')
+  return `每周${days} ${pad2(parsed.hour)}:${pad2(parsed.minute)}`
+}
+
+/* ───────────────────────── 插件主体 ───────────────────────── */
+
 export function apply(ctx) {
+  const timeZone = ctx.config.timeZone == null ? null : String(ctx.config.timeZone)
   const stateFile = ctx.config.stateFile
     ? String(ctx.config.stateFile)
     : path.join(String(ctx.config.root ?? '.'), 'state', 'time.json')
   const tickMs = Math.max(1000, Number(ctx.config.tickMs ?? 15_000))
   const inboxFile = ctx.config.inboxFile ? String(ctx.config.inboxFile) : path.join(path.dirname(stateFile), 'time.inbox.jsonl')
   const outboxFile = ctx.config.outboxFile ? String(ctx.config.outboxFile) : path.join(path.dirname(stateFile), 'time.outbox.jsonl')
-  let inboxOffset = 0
+  const maxQueue = Math.max(1, Number(ctx.config.maxQueue ?? 500))
+  const backlogShow = Math.max(1, Number(ctx.config.backlogShow ?? 20))
+  const backlogMaxChars = Math.max(200, Number(ctx.config.backlogMaxChars ?? 3000))
+  const catchUpMs = Math.max(0, Number(ctx.config.catchUpMs ?? 15 * 60_000))
+  const onceCatchUpMs = Math.max(60_000, Number(ctx.config.onceCatchUpMs ?? 24 * 3_600_000))
+  const firedRetentionMs = Math.max(1, Number(ctx.config.firedRetentionDays ?? 8)) * 86_400_000
+  const goalMaxResumes = Math.max(1, Number(ctx.config.goalMaxResumes ?? 50))
+  const goalMaxAgeMs = Math.max(60_000, Number(ctx.config.goalMaxAgeMs ?? 8 * 3_600_000))
+  const maxMuteMs = Math.max(60_000, Number(ctx.config.maxMuteMs ?? 8 * 3_600_000))
+  const defaultMuteMin = Math.max(1, Number(ctx.config.defaultMuteMin ?? 30))
+  const emergencyQuotaDefault = Math.max(0, Number(ctx.config.emergencyQuota ?? 2))
+  const emergencyTags = (Array.isArray(ctx.config.emergencyTags) ? ctx.config.emergencyTags : ['alarm', 'safety', 'emergency']).map(String)
+  const emergencyFrom = Array.isArray(ctx.config.emergencyFrom) ? ctx.config.emergencyFrom.map(String) : null
+  const listLimit = Math.max(1, Number(ctx.config.listLimit ?? 20))
+  const dir = path.dirname(stateFile)
 
-  // signals 是宿主 ctx 上的服务，不在 shared 能力表里；旧代码的回退分支必然抛错。
   const signals = ctx.signals
   if (!signals?.offer) throw new Error('time 需要 ctx.signals 服务')
   const world = ctx.services.get('world')
   const focusApi = ctx.focus ?? ctx.services.get('focus') ?? null
   const clock = ctx.services.clock ?? null
 
-  const blank = () => ({ phase: 'awake', since: ctx.now(), schedules: [], queue: [], goals: [], spans: [], fired: {}, sleepingId: null, sleepUntil: null })
+  function log(level, msg, extra = {}) {
+    try { ctx.log({ level, msg, ...extra }) } catch { /* 日志坏了不影响时间 */ }
+  }
+
+  function emitEvent(payload) {
+    try { signals.emit(payload) } catch (error) { log('warn', 'time.event-failed', { error: String(error?.message ?? error) }) }
+  }
+
+  const blank = () => ({
+    phase: 'awake',
+    since: ctx.now(),
+    schedules: [],
+    queue: [],
+    goals: [],
+    spans: [],
+    fired: {},
+    sleepingId: null,
+    sleepUntil: null,
+    lock: null,
+    pausedAt: null,
+    inboxOffset: 0,
+    stats: { dropped: 0, missed: 0, expired: 0, overflow: 0, failed: 0, inboxBad: 0 },
+    lastPersistError: null,
+    lastTickError: null,
+  })
   let state = blank()
+  let dirty = false
+
+  function sanitizeState() {
+    // __parsed 是内存缓存，不落盘：重启后由 at/weekdays 重建。
+    const schedules = state.schedules.map(({ __parsed, ...rest }) => rest)
+    return { ...state, schedules }
+  }
+
+  // ── 读状态：坏文件先备份，别让下次 persist 把它静默盖掉 ──
   try {
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
     if (saved && typeof saved === 'object') {
-      state = { ...blank(), ...saved, phase: PHASES.includes(saved.phase) ? saved.phase : 'awake' }
-      state.schedules = Array.isArray(saved.schedules) ? saved.schedules : []
-      state.queue = Array.isArray(saved.queue) ? saved.queue : []
-      state.goals = Array.isArray(saved.goals) ? saved.goals : []
-      state.spans = Array.isArray(saved.spans) ? saved.spans : []
-      for (const schedule of state.schedules) { try { schedule.__parsed = parseAt(schedule.at, ctx.now()) } catch { /* 坏数据跳过 */ } }
-      // 清理：过期的 one-time 日程、以及完全重复的日程（重启/多次测试最容易堆出来）
-      const nowMs = ctx.now()
-      const seen = new Set()
-      state.schedules = state.schedules.filter((schedule) => {
-        const parsed = schedule.__parsed
-        if (parsed?.kind === 'once' && parsed.at != null && parsed.at < nowMs - 10 * 60_000) return false
-        const key = `${schedule.mode}|${schedule.kind}|${parsed?.at ?? schedule.at}|${schedule.message ?? ''}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
+      state = { ...blank(), ...saved }
+      state.phase = PHASES.includes(saved.phase) ? saved.phase : 'awake'
+      for (const key of ['schedules', 'queue', 'goals', 'spans']) state[key] = Array.isArray(saved[key]) ? saved[key] : []
+      state.fired = saved.fired && typeof saved.fired === 'object' ? saved.fired : {}
+      state.inboxOffset = Number(saved.inboxOffset) > 0 ? Number(saved.inboxOffset) : 0
+      state.stats = { ...blank().stats, ...(saved.stats && typeof saved.stats === 'object' ? saved.stats : {}) }
+      state.lock = saved.lock && typeof saved.lock === 'object' ? saved.lock : null
+      state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
+      state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
+      state.sleepUntil = Number(saved.sleepUntil) > 0 ? Number(saved.sleepUntil) : null
+      state.since = Number(saved.since) > 0 ? Number(saved.since) : ctx.now()
+      if (!state.spans.some((span) => span?.id === state.sleepingId && span.sleep)) {
+        // 状态自愈：sleeping 但没有对应 span，回落到 awake（别卡在睡眠里）。
+        if (state.phase === 'sleeping') {
+          state.phase = 'awake'
+          state.since = ctx.now()
+          state.sleepingId = null
+          state.sleepUntil = null
+        }
+      }
     }
-  } catch { /* 第一次运行 */ }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      const backup = `${stateFile}.corrupt-${Date.now()}`
+      try { fs.copyFileSync(stateFile, backup) } catch (copyError) { log('warn', 'time.state.backup-failed', { error: String(copyError?.message ?? copyError) }) }
+      log('warn', 'time.state.corrupt', { error: String(error?.message ?? error), backup })
+    }
+  }
 
+  // 重建 __parsed，清理坏数据/漏掉的安排（显式记录，不静默）
+  ;(() => {
+    const now = ctx.now()
+    const kept = []
+    for (const schedule of state.schedules) {
+      if (!schedule || typeof schedule !== 'object' || !schedule.id) { state.stats.dropped += 1; log('warn', 'time.schedule.invalid', { id: schedule?.id ?? null }); continue }
+      try {
+        schedule.__parsed = parsedOf(schedule, now, timeZone)
+      } catch (error) {
+        state.stats.dropped += 1
+        log('warn', 'time.schedule.unparsable', { id: schedule.id, at: schedule.at, error: String(error?.message ?? error) })
+        continue
+      }
+      // 一次性安排超过补发窗口就显式丢弃（记录漏响），不要留在表里永远不响。
+      if (schedule.__parsed.kind === 'once' && now - schedule.__parsed.at > onceCatchUpMs) {
+        state.stats.missed += 1
+        log('warn', 'time.schedule.missed', { id: schedule.id, at: stampAt(schedule.__parsed.at, timeZone) })
+        continue
+      }
+      kept.push(schedule)
+    }
+    state.schedules = kept
+    // fired 只保留最近 N 天，避免 time.json 单调膨胀
+    for (const [key, at] of Object.entries(state.fired)) {
+      if (Number(at) > 0 && now - Number(at) > firedRetentionMs) delete state.fired[key]
+    }
+    // 睡眠/暂停中但 pausedAt 丢了：从现在开始算暂停（不假装没暂停过）。
+    if (state.phase === 'paused' && state.pausedAt == null) state.pausedAt = now
+    if (state.lock && !(Number(state.lock.until) > now)) {
+      log('warn', 'time.lock.expired-on-boot', { until: state.lock.until })
+      state.lock = null
+    }
+    state.queue = state.queue.filter((item) => item && typeof item === 'object')
+  })()
+
+  // 运行时（不落盘）
   const goalLeases = new Map()
   let sleepLease = null
-  let pausedAt = null
+  let gateRemover = null
+  let ticking = false
 
   function persist() {
+    dirty = false
     try {
-      fs.mkdirSync(path.dirname(stateFile), { recursive: true })
-      fs.writeFileSync(stateFile, JSON.stringify(state, null, 1), 'utf8')
-    } catch (error) { ctx.log({ level: 'warn', msg: 'time.persist', error: String(error?.message ?? error) }) }
+      fs.mkdirSync(dir, { recursive: true })
+      const body = JSON.stringify(sanitizeState(), null, 1)
+      const tmp = `${stateFile}.tmp-${process.pid}`
+      fs.writeFileSync(tmp, body, 'utf8')
+      try { fs.renameSync(tmp, stateFile) } catch (renameError) {
+        // 少数 Windows 场景下 rename 会被占用；退回直接写，并留下记录。
+        fs.writeFileSync(stateFile, body, 'utf8')
+        try { fs.unlinkSync(tmp) } catch { /* 临时文件清不掉不致命 */ }
+        log('warn', 'time.persist.rename-fallback', { error: String(renameError?.message ?? renameError) })
+      }
+      state.lastPersistError = null
+    } catch (error) {
+      dirty = true
+      state.lastPersistError = { at: ctx.now(), error: String(error?.message ?? error) }
+      log('warn', 'time.persist', { error: String(error?.message ?? error) })
+    }
+  }
+
+  function writeSideFile(file, body) {
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(file, body, 'utf8')
+    } catch (error) { log('warn', 'time.side-file', { file: path.basename(file), error: String(error?.message ?? error) }) }
   }
 
   function send({ kind = 'notice', text, focus: target = null, tags = [] }) {
     return signals.offer({ from: { plugin: 'time', activity: 'schedule' }, kind, text, focus: target, tags })
   }
 
+  /* ── 积压：有界、不丢、过期有计数 ── */
+
   function enqueue(signal, reason) {
+    if (state.queue.length >= maxQueue) {
+      const dropped = state.queue.shift()
+      state.stats.dropped += 1
+      state.stats.overflow += 1
+      log('warn', 'time.queue.overflow', { max: maxQueue, dropped: dropped?.id ?? null, from: dropped?.from?.plugin ?? null })
+    }
     state.queue.push({
-      id: `q-${state.queue.length + 1}-${Date.now()}`,
-      from: signal.from, kind: signal.kind, text: signal.text, tags: signal.tags ?? [],
-      focus: signal.focus ?? null, reason, at: ctx.now(), expiresAt: signal.expiresAt ?? null,
+      id: `q-${++queueSeq}-${Date.now().toString(36)}`,
+      from: { plugin: signal.from?.plugin ?? '?', activity: signal.from?.activity ?? null },
+      kind: signal.kind ?? 'notice',
+      text: String(signal.text ?? '').slice(0, 500),
+      tags: Array.isArray(signal.tags) ? signal.tags.slice(0, 8) : [],
+      focus: signal.focus ?? null,
+      reason,
+      at: ctx.now(),
+      expiresAt: signal.expiresAt ?? null,
     })
     persist()
   }
+  let queueSeq = 0
+
+  function reasonCounts() {
+    const counts = new Map()
+    for (const item of state.queue) counts.set(item.from?.plugin ?? '?', (counts.get(item.from?.plugin ?? '?') ?? 0) + 1)
+    return [...counts.entries()].map(([plugin, n]) => `${plugin} ${n}`).join('、')
+  }
+
+  function buildBacklogText(reason, items, expired = 0) {
+    const shown = items.slice(0, backlogShow)
+    const lines = shown.map((item) => {
+      const source = item.from?.activity ? `${item.from.plugin}/${item.from.activity}` : (item.from?.plugin ?? '?')
+      return `· [${source}] ${String(item.text ?? '')}`.slice(0, 240)
+    })
+    let body = lines.join('\n')
+    const more = items.length - shown.length
+    if (more > 0) body += `\n…还有 ${more} 条（${reasonCounts()}）`
+    if (body.length > backlogMaxChars) body = `${body.slice(0, backlogMaxChars - 1)}…`
+    const expiredNote = expired > 0 ? `；另有 ${expired} 条已过期` : ''
+    return `（${reason}）积压了 ${items.length} 条消息${expiredNote}：\n${body}`
+  }
+
+  /**
+   * 释放积压。只有真的被 signals 接收后才清空；接收失败留在队列里下次再试（不丢）。
+   * 只在 awake 时释放；睡眠/暂停中调用是空操作（保持积压）。
+   */
+  function flushQueue(reason) {
+    if (!state.queue.length) return 0
+    const now = ctx.now()
+    let expired = 0
+    const fresh = []
+    for (const item of state.queue) {
+      if (item.expiresAt != null && Number(item.expiresAt) <= now) { expired += 1; continue }
+      fresh.push(item)
+    }
+    if (expired) { state.stats.expired += expired; log('warn', 'time.queue.expired', { count: expired, reason }) }
+    if (!fresh.length) { state.queue = []; persist(); return 0 }
+    if (state.phase !== 'awake') { persist(); return 0 }
+    const outcome = send({ kind: 'notice', text: buildBacklogText(reason, fresh, expired), tags: ['backlog'] })
+    if (outcome && outcome.accepted === false) {
+      state.stats.failed += 1
+      log('warn', 'time.queue.release-failed', { reason: outcome.reason ?? outcome.error ?? 'unknown', count: fresh.length })
+      persist()
+      return 0
+    }
+    state.queue = []
+    persist()
+    return fresh.length
+  }
+
+  function activeSleepSpan() {
+    return state.spans.find((span) => span.sleep && span.id === state.sleepingId) ?? null
+  }
+
+  function isEmergency(signal) {
+    const plugin = String(signal.from?.plugin ?? '')
+    if (emergencyFrom && !emergencyFrom.includes(plugin)) return false
+    const tags = Array.isArray(signal.tags) ? signal.tags.map(String) : []
+    return tags.some((tag) => emergencyTags.includes(tag))
+  }
+
+  /* ── 唯一拦截层 ── */
 
   function gate(signal) {
+    if (!signal || typeof signal !== 'object') return { accept: true }
+    // 事件总线（to:'plugin'）不是"给模型的消息"：不拦、不进积压。
+    if (signal.to === 'plugin') return { accept: true }
+    // 她自己的闹钟/结束语/目标续推：静音不关自己的闹钟（FOCUS.md §1.6）。
     if (signal.from?.plugin === 'time') return { accept: true }
     if (state.phase === 'paused') { enqueue(signal, 'paused'); return { accept: false, reason: 'paused' } }
+    // 静音优先于睡眠：静音期间连睡眠白名单也不放（除非锁自己的白名单/紧急配额）。
+    if (state.lock) {
+      if (allowMatch(state.lock.allow, signal)) return { accept: true }
+      if (isEmergency(signal)) {
+        const quota = Number(state.lock.emergency?.quota ?? 0)
+        const used = Number(state.lock.emergency?.used ?? 0)
+        if (used < quota) {
+          state.lock.emergency.used = used + 1
+          state.lock.emergency.log = [...(state.lock.emergency.log ?? []), { at: ctx.now(), plugin: signal.from?.plugin ?? '?', text: String(signal.text ?? '').slice(0, 120) }].slice(-20)
+          persist()
+          log('info', 'time.lock.emergency', { plugin: signal.from?.plugin ?? '?', used: used + 1, quota })
+          return { accept: true, emergency: true }
+        }
+        enqueue(signal, 'muted-quota')
+        return { accept: false, reason: 'muted-quota' }
+      }
+      enqueue(signal, 'muted')
+      return { accept: false, reason: 'muted' }
+    }
     if (state.phase === 'sleeping') {
-      const schedule = state.schedules.find((s) => s.id === state.sleepingId)
-      if (allowMatch(schedule?.allow ?? DEFAULT_ALLOW, signal)) return { accept: true }
+      const span = activeSleepSpan()
+      const allow = Array.isArray(span?.allow) ? span.allow : DEFAULT_ALLOW
+      if (allowMatch(allow, signal)) return { accept: true }
       enqueue(signal, 'sleeping')
       return { accept: false, reason: 'sleeping' }
     }
     return { accept: true }
   }
 
-  function flushQueue(reason) {
-    if (!state.queue.length) return 0
-    const now = ctx.now()
-    const fresh = state.queue.filter((item) => !item.expiresAt || item.expiresAt > now)
-    state.queue = []
-    if (!fresh.length) { persist(); return 0 }
-    const body = fresh.map((item) => `· [${item.from?.plugin ?? '?'}] ${item.text}`).join('\n')
-    send({ kind: 'notice', text: `（${reason}）积压了 ${fresh.length} 条消息：\n${body}`, tags: ['backlog'] })
-    persist()
-    return fresh.length
+  /* ── 静音锁 ── */
+
+  function activeLock() {
+    if (!state.lock) return null
+    if (ctx.now() >= Number(state.lock.until)) return null
+    return state.lock
   }
 
+  function mute(input = {}) {
+    const now = ctx.now()
+    let until = null
+    if (input.until != null) {
+      until = parseUntil(input.until, now, timeZone)
+      if (until == null) throw new Error(`until 格式应为 ISO、HH:mm 或 in 式时长：${input.until}`)
+    }
+    const minutes = input.minutes ?? input.min ?? input.durationMin ?? null
+    if (until == null) until = now + Math.max(1, Number(minutes ?? defaultMuteMin)) * 60_000
+    if (!(until > now)) throw new Error('静音结束时间必须晚于现在')
+    const capped = Math.min(until, now + maxMuteMs)
+    const before = state.lock
+    state.lock = {
+      muted: true,
+      since: now,
+      until: capped,
+      reason: String(input.reason ?? '').slice(0, 200),
+      allow: Array.isArray(input.allow) ? input.allow : [],
+      emergency: {
+        quota: Math.max(0, Number(input.emergencyQuota ?? emergencyQuotaDefault) || 0),
+        used: 0,
+        log: [],
+      },
+    }
+    persist()
+    emitEvent({ from: { plugin: 'time', activity: 'lock' }, kind: 'event', text: 'mute-start', tags: ['mute'], meta: { until: capped, reason: state.lock.reason, replaced: Boolean(before) } })
+    log('info', 'time.mute', { until: stampAt(capped, timeZone), minutes: Math.round((capped - now) / 60_000), reason: state.lock.reason })
+    return { muted: true, until: capped, allow: state.lock.allow, emergencyQuota: state.lock.emergency.quota }
+  }
+
+  function unmute(reason = 'manual') {
+    const before = state.lock
+    if (!before) return { muted: false, released: 0 }
+    state.lock = null
+    persist()
+    emitEvent({ from: { plugin: 'time', activity: 'lock' }, kind: 'event', text: 'mute-end', tags: ['mute'], meta: { reason } })
+    log('info', 'time.unmute', { reason, durationMin: Math.round((ctx.now() - before.since) / 60_000) })
+    const released = flushQueue(reason === 'timeout' ? '静音到点' : '静音结束')
+    return { muted: false, released, since: before.since, until: before.until }
+  }
+
+  function expireLock(at) {
+    if (!state.lock) return
+    if (at >= Number(state.lock.until)) unmute('timeout')
+  }
+
+  /* ── 目标（会话轴） ── */
+
   function goalMessage(goal) {
-    const left = goal.turnLimit == null ? '' : `（还剩 ${goal.turnLimit} 轮）`
-    return `你在目标内：${goal.theme}${left}。若退出，请取消这个安排。`
+    const bits = []
+    if (goal.turnLimit != null) bits.push(`还剩 ${goal.turnLimit} 轮`)
+    if (goal.until != null) bits.push(`到 ${stampAt(goal.until, timeZone)} 结束`)
+    const tail = bits.length ? `（${bits.join('，')}）` : ''
+    return `你在目标内：${goal.theme}${tail}。id=${goal.id}，不用时用 time_cancel 取消，别留着空跑。`
+  }
+
+  function goalExpired(goal, reason) {
+    send({ kind: 'goal', text: `目标结束：${goal.theme}（${goal.id}${reason ? `，${reason}` : ''}）。`, tags: ['goal', 'ended'], focus: goal.focus })
+    removeGoal(goal.id)
   }
 
   function addGoal(input = {}) {
     const theme = String(input.theme ?? input.message ?? '').trim()
     if (!theme) throw new Error('目标需要 theme')
+    const now = ctx.now()
     let until = null
     if (input.until != null) {
-      const parsed = Date.parse(String(input.until))
-      if (Number.isFinite(parsed)) until = parsed
-    } else if (input.durationMin != null) {
-      until = ctx.now() + Math.max(1, Number(input.durationMin)) * 60_000
+      until = parseUntil(input.until, now, timeZone)
+      if (until == null) throw new Error(`until 格式应为 ISO、HH:mm 或 in 式时长：${input.until}`)
+    } else {
+      const relMs = parseIn(input.afterMin != null ? `${input.afterMin}m` : (input.in ?? null))
+      const durationMs = parseIn(input.durationMin != null ? `${input.durationMin}m` : (input.duration ?? null))
+      const span = relMs ?? durationMs
+      if (span != null) until = now + span
     }
+    if (until != null && until <= now) throw new Error('目标结束时间必须晚于现在')
     const goal = {
-      id: String(input.id ?? `g-${state.goals.length + 1}`),
-      theme, until,
+      id: String(input.id ?? `g-${randomUUID().slice(0, 8)}`),
+      theme: theme.slice(0, 200),
+      until,
       turnLimit: input.turnLimit == null ? null : Math.max(1, Number(input.turnLimit) || 1),
+      resumeLimit: input.resumeLimit == null ? goalMaxResumes : Math.max(1, Number(input.resumeLimit) || 1),
+      resumes: 0,
       focus: input.focus == null ? null : String(input.focus),
       resumeOnStop: input.resumeOnStop !== false,
-      createdAt: ctx.now(),
+      createdAt: now,
+      lastResumeAt: null,
+    }
+    const existing = state.goals.find((g) => g.id === goal.id)
+    if (existing) {
+      const lease = goalLeases.get(existing.id)
+      if (lease) { try { lease.release?.() } catch { /* 已经释放 */ } goalLeases.delete(existing.id) }
     }
     state.goals = state.goals.filter((g) => g.id !== goal.id).concat(goal)
     if (goal.focus && focusApi?.enter) {
@@ -230,11 +792,13 @@ export function apply(ctx) {
           title: goal.theme,
           goal: goal.theme,
           interruptible: true,
+          kind: 'goal',
         }))
-      } catch { /* ignore */ }
+      } catch (error) { log('warn', 'time.goal.focus', { id: goal.id, error: String(error?.message ?? error) }) }
     }
     send({ kind: 'goal', text: goalMessage(goal), tags: ['goal'], focus: goal.focus })
     persist()
+    log('info', 'time.goal.add', { id: goal.id, until, turnLimit: goal.turnLimit, focus: goal.focus })
     return goal
   }
 
@@ -243,202 +807,362 @@ export function apply(ctx) {
     const before = state.goals.length
     state.goals = state.goals.filter((g) => g.id !== key)
     const lease = goalLeases.get(key)
-    if (lease) { try { lease.release?.() } catch { /* ignore */ } goalLeases.delete(key) }
+    if (lease) { try { lease.release?.() } catch { /* 已经释放 */ } goalLeases.delete(key) }
     persist()
     return { removed: before !== state.goals.length }
   }
 
+  /** turn-end 续推：有轮次/时间/续推次数上限，超限就结束并释放。 */
   function resumeGoals() {
     if (state.phase !== 'awake') return 0
-    let n = 0
+    let sent = 0
     for (const goal of [...state.goals]) {
       if (!goal.resumeOnStop) continue
+      const now = ctx.now()
+      if (goal.until != null && now >= goal.until) { goalExpired(goal, '时间到'); continue }
       if (goal.turnLimit != null) {
-        if (goal.turnLimit <= 0) {
-          send({ kind: 'goal', text: `目标结束：${goal.theme}。`, tags: ['goal', 'ended'] })
-          removeGoal(goal.id)
-          continue
-        }
+        if (goal.turnLimit <= 0) { goalExpired(goal, '轮次用完'); continue }
         goal.turnLimit -= 1
       }
-      send({ kind: 'goal', text: goalMessage(goal), tags: ['goal', 'resume'] })
-      n += 1
+      goal.resumes = Number(goal.resumes ?? 0) + 1
+      const limit = Number(goal.resumeLimit ?? goalMaxResumes)
+      if (goal.resumes > limit) { goalExpired(goal, `连续唤醒到上限 ${limit} 次`); continue }
+      if (now - Number(goal.createdAt ?? now) > goalMaxAgeMs) { goalExpired(goal, '目标存在时间过久'); continue }
+      goal.lastResumeAt = now
+      send({ kind: 'goal', text: goalMessage(goal), tags: ['goal', 'resume'], focus: goal.focus })
+      sent += 1
     }
     persist()
-    return n
+    return sent
   }
 
-  async function startSchedule(schedule) {
-    const now = ctx.now()
-    // 通用日历事件：time 不认识 dream/任何消费者，只把"哪条安排响了"发出去；
-    // 插件按 tags 订阅（dream 的每日安排就是 tags:['dream']）。
-    try {
-      ctx.signals.emit({
-        from: { plugin: 'time', activity: 'schedule' },
-        kind: 'event',
-        text: `schedule:${schedule.id}`,
-        tags: ['schedule-start', ...(Array.isArray(schedule.tags) ? schedule.tags : [])],
-        meta: {
-          scheduleId: schedule.id,
-          mode: schedule.mode,
-          kind: schedule.kind,
-          sleep: Boolean(schedule.sleep),
-          message: schedule.message ?? '',
-          at: now,
-        },
-      })
-    } catch { /* 没有信号服务时仍按本安排原有行为走 */ }
-    if (schedule.mode === 'goal') {
-      addGoal({
-        theme: schedule.theme || schedule.message || schedule.id,
-        until: schedule.until ?? null,
-        durationMin: schedule.durationMin,
-        turnLimit: schedule.turnLimit,
-        focus: schedule.focus,
-      })
-    } else if (schedule.kind === 'span') {
-      const endAt = schedule.until ?? now + (Number(schedule.durationMin) || 0) * 60_000
-      if (schedule.sleep) {
-        state.phase = 'sleeping'
-        state.sleepingId = schedule.id
-        state.since = now
-        state.sleepUntil = endAt
-        if (focusApi?.enter) { try { sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false }) } catch { sleepLease = null } }
-      }
-      if (!schedule.silent) {
-        send({
-          kind: 'wake',
-          text: schedule.message || (schedule.sleep
-          ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
-          : `开始了：${schedule.id}`),
-          tags: [schedule.sleep ? 'sleep' : 'span'],
-        })
-      }
-      state.spans.push({
-        id: schedule.id,
-        until: endAt,
-        endMessage: schedule.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${schedule.id}`,
-        sleep: Boolean(schedule.sleep),
-      })
-      if (schedule.sleep) {
-        try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] }) } catch { /* ignore */ }
-      }
-    } else {
-      if (!schedule.silent) send({ kind: 'wake', text: schedule.message || `到点了：${schedule.id}`, tags: ['wake'] })
-    }
-    state.fired[`${schedule.id}@${dayKey(now)}`] = now
-    persist()
-    return { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
-  }
+  /* ── 安排（时间轴） ── */
 
-  async function endSpan(span) {
-    state.spans = state.spans.filter((s) => s.id !== span.id)
-    if (span.sleep && state.phase === 'sleeping') {
-      state.phase = 'awake'
-      state.sleepingId = null
-      state.sleepUntil = null
-      state.since = ctx.now()
-      if (sleepLease) { try { sleepLease.release?.() } catch { /* ignore */ } sleepLease = null }
-      try { ctx.signals.emit({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] }) } catch { /* ignore */ }
-      send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
-      return { ended: true, released: flushQueue('你睡觉时') }
-    }
-    send({ kind: 'wake', text: span.endMessage, tags: ['span'] })
-    return { ended: true, released: 0 }
+  function scheduleSignature(schedule) {
+    const parsed = schedule.__parsed ?? parsedOf(schedule, ctx.now(), timeZone)
+    if (parsed.kind === 'once') return `once|${parsed.at}`
+    if (parsed.kind === 'daily') return `daily|${parsed.hour}:${parsed.minute}`
+    return `weekly|${(parsed.weekdays ?? []).join(',')}|${parsed.hour}:${parsed.minute}`
   }
 
   function clearFired(id) {
     const prefix = `${id}@`
-    for (const key of Object.keys(state.fired)) {
-      if (key.startsWith(prefix)) delete state.fired[key]
-    }
+    for (const key of Object.keys(state.fired)) if (key.startsWith(prefix)) delete state.fired[key]
+  }
+
+  /** 重复安排新建/改期时：如果今天的触发点已经过去，把它记成"本轮已过"，从下一次开始。 */
+  function markPastOccurrence(schedule) {
+    const parsed = schedule.__parsed
+    if (!parsed || parsed.kind === 'once') return
+    const now = ctx.now()
+    const point = occurrenceAt(parsed, now, timeZone)
+    if (point == null) return
+    if (now - point > catchUpMs) state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = -Math.max(1, point)
   }
 
   function addSchedule(input) {
-    const schedule = normalizeSchedule(input, ctx.now())
+    const schedule = normalizeSchedule(input, ctx.now(), { timeZone })
     state.schedules = state.schedules.filter((s) => s.id !== schedule.id).concat(schedule)
-    // 同一个 id 取消/改期后今天还能再响；否则 fired 会把它永久挡在今天之外。
+    // 同一个 id 重新安排 = 重新计时；清掉 fired，否则今天不会响。
     clearFired(schedule.id)
+    markPastOccurrence(schedule)
     persist()
+    log('info', 'time.schedule.add', { id: schedule.id, mode: schedule.mode, kind: schedule.kind, at: schedule.at })
     return schedule
   }
 
-  function removeSchedule(id) {
+  function dropSchedule(id) {
     const before = state.schedules.length
     state.schedules = state.schedules.filter((s) => s.id !== String(id))
+    return { removed: before !== state.schedules.length }
+  }
+
+  function removeSchedule(id) {
+    const out = dropSchedule(id)
     clearFired(String(id))
     persist()
-    return { removed: before !== state.schedules.length }
+    return out
   }
 
   function editSchedule(id, patch = {}) {
     const current = state.schedules.find((s) => s.id === String(id))
     if (!current) return { edited: false }
-    const next = normalizeSchedule({ ...current, ...patch, id: current.id }, ctx.now())
+    const merged = { ...current, ...patch, id: current.id }
+    // 旧实现：current 一定带 at，导致 {id, in} 静默无效。这里让 in 显式压过旧 at。
+    if (patch.in != null && patch.at == null) merged.at = null
+    const next = normalizeSchedule(merged, ctx.now(), { timeZone })
+    const pointChanged = scheduleSignature(current) !== scheduleSignature(next)
     state.schedules = state.schedules.map((s) => (s.id === current.id ? next : s))
-    clearFired(current.id)
+    if (pointChanged) { clearFired(current.id); markPastOccurrence(next) }
+    // 进行中的长日程：编辑后同步结束时间（旧实现改不动已经开始的 span）。
+    const span = state.spans.find((s) => s.id === current.id)
+    if (span && next.durationMin != null) {
+      span.until = ctx.now() + next.durationMin * 60_000
+      span.endMessage = next.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${next.id}`
+      if (span.sleep && state.sleepingId === span.id) {
+        state.sleepUntil = span.until
+        state.since = ctx.now()
+      }
+    }
     persist()
+    log('info', 'time.schedule.edit', { id: current.id, pointChanged, at: next.at })
     return { edited: true, schedule: next }
   }
 
+  /** 统一取消：长日程、安排、目标（同 id 全清），目标绑定的 focus 一起释放。 */
+  function cancel(id) {
+    const key = String(id)
+    const parts = []
+    const span = state.spans.find((s) => s.id === key)
+    if (span) { endSpan(span); parts.push('长日程') }
+    if (removeSchedule(key).removed) parts.push('安排')
+    if (removeGoal(key).removed) parts.push('目标')
+    if (!parts.length) return { cancelled: false }
+    persist()
+    log('info', 'time.cancel', { id: key, parts })
+    return { cancelled: true, parts }
+  }
+
+  function startSchedule(schedule) {
+    const now = ctx.now()
+    const parsed = schedule.__parsed ?? parsedOf(schedule, now, timeZone)
+    // 通用日历事件：time 不认识消费者，插件按 tags 订阅（dream 的每日安排就是 tags:['dream']）。
+    emitEvent({
+      from: { plugin: 'time', activity: 'schedule' },
+      kind: 'event',
+      text: `schedule:${schedule.id}`,
+      tags: ['schedule-start', ...(Array.isArray(schedule.tags) ? schedule.tags : [])],
+      meta: {
+        scheduleId: schedule.id, mode: schedule.mode, kind: schedule.kind,
+        sleep: Boolean(schedule.sleep), silent: Boolean(schedule.silent),
+        message: schedule.message ?? '', at: now,
+      },
+    })
+    let outcome = { started: true }
+    if (schedule.mode === 'goal') {
+      addGoal({
+        theme: schedule.theme || schedule.message || schedule.id,
+        until: schedule.until ?? null,
+        durationMin: schedule.until == null ? schedule.durationMin : null,
+        turnLimit: schedule.turnLimit,
+        resumeLimit: schedule.resumeLimit,
+        focus: schedule.focus,
+      })
+      outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
+    } else if (schedule.kind === 'span') {
+      if (schedule.sleep && activeSleepSpan()) {
+        // 已经在睡：不叠加第二层睡眠（旧实现里第二层会在旧 span 结束时提前把 phase 切醒）。
+        log('warn', 'time.sleep.overlap', { existing: state.sleepingId, ignored: schedule.id })
+        outcome = { started: false, reason: 'already-sleeping' }
+      } else {
+        const endAt = schedule.until ?? now + (Number(schedule.durationMin) || 0) * 60_000
+        if (schedule.sleep) {
+          state.phase = 'sleeping'
+          state.sleepingId = schedule.id
+          state.since = now
+          state.sleepUntil = endAt
+          if (focusApi?.enter && !sleepLease) {
+            try {
+              sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
+            } catch (error) { log('warn', 'time.sleep.focus', { error: String(error?.message ?? error) }) }
+          }
+        }
+        if (!schedule.silent) {
+          const text = schedule.message || (schedule.sleep
+            ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
+            : `开始了：${schedule.id}`)
+          const sent = send({ kind: 'wake', text, tags: [schedule.sleep ? 'sleep' : 'span'] })
+          if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
+        }
+        state.spans.push({
+          id: schedule.id,
+          until: endAt,
+          endMessage: schedule.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${schedule.id}`,
+          sleep: Boolean(schedule.sleep),
+          silent: Boolean(schedule.silent),
+          allow: Array.isArray(schedule.allow) ? schedule.allow : DEFAULT_ALLOW,
+        })
+        if (schedule.sleep) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] })
+        outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
+      }
+    } else if (!schedule.silent) {
+      const sent = send({ kind: 'wake', text: schedule.message || `到点了：${schedule.id}`, tags: ['wake'] })
+      if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
+      outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
+    }
+    // fired 的日期用"触发点所在的那一天"，不是"现在"：跨午夜补响（daily 23:55 在
+    // 00:05 才跑到）时记到昨天，今晚 23:55 还能正常响。
+    const point = occurrenceAt(parsed, now, timeZone) ?? now
+    state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
+    persist()
+    return outcome
+  }
+
+  function endSpan(span) {
+    const known = state.spans.some((s) => s.id === span.id)
+    if (!known) return { ended: false }
+    state.spans = state.spans.filter((s) => s.id !== span.id)
+    const isActiveSleep = span.sleep && state.sleepingId === span.id
+    if (isActiveSleep) {
+      // pause 期间被 cancel 时保持 paused（暂停是全局计时模式，不因结束睡眠而解除）。
+      state.phase = state.phase === 'paused' ? 'paused' : 'awake'
+      state.sleepingId = null
+      state.sleepUntil = null
+      state.since = ctx.now()
+      emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
+      if (!span.silent) send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
+      const released = flushQueue('你睡觉时')
+      // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
+      if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+      persist()
+      return { ended: true, released }
+    }
+    // 非活动 span（例如旧睡眠被新睡眠顶掉之后才到期）：只清理，不再发结束语吵人。
+    persist()
+    return { ended: true, released: 0, stale: true }
+  }
+
+  /* ── 暂停（冻结计时，不只是停 tick） ── */
+
   function pause() {
-    if (state.phase !== 'paused') pausedAt = ctx.now()
+    if (state.phase === 'paused') return { paused: true, already: true, since: state.pausedAt }
+    state.pausedAt = ctx.now()
     state.phase = 'paused'
     persist()
-    return { paused: true }
+    log('info', 'time.pause', { at: state.pausedAt })
+    return { paused: true, since: state.pausedAt }
   }
 
   function resume() {
     if (state.phase !== 'paused') return { resumed: false, phase: state.phase }
-    const delta = pausedAt ? ctx.now() - pausedAt : 0
-    // 暂停的是计时：进行中的 span 整体后移
-    for (const span of state.spans) span.until += delta
-    if (state.sleepUntil) state.sleepUntil += delta
-    pausedAt = null
-    state.phase = state.sleepingId ? 'sleeping' : 'awake'
-    state.since = ctx.now()
+    const now = ctx.now()
+    const delta = state.pausedAt ? Math.max(0, now - state.pausedAt) : 0
+    // 冻结的是"计时"：长日程、目标期限、一次性安排、静音锁、睡眠结束都整体后移。
+    for (const span of state.spans) span.until = Number(span.until) + delta
+    if (state.sleepUntil) state.sleepUntil = Number(state.sleepUntil) + delta
+    for (const goal of state.goals) if (goal.until != null) goal.until = Number(goal.until) + delta
+    for (const schedule of state.schedules) {
+      if (schedule.__parsed?.kind !== 'once') continue
+      schedule.__parsed.at = Number(schedule.__parsed.at) + delta
+      schedule.at = new Date(schedule.__parsed.at).toISOString()
+    }
+    if (state.lock) state.lock.until = Number(state.lock.until) + delta
+    state.pausedAt = null
+    const sleeping = Boolean(activeSleepSpan())
+    state.phase = sleeping ? 'sleeping' : 'awake'
+    state.since = now
     persist()
-    const released = flushQueue('暂停期间')
-    return { resumed: true, released }
+    // 恢复后如果还在睡眠，积压应该留到醒来一起放；不要在睡着时倒给模型。
+    const released = sleeping ? 0 : flushQueue('暂停期间')
+    log('info', 'time.resume', { deltaMs: delta, phase: state.phase, released })
+    return { resumed: true, released, phase: state.phase, deltaMs: delta }
   }
 
-  async function tick(at = ctx.now()) {
-    try { processInbox() } catch { /* 控制通道失败不影响主流程 */ }
-    if (state.phase === 'paused') return
-
-    for (const span of [...state.spans]) {
-      if (at >= span.until) await endSpan(span)
+  function wake() {
+    const span = state.spans.find((s) => s.sleep)
+    if (span) return endSpan(span)
+    if (state.phase === 'sleeping') {
+      state.phase = 'awake'
+      state.sleepingId = null
+      state.sleepUntil = null
+      state.since = ctx.now()
+      if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+      send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
+      return { ended: true, released: flushQueue('你睡觉时') }
     }
+    return { ended: false }
+  }
 
-    const alive = []
-    for (const goal of state.goals) {
-      if (goal.until && at >= goal.until) {
-        send({ kind: 'goal', text: `目标结束：${goal.theme}。`, tags: ['goal', 'ended'] })
-        const lease = goalLeases.get(goal.id)
-        if (lease) { try { lease.release?.() } catch { /* ignore */ } goalLeases.delete(goal.id) }
-        continue
+  /* ── tick：到点判定、到期、落盘 ── */
+
+  function pruneFired(now) {
+    for (const [key, at] of Object.entries(state.fired)) {
+      if (Number(at) > 0 && now - Number(at) > firedRetentionMs) delete state.fired[key]
+    }
+  }
+
+  function missedSchedule(schedule, point, now) {
+    state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = -Math.max(1, now)
+    state.stats.missed += 1
+    log('warn', 'time.schedule.missed', { id: schedule.id, at: stampAt(point, timeZone), lateMs: now - point })
+    if (schedule.__parsed?.kind === 'once') dropSchedule(schedule.id)
+  }
+
+  /** 自愈：如果别的插件用旧 setGate 把我们的拦截层整体覆盖了，重新装回去。 */
+  function ensureSignalGate() {
+    if (typeof signals.gates !== 'function' || typeof signals.addGate !== 'function') return
+    if (signals.gates().includes(gate)) return
+    log('warn', 'time.gate.missing', { gates: signals.gates().length })
+    try {
+      gateRemover = signals.addGate(gate) ?? gateRemover
+    } catch (error) { log('warn', 'time.gate.reinstall', { error: String(error?.message ?? error) }) }
+  }
+
+  function tick(at = ctx.now()) {
+    if (ticking) return { skipped: 'reentrant' }
+    ticking = true
+    try {
+      ensureSignalGate()
+      processInbox()
+      if (state.phase === 'paused') { if (dirty) persist(); return { skipped: 'paused' } }
+      expireLock(at)
+
+      for (const span of [...state.spans]) {
+        if (at >= Number(span.until)) endSpan(span)
       }
-      alive.push(goal)
-    }
-    if (alive.length !== state.goals.length) state.goals = alive
 
-    for (const schedule of [...state.schedules]) {
-      const point = pointOf(schedule, at)
-      if (point == null) continue
-      const key = `${schedule.id}@${dayKey(point)}`
-      if (state.fired[key]) continue
-      if (at < point) continue
-      if (schedule.__parsed?.kind === 'once' && at - point > 86_400_000) continue
-      await startSchedule(schedule)
+      const alive = []
+      for (const goal of state.goals) {
+        if (goal.until != null && at >= Number(goal.until)) { goalExpired(goal, '时间到'); continue }
+        alive.push(goal)
+      }
+      if (alive.length !== state.goals.length) state.goals = alive
+
+      for (const schedule of [...state.schedules]) {
+        let parsed
+        try { parsed = parsedOf(schedule, at, timeZone) } catch (error) {
+          log('warn', 'time.schedule.unparsable', { id: schedule.id, error: String(error?.message ?? error) })
+          dropSchedule(schedule.id)
+          continue
+        }
+        const point = occurrenceAt(parsed, at, timeZone)
+        if (point == null || at < point) continue
+        const key = `${schedule.id}@${dayKey(point, timeZone)}`
+        if (state.fired[key]) continue
+        const grace = parsed.kind === 'once' ? onceCatchUpMs : catchUpMs
+        if (at - point > grace) { missedSchedule(schedule, point, at); continue }
+        startSchedule(schedule)
+        // 一次性安排响过就删（daily/weekly 保留）；别在 time.json 里堆一次性的残骸。
+        if (parsed.kind === 'once') dropSchedule(schedule.id)
+      }
+
+      pruneFired(at)
+      if (dirty || state.queue.length || state.spans.length || state.goals.length) persist()
+      return { at }
+    } catch (error) {
+      state.lastTickError = { at, error: String(error?.stack ?? error) }
+      dirty = true
+      writeSideFile(path.join(dir, 'tick-error.json'), String(error?.stack ?? error))
+      log('warn', 'time.tick', { error: String(error?.message ?? error) })
+      return { error: String(error?.message ?? error) }
+    } finally {
+      ticking = false
     }
-    persist()
   }
+
+  /* ── 控制后门：文件邮箱 ── */
+
+  let inboxOffset = state.inboxOffset
 
   function processInbox() {
     let text = ''
-    try { text = fs.readFileSync(inboxFile, 'utf8') } catch { return { processed: 0 } }
-    // 文件被截断/重建时 offset 会比长度大，必须归零，否则永远读不到新命令
-    if (text.length < inboxOffset) inboxOffset = 0
+    try { text = fs.readFileSync(inboxFile, 'utf8') } catch (error) {
+      if (error?.code === 'ENOENT') return { processed: 0 } // 没启用控制后门时文件不存在，正常
+      log('warn', 'time.inbox.read', { error: String(error?.message ?? error) })
+      return { processed: 0 }
+    }
+    // 文件被截断/重建时 offset 会比长度大，必须归零，否则永远读不到新命令。
+    if (text.length < inboxOffset) { log('warn', 'time.inbox.truncated', { offset: inboxOffset, length: text.length }); inboxOffset = 0 }
     if (text.length <= inboxOffset) return { processed: 0 }
     const chunk = text.slice(inboxOffset)
     inboxOffset = text.length
@@ -447,20 +1171,27 @@ export function apply(ctx) {
       const raw = line.trim()
       if (!raw) continue
       let request = null
-      try { request = JSON.parse(raw) } catch { continue }
+      try { request = JSON.parse(raw) } catch {
+        state.stats.inboxBad += 1
+        log('warn', 'time.inbox.bad-line', { line: raw.slice(0, 120) })
+        continue
+      }
       let result
       try {
         result = runCommand(request)
       } catch (error) {
-        try { fs.writeFileSync(path.join(path.dirname(stateFile), 'inbox-error.json'), String(error?.stack ?? error), 'utf8') } catch { /* ignore */ }
+        writeSideFile(path.join(dir, 'inbox-error.json'), String(error?.stack ?? error))
+        log('warn', 'time.inbox.command', { cmd: request?.cmd, error: String(error?.message ?? error) })
         result = { ok: false, error: String(error?.message ?? error) }
       }
       try {
-        fs.mkdirSync(path.dirname(outboxFile), { recursive: true })
+        fs.mkdirSync(dir, { recursive: true })
         fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: ctx.now(), ...result })}\n`, 'utf8')
-      } catch { /* ignore */ }
+      } catch (error) { log('warn', 'time.outbox.write', { error: String(error?.message ?? error) }) }
       processed += 1
     }
+    state.inboxOffset = inboxOffset
+    persist()
     return { processed }
   }
 
@@ -473,13 +1204,23 @@ export function apply(ctx) {
         case 'pause': return { ok: true, result: pause() }
         case 'resume': return { ok: true, result: resume() }
         case 'arrange': return { ok: true, result: addSchedule(args) }
-        case 'cancel': return { ok: true, result: removeSchedule(args.id) }
+        case 'cancel': return { ok: true, result: cancel(args.id) }
         case 'edit': return { ok: true, result: editSchedule(args.id, args) }
         case 'skip': return { ok: true, result: api.skip(args.id) }
         case 'queue': return { ok: true, result: api.queue() }
+        case 'mute': return { ok: true, result: mute(args) }
+        case 'unmute': return { ok: true, result: unmute(args?.reason ?? 'manual') }
+        case 'lock': return { ok: true, result: activeLock() }
+        case 'wake': return { ok: true, result: wake() }
         case 'reset': {
+          for (const lease of goalLeases.values()) { try { lease.release?.() } catch { /* 已经释放 */ } }
+          goalLeases.clear()
+          if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+          const offset = state.inboxOffset
           state = blank()
+          state.inboxOffset = offset
           persist()
+          log('info', 'time.reset', { offset })
           return { ok: true, result: { phase: state.phase } }
         }
         case 'goal_add': return { ok: true, result: addGoal(args) }
@@ -490,185 +1231,395 @@ export function apply(ctx) {
     } catch (error) { return { ok: false, error: String(error?.message ?? error) } }
   }
 
-  if (state.queue.length) flushQueue('日程因重启发生错误')
+  /* ── 查询面 ── */
 
-  signals.setGate(gate)
-  try { ctx.signals.on({ tags: ['turn-end'] }, () => { resumeGoals() }) } catch { /* ignore */ }
+  function phaseText() {
+    return ({ awake: '醒着', sleeping: '睡着', paused: '计时暂停' })[state.phase] ?? state.phase
+  }
+
+  function nextUpcoming(now = ctx.now()) {
+    let best = null
+    for (const schedule of state.schedules) {
+      let parsed
+      try { parsed = parsedOf(schedule, now, timeZone) } catch { continue }
+      const point = nextOccurrence(parsed, now, timeZone)
+      if (point == null) continue
+      if (!best || point < best.point) best = { schedule, parsed, point }
+    }
+    return best
+  }
+
+  function describeSchedule(schedule, now = ctx.now()) {
+    let parsed = null
+    try { parsed = parsedOf(schedule, now, timeZone) } catch { /* 坏数据在清单里显示原文 */ }
+    const bits = []
+    if (parsed) {
+      bits.push(describeParsed(parsed))
+      const next = nextOccurrence(parsed, now, timeZone)
+      if (next != null) bits.push(`${stampAt(next, timeZone)}（${fmtRelative(next, now)}）`)
+    } else {
+      bits.push(`at=${schedule.at}`)
+    }
+    bits.push(schedule.mode === 'goal' ? '目标模式' : '唤醒')
+    if (schedule.kind === 'span') bits.push(`长日程${schedule.durationMin ? ` ${fmtDuration(schedule.durationMin * 60_000)}` : ''}`)
+    if (schedule.sleep) bits.push('睡觉')
+    if (schedule.silent) bits.push('静默')
+    if (Array.isArray(schedule.tags) && schedule.tags.length) bits.push(`tags:${schedule.tags.join('/')}`)
+    const label = schedule.message || schedule.theme || ''
+    return `${schedule.id}：${bits.join('，')}${label ? ` —— ${label}` : ''}`
+  }
+
+  function status() {
+    const now = ctx.now()
+    return {
+      phase: state.phase,
+      since: state.since,
+      sleepingId: state.sleepingId,
+      sleepUntil: state.sleepUntil ?? null,
+      pausedAt: state.pausedAt ?? null,
+      lock: state.lock ? { muted: Boolean(activeLock()), since: state.lock.since, until: state.lock.until, reason: state.lock.reason, allow: state.lock.allow, emergency: { quota: state.lock.emergency?.quota ?? 0, used: state.lock.emergency?.used ?? 0 } } : null,
+      spans: state.spans.map((s) => ({ ...s })),
+      schedules: state.schedules.map(({ __parsed, ...rest }) => rest),
+      backlog: state.queue.length,
+      queueByPlugin: reasonCounts(),
+      goals: state.goals.map((g) => ({ ...g })),
+      missed: state.stats.missed,
+      dropped: state.stats.dropped,
+      expired: state.stats.expired,
+      lastTickError: state.lastTickError,
+      lastPersistError: state.lastPersistError,
+      now,
+    }
+  }
+
+  function statusText() {
+    const now = ctx.now()
+    const lines = [`现在：${stampAt(now, timeZone)}（${phaseText()}${state.phase === 'paused' && state.pausedAt ? `，自 ${stampAt(state.pausedAt, timeZone)}` : ''}）。`]
+    if (state.phase === 'sleeping' && state.sleepUntil) lines.push(`睡到：${stampAt(state.sleepUntil, timeZone)}（${fmtRelative(state.sleepUntil, now)}）。`)
+    if (state.lock) {
+      const lock = state.lock
+      lines.push(`静音：到 ${stampAt(Number(lock.until), timeZone)}（${fmtRelative(Number(lock.until), now)}${lock.reason ? `，${lock.reason}` : ''}；紧急剩余 ${Math.max(0, Number(lock.emergency?.quota ?? 0) - Number(lock.emergency?.used ?? 0))}/${Number(lock.emergency?.quota ?? 0)}）。`)
+    }
+    const next = nextUpcoming(now)
+    if (next) lines.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${fmtRelative(next.point, now)}）。`)
+    if (state.spans.length) {
+      lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)
+    }
+    if (state.goals.length) {
+      lines.push(`目标：${state.goals.map((g) => `${g.id} ${g.theme}${g.turnLimit != null ? `（剩 ${g.turnLimit} 轮）` : ''}${g.until != null ? `（到 ${stampAt(g.until, timeZone)}）` : ''}`).join('；')}。`)
+    }
+    if (state.queue.length) lines.push(`积压：${state.queue.length} 条（${reasonCounts()}）。`)
+    if (state.stats.missed) lines.push(`漏掉：累计 ${state.stats.missed} 条安排（见 tick-error/日志）。`)
+    return lines.join('\n')
+  }
+
+  function listText() {
+    const now = ctx.now()
+    const lines = []
+    const schedules = state.schedules.slice().sort((a, b) => {
+      let pa = nextOccurrence(parsedOf(a, now, timeZone), now, timeZone)
+      let pb = nextOccurrence(parsedOf(b, now, timeZone), now, timeZone)
+      return (pa ?? Infinity) - (pb ?? Infinity) || String(a.id).localeCompare(String(b.id))
+    })
+    if (schedules.length) {
+      lines.push(`安排（${schedules.length}）：`)
+      for (const schedule of schedules.slice(0, listLimit)) lines.push(`· ${describeSchedule(schedule, now)}`)
+      if (schedules.length > listLimit) lines.push(`· …还有 ${schedules.length - listLimit} 条`)
+    } else {
+      lines.push('还没有安排。')
+    }
+    if (state.goals.length) {
+      lines.push(`目标（${state.goals.length}）：`)
+      for (const goal of state.goals) {
+        const bits = [`id=${goal.id}`, goal.theme]
+        if (goal.turnLimit != null) bits.push(`剩 ${goal.turnLimit} 轮`)
+        if (goal.until != null) bits.push(`到 ${stampAt(goal.until, timeZone)}`)
+        bits.push(`已唤醒 ${goal.resumes ?? 0} 次`)
+        if (goal.focus) bits.push(`focus:${goal.focus}`)
+        lines.push(`· ${bits.join('，')}`)
+      }
+    }
+    if (state.queue.length) {
+      lines.push(`积压（${state.queue.length}）：`)
+      for (const item of state.queue.slice(0, listLimit)) {
+        lines.push(`· [${item.from?.plugin ?? '?'}${item.from?.activity ? `/${item.from.activity}` : ''}] ${String(item.text ?? '')}（${item.reason ?? '?'}）`)
+      }
+      if (state.queue.length > listLimit) lines.push(`· …还有 ${state.queue.length - listLimit} 条`)
+    }
+    return lines.join('\n')
+  }
+
+  function timeFacts() {
+    const now = ctx.now()
+    const p = partsOf(now, timeZone)
+    const phase = phaseText()
+    // 精确到分钟会每分钟让提示词前缀失效；DSH 每步已注入精确时间。
+    // 这里给"日期 + 时段 + 阶段"，只有状态变化时才变。
+    const hourText = p.h < 6 ? '凌晨' : p.h < 12 ? '上午' : p.h < 18 ? '下午' : p.h < 23 ? '晚上' : '深夜'
+    let line = `时间：${p.y}-${pad2(p.m)}-${pad2(p.d)} 周${WEEKDAYS_ZH[isoWeekday(now, timeZone) - 1]} ${hourText}；${phase}`
+    if (state.phase === 'sleeping' && state.sleepUntil) line += `（睡到 ${timeOnly(Number(state.sleepUntil), timeZone)}）`
+    if (state.lock) line += `（静音到 ${timeOnly(Number(state.lock.until), timeZone)}）`
+    line += '。'
+    const tail = []
+    const next = nextUpcoming(now)
+    if (next) tail.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${stampAt(next.point, timeZone)}）`)
+    if (state.queue.length) tail.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
+    return tail.length ? `${line}\n${tail.join('；')}。` : line
+  }
+
+  /* ── 对外 API ── */
 
   const api = {
     now: () => ctx.now(),
+    timeZone: () => timeZone,
     phase: () => state.phase,
-    schedules: () => state.schedules.map(({ __parsed, ...s }) => s),
+    schedules: () => state.schedules.map(({ __parsed, ...rest }) => rest),
     queue: () => state.queue.map((q) => ({ ...q })),
     add: addSchedule,
     edit: editSchedule,
     remove: removeSchedule,
+    cancel,
     skip(id) {
       const before = state.queue.length
       state.queue = state.queue.filter((q) => q.id !== String(id))
       persist()
       return { skipped: before !== state.queue.length }
     },
-    async sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = 3 } = {}) {
-      const schedule = addSchedule({ id: `sleep-${Date.now()}`, at: 'now', mode: 'wake', sleep: true, message, durationMin })
+    /** 控制后门/测试用：立即尝试释放积压（只在 awake 时真的发送）。 */
+    flush(reason = '手动') { return flushQueue(reason) },
+    sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = 3, allow = null } = {}) {
+      const schedule = addSchedule({ id: `sleep-${Date.now().toString(36)}`, at: 'now', mode: 'wake', sleep: true, message, durationMin, allow })
       return startSchedule(schedule)
     },
-    async wake() {
-      const span = state.spans.find((s) => s.sleep)
-      if (span) return endSpan(span)
-      if (state.phase === 'sleeping') {
-        state.phase = 'awake'
-        state.sleepingId = null
-        state.sleepUntil = null
-        if (sleepLease) { try { sleepLease.release?.() } catch { /* ignore */ } sleepLease = null }
-        send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
-        return { ended: true, released: flushQueue('你睡觉时') }
-      }
-      return { ended: false }
-    },
+    wake,
     tick,
     processInbox,
     runCommand,
     pause,
     resume,
+    mute,
+    unmute,
+    lock: () => (state.lock ? { ...state.lock } : null),
     setClock(fn) { return clock ? clock.set(fn) : () => {} },
     ownsClock: () => Boolean(clock?.owns?.()),
     addGoal,
     removeGoal,
     goals: () => state.goals.map((g) => ({ ...g })),
     resumeGoals,
-    status: () => ({
-      phase: state.phase,
-      since: state.since,
-      sleepUntil: state.sleepUntil ?? null,
-      spans: state.spans.map((s) => ({ ...s })),
-      schedules: api.schedules(),
-      backlog: state.queue.length,
-      goals: api.goals(),
-    }),
+    status,
+    statusText,
+    listText,
   }
 
+  // ── 提示词：只放事实（PROMPT-CONTRACT §3；order ≥800、无内容时整段消失） ──
+  try {
+    ctx.prompt.section({ name: 'time', order: 880, text: () => timeFacts() })
+  } catch (error) { log('warn', 'time.prompt', { error: String(error?.message ?? error) }) }
+
+  // ── 世界状态：只放"日程"事实（"现在几点"已经由 time section 承担，避免两行"时间："） ──
   if (world?.registerSource) {
-    world.registerSource({
-      id: 'time', owner: 'time', title: '时间', order: 1, cap: 3,
-      items: () => {
-        const phaseText = ({ awake: '醒着', sleeping: '睡着', paused: '暂停' })[state.phase] ?? state.phase
-        const lines = [`现在是 ${stampAt(ctx.now())}；阶段：${phaseText}。`]
-        const next = state.schedules.map((s) => ({ s, at: pointOf(s, ctx.now()) })).filter((x) => x.at > ctx.now()).sort((a, b) => a.at - b.at)[0]
-        if (next) lines.push(`下一个安排：${next.s.id}（${next.s.mode}/${next.s.kind}，${stampAt(next.at)}）。`)
-        if (state.goals.length) lines.push(`进行中的目标：${state.goals.map((g) => g.theme).join('、')}。`)
-        if (state.queue.length) lines.push(`积压：${state.queue.length} 条。`)
-        return lines.map((brief, i) => ({ key: `l${i}`, brief }))
-      },
-    })
+    try {
+      world.registerSource({
+        id: 'time',
+        owner: 'time',
+        title: '日程',
+        order: 5,
+        cap: 3,
+        items: () => {
+          // "现在几点/下一个安排/积压"已经由 time prompt section 陈述（同一事实只有一个家）。
+          // 世界状态只留"进行中/目标"，并靠注册 owner:'time' 抑制 world-state 的兜底时间行。
+          const lines = []
+          if (state.spans.length) lines.push({ key: 'span', brief: `进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。` })
+          if (state.goals.length) lines.push({ key: 'goals', brief: `目标：${state.goals.map((g) => `${g.id} ${g.theme}`).join('；')}。` })
+          return lines
+        },
+      })
+    } catch (error) { log('warn', 'time.world', { error: String(error?.message ?? error) }) }
   }
 
-  // ── 工具面：只围绕"安排"与"时间状态" ───────────────────────────
+  // ── 工具面：安排、状态、清单、编辑/取消、暂停/恢复、静音锁 ──
   const tool = (def) => ctx.tools.register(def)
   tool({
     name: 'time_status',
-    summary: '现在几点、处在什么阶段、有哪些安排在进行、积压了多少。',
+    summary: '现在几点、处在什么阶段、睡到/静音到什么时候、下一个安排、进行中的目标、积压了多少。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() {
-      const s = api.status()
-      const lines = [
-        `现在：${stampAt(ctx.now())}`,
-        `阶段：${s.phase}`,
-      ]
-      if (s.spans.length) lines.push(`进行中：${s.spans.map((x) => `${x.id}${x.sleep ? '（睡觉）' : ''} 到 ${stampAt(x.until)}`).join('；')}`)
-      if (s.goals.length) lines.push(`目标：${s.goals.map((g) => `${g.theme}${g.turnLimit == null ? '' : `（剩 ${g.turnLimit} 轮）`}`).join('；')}`)
-      if (s.backlog) lines.push(`积压：${s.backlog} 条`)
-      return { text: lines.join('\n') }
-    },
+    async execute() { return { text: statusText() } },
   })
   tool({
     name: 'time_arrange',
-    summary: '新建一条安排。mode 决定这次唤醒是"叫她一声"(wake)还是"让她持续做"(goal)；kind 决定单发(single)还是长日程(span)。goal 会持续在 turn 末保底唤醒；不需要被持续唤醒时用 time_cancel 取消，别留着空跑。',
+    summary: '新建一条安排：一次/每天/每周/倒计时到点唤醒；mode:"goal" 则持续在回合末唤醒，直到取消。',
+    description: 'at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"（倒计时，与 at 同给时 at 优先）；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放。weekdays:[1..7] 配 HH:mm 表示每周。silent:true 只发事件不发消息（给插件订阅用，tags 决定谁收到）。focus 绑定注意力空间；turnLimit 限制 goal 的回合数。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
-        mode: { type: 'string', enum: ['wake', 'goal'], description: 'wake=发消息；goal=持续目标' },
+        mode: { type: 'string', enum: ['wake', 'goal'], description: 'wake=到点发一条唤醒；goal=持续目标' },
         kind: { type: 'string', enum: ['single', 'span'], description: 'single=一次；span=有开始和结束' },
-        at: { type: 'string', description: 'HH:mm、ISO 或 now' },
-        in: { type: 'string', description: '多久之后，如 10m / 2h' },
+        at: { type: 'string', description: 'HH:mm（每天）、"周一 07:30"（每周）、ISO、now' },
+        in: { type: 'string', description: '多久之后，如 10m / 2h / 1d' },
         duration: { type: 'string', description: 'span 持续多久，如 8h / 30m' },
         message: { type: 'string', description: '唤醒时说的话（wake）或目标主题（goal）' },
-        theme: { type: 'string' },
-        tags: { type: 'array', items: { type: 'string' }, description: '给安排打标签；插件可按标签订阅 schedule-start 事件' },
+        theme: { type: 'string', description: 'goal 主题，缺省用 message' },
+        tags: { type: 'array', items: { type: 'string' }, description: '给安排打标签；插件按标签订阅 schedule-start 事件' },
         focus: { type: 'string', description: 'goal 绑定的注意力空间' },
-        turnLimit: { type: 'number', description: 'goal+single 的轮次上限' },
+        turnLimit: { type: 'number', description: 'goal 的回合上限' },
         sleep: { type: 'boolean', description: 'wake+span 且要进入睡眠时设 true' },
-        allow: { type: 'array', items: { type: 'object' }, description: '睡眠期间的白名单' },
+        silent: { type: 'boolean', description: '只发事件、不发消息' },
+        allow: { type: 'array', items: { type: 'object' }, description: '睡眠期间的白名单规则 {from,kinds,tags,any}' },
+        id: { type: 'string', description: '安排 id（同名会覆盖）' },
+        weekdays: { type: 'array', items: { type: 'number' }, description: '每周的星期（1=周一…7=周日），配 at:"HH:mm"' },
       },
     },
     async execute(input = {}) {
       const schedule = addSchedule(input)
-      return { text: `安排好了：${schedule.id}（${schedule.mode}/${schedule.kind}，${schedule.at}${schedule.durationMin ? `，持续 ${schedule.durationMin} 分钟` : ''}）。` }
+      const detail = describeSchedule(schedule, ctx.now())
+      return { text: `安排好了：${detail}` }
     },
   })
   tool({
     name: 'time_list',
-    summary: '列出所有安排（包括还没到的、正在进行的）。',
+    summary: '列出所有安排、目标和积压（按下一次触发排序，带相对时间）。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() {
-      const list = api.schedules()
-      const spans = api.status().spans
-      const lines = []
-      if (spans.length) lines.push(...spans.map((s) => `· 进行中 ${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(s.until)}`))
-      lines.push(...list.map((s) => `· ${s.id} ${s.mode}/${s.kind} ${s.at}${s.durationMin ? ` 持续 ${s.durationMin} 分` : ''}${s.sleep ? '（睡觉）' : ''}：${s.message || s.theme || ''}`))
-      return { text: lines.length ? lines.join('\n') : '还没有安排。' }
-    },
+    async execute() { return { text: listText() } },
   })
   tool({
     name: 'time_edit',
-    summary: '修改一条安排：改时间、改消息、改模式都可以。想把安排往后推，就改它的 at/in。',
+    summary: '修改一条安排：改时间、改消息、改模式、改时长；进行中的长日程会同步改结束时间。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['id'], properties: {
         id: { type: 'string' }, at: { type: 'string' }, in: { type: 'string' },
-        message: { type: 'string' }, mode: { type: 'string', enum: ['wake', 'goal'] }, duration: { type: 'string' },
+        message: { type: 'string' }, theme: { type: 'string' },
+        mode: { type: 'string', enum: ['wake', 'goal'] }, duration: { type: 'string' },
+        silent: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
       },
     },
     async execute({ id, ...patch } = {}) {
       const out = editSchedule(id, patch)
-      return { text: out.edited ? `改好了：${id}` : `没有这个安排：${id}` }
+      return { text: out.edited ? `改好了：${describeSchedule(out.schedule, ctx.now())}` : `没有这个安排：${id}` }
     },
   })
   tool({
     name: 'time_cancel',
-    summary: '取消一条安排（进行中的长日程会立刻结束，绑定的目标与注意力空间一起释放）。',
+    summary: '取消一条安排/长日程/目标（同一个 id 一次全清），目标绑定的专注空间一起释放。',
     parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string' } } },
     async execute({ id } = {}) {
-      const span = state.spans.find((s) => s.id === String(id))
-      if (span) { await endSpan(span); return { text: `结束了：${id}` } }
-      const removed = removeSchedule(id)
-      if (removed.removed) return { text: `取消了：${id}` }
-      const goalRemoved = removeGoal(id)
-      return { text: goalRemoved.removed ? `目标已取消：${id}` : `没有这个安排：${id}` }
+      const out = cancel(id)
+      return { text: out.cancelled ? `已取消：${id}（${out.parts.join('、')}）` : `没有这个安排：${id}` }
     },
   })
   tool({
     name: 'time_pause',
-    summary: '暂停计时：进行中的安排不再推进，消息全部积压。',
+    summary: '暂停计时：所有到点、长日程、目标期限一起冻结，外部消息转为积压。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() { pause(); return { text: '已暂停计时。' } },
+    async execute() { const out = pause(); return { text: out.already ? '已经是暂停状态。' : '已暂停计时。' } },
   })
   tool({
     name: 'time_resume',
-    summary: '恢复计时，并把暂停期间积压的消息放出来。',
+    summary: '恢复计时（暂停时长会整体后移所有期限）；不是暂停状态时如实返回。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() { const out = resume(); return { text: out.resumed ? `恢复了，释放了 ${out.released ?? 0} 条。` : `当前不是暂停状态：${out.phase}` } },
+    async execute() {
+      const out = resume()
+      if (!out.resumed) return { text: `当前不是暂停状态：${out.phase}` }
+      return { text: `恢复了（${fmtDuration(out.deltaMs)}后移），释放了 ${out.released ?? 0} 条${out.phase === 'sleeping' ? '；还在睡眠，积压留到醒来' : ''}。` }
+    },
+  })
+  tool({
+    name: 'time_mute',
+    summary: '静音：暂时拦下所有外部消息（可留白名单与紧急配额），到点自动恢复，自己的闹钟不受影响。',
+    description: 'minutes 默认 30；until 可给 ISO/HH:mm/in 式时长，最长 8 小时（超时自动解除，不会把系统卡死）。allow 是白名单规则（同睡眠）。emergencyQuota 是紧急消息放行次数（默认 2）；紧急消息指带 alarm/safety/emergency 标签的来源。静音期间 to:"model" 的外部信号进有界积压。time_status 查剩余，time_unmute 立刻恢复并释放积压摘要。',
+    parameters: {
+      type: 'object', additionalProperties: false, properties: {
+        minutes: { type: 'number', description: '静音多少分钟（默认 30，最长 480）' },
+        until: { type: 'string', description: '结束时间：ISO / HH:mm / 如 2h' },
+        reason: { type: 'string', description: '为什么安静一会儿（给自己看）' },
+        allow: { type: 'array', items: { type: 'object' }, description: '白名单规则 {from,kinds,tags,any}' },
+        emergencyQuota: { type: 'number', description: '紧急消息放行上限（默认 2）' },
+      },
+    },
+    async execute(input = {}) {
+      const out = mute(input)
+      return { text: `静音了：到 ${stampAt(Number(out.until), timeZone)}（${fmtRelative(Number(out.until), ctx.now())}），紧急放行 ${out.emergencyQuota} 次。` }
+    },
+  })
+  tool({
+    name: 'time_unmute',
+    summary: '解除静音，并把静音期间积压的消息按摘要释放。',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      const out = unmute('manual')
+      return { text: out.muted === false && out.released === 0 && out.since === undefined ? '当前没有静音。' : `解除静音，释放了 ${out.released ?? 0} 条。` }
+    },
   })
 
+  // ── 定时器：重入保护在 tick 里，异常写 tick-error 并留状态 ──
   const timer = setInterval(() => {
-    void tick().catch((error) => {
-      try { fs.writeFileSync(path.join(path.dirname(stateFile), 'tick-error.json'), String(error?.stack ?? error), 'utf8') } catch { /* ignore */ }
-    })
+    try {
+      const out = tick()
+      if (out && typeof out.then === 'function') out.catch((error) => log('warn', 'time.tick.async', { error: String(error?.message ?? error) }))
+    } catch (error) {
+      writeSideFile(path.join(dir, 'tick-error.json'), String(error?.stack ?? error))
+      log('warn', 'time.tick', { error: String(error?.message ?? error) })
+    }
   }, tickMs)
   if (typeof timer.unref === 'function') timer.unref()
+
+  // ── 启动：重启前没放出去的积压显式释放（原因如实写，不假装是错误） ──
+  if (state.queue.length) flushQueue('重启后发现的')
+
+  // ── 拦截层：signals 的 gate 和 delivery 的 push-time gate 都走组合安装 ──
+  // 多槽位：别的插件再装自己的规则也不会静默覆盖我们（setGate 是旧接口，会整体替换）。
+  if (typeof signals.addGate === 'function') {
+    const off = signals.addGate(gate)
+    gateRemover = typeof off === 'function' ? off : null
+    ctx.onDispose(() => { try { gateRemover?.() } catch { /* 已经卸下 */ } })
+  } else {
+    signals.setGate(gate)
+    ctx.onDispose(() => { try { signals.setGate(null) } catch { /* 已经卸下 */ } })
+  }
   ctx.onDispose(() => clearInterval(timer))
-  ctx.onDispose(() => { signals.setGate(null) })
+
+  // delivery 层 gate：堵住插件直接 ctx.delivery.push 绕过 signals 的结构性缺口。
+  // core 提供 addGate 时用组合式，卸载只摘自己那层；只有 setGate 时退化为旧接口。
+  const deliveryApi = ctx.delivery
+  if (deliveryApi && (typeof deliveryApi.addGate === 'function' || typeof deliveryApi.setGate === 'function')) {
+    const deliveryGate = (entry = {}) => {
+      const source = entry.source ?? entry
+      const plugin = String(source?.plugin ?? entry?.plugin ?? '')
+      if (plugin === 'time') return { accept: true }
+      // signals 已经过 gate 的投递（channel:'signal'）不再拦第二遍，否则紧急配额会被
+      // 计数两次、放行的消息又被打回积压。直接 ctx.delivery.push 的其它 channel 才在这里拦。
+      if (entry.channel === 'signal') return { accept: true }
+      const decision = gate({ from: { plugin }, kind: 'notice', text: String(entry.content?.text ?? entry.text ?? ''), focus: null, tags: [] })
+      if (decision.accept) return { accept: true }
+      return { accept: false, reason: decision.reason ?? 'blocked' }
+    }
+    try {
+      if (typeof deliveryApi.addGate === 'function') {
+        const off = deliveryApi.addGate(deliveryGate)
+        ctx.onDispose(typeof off === 'function' ? off : () => {})
+      } else {
+        deliveryApi.setGate(deliveryGate)
+        ctx.onDispose(() => { try { deliveryApi.setGate(null) } catch { /* 已经卸下 */ } })
+      }
+      log('info', 'time.delivery-gate', { installed: true })
+    } catch (error) { log('warn', 'time.delivery-gate', { error: String(error?.message ?? error) }) }
+  }
+
+  // turn-end 续推目标（会话轴）；time 自己的信号不受 gate 限制。
+  ctx.signals.on({ tags: ['turn-end'] }, () => { try { resumeGoals() } catch (error) { log('warn', 'time.resume-goals', { error: String(error?.message ?? error) }) } })
+
+  // 重启后恢复 focus 租约：睡眠租约、目标绑定的 focus（否则状态在、租约丢了）。
+  try {
+    const span = activeSleepSpan()
+    if (span && focusApi?.enter && !sleepLease) {
+      sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
+    }
+    for (const goal of state.goals) {
+      if (!goal.focus || goalLeases.has(goal.id) || !focusApi?.enter) continue
+      goalLeases.set(goal.id, focusApi.enter({ label: goal.focus, owner: 'time', reason: `goal:${goal.id}`, title: goal.theme, goal: goal.theme, interruptible: true, kind: 'goal' }))
+    }
+  } catch (error) { log('warn', 'time.leases.restore', { error: String(error?.message ?? error) }) }
 
   ctx.services.provide('time', api)
   persist()
-  ctx.log({ msg: 'time.ready', phase: state.phase, schedules: state.schedules.length })
+  ctx.log({ msg: 'time.ready', phase: state.phase, schedules: state.schedules.length, goals: state.goals.length, queue: state.queue.length, locked: Boolean(state.lock) })
   return api
 }

@@ -1,0 +1,60 @@
+[
+  { "id": "smoke", "op": "prompt", "text": "只回复 ok" },
+  {
+    "id": "mute-on",
+    "op": "time",
+    "cmd": "mute",
+    "args": { "minutes": 2, "reason": "闭环静音", "emergencyQuota": 1 }
+  },
+  {
+    "id": "alarm-during-mute",
+    "op": "time",
+    "cmd": "arrange",
+    "args": { "id": "loop-mute-alarm", "in": "1m", "mode": "wake", "kind": "single", "message": "静音里的闹钟" }
+  },
+  {
+    "id": "external-during-mute",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "静音期间的外部消息"
+  },
+  { "id": "mute-settle", "op": "wait", "seconds": 3 },
+  {
+    "id": "mute-blocked-assert",
+    "op": "assert",
+    "signalBlocked": true,
+    "required": false
+  },
+  {
+    "id": "mute-status",
+    "op": "time",
+    "cmd": "status",
+    "args": {}
+  },
+  { "id": "alarm-wait", "op": "wait", "seconds": 72 },
+  {
+    "id": "alarm-assert",
+    "op": "assert",
+    "userContains": ["静音里的闹钟"],
+    "required": false
+  },
+  {
+    "id": "lock-check",
+    "op": "time",
+    "cmd": "lock",
+    "args": {}
+  },
+  {
+    "id": "unmute",
+    "op": "time",
+    "cmd": "unmute",
+    "args": {}
+  },
+  { "id": "release-wait", "op": "wait", "seconds": 4 },
+  {
+    "id": "release-assert",
+    "op": "assert",
+    "userContains": ["静音期间的外部消息"]
+  }
+]

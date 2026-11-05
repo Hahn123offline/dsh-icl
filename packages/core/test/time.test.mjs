@@ -112,7 +112,7 @@ test('重启时释放积压并明确报错', async () => {
   await host.enable('world-state')
   await host.enable('time')
   const text = drainText(host)
-  assert.match(text, /重启发生错误/)
+  assert.match(text, /重启后发现的/)
   assert.match(text, /重启前的消息/)
 })
 

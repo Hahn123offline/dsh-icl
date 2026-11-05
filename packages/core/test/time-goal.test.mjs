@@ -41,8 +41,10 @@ test('卸载目标会释放它绑定的 focus', async () => {
 
 test('目标到期会发"目标结束"', async () => {
   const { host, api } = await setup()
-  const goal = api.addGoal({ theme: '限时任务', until: new Date(Date.now() - 1000).toISOString() })
-  await api.tick(Date.now())
+  const deadline = Date.now() + 1_000
+  const goal = api.addGoal({ theme: '限时任务', until: new Date(deadline).toISOString() })
+  assert.ok(goal.until >= deadline)
+  await api.tick(deadline + 1_000)
   assert.match(drainText(host), /目标结束：限时任务/)
   assert.equal(api.goals().length, 0)
 })
