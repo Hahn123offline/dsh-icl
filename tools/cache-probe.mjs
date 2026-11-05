@@ -777,8 +777,20 @@ const commands = { slots: cmdSlots, log: cmdLog, diff: cmdDiff, run: cmdRun, reb
 
 async function main() {
   const command = process.argv[2]
+  if (command === '--help' || command === '-h' || command === 'help') {
+    console.log('用法：node tools/cache-probe.mjs <slots|log|diff|run|rebuild|report|api|compare> [options]')
+    console.log('  slots   引擎 /slots + 关键 /metrics 指标')
+    console.log('  log     引擎请求日志（--tail / --offset / --jsonl）')
+    console.log('  diff    从 DSH 事件流重建每步 system diff（--run）')
+    console.log('  run     一键跑 lab A/B（--scenario / --model / --gap / --rounds / --run）')
+    console.log('  rebuild 不跑 GPU 重算已有 run 的指标')
+    console.log('  report  打印已有 run 的报告')
+    console.log('  api     裸 API 前缀实验（--from-run 用真实 payload）')
+    console.log('  compare 两个 run 的节流/布局 A/B 对表（--a / --b）')
+    return
+  }
   if (!commands[command]) {
-    console.error('用法：node tools/cache-probe.mjs <slots|log|diff|run|report|api> [options]')
+    console.error('用法：node tools/cache-probe.mjs <slots|log|diff|run|report|api|compare> [options]')
     process.exit(2)
   }
   await commands[command]()
