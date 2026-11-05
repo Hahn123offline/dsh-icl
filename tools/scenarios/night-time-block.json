@@ -1,0 +1,45 @@
+[
+  {
+    "id": "night-plan-sleep",
+    "op": "time",
+    "cmd": "arrange",
+    "args": {
+      "id": "night:main-sleep",
+      "mode": "wake",
+      "kind": "span",
+      "sleep": true,
+      "in": "90m",
+      "duration": "4h30m",
+      "message": "夜深了，把手里这轮收个尾，去睡吧。",
+      "allow": [{ "from": "admin" }, { "tags": ["alarm", "safety"] }]
+    }
+  },
+  {
+    "id": "night-plan-dawn",
+    "op": "time",
+    "cmd": "arrange",
+    "args": {
+      "id": "night:dawn",
+      "mode": "wake",
+      "kind": "single",
+      "in": "6h10m",
+      "message": "天亮了，该起了。"
+    }
+  },
+  { "id": "night-status-plan", "op": "time", "cmd": "status", "args": {} },
+  { "id": "night-wait-sleep", "op": "wait", "seconds": 5400 },
+  {
+    "id": "night-backlog-signal",
+    "op": "signal",
+    "from": "qq",
+    "kind": "content",
+    "text": "半夜来的一条消息（应该在睡眠里积压）"
+  },
+  { "id": "night-status-sleeping", "op": "time", "cmd": "status", "args": {} },
+  { "id": "night-wait-wake", "op": "wait", "seconds": 16500 },
+  { "id": "night-status-awake", "op": "time", "cmd": "status", "args": {} },
+  { "id": "night-wait-dawn", "op": "wait", "seconds": 3000 },
+  { "id": "night-status-dawn", "op": "time", "cmd": "status", "args": {} },
+  { "id": "night-assert-backlog", "op": "assert", "userContains": ["半夜来的一条消息"], "required": false },
+  { "id": "night-assert-dawn", "op": "assert", "userContains": ["天亮了，该起了"], "required": false }
+]

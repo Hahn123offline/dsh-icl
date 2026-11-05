@@ -471,6 +471,31 @@ test('桥：session/event 进原文层并发出 turn-end 信号', async () => {
   bridge.dispose()
 })
 
+test('桥：turn/start 也发出 turn-start 信号（time 心跳用，只进插件总线）', async () => {
+  const root = tempRoot('turn-start')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  bridge.bindSession(session)
+
+  const starts = []
+  const ends = []
+  host.services.signals.on({ tags: ['turn-start'] }, (signal) => starts.push(signal))
+  host.services.signals.on({ tags: ['turn-end'] }, (signal) => ends.push(signal))
+  bridge.onEvent(session, { type: 'turn/start', seq: 5 })
+  assert.equal(starts.length, 1)
+  assert.equal(starts[0].from.plugin, 'dsh')
+  assert.equal(starts[0].meta.seq, 5)
+  assert.equal(ends.length, 0)
+  // 同 seq 重放幂等；turn-start 不产生 turn-end
+  bridge.onEvent(session, { type: 'turn/start', seq: 5 })
+  assert.equal(starts.length, 1)
+  assert.equal(ends.length, 0)
+  bridge.dispose()
+})
+
 test('桥：历史来自 session.deriveMessages，不扫文件', async () => {
   const root = tempRoot('history')
   const host = await hostWithMemory(root)
