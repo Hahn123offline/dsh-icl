@@ -25,10 +25,10 @@ import { createHash } from 'node:crypto'
 import {
   DEFAULT_MC_PORT, DEFAULT_PORT, PRESETS, REPO_ROOT, STATE_ROOT, apiFor,
   clearCurrent, countTurnEnds, createLabSession, discoverDshBin, ensureDir,
-  isPidAlive, killPidTree, loadCurrent, materializePatch, nowIso, portBusy,
-  promptSession, readJson, readJsonl, readRunMeta, rebuildTranscript, runDirOf,
-  saveCurrent, selectModel, sleep, spawnDsh, spawnObserver, textOfMessage, tsSlug,
-  waitApiReady, writeJson, writeRunMeta,
+  isPidAlive, killPidTree, lastTurnWindow, loadCurrent, materializePatch, nowIso,
+  orderedEvents, portBusy, promptSession, readJson, readJsonl, readRunMeta,
+  rebuildTranscript, runDirOf, saveCurrent, selectModel, sleep, spawnDsh,
+  spawnObserver, textOfMessage, tsSlug, waitApiReady, writeJson, writeRunMeta,
 } from './lab-lib.mjs'
 
 const args = process.argv.slice(2)
@@ -107,8 +107,30 @@ function logTail(file, lines = 30) {
   } catch { return '' }
 }
 
+/**
+ * llama 全局锁：**根仓库**（集成区）的 `.state/locks/llama.lock`。
+ * 各 worktree 有自己的 `.state/`，锁写在 worktree 里跨 worktree 不互斥（lead/cache 已统一到根仓库）。
+ * 可用 `ICL_LOCK_FILE` 覆盖。worktree 的 `.git` 是 `gitdir: <root>/.git/worktrees/<name>`，
+ * 由此上溯三层得到根仓库目录。
+ */
 function llamaLockPath() {
-  return path.join(REPO_ROOT, '.state', 'locks', 'llama.lock')
+  const override = process.env.ICL_LOCK_FILE
+  if (override) return override
+  try {
+    const dotGit = path.join(REPO_ROOT, '.git')
+    if (fs.statSync(dotGit).isFile()) {
+      const match = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/im)
+      if (match) {
+        let gitDir = match[1].trim().replace(/\\/g, '/')
+        if (!path.isAbsolute(gitDir)) gitDir = path.resolve(REPO_ROOT, gitDir)
+        const root = path.dirname(path.dirname(path.dirname(gitDir)))
+        return path.join(root, '.state', 'locks', 'llama.lock')
+      }
+    }
+    return path.join(REPO_ROOT, '.state', 'locks', 'llama.lock')
+  } catch {
+    return 'C:/DSH/icl/.state/locks/llama.lock'
+  }
 }
 
 function acquireLocalModelLock(runId) {
@@ -345,76 +367,6 @@ function logRun() {
   }
 }
 
-/* ── 事件窗口（say/script 用）──────────────────────────── */
-
-/** 从 events.jsonl 取有序事件（去重，按 seq）。 */
-function orderedEvents(eventsFile) {
-  const seen = new Set()
-  const rows = []
-  for (const envelope of readJsonl(eventsFile)) {
-    const payload = envelope?.payload ?? envelope
-    const push = (event) => {
-      if (!event?.type) return
-      if (event.seq != null) {
-        if (seen.has(event.seq)) return
-        seen.add(event.seq)
-      }
-      rows.push(event)
-    }
-    if (payload?.type === 'session/event') push(payload.event)
-    else if (payload?.type === 'session/snapshot') for (const record of payload.snapshot?.records ?? []) if (record?.type === 'event') push(record.event)
-  }
-  return rows.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0))
-}
-
-/** 最后一轮的窗口统计：不用 data.turn（user/message 上没有），而是从 turn/end 往前找 turn/start。 */
-function lastTurnWindow(eventsFile) {
-  const events = orderedEvents(eventsFile)
-  let endIndex = -1
-  for (let i = events.length - 1; i >= 0; i -= 1) if (events[i].type === 'turn/end') { endIndex = i; break }
-  if (endIndex < 0) return null
-  const end = events[endIndex]
-  const turn = end.data?.turn
-  let startIndex = -1
-  for (let i = endIndex - 1; i >= 0; i -= 1) {
-    if (events[i].type === 'turn/start' && events[i].data?.turn === turn) { startIndex = i; break }
-  }
-  const window = events.slice(Math.max(0, startIndex), endIndex + 1)
-  const header = window.filter((event) => event.type === 'request/header').at(-1)?.data?.header ?? null
-  const tools = Array.isArray(header?.tools) ? header.tools : null
-  const systemChars = window.filter((event) => event.type === 'system/message')
-    .reduce((n, event) => n + textOfMessage(event.data?.message).length, 0)
-  const contextChars = window.filter((event) => event.type === 'user/message' && String(event.data?.source?.kind ?? 'user') === 'runtime-context')
-    .reduce((n, event) => n + textOfMessage(event.data).length, 0)
-  const iclContextChars = window.filter((event) => event.type === 'user/message' && String(event.data?.source?.kind ?? 'user') === 'runtime-context')
-    .reduce((n, event) => n + (textOfMessage(event.data).trimStart().startsWith('<icl-context>') ? textOfMessage(event.data).length : 0), 0)
-  let assistantText = ''
-  for (const event of window) {
-    if (event.type !== 'assistant/message') continue
-    for (const block of event.data?.message?.content ?? []) if (block?.type === 'text') assistantText += block.text ?? ''
-  }
-  const calls = window.filter((event) => event.type === 'tool/call').map((event) => String(event.data?.name ?? ''))
-  return {
-    turn,
-    start: window[0] ?? null,
-    end,
-    seqs: [window[0]?.seq ?? null, end.seq],
-    tools: calls,
-    assistant: assistantText,
-    systemChars,
-    contextChars,
-    iclContextChars,
-    request: header ? {
-      provider: header.config?.provider,
-      model: header.config?.model,
-      tools: header.tools?.length ?? null,
-      maxTokens: header.config?.maxTokens ?? null,
-      toolsHash: tools ? createHash('sha1').update(JSON.stringify(tools)).digest('hex').slice(0, 12) : null,
-      toolsChars: tools ? JSON.stringify(tools).length : null,
-    } : null,
-    events: window.length,
-  }
-}
 
 /* ── say ──────────────────────────────────────────────── */
 
@@ -479,6 +431,13 @@ async function script() {
     }
     if (countTurnEnds(eventsFile) <= baseline) fail(`第 ${round.id ?? '?'} 轮等 turn/end 超时`)
     const window = lastTurnWindow(eventsFile)
+    // system/message 与 request/header 只在 DSH 认为"变了"时才发一条事件：
+    // cache 需要的是"这一轮实际生效的系统提示词/请求头是哪一份"，所以带上最近一次的 seq 与是否本轮变化。
+    const all = orderedEvents(eventsFile)
+    const lastSystem = all.filter((event) => event.type === 'system/message').at(-1) ?? null
+    const lastHeader = all.filter((event) => event.type === 'request/header').at(-1) ?? null
+    const header = lastHeader?.data?.header ?? null
+    const tools = Array.isArray(header?.tools) ? header.tools : null
     const row = {
       at: nowIso(),
       id: round.id ?? null,
@@ -486,15 +445,24 @@ async function script() {
       turn: window?.turn ?? null,
       turnMs: Date.now() - started,
       tools: window?.tools ?? [],
-      systemChars: window?.systemChars ?? 0,
-      contextChars: window?.contextChars ?? 0,
-      iclContextChars: window?.iclContextChars ?? 0,
-      request: window?.request ?? null,
       assistantChars: window?.assistant?.length ?? 0,
       turnEndSeq: window?.seqs?.[1] ?? null,
+      system: lastSystem
+        ? { seq: lastSystem.seq, chars: textOfMessage(lastSystem.data?.message).length, changed: window?.systemChars > 0 }
+        : null,
+      context: { chars: window?.contextChars ?? 0, iclChars: window?.iclContextChars ?? 0 },
+      request: header ? {
+        seq: lastHeader.seq,
+        provider: header.config?.provider ?? null,
+        model: header.config?.model ?? null,
+        maxTokens: header.config?.maxTokens ?? null,
+        tools: tools?.length ?? null,
+        toolsHash: tools ? createHash('sha1').update(JSON.stringify(tools)).digest('hex').slice(0, 12) : null,
+        toolsChars: tools ? JSON.stringify(tools).length : null,
+      } : null,
     }
     appendJsonl(roundsFile, row)
-    console.log(`[lab] ${row.id} turn=${row.turn} ${row.turnMs}ms system=${row.systemChars} ctx=${row.contextChars} tools=[${row.tools.join(',')}] reply=${row.assistantChars}字`)
+    console.log(`[lab] ${row.id} turn=${row.turn} ${row.turnMs}ms system=${row.system ? `${row.system.chars}${row.system.changed ? '*' : ''}@${row.system.seq}` : '?'} ctx=${row.context.chars} tools=[${row.tools.join(',')}] reply=${row.assistantChars}字`)
     if (gapMs) await sleep(gapMs)
   }
   try { rebuildTranscript(run.runDir) } catch { /* ignore */ }
@@ -504,6 +472,18 @@ async function script() {
 
 function appendJsonl(file, row) {
   try { fs.appendFileSync(file, `${JSON.stringify(row)}\n`, 'utf8') } catch { /* ignore */ }
+}
+
+/* ── scene（MC 验收场景 A/C/E）────────────────────────── */
+
+async function scene() {
+  const run = requireRun()
+  const file = String(arg('--file', positionals()[0] ?? ''))
+  if (!file) fail('用法：node tools/lab.mjs scene tools/scenarios/mc-A.json [--no-interview]')
+  const { runScene } = await import('./lab-scene.mjs')
+  const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview') })
+  console.log(JSON.stringify({ ok: result.ok, verdict: result.verdictFile, checks: result.checks.length, failed: result.checks.filter((row) => !row.ok).length }, null, 2))
+  if (!result.ok) process.exitCode = 1
 }
 
 /* ── dispatch ─────────────────────────────────────────── */
@@ -520,10 +500,11 @@ const commands = {
     for (const row of listRuns()) console.log(`${row.runId}\t${row.status ?? '?'}\t${row.preset ?? ''}\t:${row.port ?? ''}\t${row.startedAt ?? ''}`)
   },
   script,
+  scene,
 }
 
 if (!cmd || !commands[cmd]) {
-  console.error('用法：node tools/lab.mjs <up|down|status|say|tail|export|log|runs|script> [options]')
+  console.error('用法：node tools/lab.mjs <up|down|status|say|tail|export|log|runs|script|scene> [options]')
   process.exit(2)
 }
 await commands[cmd]()

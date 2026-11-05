@@ -142,12 +142,18 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT }) {
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
+  // lab 自己的服务器清单：只列 flat 测试服（54837），不列用户在玩的 survival。
+  const mcServersFile = path.join(runDir, 'mc-servers.json')
+  fs.writeFileSync(mcServersFile, `${JSON.stringify([
+    { name: 'local-flat', host: '127.0.0.1', port: 54837 },
+  ], null, 2)}\n`, 'utf8')
   const output = template
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
+    .replaceAll('__LAB_MC_SERVERS__', posix(mcServersFile))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')
@@ -509,6 +515,10 @@ export function renderTranscript({ meta, envelopes, sidecars }) {
   push(`- 工具调用：${toolTotal}`)
   push()
   push('> 证据口径：`events.jsonl` 的 `session/event` 是权威源；模型自述只作当事人反馈（docs/LOOP.md §9）。')
+  push('>')
+  push('> 体积口径：**系统** = `system/message` 的字符数（cache 方案 B 之后只剩静态人格+仿真段）；')
+  push('> **运行时上下文快照** = `user/message` 且 source.kind=runtime-context（DSH 自带 + ICL 事实段）；**ICL 注入** = 其中 `<icl-context>` 那段。')
+  push('> 每轮都带 `toolsHash`（工具定义 JSON 的 sha1 前 12 位）——它变了说明工具面发生字节变化，缓存会受影响。')
   push()
 
   const renderSummary = (summary, labelPrefix, seqHint) => {
@@ -531,7 +541,10 @@ export function renderTranscript({ meta, envelopes, sidecars }) {
     }
     for (const item of summary.injected) {
       const isIcl = item.text.trimStart().startsWith('<icl-context>')
-      push(`- ${labelPrefix}**${isIcl ? 'ICL 注入上下文' : 'DSH 运行时上下文'}** seq=${item.event.seq} · ${item.text.length} 字符`)
+      const sections = Array.isArray(item.event.data?.source?.sections)
+        ? item.event.data.source.sections.map((section) => section?.name).filter(Boolean)
+        : []
+      push(`- ${labelPrefix}**${isIcl ? 'ICL 注入上下文' : '运行时上下文快照'}** seq=${item.event.seq} · ${item.text.length} 字符${sections.length ? ` · 段=${sections.join(',')}` : ''}`)
       push(indent(clip(item.text, 600)))
     }
     for (const item of summary.notices) {
@@ -671,6 +684,77 @@ export function rebuildTranscript(runDir) {
   fs.writeFileSync(tmp, `${text}\n`, 'utf8')
   fs.renameSync(tmp, file)
   return { file, events: events.length }
+}
+
+/** 从 events.jsonl 取有序事件（按 seq 去重排序；snapshot 与增量都算）。 */
+export function orderedEvents(eventsFile) {
+  const seen = new Set()
+  const rows = []
+  for (const envelope of readJsonl(eventsFile)) {
+    const payload = envelope?.payload ?? envelope
+    const push = (event) => {
+      if (!event?.type) return
+      if (event.seq != null) {
+        if (seen.has(event.seq)) return
+        seen.add(event.seq)
+      }
+      rows.push(event)
+    }
+    if (payload?.type === 'session/event') push(payload.event)
+    else if (payload?.type === 'session/snapshot') for (const record of payload.snapshot?.records ?? []) if (record?.type === 'event') push(record.event)
+  }
+  return rows.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0))
+}
+
+/**
+ * 最后一轮的事件窗口与体积统计。
+ * 不用 `data.turn` 定位用户消息（user/message 上没有 turn），而是从最后一个 turn/end 往前找同 turn 的 turn/start。
+ */
+export function lastTurnWindow(eventsFile) {
+  const events = orderedEvents(eventsFile)
+  let endIndex = -1
+  for (let i = events.length - 1; i >= 0; i -= 1) if (events[i].type === 'turn/end') { endIndex = i; break }
+  if (endIndex < 0) return null
+  const end = events[endIndex]
+  const turn = end.data?.turn
+  let startIndex = -1
+  for (let i = endIndex - 1; i >= 0; i -= 1) {
+    if (events[i].type === 'turn/start' && events[i].data?.turn === turn) { startIndex = i; break }
+  }
+  const window = events.slice(Math.max(0, startIndex), endIndex + 1)
+  const header = window.filter((event) => event.type === 'request/header').at(-1)?.data?.header ?? null
+  const tools = Array.isArray(header?.tools) ? header.tools : null
+  const systemChars = window.filter((event) => event.type === 'system/message')
+    .reduce((n, event) => n + textOfMessage(event.data?.message).length, 0)
+  const runtimeContext = window.filter((event) => event.type === 'user/message' && String(event.data?.source?.kind ?? 'user') === 'runtime-context')
+  const contextChars = runtimeContext.reduce((n, event) => n + textOfMessage(event.data).length, 0)
+  const iclContextChars = runtimeContext.reduce((n, event) => n + (textOfMessage(event.data).trimStart().startsWith('<icl-context>') ? textOfMessage(event.data).length : 0), 0)
+  let assistantText = ''
+  for (const event of window) {
+    if (event.type !== 'assistant/message') continue
+    for (const block of event.data?.message?.content ?? []) if (block?.type === 'text') assistantText += block.text ?? ''
+  }
+  const calls = window.filter((event) => event.type === 'tool/call').map((event) => String(event.data?.name ?? ''))
+  return {
+    turn,
+    start: window[0] ?? null,
+    end,
+    seqs: [window[0]?.seq ?? null, end.seq],
+    tools: calls,
+    assistant: assistantText,
+    systemChars,
+    contextChars,
+    iclContextChars,
+    request: header ? {
+      provider: header.config?.provider,
+      model: header.config?.model,
+      tools: header.tools?.length ?? null,
+      maxTokens: header.config?.maxTokens ?? null,
+      toolsHash: tools ? createHash('sha1').update(JSON.stringify(tools)).digest('hex').slice(0, 12) : null,
+      toolsChars: tools ? JSON.stringify(tools).length : null,
+    } : null,
+    events: window.length,
+  }
 }
 
 export { unwrap }

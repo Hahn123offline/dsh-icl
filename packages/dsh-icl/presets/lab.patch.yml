@@ -76,6 +76,10 @@
               pluginConfig:
                 mc-link:
                   listenPort: __LAB_MC_PORT__
+                  # 默认值会落到仓库根 .state/mc-live 和 C:/DSH/icl/config/mc-servers.json；
+                  # lab 必须自带 state 与服务器清单，不碰用户正在玩的 survival。
+                  stateDir: '__LAB_STATE__/mc-body'
+                  serversFile: '__LAB_MC_SERVERS__'
               plugins:
                 - memory
                 - world-state

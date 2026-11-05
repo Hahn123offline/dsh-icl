@@ -1,0 +1,38 @@
+{
+  "id": "E",
+  "name": "退出清理",
+  "preset": "icl-mc-lab",
+  "description": "进去玩一会儿再说\u201c不玩了\u201d：期望 mcb_leave → body 进程消失；下一轮 mcb_status 报未连接；goal/focus 不因 leave 被偷偷自动取消或残留。",
+  "steps": [
+    {
+      "op": "prompt",
+      "id": "join-first",
+      "text": "去 flat 服（127.0.0.1:54837，名字 ICL-mclab-1）玩一会儿，到了告诉我你在哪。",
+      "timeoutSec": 420
+    },
+    { "op": "assert", "id": "joined", "toolAll": ["mcb_join"], "required": true },
+    { "op": "assert", "id": "body-alive-before-leave", "bodyAlive": true, "required": true },
+    {
+      "op": "prompt",
+      "id": "ask-to-leave",
+      "text": "不玩了，退出 MC。",
+      "timeoutSec": 300
+    },
+    { "op": "assert", "id": "left", "toolAll": ["mcb_leave"], "required": true },
+    { "op": "assert", "id": "body-gone", "bodyAlive": false, "required": true },
+    {
+      "op": "prompt",
+      "id": "status-after-leave",
+      "text": "再查一下 MC 身体状态，告诉我现在连没连。",
+      "timeoutSec": 240
+    },
+    { "op": "assert", "id": "status-says-disconnected", "toolResultContains": { "names": ["mcb_status", "mcb_look"], "any": ["未连接"] }, "required": true },
+    { "op": "assert", "id": "no-tool-error", "noToolError": true, "required": true },
+    { "op": "snapshot", "id": "after-leave" }
+  ],
+  "interview": [
+    "刚才退出 MC 的过程顺利吗？哪一步不确定？",
+    "退出后你还记得自己有没有别的目标或专注在挂着？",
+    "如果下次要一键\u201c收工\u201d，你希望环境保证什么？"
+  ]
+}

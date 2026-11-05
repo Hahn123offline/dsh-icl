@@ -236,6 +236,7 @@ node tools/lab.mjs status          # 人或 --json
 node tools/lab.mjs tail            # transcript 尾部；--events 看原始事件
 node tools/lab.mjs export          # 从 events.jsonl 全量重建 transcript.md
 node tools/lab.mjs script --file tools/scenarios/cache-10.json   # 固定 10 轮（cache 用）
+node tools/lab.mjs scene tools/scenarios/mc-A.json    # MC 验收场景 A/C/E（判据见 MC-ACCEPTANCE.md）
 node tools/lab.mjs down            # 停进程、落最终 transcript
 ```
 
@@ -256,6 +257,24 @@ node tools/lab.mjs down            # 停进程、落最终 transcript
 
 **纪律**（与 TEAM-PLAN §3 一致）：一条 lab 进程只绑一条会话（`dsh-icl` 单会话锁）；换场景 `down` 再 `up`，
 不并行建会话；不 kill 用户 MC 客户端/llama-swap；`--model local` 会先拿 `.state/locks/llama.lock`（全局串行，找 lead 协调）。
+
+**多人共用这台测试床的规矩**（2026-11-05 lead 确认）：
+
+- **端口按人分配**（TEAM-PLAN §3）：lead 57100、mc-lab 57101、mc-link 57102、mc-body 57103、cache 57104–57106、time 57107、qq 57108、misc 57109。
+  `up` 的 `--port` 默认 57101 只属于 mc-lab；别人必须显式 `--port 自己的`。
+- **run 名自取**（`--run <你的owner>-<用途>-<序号>`），不要复用别人的 runId。
+- **up 前先 `down` 自己的旧 run**：`node tools/lab.mjs down --run <你要用的 run>`；`up` 发现 `current.json` 里有活进程会拒绝并要求先 down（`--force` 只用于自己的 run）。
+- **同一 preset 单实例**：一个 run = 一条会话 = 一个 dsh 进程；需要两个场景就顺序起，不要同时起两个。
+- 证据落在**自己的** `.state/lab/<runId>/`；别人只读，不要清别人的目录。
+
+**MC 场景脚本**（`tools/lab-scene.mjs`，判据见 `docs/MC-ACCEPTANCE.md`）：
+
+- A `tools/scenarios/mc-A.json`：叫她去玩 → `mcb_servers/lan` → `mcb_join` → 查状态；断言 join 成功、body 进程在。
+- C `tools/scenarios/mc-C.json`：join + `mcb_do` 下任务 → 杀 lab 派生的 body 子进程 → 看她是否发现掉线、是否假状态、重连是否显式。
+- E `tools/scenarios/mc-E.json`：进去 → “不玩了” → `mcb_leave` → body 进程消失 → 再查 `mcb_status` 报“未连接”。
+- 每个场景产出 `<runDir>/scenes/<id>/{verdict.md,verdict.json,interview.md}`；三问原文在 `interview.md`，
+  是**当事人自述**，不算链路证据。`lab.mjs scene` 发现必需的断言失败会以非零码退出。
+
 
 首轮实测（2026-11-05，session `session-84f2ac28…`）：`tools=32`（31 个 ICL 工具 + `todo_write`）、
 系统提示词 5115 字符（persona + sim 两段都在）、`turn 1` 1.3s 完成、回复 `ok`、transcript 可读。

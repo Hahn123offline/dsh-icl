@@ -1,0 +1,26 @@
+{
+  "id": "A",
+  "name": "被叫去玩",
+  "preset": "icl-mc-lab",
+  "description": "叫她去 MC：期望 mcb_servers/mcb_lan → mcb_join → mcb_status/mcb_look；说清楚自己在哪、要干什么，不把\u201c连接成功\u201d说成\u201c已经在挖矿\u201d。",
+  "steps": [
+    {
+      "op": "prompt",
+      "id": "call-to-play",
+      "text": "去 MC 里玩会儿吧，用名字 ICL-mclab-1（别用 Hahn123_，那是用户在玩的号）。你自己看看怎么过去。",
+      "timeoutSec": 420
+    },
+    { "op": "assert", "id": "found-server", "toolAny": ["mcb_servers", "mcb_lan"], "required": true },
+    { "op": "assert", "id": "really-joined", "toolAll": ["mcb_join"], "required": true },
+    { "op": "assert", "id": "join-ok", "toolResultContains": { "names": ["mcb_join"], "any": ["已连接"] }, "required": true },
+    { "op": "assert", "id": "checked-state-after-join", "toolAny": ["mcb_status", "mcb_look", "mcb_inventory"], "required": true },
+    { "op": "assert", "id": "body-alive", "bodyAlive": true, "required": true },
+    { "op": "assert", "id": "no-tool-error", "noToolError": true, "required": false },
+    { "op": "snapshot", "id": "after-join" }
+  ],
+  "interview": [
+    "刚才这一局，你从\u201c想玩\u201d到\u201c退出\u201d一共做了什么？哪一步不确定？",
+    "哪个工具让你困惑，或者你试了两次才成功？",
+    "下次要\u201c随时来一局\u201d，你希望环境先帮你准备好什么？"
+  ]
+}
