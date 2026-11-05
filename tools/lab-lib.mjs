@@ -140,24 +140,37 @@ export function writeRunMeta(runId, meta) {
 export const LAB_MC_SERVER_PORT = Number(process.env.ICL_LAB_MC_SERVER_PORT ?? 54840)
 export const LAB_MC_SERVER_NAME = 'lab-normal'
 
-export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT }) {
+/** 已知 lab 可连的服务器名 -> host/port（`--servers` 用名字挑选，不写死只给一个服）。 */
+export const KNOWN_MC_SERVERS = Object.freeze({
+  'lab-normal': { host: '127.0.0.1', port: LAB_MC_SERVER_PORT, note: 'lab 专用 normal 地形验收服（fresh world）' },
+  survival: { host: '127.0.0.1', port: 54838, note: '正常地形生存服；夜间长测用，用户在玩时先问' },
+  flat: { host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
+})
+
+export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'] }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
-  // lab 的服务器清单（mc-link 会把它和插件自带 servers.json 合并）：正常地形验收服 + flat 调试服。
+  // lab 的服务器清单（mc-link 会把它和插件自带 servers.json 合并）；按 --servers 选实际要暴露的服。
+  const listed = (Array.isArray(servers) ? servers : String(servers).split(','))
+    .map((name) => String(name).trim())
+    .filter(Boolean)
+    .map((name) => {
+      const known = KNOWN_MC_SERVERS[name]
+      if (!known) throw new Error(`未知 MC 服务器名：${name}（可选：${Object.keys(KNOWN_MC_SERVERS).join(', ')}）`)
+      return { name, host: known.host, port: known.port, note: known.note }
+    })
   const serversFile = path.join(runDir, 'mc-servers.json')
-  fs.writeFileSync(serversFile, `${JSON.stringify([
-    { name: LAB_MC_SERVER_NAME, host: '127.0.0.1', port: LAB_MC_SERVER_PORT, note: 'lab 专用 normal 地形验收服（fresh world）' },
-    { name: 'flat', host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
-  ], null, 2)}\n`, 'utf8')
+  fs.writeFileSync(serversFile, `${JSON.stringify(listed, null, 2)}\n`, 'utf8')
   const output = template
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
+    .replaceAll('__LAB_MC_USERNAME__', String(mcUser))
     .replaceAll('__LAB_MC_SERVERS__', posix(serversFile))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')

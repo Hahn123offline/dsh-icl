@@ -86,8 +86,8 @@
               pluginConfig:
                 mc-link:
                   listenPort: __LAB_MC_PORT__
-                  # 默认 username 是 ICL；lab 固定成 ICL-mclab-1，避免同服同名互踢。
-                  username: ICL-mclab-1
+                  # 默认 username 是 ICL；lab 用占位符，白天验收 ICL-mclab-1、夜间长测 ICL-night-1。
+                  username: '__LAB_MC_USERNAME__'
                   # 默认 stateDir 会落到仓库根 .state/mc-live；lab 必须自带。
                   stateDir: '__LAB_STATE__/mc-body'
                   # lab 自己的服务器清单（含正常地形验收服 lab-normal:54840）。
