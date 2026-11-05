@@ -131,6 +131,9 @@ function analyzeRun(dir) {
     uptimeMin: status.uptimeMin ?? null,
     server: night?.cfg ? `${night.cfg.serverName}:${night.cfg.serverPort}` : null,
     turns: status.turns ?? null,
+    statusToolCalls: status.toolCalls ?? null,
+    statusToolErrors: status.toolErrors ?? null,
+    logRotated: Number(status.toolCalls ?? 0) > calls.length * 1.5,
     toolCalls: calls.length,
     toolErrors: results.filter((row) => row.error).length,
     errorRate: calls.length ? Math.round(results.filter((row) => row.error).length / calls.length * 100) : 0,
@@ -163,7 +166,7 @@ if (history) {
 }
 if (asJson) { console.log(JSON.stringify(summary, null, 2)); process.exit(0) }
 console.log(`RUN ${summary.run} phase=${summary.phase} smoke=${summary.smoke} uptime=${summary.uptimeMin}min server=${summary.server}`)
-console.log(`turns=${summary.turns} calls=${summary.toolCalls} errors=${summary.toolErrors} (${summary.errorRate}%) last30sBuckets=${summary.recent30s}`)
+console.log(`turns=${summary.turns} calls=${summary.toolCalls} errors=${summary.toolErrors} (${summary.errorRate}%) statusCounters=${summary.statusToolCalls}/${summary.statusToolErrors} rotated=${summary.logRotated} last30sBuckets=${summary.recent30s}`)
 console.log(`sameCallMax=${summary.sameCallMax} sameErrorMax=${summary.sameErrorMax}`)
 if (summary.sameCallSample) console.log(`sameCallSample: ${summary.sameCallSample}`)
 if (summary.sameErrorSample) console.log(`sameErrorSample: ${summary.sameErrorSample}`)
@@ -174,3 +177,4 @@ console.log(`deaths=${summary.deaths} lastDeath=${JSON.stringify(summary.lastDea
 console.log(`taskTerminal: ${JSON.stringify(summary.taskTerminal)}`)
 console.log(`lastEventAgeSec=${summary.lastEventAgeSec} lastErrorInterruptAt=${summary.lastErrorInterruptAt}`)
 console.log(summary.alerts.length ? `ALERTS: ${summary.alerts.join(', ')}` : 'ALERTS: none')
+
