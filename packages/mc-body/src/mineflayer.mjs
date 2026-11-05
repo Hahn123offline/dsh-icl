@@ -1383,7 +1383,17 @@ export function createMineflayerAdapter({
         }
       }
       const recipes = bot.recipesFor(def.id, null, count, table)
-      if (!recipes.length) throw new Error(`没有可用配方：${name}（可能缺工作台/材料；需要工作台时先放一张或靠近它）`)
+      if (!recipes.length) {
+        // 可操作报错：区分“背包有工作台但没放下”/“没有工作台”/“纯缺材料”。
+        // 注意：不自动放工作台（用户明确要求“不要自动放工作台”），只告诉下一步怎么做。
+        const hasTableItem = (bot.inventory?.items?.() ?? []).some((item) => item.name === 'crafting_table')
+        const planks = countOf('oak_planks') + countOf('spruce_planks') + countOf('birch_planks') + countOf('jungle_planks') + countOf('acacia_planks') + countOf('dark_oak_planks')
+        let hint = '缺材料或该配方需要其他工作站'
+        if (hasTableItem) hint = '背包里有工作台：先用 place 放到身边（4 格内）再 craft'
+        else if (planks >= 4) hint = '没有工作台：先 craft crafting_table（需要 4 木板）并 place 到身边，再 craft 本物品'
+        else if (planks > 0) hint = `木板不足（当前 ${planks}）：先多砍原木 → craft 木板/工作台`
+        throw new Error(`没有可用配方：${name}（${hint}；当前 nearestTable=${table ? '有但可能够不到' : '无'}）`)
+      }
       const before = countOf(name)
       const recipe = recipes[0]
       // 语义对齐：count = “想要多少个成品”（不是 craft 次数）。
