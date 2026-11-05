@@ -52,7 +52,6 @@
                 - model-manager
                 - time
                 - dream
-                - compaction
                 - editor
                 - bili
                 - loop-probe
@@ -91,7 +90,6 @@
                 - model-manager
                 - time
                 - dream
-                - compaction
                 - editor
                 - mc-link
           - id: tool-todo
