@@ -39,7 +39,8 @@ function statusBody(state) {
       health: state.health,
       food: 18,
       oxygen: state.oxygen === undefined ? null : state.oxygen,
-      inventoryCount: 4,
+      inventoryCount: state.inventoryCount ?? 4,
+      inventory: { used: state.inventoryUsed ?? 2, full: false },
       nearby: { villager: 1 },
       dimension: 'overworld',
       environment: extra.environment,
@@ -83,6 +84,14 @@ async function startFakeBody({ connected = true } = {}) {
             : `附近没有 ${name}。`
           return send(200, { ok: true, result: { text } })
         }
+        // 真 body 的 look/inventory 文本里有原始小数（health 17.8333…），用来验证 mc-link 的统一取整。
+        if (input.kind === 'look') {
+          return send(200, { ok: true, result: {
+            text: ['位置：358.7, -60.2, 113.9；朝向 yaw=90°', '生命/饥饿/氧气：17.833332061767578/18/0', '手持：空'].join('\n'),
+            data: { position: { x: 358.7, y: -60.2, z: 113.9 }, health: 17.833332061767578, food: 18 },
+          } })
+        }
+        if (input.kind === 'inventory') return send(200, { ok: true, result: { text: '背包：dirt×12、oak_log×3' } })
         return send(200, { ok: true, result: { text: `inspect:${input.kind}` } })
       })
     }
@@ -105,6 +114,7 @@ async function startFakeBody({ connected = true } = {}) {
           }
           else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
           else if (step.op === 'pickup') results.push({ index: results.length, op: 'pickup', result: { picked: 2, items: ['dirt', 'oak_log'], radius: 8, left: 1 } })
+          else if (step.op === 'dig') results.push({ index: results.length, op: 'dig', result: { dug: 'dirt', pos: { x: 12.6, y: -59.6, z: 14.4 } } })
           else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
         }
         return send(200, { ok: true, results })
@@ -337,6 +347,34 @@ test('mcb_do：pickup 单步 op 可用，返回说人话（picked/items/left）'
     const sent = body.state.requests.at(-1).steps[0]
     assert.equal(sent.op, 'pickup')
     assert.deepEqual(sent.params, { radius: 8, max: 4 })
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('口径统一：look/status/inventory 的位置、血量、背包同源同取整（不出现 17.8333 / 差几格）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    // look：body 原文是 358.7/-60.2/113.9 与 17.8333…，统一后必须是 359,-60,114 与 18/18/0
+    const look = await link.tools.mcb_look.execute({})
+    assert.match(look.text, /位置：359,-60,114；朝向 yaw=90°/)
+    assert.match(look.text, /生命\/饥饿\/氧气：18\/18\/0/)
+    assert.doesNotMatch(look.text, /17\.83/)
+    // status：同一位置、同一血量取整、背包区分"件/格"
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /位置：13,64,-8/, 'statusBody 的 12.5/-8.5 取整后与 join/look 同口径')
+    assert.match(status.text, /生命\/饥饿\/氧气：20\/20，18\/20/)
+    assert.match(status.text, /背包：4 件（占 2 格）/)
+    // inventory：body 列表 + 统一汇总行（件=物品总数，格=占用格子）
+    const inventory = await link.tools.mcb_inventory.execute({})
+    assert.match(inventory.text, /背包：dirt×12、oak_log×3/)
+    assert.match(inventory.text, /合计：4 件（占 2 格）（件=物品总数，格=占用背包格子）/)
+    // dig 结果里的坐标（12.6/-59.5/14.4）也统一取整
+    const dig = await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: { x: 12.6, y: -59.5, z: 14.4 } } }] })
+    assert.match(dig.text, /\[dig\] \{"dug":"dirt","pos":\{"x":13,"y":-60,"z":14\}\}/)
   } finally {
     await link.cleanup()
     await body.close()
@@ -579,17 +617,58 @@ test('mcb_leave：默认只停 body 但报告还挂着什么；cleanup:true 释�
     assert.match(left.text, /安全停止：成功/)
     assert.match(left.text, /body 进程：本会话没有启动过|body 进程：已结束/)
     assert.match(left.text, /不是本会话启动的/)
-    assert.match(left.text, /还挂着：.*focus 1 个/)
+    assert.match(left.text, /还挂着（全部）：.*MC 相关 1 个/)
     assert.match(left.text, /cleanup:true/)
     assert.equal(body.state.paused, true, 'leave 必须先安全停止')
 
     const cleaned = await link.tools.mcb_leave.execute({ cleanup: true })
-    assert.match(cleaned.text, /收尾清理：focus 释放 1 个/)
+    assert.match(cleaned.text, /收尾清理（MC 相关，按 activity\/标签\/服务器别名识别）：focus 释放 1 个/)
     assert.match(cleaned.text, /已完全收工/)
     assert.equal(link.host.services.focus.list().length, 0, 'cleanup 应释放模型 focus 租约')
     // 幂等：再调一次不报错、不重复清
     const again = await link.tools.mcb_leave.execute({ cleanup: true })
     assert.match(again.text, /没有启动过|无需停止/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_leave：MC 识别不限 focus 字符串（activity/title/theme/服务器别名），非 MC 的如实列出、不谎称"已完全收工"', async () => {
+  const timeGoals = [
+    { id: 'g-mc', focus: '游戏', theme: '在 flat 服挖矿' },
+    { id: 'g-mc2', focus: 'mc:build', theme: '盖房子' },
+    { id: 'g-other', focus: 'acme-work', theme: '写周报' },
+  ]
+  const removed = []
+  const timeApi = {
+    goals: () => timeGoals.slice(),
+    removeGoal: (id) => { removed.push(id); const index = timeGoals.findIndex((goal) => goal.id === id); if (index >= 0) timeGoals.splice(index, 1); return { removed: index >= 0 } },
+    schedules: () => [], queue: () => [], lock: () => null,
+  }
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port, timeApi })
+  try {
+    await link.tools.mcb_join.execute({ server: 'flat' })
+    link.host.services.focus.enter({ label: '游戏', owner: 'focus', title: '在 flat 玩' })
+    link.host.services.focus.enter({ label: 'act:reading', owner: 'focus', title: '读文档' })
+    // 默认 leave：不清理，但要把 MC 和非 MC 的都如实列出
+    const left = await link.tools.mcb_leave.execute({})
+    assert.match(left.text, /收工完成但没完全干净/)
+    assert.match(left.text, /MC focus 1 个（游戏）/, 'focus label 写成"游戏"也要按 title/别名识别成 MC')
+    assert.match(left.text, /MC 持续目标 2 个/, 'g-mc/g-mc2 应算 MC 目标')
+    assert.match(left.text, /其它 focus 1 个（act:reading）/, '非 MC 的也要如实列出')
+    assert.match(left.text, /其它持续目标 1 个/, 'g-other 也要列出')
+    assert.doesNotMatch(left.text, /已完全收工/)
+    // cleanup：只清 MC 相关的 focus/goal，非 MC 的不动，结论不能说"已完全收工"
+    timeGoals.push(...[]) // 占位：保持数组引用
+    const cleaned = await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.match(cleaned.text, /focus 释放 1 个、持续目标取消 2 个/)
+    assert.deepEqual(removed.sort(), ['g-mc', 'g-mc2'])
+    assert.equal(link.host.services.focus.list().filter((lease) => lease.owner === 'focus').length, 1, '非 MC focus 不释放')
+    assert.match(cleaned.text, /还有非 MC 的专注\/目标在/)
+    assert.match(cleaned.text, /act:reading|acme-work/)
+    assert.doesNotMatch(cleaned.text, /已完全收工/)
   } finally {
     await link.cleanup()
     await body.close()
@@ -814,6 +893,7 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     assert.match(list.text, /play/)
     assert.match(list.text, /collect/)
     assert.match(list.text, /tunnel/)
+    assert.match(list.text, /macro/)
     const play = await link.tools.mcb_help.execute({ skill: 'play' })
     assert.match(play.text, /开一局/)
     assert.match(play.text, /mcb_leave/)
@@ -824,6 +904,9 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     const col = await link.tools.mcb_help.execute({ skill: 'collect' })
     assert.match(col.text, /批量采集/)
     assert.match(col.text, /needs-tool/)
+    const macro = await link.tools.mcb_help.execute({ skill: 'mac' })
+    assert.match(macro.text, /宏操作总览/)
+    assert.match(macro.text, /needs-tool/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {

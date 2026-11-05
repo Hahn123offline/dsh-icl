@@ -67,6 +67,17 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 | `path_stuck` | **单次不投递**；连续 ≥2 次才 notice | 单次只是重算路线，常随后成功；计数在任务开始/终态时重置 |
 | `dig_fallback` / `path_approximate` / `path_recovered` / `tunnel_clear` | dig_fallback notice；其余不投递 | 寻路中间过程不叫她 |
 
+## 收工语义（mcb_leave）与显示口径
+
+- `mcb_leave {cleanup:true}` 清 **MC 相关**的模型 focus + time 持续目标：识别不只看 `focus==='mc'` 字符串，
+  也看 activity/title/goal/reason/theme 里的 MC 标记与服务器别名（flat/survival…）。
+- **回执如实**：默认 leave 会列出**所有**还挂着的 focus/目标（MC 与非 MC 分开报）；只有真的空了才说
+  "已完全收工"。cleanup 只清 MC 相关的，非 MC 的会单独列出并提示 focus_leave / time_cancel，不会谎称干净。
+- **坐标/血量/背包同口径**：位置统一 `x,y,z`（四舍五入，join/look/status/提示词行/dig 结果一致），
+  生命/饥饿取整（17.8333→18）；背包 `N 件` = 物品总数，`（占 K 格）` = 占用背包格子（body inventory.used），
+  `mcb_status`/`mcb_look`/`mcb_inventory` 用同一套文案。
+- 宏教学总览见 `mcb_help macro`（8 宏/参数/失败码/别逐方块），细节 `mcb_help collect|tunnel`。
+
 ## body 进程退出（lifecycle）
 
 - `body-exit.json`（mc-body 新版）优先：`reason`、`exitCode`、`detail`(栈)、`recentEvents`、`stderrTail`、退出时 status；旧 body 退化读 stderr 的 `[mc-body] exit reason=`。
