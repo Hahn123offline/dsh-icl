@@ -7,6 +7,7 @@
     "args": { "id": "loop-wake-1", "in": "1m", "mode": "wake", "kind": "single", "message": "闭环唤醒" }
   },
   { "id": "wake-wait", "op": "wait", "seconds": 72 },
+  { "id": "wake-settle", "op": "wait", "seconds": 30 },
   {
     "id": "wake-arrived",
     "op": "assert",

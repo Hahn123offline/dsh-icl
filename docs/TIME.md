@@ -59,7 +59,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 | `since` | 最近一次阶段意义变化的时间戳（入睡/醒来/resume） |
 | `schedules` | 全部安排，持久；一次性安排响过即删，daily/weekly 保留 |
 | `spans` | 进行中的长日程 `{id, until, endMessage, sleep, silent, allow}` |
-| `queue` | 被拦下的积压 `{id, from:{plugin,activity}, kind, text, tags, focus, reason, at, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota` |
+| `queue` | 被拦下的积压 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota`；`signalId` 保留原信号 id 供来源侧（QQ/MC）对账/去重，同 id 重复 offer 不重复入队 |
 | `goals` | `{id, theme, until, turnLimit, resumeLimit, resumes, focus, resumeOnStop, createdAt, lastResumeAt}` |
 | `fired` | 幂等键 `"<id>@<YYYY-MM-DD>" → ms`；负值表示"这天已处理但漏响" |
 | `sleepingId` / `sleepUntil` | 当前睡眠安排 id / 结束时刻（展示与后移用；判定读 `spans[].until`） |
@@ -135,8 +135,9 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 补充：
 - `allow: []` 表示**没有**白名单（除 time 自己和静音锁规则外全拦）；`allow:null` 才回落默认。
-- 积压有界：`maxQueue` 默认 500，超出丢最旧、`stats.dropped/overflow` 计数并 log。
-- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字）；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
+- 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（没有 `mention/at/private/direct/admin` 标签的），@/私聊优先保留；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
+- 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId`。
+- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
 - 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
 
 ### 4.1 静音锁（新）
@@ -147,6 +148,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 - 紧急事件 = 带 `tags` 里的 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 配置可把来源收敛成显式插件白名单（默认 null=不限制）。
 - 可查：`time_status` / `status().lock` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
 - 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason`、`time_list` 显示 `（sleeping）/（muted）/（muted-quota）`。
+- 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。
 - 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
 
 ### 4.2 穿透与伪造：风险边界
@@ -265,11 +267,34 @@ S0 工具面/系统提示、S1 外部投递、S2 focus 积压与摘要、S3 time
 ### 真实会话（lab，最终手感确认；不重启 desktop）
 
 ```bash
+# 注意：显式钉住 provider/model，不依赖 profile 默认（2026-11-05 曾有人误改 web profile 默认模型）
 node tools/lab.mjs up --preset icl-lab --port 57107 --run time-1
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s2-time.json
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s4-sleep.json
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s5-mute.json
+node tools/loop.mjs --base http://127.0.0.1:57107 \
+  --state-dir <runDir>/state/icl-lab --session <sessionId> \
+  --scenario tools/scenarios/loop-s2-time.json --out <runDir>/loop-s2
+# s4 / s5 同理；loop.mjs 的 --session 复用同一条 lab 会话
 node tools/lab.mjs down --run time-1
 ```
 
-S2 = 到点唤醒一次 + 同 id 改期再响 + 暂停/恢复积压；S4 = 睡眠拦截 + 醒来释放；S5 = 静音拦截 + 闹钟穿透 + 解除释放。断言只认 `events.jsonl`/`time.outbox.jsonl`/状态快照，不拿模型自述当证据。
+S2 = 到点唤醒一次且多一轮（minTurns=2）；S4 = 睡眠拦截 + 醒来释放；S5 = 静音拦截 + 闹钟穿透 + 解除释放。断言只认 `events.jsonl`/`time.outbox.jsonl`/状态快照，不拿模型自述当证据。
+
+**2026-11-05 结果（port 57107，deepseek-account/deepseek-flash）：**
+
+| 场景 | 结果 | 断言 |
+|---|---|---|
+| S2 time | PASS | 2/2（userContains 闭环唤醒 + minTurns 2），errors 0 |
+| S4 sleep | PASS | 2/2（醒来结束语 + 积压释放），turns 4，errors 0 |
+| S5 mute | PASS | 3/3（signalBlocked / 闹钟穿透 / 解除释放），turns 3，errors 0 |
+
+产物：`.state/lab/time-3/loop-s2|loop-s4|loop-s5/{report.md,verdict.json,events.jsonl}`（worktree 内，不提交）。
+
+### 前缀稳定性（misc 对表，2026-11-05）
+
+同一 lab 流程 + `tools/scenarios/cache-10.json`（cloud deepseek-flash，显式 provider/model）：
+
+| 跑次 | 代码 | 轮数/跨度 | system 字数 | `system/message` 条数 | 首差异 |
+|---|---|---|---|---|---|
+| misc-1 | 旧（分钟级时间行） | 11 轮 / 130s | 5117 | 2 | **2316** |
+| misc-minute-check | 本契约版，故意跨分钟（gap 32s） | 4 轮 / 102s | 5060 | **1** | 无（只有一份） |
+
+结论：`时间：日期+周几+时段` 后，跨分钟不再产生新的 `system/message`，也不再每轮 append 一整段系统提示词。工具面：34 个工具、`toolsChars` 18910（+inspect 时注意 `time_mute/time_unmute` 是新增变量）。
