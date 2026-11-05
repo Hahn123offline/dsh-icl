@@ -702,3 +702,12 @@ Get-Content .state/lab/<runId>/qq-shadow/inbound.jsonl
 node tools/lab.mjs down --run <runId>
 ```
 
+
+## 0.2 真实影子执行结果（2026-11-05 22:57）
+
+用户回到电脑前、手动启动 SnowLuma 后，旧消费者（focus-core pid 12232）已确认并停止；随后按 runbook 执行了一次真实只读影子：
+
+- 命令：`node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved --port 57108 --run qq-shadow-20261105-2257 --peer 3429502459`
+- 结果：**9/9 全过**。QQ 私聊（`720385456`，"👋你好，这是测试消息"）以 `source.kind='plugin:qq'` 的 user/message 进入 DSH 会话；**零出站帧**（插件自报 framesSent=0，SnowLuma 日志同期无 `send_private_msg/send_group_msg`）；影子记录只有白名单私聊、无群文本；transcript 可见。
+- 证据：`.state/lab/qq-shadow-20261105-2257/{report.md, events.jsonl, qq-shadow/inbound.jsonl, transcript.md}`；影子已自动停止，57108 无监听。
+- 遗留：启动文件夹 `dsh-icl.lnk` 仍会在下次登录拉起旧 focus-core 应用（建议用户确认后改名/移走）；出站（私聊回）仍默认关闭，等用户单独批准后再实现 phase 1（10 项清单见 §11.1）。

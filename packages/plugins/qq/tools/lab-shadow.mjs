@@ -103,8 +103,14 @@ function patchText(file) {
   let text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
   // 只在 icl-lab 的插件列表里加 qq（icl-mc-lab 那段保持原样）
   text = text.replace('                - bili\n', '                - bili\n                - qq\n')
+  // 模板现在可能已经带 pluginConfig（例如 time.testClock）：有就合并进去，没有才新建。
+  // 否则会出现两个 `pluginConfig:` 键 → YAML duplicated mapping key，dsh 直接启动失败。
   const block = `              pluginConfig:\n${qqPluginBlock()}`
-  text = text.replace('              timeTickMs: 1000\n', `              timeTickMs: 1000\n${block}`)
+  if (text.includes('              pluginConfig:\n')) {
+    text = text.replace('              pluginConfig:\n', block)
+  } else {
+    text = text.replace('              timeTickMs: 1000\n', `              timeTickMs: 1000\n${block}`)
+  }
   if (!/                - qq\n/.test(text) || !text.includes('pluginConfig:')) throw new Error('patch 注入 qq 失败')
   fs.writeFileSync(file, text, 'utf8')
   return text
