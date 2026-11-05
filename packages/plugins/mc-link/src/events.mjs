@@ -24,6 +24,9 @@ export const QUIET_EVENTS = Object.freeze([
   // 观测/记账类：body 自己的 watchdog 统计与心跳、寻路/隧道的中间过程，不叫她。
   'heartbeat', 'watchdog', 'watchdog_suppressed', 'task_idempotent_hit', 'ledger_loaded',
   'path_recovered', 'tunnel_clear', 'path_approximate',
+  // 宏的信息事件（MC-MACRO §5）：macro_step/macro_blocked 等在 body 台账里可查，不逐条叫醒；
+  // 宏真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
+  'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
 ])
 
 /** 危险事件：tags 带 alarm，focus 里也放行（MC-CONTRACT §8）。 */
@@ -75,12 +78,19 @@ function seriousReason(reason) {
 
 /** 任务结束但没达成时，body 在 error/result.reason 里给的原因，翻成下一步。 */
 const TASK_REASON_TEXT = Object.freeze({
-  'no-target': '附近没有目标方块（换 block 名或调大 radius）',
+  'no-target': '附近没有目标方块/资源（换 block/item 名或调大 radius）',
   'no-path': '走不过去（mcb_map 看地形，换目标点或先 goto 到开阔处）',
   'dig-failed': '挖不动（可能要更好的工具，或方块被挡住）',
   'no-effect': '挖了但方块没变化（太远或工具不对，换位置/工具）',
   stuck: '卡住了（先 mcb_map/mcb_look 看地形再脱困）',
   timeout: '超时（结果未知，先看背包/位置再决定）',
+  'needs-tool': '工具不对/不够好（body 已停：先 mcb_inventory 看材料，做/换对应工具再下宏）',
+  'inventory-full': '背包满了（先存箱子/丢点东西，再继续收集）',
+  'needs-material': '材料不够（先补材料：砍树/挖石/合成，再下这个宏）',
+  blocked: '前方是水/岩浆/基岩（换方向或绕开，别硬挖）',
+  unsafe: '安全护栏拒绝（会造成危险：换位置/换做法）',
+  partial: '只完成了一部分（有进展没达标：看 progress/背包再决定续做还是换目标）',
+  'unsupported task': '这个宏 body 还没实现（bridge/build/sort/shelter/farm 陆续开放；现在先用 collect/tunnel 或原语）',
   'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
   'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
   'not connected': '身体当时不在线（先 mcb_status，需要就 mcb_join）',
@@ -96,7 +106,10 @@ function reasonHint(raw) {
 
 
 const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
-const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat'])
+/** 任务类型：原语 kind + 宏 kind（body KINDS 的超集；宏契约见 docs/MC-MACRO.md）。 */
+const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm'])
+/** 宏 kind（重复劳动下沉到 body 脚本，模型只下一条指令/查进度/打断）。 */
+const MACRO_KINDS = Object.freeze(['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm'])
 
 function cut(value, max = 80) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
@@ -154,7 +167,7 @@ function taskParamsText(task, max = 60) {
 /** 任务进度只保留人能看的几个字段，别把 body 的 result JSON 整段塞进一行信号。 */
 function progressText(result, max = 70) {
   if (!result || typeof result !== 'object') return ''
-  const keys = ['mined', 'collected', 'trips', 'eaten', 'done', 'total', 'arrived', 'distance', 'points', 'stuck', 'reason']
+  const keys = ['mined', 'collected', 'net', 'requested', 'trips', 'eaten', 'done', 'total', 'direction', 'torches', 'arrived', 'distance', 'points', 'layer', 'totalLayers', 'placed', 'skipped', 'moved', 'kept', 'tilled', 'planted', 'stuck', 'reason']
   const bits = []
   for (const key of keys) {
     const value = result[key]
@@ -162,6 +175,22 @@ function progressText(result, max = 70) {
     bits.push(`${key}=${typeof value === 'object' ? JSON.stringify(value) : value}`)
   }
   return bits.length ? `，进度 ${cut(bits.join(' '), max)}` : ''
+}
+
+/** 宏成功的一句话：collect 说收集了多少、tunnel 说通道尺寸与火把，其余给关键进度。 */
+function macroDoneText(task, result) {
+  const label = taskLabel(task)
+  if (task.kind === 'collect') {
+    const item = result?.item ?? result?.block ?? '资源'
+    const got = result?.collected ?? result?.net ?? result?.mined
+    const want = result?.requested
+    return `[MC] 宏完成：collect ${label} 收集到 ${got ?? '?'} 个 ${item}${want != null ? `（目标 ${want}）` : ''}`
+  }
+  if (task.kind === 'tunnel') {
+    return `[MC] 宏完成：tunnel ${label} 往${result?.direction ?? '?'}挖了 ${result?.done ?? '?'} 格${result?.height ? `（高 ${result.height}）` : ''}${result?.torches != null ? `，放火把 ${result.torches}` : ''}`
+  }
+  if (result && Object.keys(result).length) return `[MC] 宏完成：${label} ${cut(JSON.stringify(result), 90)}`
+  return `[MC] 宏完成：${label}`
 }
 
 /** 任务事件文本：把 outcome/error/result 翻译成"发生了什么 + 下一步"。
@@ -182,6 +211,8 @@ export function taskEventText(type, data = {}, status = null) {
   const progress = progressText(task.result)
   if (type === 'task_done') {
     const result = task.result ?? {}
+    // 宏（collect/tunnel/bridge/build/sort/shelter/farm）有各自的 result 形状，单独说人话。
+    if (MACRO_KINDS.includes(String(task.kind))) return `${macroDoneText(task, result)}${suffix}`
     const reason = result?.reason ?? null
     // 新 body 用 reason 标记"怎么达成的"（net-target/duration/target），不是失败；
     // 旧 body 曾用 task_done + result.reason(no-target 等) 表示没达成，这里只对旧失败原因做兼容。
@@ -547,7 +578,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
   }
 }
 
-export { OPS, TASK_KINDS, REASON_TEXT, TASK_REASON_TEXT }
+export { OPS, TASK_KINDS, MACRO_KINDS, REASON_TEXT, TASK_REASON_TEXT }
 
 /** 简短描述一条 body 事件，用于 mcb_do 的 events 查询（台账视角，不省略 quiet 事件）。 */
 export function eventLine(event, status = null) {

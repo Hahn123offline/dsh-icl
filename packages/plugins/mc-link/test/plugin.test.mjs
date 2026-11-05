@@ -230,6 +230,28 @@ test('mcb_do：缺 kind / 未知 op / 未知 kind 都给出可用集合与下一
   }
 })
 
+test('mcb_do：宏 kind（collect/tunnel/bridge/build/sort/shelter/farm）全部放行并透传', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm']) {
+      const out = await link.tools.mcb_do.execute({ steps: [{ op: 'task', kind, params: {} }] })
+      assert.match(out.text, new RegExp(`任务 t-1（${kind}）已接受`))
+      assert.equal(body.state.requests.at(-1).steps[0].kind, kind)
+    }
+    // 描述里要有宏教学与"别逐方块"的指引
+    const desc = link.tools.mcb_do.description
+    assert.match(desc, /宏/)
+    assert.match(desc, /collect/)
+    assert.match(desc, /别逐方块/)
+    assert.match(desc, /needs-tool/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('mcb_do：task 的 kind/params 规整后交给 body（不再出现"未知任务：undefined"）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
@@ -658,11 +680,18 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
   try {
     const list = await link.tools.mcb_help.execute({})
     assert.match(list.text, /play/)
+    assert.match(list.text, /collect/)
+    assert.match(list.text, /tunnel/)
     const play = await link.tools.mcb_help.execute({ skill: 'play' })
     assert.match(play.text, /开一局/)
     assert.match(play.text, /mcb_leave/)
     const trad = await link.tools.mcb_help.execute({ skill: 'trad' })
     assert.match(trad.text, /村民交易/)
+    const tun = await link.tools.mcb_help.execute({ skill: 'tun' })
+    assert.match(tun.text, /挖隧道/)
+    const col = await link.tools.mcb_help.execute({ skill: 'collect' })
+    assert.match(col.text, /批量采集/)
+    assert.match(col.text, /needs-tool/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {
