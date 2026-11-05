@@ -131,3 +131,36 @@
 - [ ] mc-link 侧（不在我 scope，已发建议）：`OPS` 加 `sleep`；status 行加 饱食/时间/附近敌人/背包满；注册 night/death 技能入口
 
 > 维护约定：一个事实只有一个家。里程碑/风险放本文；body 接口细节放 `packages/mc-body/README.md`；技能操作放 `packages/plugins/mc-link/skills/*.md`。
+
+## 7. night-1（E1 第一夜）复盘与 issue 日志（2026-11-06 00:42–02:11）
+
+> runDir `C:/DSH/icl-wt/mc-lab/.state/lab/night-1`（events.jsonl 为权威源；mc-lab 另有 `night-notes.md`/`strategy.jsonl`/`degradation-*.json`/`milestones.jsonl`）。
+> 结局：02:09 入睡成功；**02:11 mc-lab 主动 `/v1/shutdown` 收 body（sleep-safe）**：睡前同代 8 次死亡、夜间怪多，避免睡眠期被反复击杀；session 保留，睡到 ~06:49 醒后 rejoin。
+
+### 7.1 三类问题（说明不清 / 组合不可行 / 环境卡死）
+
+- `说明不清` · `crafting_table` 报“没有可用配方（缺材料）”，但背包有 8 原木、0 木板 → 模型不知道“先 craft oak_planks”，**131× 重复同一 craft 调用**（night-smoke2 seq 56–…）。修：craft 无配方报错给“下一步链条”（原木→木板→工作台）+ 当前库存（df2931e）。
+- `说明不清` · 长任务期间只能 `wait/tasks` 轮询（night-smoke seq 61/66/71/80/85/90）；progress 被 gate 合并。修：mc-link 文档/描述教“提交后别 wait，用 tasks/inventory”，宏 progress 限频。
+- `组合不可行` · **`goto` 到自身坐标“捡掉落”循环 96 次**（错误=0，按错误熔断不响；item 只有距离没有坐标）→ 需 `pickup` op + entity 坐标 + “同 tool+args 连续 ≥5 无论成败”断路器（后者 mc-lab 已加，前者明早 body）。
+- `组合不可行` · 手动 `goto+dig` 失效坐标：`dig: 方块没有变化` 22 次（模型不知道是“空气/过期坐标”还是“工具不对”）。修：dig 精确报错（39b232e，pending merge/已合入 master a979a4d）。
+- `组合不可行` · 同一长 `mcb_do mine` 连发 → mc-link 120s 超时 + body 无 doPlan 互斥 → `tool call aborted`/`mine: dig-failed`（night-1 seq 370/372→376/378；watch sameCallMax=23）。→ 明早 body 单飞锁 409 + 教“长任务用 task”。
+- `环境卡死` · 夜间生存：同代 8 次死亡、血 5 时 supervisor 低血 resume→再被打循环（safety_stop 70/emergency 62/health_drop 38/resume 71）；mc-lab 最终 sleep-safe 收 body。非 body 故障，body 安全反射正常。
+- `环境卡死` · supervisor 自身 `sleep is not a function` 崩溃（mc-night.mjs:1125，00:36 前后）→ mc-lab 修好重启；旧 gen 证据在 `checkpoint/lab-gen-2/`。
+- `说明不清` · `mcb_status` 氧气显示 0（body null）→ mc-link 改 `?`（本夜已修）。
+- `说明不清` · craft 无配方 hint 选到错误配方变体（她有 oak/cobblestone，却提示缺 pale_oak_planks/cobbled_deepslate）→ 明早改：多配方变体选“缺最少”的那个再提示。
+
+### 7.2 设计转向（用户两次明确要求）
+
+1) **装备/工具归模型管**（02:0x 用户要求）：inventory 要给手持/快捷栏/★/toolFor/耐久；equip {item|slot} 自管；mine/dig 前置检查：错工具/空手 → 立即 failed(needsTool/suggestCraft) 不重试；有更好工具→自动换；脚本只在战斗/低血/危险 emergency 兜底。→ **已实现并部署**（b1fa2a8/347040a；night-1 真服证据 seq 390/391 inventory、726/727+773/774 equip、370/372 mine net10；auto_tool 事件 20 次）。
+2) **宏操作**（02:3x 用户要求）：重复劳动不要逐方块交给模型；body 自带 collect/tunnel/bridge/build/sort/shelter/farm 宏，模型一条 op + 查进度 + 随时打断；大建筑给蓝图。→ **契约 MC-MACRO.md + collect/tunnel 已实现并真服 smoke 通过**（de1acfe/011e3f2）；其余明早。
+
+### 7.3 退化数据（宏动机）
+
+`[01:20–01:37Z]` 154 calls：`mcb_status 101 / mcb_do 39 / mcb_inventory 8`；**mine/dig 22 次全部 stone**；**assistant 目的表述 0 条**；task 事件 87（progress 79/done1/cancelled1）→ 逐块 progress 循环，不是资源不足。→ 一条宏 + 限频 progress 是正道。
+
+### 7.4 明早待办（按优先级）
+
+1. body：`doPlan` 单飞锁（并发 409，长任务引导 task）；`pickup` op + look/inspect entity 坐标；craft hint 变体选择；`collect` 结果 net（已加 358bd17）。
+2. 宏：bridge/build/sort/shelter/farm；`tunnel` stairs/blocked 用例；build 蓝图校验 + 真服。
+3. 技能/文案：mcb_help collect/tunnel（mc-link 已写）→ build/shelter 待实现后补；play.md 已有“重复劳动用宏”。
+4. 复盘：把本 §7 与 mc-lab 数字表合成早报；MC-LEAVE/sleep-safe 作为验收流程一部分。

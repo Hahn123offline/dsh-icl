@@ -1370,8 +1370,8 @@ export function createMineflayerAdapter({
           if (params.returnToSafe) returned = await returnToSafe().catch(() => null)
           let deposited = null
           if (params.deposit) deposited = await runOp('chest', { action: 'put', all: true }).catch((error) => ({ error: String(error?.message ?? error) }))
-          emit('macro_done', { kind: 'collect', item, block, collected, returned, deposited })
-          return { collected, item, block, requested: count, source: result, returned, deposited }
+          emit('macro_done', { kind: 'collect', item, block, collected, net: collected, returned, deposited })
+          return { collected, net: collected, item, block, requested: count, source: result, returned, deposited }
         } catch (error) {
           if (signal?.aborted) throw error
           lastError = error
@@ -2061,6 +2061,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 
