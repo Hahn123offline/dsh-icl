@@ -61,3 +61,11 @@
 2. **craft/place 真服链路证据只拿到部分**：`craft-place-real3`（54840）里 scan/goto 成功、mine oak_log 因 drop 没捡到 + 掉血暂停而失败，导致 craft 缺木板、place 被暂停拒绝。已验证的只是"mine 4 logs→craft oak_planks×12→crafting_table→stick"（real 那次），缺 `craft wooden_pickaxe` 与 `place`（有支撑成功/悬空 skipped）两行。
 3. **C 的会话内 crash notice 时延**：mc-link 实测 kill→会话消息 ≈166ms（tick 200ms），但若她正在 turn 内，要等下一个 step 边界才注入（DSH steer 语义）；场景把"signalLogged 查台账"作必过、会话内 notice 作软断言。
 4. **本地模型稳定性**：L1 曾出现单次 430s 的 turn 被 session/cancel；LA 22–35s 正常。云端 flash 也出现过一次 >7 分钟挂起（mc-link 循环），重启即可，不当产品失败。
+
+## 8. craft/place 真服链路（19:44 复查）
+
+`craft-place-final`（54840）：scan/goto/mine oak_log ×4 ✓，但：
+- `craft oak_planks` 报"产物没进背包（想要 +12，实际 +0，合成 3 次×4）"，而 final inventory 实际有 `oak_planks×13 / stick×4` → **产物校验的 inventory 时序问题**（合成后立即读背包早于更新），不是合成失败。
+- `craft wooden_pickaxe` 报"没有可用配方"（缺已放置的工作台/材料链）。
+- `place` 因背包无 dirt 失败。
+→ 记为下轮 P0（craft 后置校验加等待/重读；需要工作台时先放置；place 材料预检），本轮不再追。已有可复现证据路径。
