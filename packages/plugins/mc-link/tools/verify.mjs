@@ -119,10 +119,13 @@ try {
 
   // E. 退出清理：leave 后 body 进程消失、下一轮 status 未连接
   const leavePid = api.supervisor().pid
+  // 挂一个模型 focus + 一条 MC 持续目标，验证 leave 的报告与 cleanup 语义（time 不在这个 driver 里，所以 goal 为空）。
+  const lease = host.services.focus.enter({ label: 'mc', owner: 'focus', title: '在 MC 里玩' })
   const left = await tools.mcb_leave.execute({})
-  log(`mcb_leave: ${left.text}`)
-  check('leave 说明杀了哪个进程', /已停止本会话启动的 body/.test(left.text))
-  check('leave 说明 focus/goal 未动', /focus\/goal 没有动/.test(left.text))
+  log(`mcb_leave（默认只停 body）: ${left.text}`)
+  check('leave 报告安全停止结果', /安全停止：成功/.test(left.text), left.text.split('；')[0] ?? '')
+  check('leave 报告进程怎么结束（pid）', /body 进程：已结束（pid/.test(left.text))
+  check('leave 报告还挂着的 focus/goal', /还挂着：focus 1 个/.test(left.text))
   await wait(800)
   let dead = false
   try { process.kill(leavePid, 0); dead = false } catch { dead = true }
@@ -130,8 +133,12 @@ try {
   const afterLeave = await tools.mcb_status.execute({})
   log(`leave 后 mcb_status:\n${afterLeave.text}`)
   check('leave 后下一轮 status 报未连接', /未连接/.test(afterLeave.text) && !/已连接/.test(afterLeave.text))
-  const focusLease = host.services.focus.current()
-  check('leave 没有偷偷取消 focus/goal（本来就没有 focus）', focusLease == null)
+  const cleaned = await tools.mcb_leave.execute({ cleanup: true })
+  log(`mcb_leave（cleanup:true）: ${cleaned.text}`)
+  check('cleanup 释放 focus 租约', /收尾清理：focus 释放 1 个/.test(cleaned.text) && host.services.focus.list().length === 0)
+  const again = await tools.mcb_leave.execute({ cleanup: true })
+  check('leave 幂等（第二次没有可清的东西，不报错）', /没有启动过|没有挂着的|都空了/.test(again.text), again.text)
+  check('cleanup 之后没有残留 focus 租约', host.services.focus.list().length === 0)
 } catch (error) {
   check('脚本无异常', false, String(error?.stack ?? error))
 } finally {

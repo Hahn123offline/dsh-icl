@@ -15,6 +15,13 @@
   - 立即返回 taskId，进度/完成/失败会作为事件回来。**同一件事不要连发多个 task**，先查 `{"op":"tasks"}`。
 - 单步动作：`dig`/`place`/`use`/`equip`/`toss`/`attack`/`eat`/`face`/`wait`/`craft`/`furnace`/`chest`/`trade`/`move`。
   它们会阻塞到完成（最长约 120 秒）；超时只说明"没及时返回"，先查状态，别原样重试。
+  - 坐标两种写法都行：`{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}` 或 `{"op":"dig","params":{"pos":[12,-60,14]}}`；
+    也可以不给坐标，按名字找最近的：`{"op":"dig","params":{"name":"dirt","radius":4}}`。
+  - 放置：`{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}`。
+  - `wait` 用 `{ms}`（不是 durationMs）；`routine` 用 `{durationMs}`。
+- 扫描/地图的硬限制（写错会误判"没有"）：
+  - `mcb_scan`：`radius` 默认 16、最大 48；`count` 默认 8、最大 64；结果按距离升序，到上限会附一句"可能还有更多"。
+  - `mcb_map`：`radius` 默认 4、最大 8。
 - 查台账：`{"op":"tasks"}`；查事件：`{"op":"events"}`（默认只列上次之后的新事件）；取消：`{"op":"cancel","taskId":"t-1"}`。
 - 游戏里说话：`{"op":"say","text":"..."}`（≤200 字，不能以 `/` 开头）。做大事前说一句，任务完成或失败也说一句。
 
@@ -37,9 +44,11 @@
 
 ## 收尾（离开）
 
-1. 不要被持续叫醒：`time_cancel` 取消 goal、`focus_leave` 离开专注——这两件事 `mcb_leave` 不替你做。
-2. `mcb_leave`：先安全停止，再结束**本会话启动的** body 进程。之后 `mcb_status` 应显示未连接。
-3. 下一轮她再想玩，重新 `mcb_join`。
+1. 收工想干净：`mcb_leave {"cleanup":true}` —— 停 body + 释放自己的 focus 租约 + 取消 `focus=="mc"` 的 time 持续目标
+   （不碰闹钟/积压/时间锁；返回值会报哪些清了、哪些还挂着）。
+2. 只离开游戏、想保留专注/目标：默认 `mcb_leave`（只停 body），返回值会列出还挂着哪些 focus/goal。
+3. 两条路径都幂等：可以再调一次确认"没有可清的东西"。
+4. 之后 `mcb_status` 应显示未连接；下一轮想玩重新 `mcb_join`。
 
 ## 失败怎么办
 
