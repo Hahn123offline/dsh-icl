@@ -1400,9 +1400,16 @@ export function createMineflayerAdapter({
       } catch (error) {
         craftError = error
       }
-      await sleep(250)
-      const after = countOf(name)
-      const produced = after - before
+      await sleep(120)
+      // 产物进背包有网络延迟：轮询最多 ~2.5s 再判定，避免“物品其实到了”被误报成吞材料。
+      let after = countOf(name)
+      let produced = after - before
+      const verifyDeadline = Date.now() + 2500
+      while (produced < count && Date.now() < verifyDeadline) {
+        await sleep(150)
+        after = countOf(name)
+        produced = after - before
+      }
       if (produced < count) {
         const detail = {
           requested: count,
