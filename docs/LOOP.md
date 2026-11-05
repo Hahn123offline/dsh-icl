@@ -330,6 +330,12 @@ mc-link 的 `serversFile`，所以场景里 `--server lab-normal` 就能用。�
 - 每场开始前清 stray body（最多 3 轮 kill，含 mc-link 自动重启的孤儿），`up`/`down` 也清；否则同服同名互踢
   （`You logged in from another location`）会把 A 场景搞成假 FAIL。
 - prompt 超时会 `session/cancel` 并记录（本地模型曾 430s 超时一次），不再让场景被一个无界回合挂死。
+- **坑：测试脚手架会吞 time/focus 状态**。`loop-probe` 默认 `resetOnStart: true`，lab 进程一重启就会给 time 发
+  `reset`，把 `time.json` 的 `phase/spans/queue/fired` 清空——于是"跨重启恢复睡眠 span、不重复唤醒、积压不丢"
+  这类验证永远测不到，看起来像 time 的 bug。长测/跨重启场景给 preset 的 `pluginConfig.loop-probe.resetOnStart`
+  设 `false`（本仓库 `preset-icl-mc-lab` 已设；`icl-lab` 保持默认，loop driver 有自己的显式 reset）。
+  同理，`body.jsonl` 跨 lab 代保留，统计死亡/任务时必须从最后一个 `ledger_loaded` 之后算，否则会把上一代事件当成本代（replay）。
+
 
 ### 11.3 最终 3 连结果（2026-11-05，云端 deepseek-flash，54840 lab-normal）
 

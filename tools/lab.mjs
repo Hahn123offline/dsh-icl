@@ -172,6 +172,8 @@ async function up() {
   if (!PRESETS[preset]) fail(`未知 preset：${preset}（可选：${Object.keys(PRESETS).join(', ')}）`)
   const port = Number(arg('--port', DEFAULT_PORT))
   const mcPort = Number(arg('--mc-port', DEFAULT_MC_PORT))
+  const mcUser = String(arg('--mc-user', 'ICL-mclab-1'))
+  const servers = String(arg('--servers', 'lab-normal,flat')).split(',').map((item) => item.trim()).filter(Boolean)
   const runId = String(arg('--run', tsSlug()))
   const modelKey = String(arg('--model', 'flash'))
   const customRoute = arg('--provider') && arg('--model') ? { provider: String(arg('--provider')), model: String(arg('--model')), source: 'explicit' } : null
@@ -190,19 +192,21 @@ async function up() {
   const dshBin = discoverDshBin()
   if (!dshBin) fail('找不到 dsh 的 bin.js；用 DSH_BIN=<...>/lib/bin.js 指定')
   // 清掉上一轮 lab 留下的 body（含被 kill 后 mc-link 自动重启的孤儿），避免同服同名互踢。
-  const strays = await cleanupStrayBodies({ username: 'ICL-mclab-1' })
+  const strays = await cleanupStrayBodies({ username: mcUser })
   if (strays.length) info(`清理上一轮残留 body：${strays.join(',')}`)
   if (modelKey === 'local') acquireLocalModelLock(runId)
 
   const runDir = ensureDir(runDirOf(runId))
   ensureDir(path.join(runDir, 'state'))
-  const patch = materializePatch({ runDir, mcPort })
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers })
   const workspace = path.resolve(String(arg('--workspace', path.join(runDir, 'workspace'))))
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,
     port,
     mcPort,
+    mcUser,
+    servers,
     preset,
     worktree: REPO_ROOT,
     commit: gitCommit(),
@@ -511,6 +515,8 @@ async function scene() {
     const value = arg(`--${key}`, null)
     if (value != null) vars[key] = String(value)
   }
+  // username 默认跟 run 的 mc-link 配置走（白天 ICL-mclab-1、夜间 ICL-night-1）。
+  if (vars.username == null && run.meta.mcUser) vars.username = run.meta.mcUser
   const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview'), vars })
   console.log(JSON.stringify({ ok: result.ok, verdict: result.verdictFile, checks: result.checks.length, failed: result.checks.filter((row) => !row.ok).length }, null, 2))
   if (!result.ok) process.exitCode = 1
