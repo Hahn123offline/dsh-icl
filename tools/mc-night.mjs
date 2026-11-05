@@ -42,6 +42,8 @@ const cfg = {
   smokeMin: num('--smoke-min', 0),
   smokeRestart: flag('--smoke-restart'),
   turnTimeoutMin: num('--turn-timeout-min', 10),
+  /** 入睡 grace：与 time 侧 sleepGraceSec 默认 120s 对齐（可用 ICL_SLEEP_GRACE_SEC 覆盖）。 */
+  sleepGraceSec: num('--sleep-grace-sec', Number(process.env.ICL_SLEEP_GRACE_SEC ?? 120)),
   stallSec: num('--stall-sec', 180),
   checkpointMin: num('--checkpoint-min', 12),
   nudgeMin: num('--nudge-min', 45),
@@ -554,7 +556,7 @@ async function handleSleepBoundary({ stats, nowMs, sleeping }) {
     return
   }
   const sleepAgeMs = nowMs - Date.parse(state.sleepEnteredAt)
-  if (stats.inTurn && sleepAgeMs < 60_000) return
+  if (stats.inTurn && sleepAgeMs < cfg.sleepGraceSec * 1000) return
   if (stats.inTurn) {
     try {
       const api = apiFor(cfg.port)
