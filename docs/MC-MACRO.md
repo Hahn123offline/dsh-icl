@@ -120,3 +120,10 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 - 工具调用分布：`mcb_status 101 / mcb_do 39 / mcb_inventory 8`；`mine/dig 22 次全部 stone`；**assistant 目的表述 0 条**。
 - task 事件 87 条：`task_progress 79 / done 1 / cancelled 1` —— 同一任务逐块 progress 循环，不是资源不足。
 - 结论：模型把时间花在"反复查状态+逐块挖同一资源"上，没有任何结构/目标推进；这正是宏操作要消灭的退化模式（一条宏 + 限频 progress 代替 79 条 progress/s 数十次原语）。
+
+### 第二波契约细化（2026-11-06 03:1x，纯逻辑+单测就绪，adapter 明早实现）
+
+- `bridge`：`bridgePlan(params)` 已给出每步要铺的格子（沿方向 step=1..length，宽度沿垂直方向展开，`yOffset:-1` 即支撑放在前进格脚下）；adapter 实现要点：先 `checkBlueprintMaterials`/库存核对 `length*width` 个 support，不足立即 `failed(needs-material)` 并给需补数量；每步“放支撑→走到支撑上→下一步”，掉落/被挡算 `blocked`。
+- `build`：`parseBlueprint(blueprint)` 校验 size/layers/palette 尺寸并展开 placements（相对坐标，从下往上 y）；`checkBlueprintMaterials(blueprint, counts)` 给 `{ok,missing[]}`；adapter 明早做：origin（默认玩家脚下方块）、可选 rotate、逐层放、超出 reach 4.5 记 skipped（有上限）、`strict` 材料不足立即 failed(needs-material)。
+- `shelter`：`shelterPlan({size,height})` 给出墙/顶/门占位（门在 z=0 中间、y0–1）；adapter 明早用 place 逐格放，材料不足 failed(needs-material)。
+- 单测：`test/macro.test.mjs` 已覆盖 bridgePlan/parseBlueprint/checkBlueprintMaterials/shelterPlan（45/45 mc-body 测试绿）。
