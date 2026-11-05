@@ -576,4 +576,4 @@ node tools/cache-probe.mjs diff --run cache-bf2
    ①system append/replace 与"文本恒等"（期望 1/0、firstDiff=-1）；②system 字符/字节 + tools count/hash（只准变长度，不准变 hash）；
    ③`systemHasDynamicFacts=false` + facts 快照 sections 仍含 `icl:facts` + ≤1 条/轮。
    P0-1 结果：system 5011→2294 字符（8485→5762 字节，-32.1% bytes）、tools 34/`7047e6c4f3e8` 不变、facts 布局未动、firstDiff=-1；
-   命中硬数字待本地 run（云端不可测）。详见 `docs/FIRST-SCREEN.md` §10。
+   本地实测（同 commit/scenario，purify 开 vs 关）：冷启动首请求 **8039→7471 tok（-568，-7.1%）**、稳态 hit **98.69% vs 98.59%（持平）**、稳态 prefill 持平 → 只省冷启动、不伤稳态。详见 `docs/FIRST-SCREEN.md` §10.1。

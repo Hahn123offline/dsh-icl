@@ -146,3 +146,22 @@ node tools/cache-layout-audit.mjs `
 也就是说每步请求的"append-only 增量"与改前同构，前缀稳定性没有变化，唯一变化是冷启动/每个请求的前缀更短（只会降低 prefill）。
 **预期收益**：冷启动静态前缀少 2723 字节（-32.1% bytes），冷启动 prefill 同比减少（具体 token 数需本地实测）。
 **待办**：要 hit%/prefill/TTFT 硬数字时，lead 排 GPU 根锁、用本地 `--model local` 跑同 5 轮场景，然后按 night-1 方法切片引擎日志（`tools/cache-longrun.mjs`）。
+
+### 10.1 本地实测（2026-11-06 07:09–07:17，GPU 根锁，commit `0de4462`）
+
+同 commit、同 scenario（`tools/scenarios/cache-facts-6.json`）、同 5 轮、同 34 工具（`7047e6c4f3e8`）、本地 `coder390-27b-q3-df2-4x500`；
+唯一差异 = lab preset 的 `purifySections`（开 = 新布局 / 删掉 = 旧布局；跑完已从备份恢复，`git status` 干净）。
+
+| 指标 | 旧布局（purify 关） | **新布局（P0-1）** | 变化 |
+|---|---|---|---|
+| system（run 内实测） | 5017 字符 / 8491 字节 | **2299 字符 / 5767 字节** | -54.2% / -32.1% |
+| 冷启动首请求 prompt / prefill | **8039 tok** | **7471 tok** | **-568 tok（-7.1%）** |
+| 冷启动 TTFT | 5.23s | 5.40s | 噪声（568 tok ≈0.5s，被冷启动方差淹没；单次不可下结论） |
+| 稳态 9 条请求 prefill 合计 | 1034 tok | 1038 tok | 持平 |
+| 稳态 hit% | 98.69% | 98.59% | 持平（短 5 轮里 1 次冷启动占 1/10，故低于 night-1 的 99.5%） |
+| 稳态 TTFT 均值 | 0.38s | 0.37s | 持平 |
+
+**结论**：P0-1 把冷启动 prompt 减少 **568 tok（-7.1%）**（比按字节估的 700–900 保守——中英文 token 比不是 3 B/tok）；
+**稳态命中/前缀行为零回归**（同 scenario 同工具面，hit 98.6% 对 98.6%、稳态 prefill 持平）。
+证据：`.state/lab/cache-firstscreen-{old,new}/cache-probe.json` + `cache-probe-engine.jsonl`。
+
