@@ -14,8 +14,9 @@ import { createHeartbeat, createProgressTracker, createRateLimiter } from './rec
 const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
 const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
-// 暂停时仍然允许的非动作 op（感知/查询/恢复）；写动作一律拒绝。
-const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'wait'])
+// 暂停时仍然允许的 op：感知/查询/恢复，以及**取消任务**（取消是纯安全动作，不应被拒）。
+// 写动作（move/dig/place/task…）一律拒绝。
+const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'say', 'wait'])
 
 function abortError(message = 'aborted') {
   const error = new Error(message)
@@ -810,7 +811,17 @@ export function createBody({
       online: connected,
       paused,
       pausedReason,
-      safety: { paused, reason: pausedReason, offline: connected === false, offlineReason, everOnline },
+      safety: {
+        paused,
+        reason: pausedReason,
+        offline: connected === false,
+        offlineReason,
+        everOnline,
+        // 说清语义：paused 不是“冻结世界”，只是不接任务/中断当前任务。
+        note: paused
+          ? 'paused = 停止接任务并中断当前任务；物理世界仍在（会掉落/受伤/被推），可 cancel/tasks/look 等安全 op，恢复用 /v1/safety/resume；暂停超时会 idle_disconnect'
+          : null,
+      },
       task: taskView(current),
       queue: queue.map(taskView),
       pausedTasks: [...tasks.values()].filter((task) => task.state === 'paused').map(taskView),
