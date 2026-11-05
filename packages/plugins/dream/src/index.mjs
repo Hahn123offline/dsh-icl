@@ -221,11 +221,16 @@ export function apply(ctx) {
   async function jobWash({ now, force = false }) {
     const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'wash')) return { job: 'wash', skipped: 'already-ran' }
+    // 没有原料时要能分清"今天真没说话"和"原文层没接上"：把来源清单一起带回去。
+    let rawSources = []
+    try { rawSources = ctx.services.raw?.ids?.() ?? [] } catch { rawSources = [] }
     let rows = []
     try {
       rows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 2000 }) ?? []
-    } catch { rows = [] }
-    if (!rows.length) return { job: 'wash', skipped: 'no-raw' }
+    } catch (error) {
+      return { job: 'wash', skipped: 'no-raw', rawSources, error: String(error?.message ?? error) }
+    }
+    if (!rows.length) return { job: 'wash', skipped: 'no-raw', rawSources }
 
     const startMs = dayStartOf(now)
     const endMs = dayEndOf(now)
@@ -1057,7 +1062,7 @@ export function apply(ctx) {
           reason,
           day: result.day,
           ok: result.ok,
-          jobs: result.results.map((row) => `${row.job}:${row.ok === false ? `fail(${row.error ?? ''})` : row.skipped ? `skip(${row.skipped})` : 'ok'}`).join(','),
+          jobs: result.results.map((row) => `${row.job}:${row.ok === false ? `fail(${row.error ?? ''})` : row.skipped ? `skip(${row.skipped}${row.rawSources ? ` raw=${row.rawSources.join('|') || '(空)'}` : ''})` : 'ok'}`).join(','),
         })
         return result
       })
