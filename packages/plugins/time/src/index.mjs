@@ -423,6 +423,9 @@ export function apply(ctx) {
   const awakeCappedSec = Math.max(60, Number(awakeCfg.cappedSec ?? 600))
   const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
   const awakeCappedShortMax = Math.max(0, Number(awakeCfg.cappedShortMax ?? 3))
+  // 睡眠边界：入睡瞬间可能还有在飞回合（"把手里这轮收个尾"）。允许它自然结束，
+  // 超过 sleepGraceSec 仍在跑就发 sleep-boundary-overrun 事件（driver 可订阅后 cancel）。
+  const sleepGraceSec = Math.max(0, Number(ctx.config.sleepGraceSec ?? 120))
   const dir = path.dirname(stateFile)
 
   // 测试时钟（config.testClock:true 时才允许 inbox clock 命令）：只在 time 自己的时间视图上
@@ -465,6 +468,8 @@ export function apply(ctx) {
     awakeTickSentAt: [],
     awakeTickShortSentAt: [],
     awakeTickCappedAt: null,
+    sleepBoundary: null,
+    lastSleepBoundary: null,
     turnEnds: 0,
     heartbeatOverdueLoggedAt: null,
     stats: { dropped: 0, missed: 0, expired: 0, overflow: 0, failed: 0, inboxBad: 0 },
@@ -496,6 +501,8 @@ export function apply(ctx) {
         state[key] = Number(saved[key]) > 0 ? Number(saved[key]) : null
       }
       state.turnEnds = Number(saved.turnEnds) > 0 ? Number(saved.turnEnds) : 0
+      state.sleepBoundary = saved.sleepBoundary && typeof saved.sleepBoundary === 'object' ? saved.sleepBoundary : null
+      state.lastSleepBoundary = saved.lastSleepBoundary && typeof saved.lastSleepBoundary === 'object' ? saved.lastSleepBoundary : null
       state.lock = saved.lock && typeof saved.lock === 'object' ? saved.lock : null
       state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
       state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
@@ -1011,7 +1018,7 @@ export function apply(ctx) {
 
   /**
    * 每个 turn-end：记心跳、续推目标；本轮没有目标续推时安排清醒节拍。
-   * 这样"没有 goal / 没有外部事件"不再是静默等待，而是 idleSec 后的一次自检。
+   * 同时记录睡眠边界：如果入睡时还有在飞回合，它什么时候结束、耗时多少。
    */
   function onTurnEnd(signal) {
     const at = nowTime()
@@ -1019,6 +1026,13 @@ export function apply(ctx) {
     state.turnEnds = Number(state.turnEnds ?? 0) + 1
     const seq = Number(signal?.meta?.seq)
     if (Number.isFinite(seq)) state.lastTurnSeq = seq
+    if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt == null) {
+      state.sleepBoundary.turnEndedAt = at
+      state.sleepBoundary.turnEndedAfterSec = Math.max(0, Math.round((at - Number(state.sleepBoundary.at)) / 1000))
+      state.sleepBoundary.overrun = state.sleepBoundary.turnEndedAfterSec > sleepGraceSec
+      log('info', 'time.sleep-boundary.turn-end', { afterSec: state.sleepBoundary.turnEndedAfterSec, graceSec: sleepGraceSec, overrun: state.sleepBoundary.overrun })
+      if (state.sleepBoundary.overrun) emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-overrun', tags: ['sleep', 'boundary', 'overrun'], meta: { afterSec: state.sleepBoundary.turnEndedAfterSec, graceSec: sleepGraceSec } })
+    }
     let resumed = 0
     try { resumed = resumeGoals() } catch (error) { log('warn', 'time.resume-goals', { error: String(error?.message ?? error) }) }
     if (resumed > 0) {
@@ -1157,6 +1171,20 @@ export function apply(ctx) {
           state.since = now
           state.sleepUntil = endAt
           clearAwakeTick()
+          // 睡眠边界：入睡时是否还有在飞回合（正常 = 她正在"收尾"）。
+          const inFlight = state.lastTurnStartAt != null && (state.lastTurnEndAt == null || Number(state.lastTurnStartAt) > Number(state.lastTurnEndAt))
+          state.sleepBoundary = {
+            at: now,
+            inFlight,
+            turnStartAt: inFlight ? Number(state.lastTurnStartAt) : null,
+            turnAgeAtEntrySec: inFlight ? Math.max(0, Math.round((now - Number(state.lastTurnStartAt)) / 1000)) : null,
+            turnEndedAt: inFlight ? null : now,
+            turnEndedAfterSec: inFlight ? null : 0,
+            postSleepTurn: false,
+            overrun: false,
+            overrunLoggedAt: null,
+          }
+          log('info', 'time.sleep-boundary.entry', { inFlight, turnAgeAtEntrySec: state.sleepBoundary.turnAgeAtEntrySec, graceSec: sleepGraceSec })
           if (focusApi?.enter && !sleepLease) {
             try {
               sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
@@ -1205,6 +1233,11 @@ export function apply(ctx) {
       state.sleepingId = null
       state.sleepUntil = null
       state.since = nowTime()
+      // 归档本次睡眠的边界事实（供报告/validity 用），睡眠中的边界不再活跃。
+      if (state.sleepBoundary) {
+        state.lastSleepBoundary = { ...state.sleepBoundary, endedAt: nowTime() }
+        state.sleepBoundary = null
+      }
       emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
       if (!span.silent) send({ kind: 'wake', text: span.endMessage, tags: ['wake'] })
       const released = flushQueue('你睡觉时')
@@ -1266,6 +1299,10 @@ export function apply(ctx) {
       state.sleepingId = null
       state.sleepUntil = null
       state.since = nowTime()
+      if (state.sleepBoundary) {
+        state.lastSleepBoundary = { ...state.sleepBoundary, endedAt: nowTime() }
+        state.sleepBoundary = null
+      }
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
       armAwakeTick()
@@ -1338,6 +1375,17 @@ export function apply(ctx) {
       }
 
       pruneFired(at)
+      // 睡眠边界：入睡时的在飞回合超过 grace 还在跑 → 发一次 overrun 事件（driver 订阅后 cancel）。
+      if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt == null) {
+        const boundaryAgeSec = Math.round((at - Number(state.sleepBoundary.at)) / 1000)
+        if (sleepGraceSec > 0 && boundaryAgeSec > sleepGraceSec && !state.sleepBoundary.overrunLoggedAt) {
+          state.sleepBoundary.overrunLoggedAt = at
+          state.sleepBoundary.overrun = true
+          dirty = true
+          log('warn', 'time.sleep-boundary.overrun', { afterSec: boundaryAgeSec, graceSec: sleepGraceSec })
+          emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-overrun', tags: ['sleep', 'boundary', 'overrun'], meta: { afterSec: boundaryAgeSec, graceSec: sleepGraceSec } })
+        }
+      }
       maybeAwakeTick(at)
       // 醒着长时间没有 turn 活动 = 可观测异常（自检本该在 idleSec 内把它救回来）。
       if (awakeTickEnabled && !awakeSuppressed() && state.lastTurnEndAt != null) {
@@ -1529,6 +1577,8 @@ export function apply(ctx) {
       queueByPlugin: reasonCounts(),
       goals: state.goals.map((g) => ({ ...g })),
       heartbeat: heartbeatStatus(),
+      sleepBoundary: state.sleepBoundary ? { ...state.sleepBoundary } : null,
+      lastSleepBoundary: state.lastSleepBoundary ? { ...state.lastSleepBoundary } : null,
       missed: state.stats.missed,
       dropped: state.stats.dropped,
       overflow: state.stats.overflow,
@@ -1562,6 +1612,15 @@ export function apply(ctx) {
         lines.push(`心跳：上次回合结束 ${hb.idleSec} 秒前；${nextAt}（近一小时自检 ${hb.ticksLastHour} 次）。`)
       } else {
         lines.push('心跳：还没收到过 turn-end（清醒节拍照常待命）。')
+      }
+    }
+    if (state.phase === 'sleeping' && state.sleepBoundary) {
+      const boundary = state.sleepBoundary
+      if (boundary.turnEndedAt == null) {
+        const age = Math.round((now - Number(boundary.at)) / 1000)
+        lines.push(`睡眠边界：入睡时有在飞回合（已 ${age} 秒，grace ${sleepGraceSec} 秒${boundary.overrun ? '，已超时' : ''}）。`)
+      } else if (boundary.postSleepTurn) {
+        lines.push('⚠ 睡眠边界：入睡后出现新回合（疑似外部直投；session/prompt 不经过 time gate）。')
       }
     }
     const next = nextUpcoming(now)
@@ -1875,11 +1934,17 @@ export function apply(ctx) {
   }
 
   // turn-start：记录模型活动开始时间（bridge 提供）；没有它时 lastModelCallAt 退化到 turn-end。
+  // 睡眠期出现新 turn（边界 turn 已结束后又起来）= 直接注入的嫌疑，记事件供 validity 统计。
   ctx.signals.on({ tags: ['turn-start'] }, (signal) => {
     try {
       state.lastTurnStartAt = nowTime()
       const seq = Number(signal?.meta?.seq)
       if (Number.isFinite(seq)) state.lastTurnSeq = seq
+      if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt != null && !state.sleepBoundary.postSleepTurn) {
+        state.sleepBoundary.postSleepTurn = true
+        log('warn', 'time.sleep-boundary.new-turn', { at: nowTime() })
+        emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-new-turn', tags: ['sleep', 'boundary', 'injection'], meta: { at: nowTime() } })
+      }
       dirty = true
     } catch (error) { log('warn', 'time.turn-start', { error: String(error?.message ?? error) }) }
   })

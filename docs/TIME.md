@@ -510,3 +510,54 @@ node tools/lab.mjs down --run "$RUN"
   但也意味着没有模型调用时日志会持续出现 retry）。
 - **lastModelCallAt**：由 bridge 的 `turn-start`/`turn-end` 共同提供；如果 bridge 未升级（旧宿主），退化为 `lastTurnEndAt`。
 
+
+---
+
+## 14. 睡眠边界（in-flight turn，2026-11-06 设计/最小实现）
+
+### 14.1 问题与语义
+
+`phase→sleeping` 的瞬间可能还有一轮在飞（她正在"把手里这轮收个尾"）。这条消息（"该睡了"）
+本身要靠**在飞 turn 的下一个 step 边界**才被看到，所以：
+
+- **不立即 cancel**：立即 `session/cancel` 会丢掉"收尾"语义，还会产生 tool aborted 噪声；
+- **允许边界 turn 自然结束，但有界**：`sleepGraceSec`（默认 120s，从进入 sleeping 起算）。
+  grace 内结束 = 合法收尾；超过 grace 仍在跑 → time 发 `sleep-boundary-overrun` 事件
+  （driver/supervisor 订阅后可发一次 `session/cancel`，记 `sleep-boundary-cancel`）；
+  入睡后出现**新 turn**（边界 turn 已结束后又起来）= 直投/注入嫌疑 → `sleep-boundary-new-turn`。
+- 工具层守卫（mc-link）配合：sleeping 时拒绝新 `mcb_join`/新任务，但允许 `mcb_leave`/`mcb_status`/取消当前任务（收尾动作）。
+
+### 14.2 状态与可观测
+
+`state.sleepBoundary`（睡眠中）由入睡瞬间写入：
+
+```json
+{"at": 1793…, "inFlight": true, "turnStartAt": 1793…, "turnAgeAtEntrySec": 12,
+ "turnEndedAt": null, "turnEndedAfterSec": null, "postSleepTurn": false,
+ "overrun": false, "overrunLoggedAt": null}
+```
+
+- 边界 turn 的 `turn-end` 到达 → 写 `turnEndedAt/turnEndedAfterSec`；
+- `> sleepGraceSec` 仍未结束 → tick 里写 `overrun=true` + log warn + emit `sleep-boundary-overrun`（只发一次）；
+- sleeping 期间收到 `turn-start` 且边界 turn 已结束 → `postSleepTurn=true` + emit `sleep-boundary-new-turn`；
+- 醒来时归档到 `state.lastSleepBoundary`（带 `endedAt`），`status().sleepBoundary/lastSleepBoundary` 可查；
+  `time_status` 在 sleeping 时多一行「睡眠边界：入睡时有在飞回合（已 N 秒，grace M 秒）」或 ⚠ 注入提示。
+- 配置：`config.sleepGraceSec`（默认 120，0 表示不报 overrun）。
+
+### 14.3 与 supervisor/driver 的契约
+
+| 事件 | 谁处理 | 动作 |
+|---|---|---|
+| `sleep-boundary-overrun`（tags: sleep/boundary/overrun） | supervisor/driver | 发**一次** `session/cancel`，记 `sleep-boundary-cancel`；之后不再 nudge |
+| `sleep-boundary-new-turn`（tags: sleep/boundary/injection） | supervisor/driver/观测 | 记 violation；检查直投来源（session/prompt 不经过 time gate） |
+| 边界 turn 正常结束 | 无 | 计"合法收尾"，validity 里单独列，不算睡眠期模型活动 |
+
+- 名词：`awakeIdleSec/heartbeat.idleSec = now - lastTurnEndAt`；睡眠边界用 `turnEndedAfterSec = 边界 turn 的 turn-end - 入睡时刻`。
+- 外部注入方（supervisor/driver/未来连接器）直投前必须读 `time.json` 的 `phase` **和 `lock`**（静音不改 phase），
+  或改走 `signals.offer` 让 gate 拦进积压。night-1 2026-11-06 实测：睡眠期 9 条 supervisor 直投（02:09:56–02:11:27），
+  不是 time 拦截失败；修复后 0。
+
+### 14.4 测试
+
+`time-lock.test.mjs`：入睡时在飞回合被记录（`inFlight/turnAgeAtEntrySec`）、grace 内结束归档为合法收尾、
+超过 grace 只发一次 `sleep-boundary-overrun`、入睡后新 turn 标 `postSleepTurn` 并发事件、醒后 `lastSleepBoundary` 可查。

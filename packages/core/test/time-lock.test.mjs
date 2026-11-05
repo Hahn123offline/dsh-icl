@@ -572,6 +572,74 @@ test('awakeTick.enabled:false 时完全不自检（长跑/测试可关）', asyn
   assert.equal(api.heartbeat().enabled, false)
 })
 
+/* ───────────────────────── 睡眠边界（in-flight turn） ───────────────────────── */
+
+function emitTurnStart(host, seq = 1) {
+  host.services.signals.emit({ from: { plugin: 'dsh' }, kind: 'event', text: 'turn-start', tags: ['turn-start'], meta: { seq } })
+}
+
+test('睡眠边界：入睡时在飞回合被记录，grace 内结束算合法收尾', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, sleepGraceSec: 120 } })
+  emitTurnStart(host, 1)
+  virtualNow += 10_000
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  const entry = api.status().sleepBoundary
+  assert.equal(entry.inFlight, true)
+  assert.equal(entry.turnAgeAtEntrySec, 10)
+  virtualNow += 20_000
+  emitTurnEnd(host, 2)
+  const ended = api.status().sleepBoundary
+  assert.ok(ended.turnEndedAt != null)
+  assert.equal(ended.turnEndedAfterSec, 20)
+  assert.equal(ended.overrun, false)
+  virtualNow += 30 * 60_000
+  api.wake()
+  drainText(host)
+  assert.equal(api.status().sleepBoundary, null)
+  const last = api.status().lastSleepBoundary
+  assert.ok(last)
+  assert.equal(last.inFlight, true)
+  assert.equal(last.turnEndedAfterSec, 20)
+})
+
+test('睡眠边界：在飞回合超过 grace → 发一次 sleep-boundary-overrun', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, sleepGraceSec: 60 } })
+  const events = []
+  host.services.signals.on({ kind: 'event', tags: ['boundary'] }, (signal) => events.push(signal.text))
+  emitTurnStart(host, 1)
+  virtualNow += 5_000
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  virtualNow += 61_000
+  api.tick()
+  assert.ok(events.includes('sleep-boundary-overrun'), '超过 grace 要发 overrun')
+  assert.equal(api.status().sleepBoundary.overrun, true)
+  virtualNow += 10_000
+  api.tick()
+  assert.equal(events.filter((text) => text === 'sleep-boundary-overrun').length, 1, 'overrun 只发一次')
+})
+
+test('睡眠边界：入睡后出现新 turn（边界回合已结束）→ postSleepTurn + 事件', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  const events = []
+  host.services.signals.on({ kind: 'event', tags: ['boundary'] }, (signal) => events.push(signal.text))
+  emitTurnStart(host, 1)
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  virtualNow += 5_000
+  emitTurnEnd(host, 2) // 边界回合在 grace 内结束
+  virtualNow += 5_000
+  emitTurnStart(host, 3) // 睡眠中又起一轮 = 直投/注入嫌疑
+  const boundary = api.status().sleepBoundary
+  assert.equal(boundary.postSleepTurn, true)
+  assert.ok(events.includes('sleep-boundary-new-turn'))
+  assert.match(api.statusText(), /睡眠边界：入睡后出现新回合/)
+})
+
 test('turn-start 记录模型活动开始时间，heartbeat.lastModelCallAt 用它', async () => {
   let virtualNow = MON_0900
   const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })

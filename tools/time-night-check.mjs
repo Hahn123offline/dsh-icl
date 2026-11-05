@@ -144,6 +144,8 @@ function analyse(runDir) {
     stats,
     lastTickError: state.lastTickError ?? null,
     lastPersistError: state.lastPersistError ?? null,
+    sleepBoundary: state.sleepBoundary && typeof state.sleepBoundary === 'object' ? state.sleepBoundary : null,
+    lastSleepBoundary: state.lastSleepBoundary && typeof state.lastSleepBoundary === 'object' ? state.lastSleepBoundary : null,
     stateAgeMs: age,
   }
 
@@ -165,6 +167,18 @@ function analyse(runDir) {
   }
   if (state.phase === 'paused' && !state.pausedAt) flag('warn', 'paused 但 pausedAt 丢失')
   if (state.pausedAt && state.phase !== 'paused') flag('warn', 'pausedAt 残留但 phase=' + state.phase)
+
+  // 睡眠边界：入睡时有在飞回合是合法的"收尾"，但要能看到它结束得多晚/是否被注入打断。
+  if (state.sleepBoundary) {
+    const b = state.sleepBoundary
+    if (b.overrun) flag('warn', '睡眠边界：在飞回合超过 grace', `${b.turnEndedAfterSec ?? '?'}s`)
+    if (b.postSleepTurn) flag('warn', '睡眠边界：入睡后出现新回合（疑似直投注入，time 拦不到 session/prompt）', '')
+    if (b.turnEndedAt == null && state.phase === 'sleeping') {
+      const ageSec = Math.round((now - Number(b.at)) / 1000)
+      if (ageSec > 120) flag('info', '睡眠边界：入睡时的在飞回合仍未结束', `${ageSec}s`)
+    }
+  }
+  if (state.lastSleepBoundary?.postSleepTurn) flag('warn', '上次睡眠边界：入睡后出现新回合', '')
 
   // 安排本身：到点没响/没入睡要能在半夜被发现
   const schedules = Array.isArray(state.schedules) ? state.schedules : []
@@ -269,6 +283,14 @@ function printHuman(result) {
   console.log(`spans: ${t.spans.length ? t.spans.map((s) => `${s.id}${s.sleep ? '(sleep)' : ''}→${new Date(s.until).toISOString()}`).join(' ') : '-'}`)
   console.log(`goals: ${t.goals.length ? t.goals.map((g) => `${g.id}:${g.theme}(resumes=${g.resumes})`).join(' ') : '-'}`)
   console.log(`queue: ${t.queue.total} 条  reasons=${JSON.stringify(t.queue.byReason)} sources=${JSON.stringify(t.queue.bySource)}`)
+  if (t.sleepBoundary) {
+    const b = t.sleepBoundary
+    console.log(`sleepBoundary: inFlight=${b.inFlight} turnAgeAtEntry=${b.turnAgeAtEntrySec ?? '-'}s turnEndedAfter=${b.turnEndedAfterSec ?? '-'}s postSleepTurn=${Boolean(b.postSleepTurn)} overrun=${Boolean(b.overrun)}`)
+  }
+  if (t.lastSleepBoundary) {
+    const b = t.lastSleepBoundary
+    console.log(`lastSleepBoundary: inFlight=${b.inFlight} turnEndedAfter=${b.turnEndedAfterSec ?? '-'}s postSleepTurn=${Boolean(b.postSleepTurn)} overrun=${Boolean(b.overrun)}`)
+  }
   console.log(`stats: ${JSON.stringify(t.stats)}`)
   console.log(`firedKeys: ${t.firedKeys.length ? t.firedKeys.join(', ') : '-'}`)
   if (t.lastTickError) console.log(`lastTickError: ${JSON.stringify(t.lastTickError).slice(0, 300)}`)
@@ -297,6 +319,18 @@ function compact(result) {
     queueReasons: t.queue?.byReason ?? null,
     spans: t.spans?.map((s) => s.id) ?? [],
     firedKeys: t.firedKeys ?? [],
+    sleepBoundary: t.sleepBoundary ? {
+      inFlight: Boolean(t.sleepBoundary.inFlight),
+      turnEndedAfterSec: t.sleepBoundary.turnEndedAfterSec ?? null,
+      postSleepTurn: Boolean(t.sleepBoundary.postSleepTurn),
+      overrun: Boolean(t.sleepBoundary.overrun),
+    } : null,
+    lastSleepBoundary: t.lastSleepBoundary ? {
+      inFlight: Boolean(t.lastSleepBoundary.inFlight),
+      turnEndedAfterSec: t.lastSleepBoundary.turnEndedAfterSec ?? null,
+      postSleepTurn: Boolean(t.lastSleepBoundary.postSleepTurn),
+      overrun: Boolean(t.lastSleepBoundary.overrun),
+    } : null,
     stats: t.stats ?? null,
     errors: errors.map((c) => `${c.name}${c.detail ? `:${String(c.detail).slice(0, 120)}` : ''}`),
     warns: warns.map((c) => `${c.name}${c.detail ? `:${String(c.detail).slice(0, 120)}` : ''}`),
