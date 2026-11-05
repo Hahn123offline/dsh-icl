@@ -239,11 +239,13 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | GUI/transcript | 事实显示为 runtime-context 快照，不再是 system 提示词的一部分 | 展示位置变化，内容不变 |
 | ICL 原文层 / dream | 桥内按 `source.kind!=='user'` 过滤；`dsh-raw` 另有 `/^(Current runtime context|Time sampled|…)/` 过滤 → 快照不会进原文/dream wash | 否 |
 | 旧宿主兼容 | 无 `systemPrompt.context` 时退回全量单段（缓存差但语义完整），有测试 | 否 |
-| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同 commit A/B；生产默认必须是 B（不设该变量） | 不是产品路径 |
+| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同代码 A/B；生产默认必须是 B（不设该变量）。唯一读取点在 `bridge.registerPrompt()` 的短路（`!== ''1''`），不设时行为完全由 config 决定；**合并后可按 lead 决定删掉该 env 分支**（删之前它也不会被业务代码误用） | 不是产品路径 |
 
 ### 5.3 before / after 数字
 
-> 同一 commit（`6f7e88f`）、同一 scenario（`tools/scenarios/cache-facts-6.json`：每轮用 `time_arrange` 让"下一个安排"变早，
+> 两轮跑的是**同一份代码内容**：before 启动时 HEAD 还是 `6f7e88f`（B 代码已在工作区、尚未提交），随后 `ff44c00` 提交的就是这份代码，
+> after 在 `ff44c00` 上跑；两轮 `toolsHash` 相同（`ea157721d261`）、system 只差 118 字节（事实移出），除 `ICL_FACTS_IN_SYSTEM` 外没有别的差异。
+> 同一 scenario（`tools/scenarios/cache-facts-6.json`：每轮用 `time_arrange` 让"下一个安排"变早，
 > 制造真实的事实变化）、`--rounds 6 --gap 65`（每轮跨分钟）、同一引擎（`coder390-27b-q3-df2-4x500`）、
 > 同一 lab preset（`icl-lab`，32 个 ICL 工具 + `tool-todo`，**toolsHash 实测 34 个工具 / `ea157721d261`**）；
 > before 只多一个 `ICL_FACTS_IN_SYSTEM=1`。
@@ -368,6 +370,52 @@ node tools/cache-probe.mjs run --scenario tools/scenarios/cache-facts-6.json \
 - 跨分钟/跨事实变化必须**显式制造**：`time` 段已经是"日期+时段"（无分钟级），
   纯等待不一定会变；`cache-facts-6` 用 `time_arrange` 让"下一个安排"每轮变早。
 - 工具面是稳定的：每轮 `toolsHash` 不变才说明"变化的只有 system/消息"；变了先查插件启用/模型切换。
+
+### 6.4 可复算口径（独立复核用；数字对不上先看这里）
+
+**单位**
+
+- `systemChars` = JS 字符串长度（UTF-16 code unit 数；中文一个字算 1）。
+- `systemBytes` / `invalidSuffixB` = **UTF-8 字节**（中文一个字算 3 字节）。
+- 本文件表格里"system 字节"用 `systemBytes`；引用 misc/lead 的"字符"时明确标注。
+
+**system 段口径**
+
+- "每轮 system 字节"是**当前生效的那一份 system 文本**（`replace` 之后是替换后的内容），
+  **不是跨轮累加**。本文件 before 的 8526 B / after 的 8408 B 都是单份。
+- 例外：`deepseek` 路由是 `in-history` 追加模式，会在历史里堆多份 system/message；
+  本文件的数字**全部来自 ninfer（replace）**，不要和 deepseek lab 的累加口径混用。
+- ICL 段字节数（如"2518 字/6190 B"）是 **host 级 `prompt.assemble()` 的结果**，不含 DSH 自己的段；
+  端到端 system（8408 B）包含 DSH 全部段。两者不能直接比，差值 ≈ DSH 基础段 + 工具说明段。
+
+**工具面口径**
+
+- `toolsHash` = 第一次 `request/header` 里 `tools` 数组的**规范化 JSON** 哈希：
+  每项只取 `{name, description, parameters}`，按 name 字典序排序，SHA-1 取前 12 位。
+- `toolsChars` = 上述规范化 JSON 的字符数；`tools` = 工具个数。
+- 工具 schema **不计入**"ICL 段字节"（那是提示词段）；但 **计入**引擎的 `prompt_tokens`
+  （chat template 会渲染 tools）。本文件 before/after 的 `promptTokens` 含工具面。
+
+**引擎指标口径**
+
+- `promptTokens` = 引擎日志 `result.prompt_tokens`：请求总 token（system + tools + messages，渲染后）。
+- `prefillTokens` = `result.computed_prefill_tokens`：**实际重新 prefill** 的 token。
+- `cacheHitTokens` = `result.prefix_cache_hit_tokens`：复用前缀的 token。
+- `全量失效` = `cacheHitTokens === 0 && prefillTokens > 0`。
+- 每轮聚合：一轮内**所有** `request_done`（含 tool 步）的 prefill/hit/prompt 求和；
+  `TTFT` 取该轮最大值；`turnMs` 用 lab observer 的轮次墙钟。
+- 时间窗：`rounds.jsonl` 的 `at` 是**轮结束**时间，所以引擎请求窗口取 `[at-turnMs-1s, at+0.5s]`
+  （`cache-probe joinRounds` 已内置；改口径后可用 `rebuild` 重算，不重跑 GPU）。
+
+**复算命令**
+
+```bash
+# 不跑 GPU，用已落盘的引擎日志切片 + 事件流重算 bf2/af2 的所有表
+node tools/cache-probe.mjs rebuild --run cache-bf2
+node tools/cache-probe.mjs rebuild --run cache-af2
+# 逐 step 的 system diff（首差异/作废后缀/system 更新方式）
+node tools/cache-probe.mjs diff --run cache-bf2
+```
 
 ---
 
