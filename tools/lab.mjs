@@ -146,7 +146,15 @@ function acquireLocalModelLock(runId) {
   if (existing && existing.owner === 'mc-lab' && existing.runId && existing.runId !== runId && isPidAlive(existing.pid)) {
     fail(`本地模型锁被 mc-lab 自己的 run ${existing.runId} 占用（pid=${existing.pid}）；先 down 那个 run`)
   }
-  writeJson(file, { owner: 'mc-lab', runId, purpose: 'lab --model local', pid: process.pid, at: nowIso() })
+  const etaMinutes = Number(process.env.ICL_LOCK_ETA_MIN ?? 25)
+  writeJson(file, {
+    owner: 'mc-lab',
+    runId,
+    purpose: 'lab --model local (MC A/C/E acceptance)',
+    pid: process.pid,
+    at: nowIso(),
+    eta: new Date(Date.now() + etaMinutes * 60_000).toISOString(),
+  })
 }
 
 function releaseLocalModelLock(runId) {
