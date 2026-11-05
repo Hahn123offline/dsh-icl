@@ -26,8 +26,8 @@ function fakeChat(script) {
   return { call, calls }
 }
 
-async function setup({ script = [], timezone = 'Asia/Hong_Kong' } = {}) {
-  const host = createHost({ log: () => {} })
+async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null } = {}) {
+  const host = createHost({ log: (entry) => { logs?.push(entry) } })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-dream2-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
@@ -239,4 +239,78 @@ test('cleanup 改写同时保留 body 与 evidence（不能后写覆盖前写）
   assert.equal(block.text, '新摘要')
   assert.equal(block.data.body, '新正文')
   assert.equal(block.data.evidence[0].id, 7, '改写正文不能丢掉原有 evidence')
+})
+
+/* ── READINESS G-1：忙碌一天的 dream 输入必须有界（分片/预算），失败不拖垮整夜 ── */
+
+test('大 raw：wash 按预算截断、events 分片后单请求 ≤200k、块合并、超长单行被截断', async () => {
+  const { host, memory, dream } = await setup()
+  const now = Date.parse('2026-11-06T12:00:00+08:00')
+  const calls = []
+  host.services.slots.bind('dream-chat', {
+    provider: 'cap',
+    call: async ({ messages }) => {
+      const system = String(messages?.[0]?.content ?? '')
+      const user = String(messages?.[1]?.content ?? '')
+      calls.push({ system, user })
+      if (!system.includes('事件块')) return '[]'
+      const index = calls.filter((row) => row.system.includes('事件块')).length
+      return JSON.stringify([{ summary: `第${index}片的一件事`, body: '第一人称正文', people: [], tags: ['压测'], evidence: [index] }])
+    },
+  })
+  const rows = Array.from({ length: 2000 }, (_, i) => ({
+    time: now - 3_600_000 + i * 100,
+    text: '原文'.repeat(250),
+    sender: 'user',
+  }))
+  host.services.raw.register({ id: 'fake-busy-raw', list: () => rows, search: () => [] })
+  const out = await dream.run({ now, jobs: ['wash', 'events'] })
+  const wash = out.results.find((row) => row.job === 'wash')
+  const events = out.results.find((row) => row.job === 'events')
+  assert.equal(wash.ok, true)
+  assert.equal(events.ok, true)
+  const dayLog = memory.query({ namespace: 'day', kind: 'log', limit: 5 })[0]
+  assert.ok(dayLog, '应写出当天 log')
+  assert.ok(dayLog.text.length <= 200_000, `day log 超预算：${dayLog.text.length}`)
+  assert.ok(dayLog.data.omittedLines > 0, '繁忙日应有省略行标记')
+  assert.ok(!dayLog.text.includes('原文'.repeat(250)), '超长单行必须被截断')
+  assert.ok(dayLog.text.split('\n').every((line) => line.length <= 480), '每行都应在单行预算内')
+  const eventCalls = calls.filter((row) => row.system.includes('事件块'))
+  assert.ok(eventCalls.length >= 2, `应分成多片，实际 ${eventCalls.length}`)
+  for (const call of eventCalls) assert.ok(call.user.length <= 200_000, `单片 payload 超预算：${call.user.length}`)
+  const blocks = memory.query({ namespace: 'event', kind: 'block', limit: 50 })
+  assert.equal(blocks.length, eventCalls.length, '每片一块都应落库（合并结果正确）')
+  assert.equal(events.shards, eventCalls.length)
+  assert.equal(events.failedShards, 0)
+})
+
+test('某一片失败不拖垮整夜：其它片的块照常落库，job 标 degraded 且留 shard-fail 日志', async () => {
+  const logs = []
+  const { host, memory, dream } = await setup({ logs })
+  const now = Date.parse('2026-11-06T12:00:00+08:00')
+  let shardIndex = 0
+  host.services.slots.bind('dream-chat', {
+    provider: 'flaky',
+    call: async ({ messages }) => {
+      const system = String(messages?.[0]?.content ?? '')
+      if (!system.includes('事件块')) return '[]'
+      shardIndex += 1
+      if (shardIndex === 1) throw new Error('上游 502')
+      return JSON.stringify([{ summary: `幸存片${shardIndex}`, body: '正文', people: [], tags: [], evidence: [1] }])
+    },
+  })
+  const rows = Array.from({ length: 900 }, (_, i) => ({
+    time: now - 3_600_000 + i * 100,
+    text: '这一天发生了很多事。'.repeat(20),
+    sender: 'user',
+  }))
+  host.services.raw.register({ id: 'fake-flaky-raw', list: () => rows, search: () => [] })
+  const out = await dream.run({ now, jobs: ['wash', 'events'] })
+  const events = out.results.find((row) => row.job === 'events')
+  assert.equal(events.ok, true, '部分片失败时整体仍应算完成')
+  assert.ok(events.failedShards >= 1)
+  assert.equal(events.degraded, true)
+  const blocks = memory.query({ namespace: 'event', kind: 'block', limit: 50 })
+  assert.ok(blocks.length >= 1, '失败片之外的块必须保留')
+  assert.ok(logs.some((entry) => entry.msg === 'dream.shard-fail'), '必须有 shard-fail 日志')
 })

@@ -137,11 +137,54 @@ export function apply(ctx) {
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
 
-  async function ask({ instruction, payload, maxTokens = 1200 }) {
+  // ── 输入预算（READINESS G-1：繁忙一天的 dream 输入曾到 1MB，整晚白跑） ──
+  // 所有发给模型的 payload 都必须 ≤ maxPayloadChars；wash 的 day log 另受 maxDayLogChars 约束。
+  // 分片只影响"一次喂多少"，不影响 evidence 编号（编号始终是原话的绝对序号）。
+  const maxPayloadChars = Math.max(20_000, Number(ctx.config.maxPayloadChars ?? 200_000))
+  const shardChars = Math.min(maxPayloadChars, Math.max(20_000, Number(ctx.config.shardChars ?? 80_000)))
+  const shardLines = Math.max(20, Number(ctx.config.shardLines ?? 400))
+  const maxLineChars = Math.max(40, Number(ctx.config.maxLineChars ?? 400))
+  const maxDayLogChars = Math.max(shardChars, Number(ctx.config.maxDayLogChars ?? maxPayloadChars))
+  const maxShards = Math.max(1, Number(ctx.config.maxShards ?? 24))
+
+  function clipText(value, max = maxLineChars) {
+    const s = String(value ?? '')
+    return s.length > max ? `${s.slice(0, Math.max(0, max - 1))}…` : s
+  }
+  /** 最后一道保险：任何 payload 都不得超预算（正常情况下分片/预算早于这里生效）。 */
+  function clipPayload(text, where = 'payload') {
+    const body = String(text ?? '')
+    if (body.length <= maxPayloadChars) return body
+    ctx.log({ level: 'warn', msg: 'dream.payload-clip', where, from: body.length, to: maxPayloadChars })
+    return `${body.slice(0, maxPayloadChars - 24)}\n…（已截断：原始 ${body.length} 字超预算）`
+  }
+  /** 把行数组切成 ≤shardChars/shardsLines 的片（超 maxShards 时保留头尾并标记省略）。 */
+  function shardLinesOf(lines) {
+    const shards = []
+    let current = []
+    let size = 0
+    const push = () => { if (current.length) { shards.push(current); current = []; size = 0 } }
+    for (const line of lines) {
+      const text = String(line ?? '')
+      const cost = text.length + 1
+      if (current.length && (size + cost > shardChars || current.length >= shardLines)) push()
+      current.push(text)
+      size += cost
+    }
+    push()
+    if (shards.length <= maxShards) return { shards, omitted: 0 }
+    // 片太多（极端繁忙日）：保留头 80% / 尾 20% 的片，中间明确省略。
+    const head = Math.max(1, Math.floor(maxShards * 0.8))
+    const tail = Math.max(0, maxShards - head)
+    const kept = [...shards.slice(0, head), ...shards.slice(shards.length - tail)]
+    return { shards: kept, omitted: shards.length - kept.length }
+  }
+
+  async function ask({ instruction, payload, maxTokens = 1200, where = 'dream' }) {
     const out = await ctx.slots.call(slot, {
       messages: [
         { role: 'system', content: [persona, instruction].filter(Boolean).join('\n\n') },
-        { role: 'user', content: payload },
+        { role: 'user', content: clipPayload(payload, where) },
       ],
       maxTokens,
     })
@@ -246,17 +289,49 @@ export function apply(ctx) {
     }
     if (!cleaned.length) return { job: 'wash', skipped: 'nothing-clean' }
 
-    const lines = cleaned.map((x, i) => `[${i + 1}] ${hhmm(x.at || now)}${x.sender ? ` ${x.sender}` : ''}：${x.text}`)
+    // day log 是后续 events/people/lexicon 的原材料：单行截断 + 总量预算，
+    // 超预算时保留头尾、中间显式省略；**编号仍是原话的绝对序号**（evidence 映射不丢）。
+    const renderLine = (x, i) => `[${i + 1}] ${hhmm(x.at || now)}${x.sender ? ` ${x.sender}` : ''}：${clipText(x.text)}`
+    let lines = cleaned.map(renderLine)
+    let total = lines.reduce((n, line) => n + line.length + 1, 0)
+    let omittedLines = 0
+    if (total > maxDayLogChars) {
+      const kept = []
+      const head = []
+      const tail = []
+      let budget = maxDayLogChars
+      // 头部 40% 预算、尾部 60% 预算（晚上的事更重要，但不能丢早上）
+      const headBudget = Math.floor(budget * 0.4)
+      const tailBudget = budget - headBudget
+      let used = 0
+      for (const line of lines) { if (used + line.length + 1 > headBudget) break; head.push(line); used += line.length + 1 }
+      used = 0
+      const tailLines = []
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i]
+        if (used + line.length + 1 > tailBudget) break
+        tailLines.unshift(line); used += line.length + 1
+      }
+      omittedLines = lines.length - head.length - tailLines.length
+      kept.push(...head)
+      if (omittedLines > 0) kept.push(`[--] …（中间省略 ${omittedLines} 行原话：输入预算 ${maxDayLogChars} 字）`)
+      kept.push(...tailLines)
+      lines = kept
+      total = lines.reduce((n, line) => n + line.length + 1, 0)
+    }
     memory.put({
       namespace: 'day',
       kind: 'log',
       key: `day:${day}`,
       text: lines.join('\n'),
-      data: { day, lines: lines.length, times: cleaned.map((x) => x.at) },
+      data: { day, lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total, times: cleaned.map((x) => x.at) },
       now,
     })
-    recordRun(day, 'wash', { lines: lines.length }, now)
-    return { job: 'wash', ok: true, lines: lines.length }
+    recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total }, now)
+    return {
+      job: 'wash', ok: true, lines: lines.length, totalLines: cleaned.length,
+      omittedLines, chars: total, degraded: omittedLines > 0,
+    }
   }
 
   async function jobEvents({ now, force = false }) {
@@ -274,31 +349,48 @@ export function apply(ctx) {
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
     let dayLog = null
     try { dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLog = null }
-    const payload = dayLog
-      ? `${dayLog.text}\n\n（上面每行开头的编号就是 evidence 要用的编号）`
+    // 材料行：dayLog（wash 已按预算截断）优先，否则 notes。按片喂模型，单请求 ≤ shardChars。
+    const material = dayLog
+      ? dayLog.text.split('\n')
       : notes
-      .slice()
-      .sort((a, b) => timeOf(a) - timeOf(b))
-      .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${n.text}`)
-      .join('\n')
-    let blocks = []
-    try {
-      const raw = await ask({
-        instruction: [
-          '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
-          '块里可以是你做过的事，也可以是你今天看到/刷到/学到的东西（写成“我刷到一个讲…”）。',
-          '时间优先：先按"一段经历"分组——时间挨得很近、连续发生的笔记算同一次经历；',
-          '再在这一次经历内部按话题合并。同一次连续经历里的碎片要放进同一块，不要拆开。',
-          '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
-          '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
-          'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
-          '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
-        ].join('\n'),
-        payload,
-      })
-      blocks = parseBlocks(raw)
-    } catch (error) {
-      return { job: 'events', ok: false, error: String(error?.message ?? error) }
+        .slice()
+        .sort((a, b) => timeOf(a) - timeOf(b))
+        .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
+    const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
+    const { shards, omitted: omittedShards } = shardLinesOf(material)
+    if (omittedShards) ctx.log({ level: 'warn', msg: 'dream.events-shards-capped', omittedShards, kept: shards.length })
+    const instruction = [
+      '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
+      '块里可以是你做过的事，也可以是你今天看到/刷到/学到的东西（写成“我刷到一个讲…”）。',
+      '时间优先：先按"一段经历"分组——时间挨得很近、连续发生的笔记算同一次经历；',
+      '再在这一次经历内部按话题合并。同一次连续经历里的碎片要放进同一块，不要拆开。',
+      '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
+      '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
+      'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
+      '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
+    ].join('\n')
+    const blocks = []
+    const shardResults = []
+    for (let i = 0; i < shards.length; i += 1) {
+      const payload = `${shards[i].join('\n')}${hint}`
+      try {
+        const raw = await ask({ instruction, payload, where: `events#${i + 1}` })
+        const parsed = parseBlocks(raw)
+        blocks.push(...parsed)
+        shardResults.push({ index: i + 1, ok: true, blocks: parsed.length, chars: payload.length })
+      } catch (error) {
+        // 某片失败不拖垮整夜：记录、继续下一片，已成功片的块照常落库。
+        const reason = String(error?.message ?? error)
+        shardResults.push({ index: i + 1, ok: false, error: reason, chars: payload.length })
+        ctx.log({ level: 'warn', msg: 'dream.shard-fail', job: 'events', shard: i + 1, shards: shards.length, error: reason })
+      }
+    }
+    if (!shardResults.some((row) => row.ok)) {
+      return {
+        job: 'events', ok: false, blocks: 0, shards: shards.length,
+        failedShards: shardResults.length,
+        error: shardResults.map((row) => row.error).filter(Boolean).slice(0, 3).join('；'),
+      }
     }
     const written = []
     for (const block of blocks) {
@@ -376,8 +468,16 @@ export function apply(ctx) {
       // 用当天原话成块后，wash 的笔记已被原话覆盖，不再作为待整理项
       markNotes(notes.filter((n) => n.data?.consolidated !== true), now)
     } else if (covered.length) markNotes(covered, now)
-    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: notes.length - covered.length }, now)
-    return { job: 'events', ok: true, blocks: written.length, notes: notes.length, deferred: dayLog ? 0 : notes.length - covered.length }
+    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: notes.length - covered.length, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards, payloadChars: shardResults.reduce((n, row) => n + row.chars, 0) }, now)
+    return {
+      job: 'events', ok: true, blocks: written.length, notes: notes.length,
+      deferred: dayLog ? 0 : notes.length - covered.length,
+      shards: shards.length,
+      failedShards: shardResults.filter((row) => !row.ok).length,
+      omittedShards,
+      payloadChars: shardResults.reduce((n, row) => n + row.chars, 0),
+      degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
+    }
   }
 
   /* ── people：逐人整块重写 ─────────────────────────────────────── */
@@ -435,6 +535,7 @@ export function apply(ctx) {
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
     const written = []
     const skippedPeople = []
+    let degradedPeople = false
     for (const [qq, list] of byQq) {
       const [subjectKind, subjectValue] = (() => { const s = list[0]?.__subject ?? { kind: 'qq', value: qq }; return [s.kind, s.value] })()
       const key = subjectKind === 'qq' ? `person:${subjectValue}` : `person:${subjectKind}:${subjectValue}`
@@ -453,13 +554,20 @@ export function apply(ctx) {
         .filter((n) => matchesSubject(n.data) && !list.some((x) => x.id === n.id))
         .slice(-20)
 
-      const context = [
+      // 材料预算：单行截断 + 总量上限（READINESS G-1）。超出时显式省略而不是把请求撑爆。
+      const renderNotes = (rows, label, max = 60) => {
+        const kept = rows.slice(-max)
+        const omitted = rows.length - kept.length
+        return `${label}：\n${kept.map((n) => `[${n.id}] ${clipText(n.text)}`).join('\n')}${omitted > 0 ? `\n…（省略更早 ${omitted} 条）` : ''}`
+      }
+      const context = clipPayload([
         `内部编号（不要写进档案）：${qq}`,
-        existing ? `现有档案：\n${existing.text}\n${existing.data?.narrative ?? ''}` : '现有档案：无',
-        relatedEvents.length ? `以前提到过 TA 的事：\n${relatedEvents.map((b) => `· ${b.text}`).join('\n')}` : '',
-        pastNotes.length ? `以前记下的：\n${pastNotes.map((n) => `[${n.id}] ${n.text}`).join('\n')}` : '',
-        `今天记下的：\n${list.map((n) => `[${n.id}] ${n.text}`).join('\n')}`,
-      ].filter(Boolean).join('\n\n')
+        existing ? `现有档案：\n${clipText(existing.text, 1200)}\n${clipText(existing.data?.narrative ?? '', 1200)}` : '现有档案：无',
+        relatedEvents.length ? `以前提到过 TA 的事：\n${relatedEvents.map((b) => `· ${clipText(b.text, 200)}`).join('\n')}` : '',
+        pastNotes.length ? renderNotes(pastNotes, '以前记下的') : '',
+        renderNotes(list, '今天记下的', 120),
+      ].filter(Boolean).join('\n\n'), 'people-materials')
+      if (context.length >= maxPayloadChars - 32) degradedPeople = true
 
       let out = null
       try {
@@ -580,8 +688,8 @@ export function apply(ctx) {
     }
     const writtenNotes = notes.filter((n) => citedPeople.has(Number(n.id)))
     if (writtenNotes.length) markNotes(writtenNotes, now)
-    recordRun(day, 'people', { blocks: written.length, people: byQq.size, skipped: skippedPeople.length }, now)
-    return { job: 'people', ok: true, blocks: written.length, people: byQq.size, skipped: skippedPeople.length }
+    recordRun(day, 'people', { blocks: written.length, people: byQq.size, skipped: skippedPeople.length, degraded: degradedPeople }, now)
+    return { job: 'people', ok: true, blocks: written.length, people: byQq.size, skipped: skippedPeople.length, degraded: degradedPeople }
   }
 
   /* ── slang：新增/更新梗块 ───────────────────────────────────── */
@@ -1062,7 +1170,7 @@ export function apply(ctx) {
           reason,
           day: result.day,
           ok: result.ok,
-          jobs: result.results.map((row) => `${row.job}:${row.ok === false ? `fail(${row.error ?? ''})` : row.skipped ? `skip(${row.skipped}${row.rawSources ? ` raw=${row.rawSources.join('|') || '(空)'}` : ''})` : 'ok'}`).join(','),
+          jobs: result.results.map((row) => `${row.job}:${row.ok === false ? `fail(${row.error ?? ''})` : row.skipped ? `skip(${row.skipped}${row.rawSources ? ` raw=${row.rawSources.join('|') || '(空)'}` : ''})` : `ok${row.shards ? `(${row.blocks ?? 0}块/${row.shards}片${row.failedShards ? `,${row.failedShards}片失败` : ''})` : ''}${row.degraded ? '!degraded' : ''}`}`).join(','),
         })
         return result
       })
