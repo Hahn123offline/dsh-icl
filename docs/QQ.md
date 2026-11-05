@@ -18,12 +18,13 @@
 | 连接器/消息模型/focus 张力设计 | ✅ | §3–§7 |
 | 只读入站实现（OneBot WS → signals） | ✅ | `packages/plugins/qq/src/` |
 | 单测（规范化/去重/gate/限流/不发送/静态安全） | ✅ 19 条 | `node --test packages/core/test/qq.test.mjs` |
-| **phase 1 出站（qq_send，只回 owner 私聊）** | ✅ 实现 + fake 11 条；真实窗口待 lead 指令 | `src/send-tool.mjs`、`packages/core/test/qq-send.test.mjs` |
+| **phase 1 出站（qq_send，只回 owner 私聊）** | ✅ 实现 + fake 11 条；真实窗口已验证（1 条私聊、0 群） | `src/send-tool.mjs`、`packages/core/test/qq-send.test.mjs`、§0.3 |
 | QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 381 pass | `node --test packages/core/test packages/mc-body/test` |
+| 全量测试 | ✅ 452 pass | `npm test` |
+| **完整性差距研究（旧项目 vs 我们，P0/P1/P2 路线）** | ✅ 已完成 | [QQ-GAP.md](QQ-GAP.md) |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
 | 真实 SnowLuma 影子 | ⏸ 用户 2026-11-05 选 B 暂缓（不在电脑前）；**phase 1 真实窗口待 lead 指令**（旧消费者已停、SnowLuma 已在跑） | §0.1 / §10 / §13.5 |
