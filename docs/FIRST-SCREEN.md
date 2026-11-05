@@ -8,7 +8,8 @@
 
 `system prompt 5011 → 2294 字符（-54%），persona+sim 占比 43.5% → 96.3%，首行从
 "You are an AI agent powered by DeepSeek Harness." 变成 "你是小千。"；工具面 34 个/toolsHash 不变，
-5 轮里 8 次工具调用 0 错误；facts 仍全部走 runtime-context 快照（3 条，415/450/415 字符）。`
+5 轮里 8 次工具调用 0 错误；facts 仍全部走 runtime-context 快照（3 条，415/450/415 字符）。
+本地硬数字（cache §10.1）：冷启动 prefill **8039→7471 tok（-7.1%）**、稳态 hit **98.69%→98.59%**（持平）。`
 
 ## 1. 改前：静态 system 里有什么（r5 / `firstscreen-base`）
 
@@ -118,8 +119,11 @@ node tools/lab.mjs down
 ①**firstDiff**：两 run 都是 1 条 system/message（seq 8），相邻 turn system 恒定 → 预期 `-1`；
 ②**体积**：system 5011→2294 字符 / 8485→5762 字节（-54.2%/-32.1%），tools=34、toolsHash 不变；
 ③**facts 仍在 runtime-context**：快照 3 条（415/450/415），`systemHasDynamicFacts` 应为 false；
-④**hit%**：云端无引擎日志，只能定性（静态段更小、且零重发，方向非回归）。若需要 hit%/prefill/TTFT 硬数字，
-需要一次**本地** run（GPU 根锁，非我 scope）——按 night-1 同法按窗口切片即可。
+④**hit%**：云端无引擎日志，我这边只能定性（静态段更小、且零重发，方向非回归）。
+**本地硬数字已由 cache 补测**（§10.1，GPU 根锁、同 commit/scenario）：
+冷启动 prompt/prefill **8039→7471 tok（-568，-7.1%）**；稳态 prefill 1034→1038、hit **98.69%→98.59%**、
+TTFT 0.38→0.37s（持平，短窗口噪声）→ 结论"**只省冷启动，稳态零回归**"。
+因此本条判据改为：**首屏净化在冷启动省 568 tok、稳态不回归**（不再需要"只能定性"的免责声明）。
 
 ## 10. cache 复核结果（cache，2026-11-06，只读，不占 GPU）
 
