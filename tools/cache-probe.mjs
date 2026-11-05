@@ -49,14 +49,15 @@ function logSize(file = ENGINE_LOG) {
   try { return fs.statSync(file).size } catch { return 0 }
 }
 
-/** 从字节偏移处读新增行（偏移正好落在行中间时丢掉残行）。 */
-function readLogFrom(offset, file = ENGINE_LOG) {
+/** 从字节偏移处读新增行（可给 end 限定字节范围；偏移落在行中间时丢掉残行）。 */
+function readLogFrom(offset, file = ENGINE_LOG, end = null) {
   let fd
   try { fd = fs.openSync(file, 'r') } catch { return [] }
   try {
     const size = fs.fstatSync(fd).size
-    if (offset >= size) return []
-    const length = size - offset
+    const stop = end == null ? size : Math.min(size, end)
+    if (offset >= stop) return []
+    const length = stop - offset
     const buf = Buffer.allocUnsafe(length)
     fs.readSync(fd, buf, 0, length, offset)
     const rows = []
@@ -197,7 +198,10 @@ function reconstructSteps(events) {
       const op = event.surfaceOp
       const replaceTarget = op && typeof op === 'object' && op.op === 'replace' ? (op.startSeq ?? op.seq ?? event.seq) : null
       if (replaceTarget != null) {
-        systemNodes.set(replaceTarget, text)
+        // DSH 的 replace 把**那个 surface 节点**换成新 event：节点身份 = 最新 event seq。
+        // 所以先删旧 key，再以本 event.seq 存新文本（否则后续 replace 链会堆成多份 system）。
+        systemNodes.delete(replaceTarget)
+        systemNodes.set(event.seq, text)
         current.systemUpdates.push({ seq: event.seq, mode: 'replace', target: replaceTarget, chars: text.length })
       } else {
         systemNodes.set(event.seq, text)
@@ -339,9 +343,10 @@ function joinRounds(runId, engineRows) {
   const rounds = readJsonl(path.join(runDirOf(runId), 'rounds.jsonl'))
   const steps = reconstructSteps([...readEventFile(eventsPath(runId))])
   return rounds.map((round) => {
-    const start = Date.parse(round.at)
-    const end = start + Number(round.turnMs ?? 0)
-    const window = engineRows.filter((row) => row.at != null && row.at >= start && row.at <= end + 500)
+    // rounds.jsonl 的 `at` 是**这一轮结束后**落盘的时间，所以窗口是 [at-turnMs, at]。
+    const end = Date.parse(round.at) + 500
+    const start = end - Number(round.turnMs ?? 0) - 1000
+    const window = engineRows.filter((row) => row.at != null && row.at >= start && row.at <= end)
     const promptRows = window.filter((row) => Number(row.toolCount ?? 0) > 0)
     const titleRows = window.filter((row) => Number(row.toolCount ?? 0) === 0)
     const step = steps.find((s) => s.turn === round.turn) ?? null
@@ -665,7 +670,28 @@ async function cmdApi() {
   }
 }
 
-const commands = { slots: cmdSlots, log: cmdLog, diff: cmdDiff, run: cmdRun, report: cmdReport, api: cmdApi }
+/** 不跑 GPU，重算一次已有 run 的指标（改了解析逻辑/时间窗之后用）。 */
+async function cmdRebuild() {
+  const runId = resolveRunId()
+  const file = path.join(runDirOf(runId), 'cache-probe.json')
+  if (!fs.existsSync(file)) throw new Error(`没有 ${file}；先跑 node tools/cache-probe.mjs run`)
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'))
+  record.engineRows = doneRecords(readLogFrom(record.offsetBefore, ENGINE_LOG, record.offsetAfter ?? null))
+  record.tools = toolsFingerprint(runId)
+  record.rounds = joinRounds(runId, record.engineRows)
+  record.steps = diffRun(runId)
+  record.summary = summarize(record.engineRows.filter((row) => Number(row.toolCount ?? 0) > 0))
+  record.roundSummary = printRoundTable(record.rounds)
+  console.log(`## 系统提示词 diff`)
+  for (const step of record.steps) {
+    console.log([`t${step.turn}s${step.step}`, `${step.systemBytes}B`, `firstDiff=${step.firstDiffChar ?? '?'}`, `suffix=${step.invalidatedSuffixBytes ?? '?'}B`, step.diffMarker ?? '-', `msgPrefix=${step.messagePrefix}/${step.messageCount}`, step.systemUpdates.map((u) => `${u.mode}:${u.chars}`).join(',') || '-'].join('\t'))
+  }
+  fs.writeFileSync(file, JSON.stringify(record, null, 1), 'utf8')
+  fs.writeFileSync(path.join(runDirOf(runId), 'cache-probe-engine.jsonl'), record.engineRows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8')
+  console.log(`\n重建：${file}`)
+}
+
+const commands = { slots: cmdSlots, log: cmdLog, diff: cmdDiff, run: cmdRun, rebuild: cmdRebuild, report: cmdReport, api: cmdApi }
 
 async function main() {
   const command = process.argv[2]
