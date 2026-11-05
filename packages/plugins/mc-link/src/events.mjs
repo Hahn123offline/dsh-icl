@@ -90,7 +90,10 @@ const TASK_REASON_TEXT = Object.freeze({
   blocked: '前方是水/岩浆/基岩（换方向或绕开，别硬挖）',
   unsafe: '安全护栏拒绝（会造成危险：换位置/换做法）',
   partial: '只完成了一部分（有进展没达标：看 progress/背包再决定续做还是换目标）',
-  'unsupported task': '这个宏 body 还没实现（bridge/build/sort/shelter/farm 陆续开放；现在先用 collect/tunnel 或原语）',
+  'unsupported task': '这个宏还在 beta/未开放（先看 mcb_help play 或 mcb_help collect/tunnel；bridge/build/shelter/sort/deposit/farm 是 beta）',
+  'no-water': '附近没有水：找水边/引水（水离耕地 4 格内才能种）',
+  'no-site': '水边没有可开垦的土/草方块（要离水 4 格内、上方是空气）',
+  unsupported: 'body 不支持这个参数组合（例如 tunnel 的向上 stairs）：换方向/换做法',
   'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
   'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
   'not connected': '身体当时不在线（先 mcb_status，需要就 mcb_join）',
@@ -105,11 +108,11 @@ function reasonHint(raw) {
 }
 
 
-const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
+const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'pickup', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
 /** 任务类型：原语 kind + 宏 kind（body KINDS 的超集；宏契约见 docs/MC-MACRO.md）。 */
-const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm'])
+const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 /** 宏 kind（重复劳动下沉到 body 脚本，模型只下一条指令/查进度/打断）。 */
-const MACRO_KINDS = Object.freeze(['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm'])
+const MACRO_KINDS = Object.freeze(['collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 
 function cut(value, max = 80) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
@@ -187,7 +190,23 @@ function macroDoneText(task, result) {
     return `[MC] 宏完成：collect ${label} 收集到 ${got ?? '?'} 个 ${item}${want != null ? `（目标 ${want}）` : ''}`
   }
   if (task.kind === 'tunnel') {
-    return `[MC] 宏完成：tunnel ${label} 往${result?.direction ?? '?'}挖了 ${result?.done ?? '?'} 格${result?.height ? `（高 ${result.height}）` : ''}${result?.torches != null ? `，放火把 ${result.torches}` : ''}`
+    return `[MC] 宏完成：tunnel ${label} 往${result?.direction ?? '?'}挖了 ${result?.done ?? '?'} 格${result?.height ? `（高 ${result.height}）` : ''}${result?.stairs ? '（向下阶梯）' : ''}${result?.torches != null ? `，放火把 ${result.torches}` : ''}`
+  }
+  if (task.kind === 'bridge') {
+    return `[MC] 宏完成：bridge ${label} 往${result?.direction ?? '?'}铺了 ${result?.done ?? result?.placed ?? '?'} 格${result?.width ? `（宽 ${result.width}）` : ''}${result?.materialsUsed != null ? `，用材料 ${result.materialsUsed}` : ''}`
+  }
+  if (task.kind === 'build') {
+    return `[MC] 宏完成：build ${label} 放了 ${result?.placed ?? '?'} 块，跳过 ${result?.skipped ?? 0}${result?.totalLayers != null ? `（${result?.layer ?? '?'}/${result.totalLayers} 层）` : ''}`
+  }
+  if (task.kind === 'shelter') {
+    return `[MC] 宏完成：shelter ${label} 墙 ${result?.walls ?? '?'}、顶 ${result?.roof ?? '?'}、门 ${result?.door ?? '?'}`
+  }
+  if (task.kind === 'sort' || task.kind === 'deposit') {
+    const action = result?.action === 'take' ? '取出' : '存入'
+    return `[MC] 宏完成：${task.kind} ${label} ${action} ${result?.moved ?? '?'} 件${result?.kept != null ? `，保留 ${result.kept}` : ''}`
+  }
+  if (task.kind === 'farm') {
+    return `[MC] 宏完成：farm ${label} 开垦 ${result?.tilled ?? '?'}、播种 ${result?.planted ?? '?'} 格${result?.crop ? ` ${result.crop}` : ''}`
   }
   if (result && Object.keys(result).length) return `[MC] 宏完成：${label} ${cut(JSON.stringify(result), 90)}`
   return `[MC] 宏完成：${label}`
@@ -211,7 +230,7 @@ export function taskEventText(type, data = {}, status = null) {
   const progress = progressText(task.result)
   if (type === 'task_done') {
     const result = task.result ?? {}
-    // 宏（collect/tunnel/bridge/build/sort/shelter/farm）有各自的 result 形状，单独说人话。
+    // 宏（collect/tunnel/bridge/build/shelter/sort/deposit/farm）有各自的 result 形状，单独说人话。
     if (MACRO_KINDS.includes(String(task.kind))) return `${macroDoneText(task, result)}${suffix}`
     const reason = result?.reason ?? null
     // 新 body 用 reason 标记"怎么达成的"（net-target/duration/target），不是失败；

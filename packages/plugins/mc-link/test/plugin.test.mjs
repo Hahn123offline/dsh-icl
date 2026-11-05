@@ -104,6 +104,7 @@ async function startFakeBody({ connected = true } = {}) {
             results.push({ index: results.length, op: 'resume', result: step.taskId ? { id: step.taskId, kind: 'mine', state: 'running' } : { paused: false } })
           }
           else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
+          else if (step.op === 'pickup') results.push({ index: results.length, op: 'pickup', result: { picked: 2, items: ['dirt', 'oak_log'], radius: 8, left: 1 } })
           else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
         }
         return send(200, { ok: true, results })
@@ -239,7 +240,7 @@ test('mcb_do：宏 kind（collect/tunnel/bridge/build/sort/shelter/farm）全部
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
-    for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm']) {
+    for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm']) {
       const out = await link.tools.mcb_do.execute({ steps: [{ op: 'task', kind, params: {} }] })
       assert.match(out.text, new RegExp(`任务 t-1（${kind}）已接受`))
       assert.equal(body.state.requests.at(-1).steps[0].kind, kind)
@@ -308,6 +309,34 @@ test('mcb_do：长动作超时不抛裸错，告诉先查状态、不要原样�
     assert.match(out.text, /没有返回/)
     assert.match(out.text, /不要原样重试/)
     assert.match(out.text, /mcb_status/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：body 报 409（单飞锁）时说"长动作用 task、别并发单步"', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    body.state.doError = '上一个 do 动作还在执行（单飞锁），长任务请用 task 形式'
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'mine', params: { name: 'dirt' } }] }), /长动作一律用|别并发单步/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：pickup 单步 op 可用，返回说人话（picked/items/left）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'pickup', params: { radius: 8, max: 4 } }] })
+    assert.match(out.text, /\[pickup\] 捡到 2 个（dirt、oak_log）；附近还剩 1 个掉落/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.op, 'pickup')
+    assert.deepEqual(sent.params, { radius: 8, max: 4 })
   } finally {
     await link.cleanup()
     await body.close()
