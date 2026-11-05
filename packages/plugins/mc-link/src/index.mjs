@@ -60,7 +60,11 @@ export function apply(ctx) {
   const pollMs = Math.max(500, Number(raw.pollMs) || 1200)
   const focus = String(raw.focus ?? 'mc')
   const bodyPort = Number(raw.listenPort ?? new URL(base).port ?? 54836)
-  const stateDir = path.resolve(String(raw.stateDir ?? 'C:/DSH/icl/.state/mc-live'))
+  // bot 名：配置优先；lab 里用环境变量按 owner 区分（两个都叫 ICL 会被服务器互踢）。
+  const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
+  // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
+  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
   const bodyEntry = String(raw.bodyEntry ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)
@@ -82,7 +86,7 @@ export function apply(ctx) {
   const gate = createEventGate({
     config: {
       chatPerMinute: raw.chatPerMinute,
-      mentionNames: [String(raw.username ?? 'ICL')],
+      mentionNames: [botName],
       ...(raw.signalWindows ?? {}),
     },
   })
@@ -264,7 +268,7 @@ export function apply(ctx) {
     if (!targetHost) throw new Error(`mcb_join 需要 host（或 server 名）。已知服务器：${list.map((row) => `${row.name} ${row.host}:${row.port}`).join('、') || '（空）'}；先 mcb_servers / mcb_lan。`)
     const targetPort = Number(port ?? configured?.port ?? 25565)
     if (!Number.isFinite(targetPort) || targetPort <= 0) throw new Error(`端口不合法：${port}。用 1–65535 的数字。`)
-    return { host: targetHost, port: targetPort, username: String(raw.username ?? 'ICL').slice(0, 16) }
+    return { host: targetHost, port: targetPort, username: botName }
   }
 
   async function join({ host = null, port = null, username = null, server = null } = {}) {
@@ -439,6 +443,11 @@ export function apply(ctx) {
         step.text = text
       }
       if (op === 'cancel' && !raw.taskId) throw new Error(`${where} cancel 需要 taskId；先 {"op":"tasks"} 看任务台账。`)
+      // wait 的 body 参数叫 ms；模型常写 durationMs，这里做一次容错，避免"等了 8 秒"实际只等 500ms。
+      if (op === 'wait') {
+        const params = raw.params && typeof raw.params === 'object' ? raw.params : {}
+        step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
+      }
       if (op === 'events' && raw.since == null) step.since = lastSeq
       return step
     })
@@ -459,8 +468,13 @@ export function apply(ctx) {
         timeoutMs,
       })
       lastStatus = await refreshStatus() ?? lastStatus
-      if (body.task) return { text: `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。` }
       const parts = (body.results ?? []).map(renderRow)
+      if (body.task) {
+        // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
+        // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
+        const head = `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。`
+        return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+      }
       return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
     } catch (error) {
       if (isTimeoutError(error) || error?.code === 'timeout') return { text: doTimeoutText(timeoutMs) }
@@ -612,7 +626,7 @@ export function apply(ctx) {
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）。查询/控制：{"op":"tasks"}（台账含 result/error）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解除暂停；队列已清空，要续做重新下任务）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。决定做大事/任务完成或失败时用 say 说一句。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）；wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}（台账含 result/error）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解除暂停；队列已清空，要续做重新下任务）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。决定做大事/任务完成或失败时用 say 说一句。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],

@@ -36,7 +36,7 @@ const DEFAULTS = Object.freeze({
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
-  alarmWindow: { death: 60_000, safety_stop: 30_000, body_error: 30_000 },
+  alarmWindow: { death: 60_000, safety_stop: 30_000, body_error: 30_000, reconnect_exhausted: 120_000 },
   /** 危险通知配额（滑动窗口）：超过就抑制并计数，等她问状态时看得到。 */
   alarmQuota: { max: 10, windowMs: 300_000 },
   /** 5 分钟内死亡 >= 3 次，额外发一次升级提醒（每 5 分钟最多一次）。 */
@@ -86,6 +86,13 @@ function cut(value, max = 80) {
 
 function num(value, fallback = '?') {
   return Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : fallback
+}
+
+/** body 有时把 reason 塞成对象（mineflayer kicked 的 reason 是 {text:...}），别显示 "[object Object]"。 */
+function valueText(value, fallback = '原因未知', max = 90) {
+  if (value == null || value === '') return fallback
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return cut(value, max)
+  try { return cut(JSON.stringify(value), max) } catch { return fallback }
 }
 
 /** 一行位置；status 里没有就返回 null。 */
@@ -189,7 +196,7 @@ function describe(event, status, ctx) {
         text: `[MC] 掉血：${num(d.from)} → ${num(d.to)}${aliveText(status) ? `（${aliveText(status)}）` : ''}`,
       }
     case 'safety_stop': {
-      const why = REASON_TEXT[d.reason] ?? d.reason ?? '安全原因'
+      const why = REASON_TEXT[d.reason] ?? valueText(d.reason, '安全原因', 60)
       const serious = seriousReason(d.reason)
       return {
         kind: 'event',
@@ -207,7 +214,7 @@ function describe(event, status, ctx) {
     case 'disconnected':
       return {
         kind: 'event', tags: ['mc', 'connection'], priority: 'notice', merge: 'disconnected',
-        text: `[MC] 连接断开（${cut(d.reason ?? '原因未知', 60)}）；body 会自动重连，最多 3 次`,
+        text: `[MC] 连接断开（${valueText(d.reason, '原因未知', 60)}）；body 会自动重连，最多 3 次`,
       }
     case 'reconnecting':
       return {
@@ -227,17 +234,22 @@ function describe(event, status, ctx) {
     case 'body_error':
       return {
         kind: 'event', tags: ['mc', 'issue'], priority: 'notice', merge: 'body_error',
-        text: `[MC] 身体报错：${cut(d.message ?? d.error ?? '未知错误', 120)}`,
+        text: `[MC] 身体报错：${valueText(d.message ?? d.error, '未知错误', 120)}`,
       }
-    case 'kicked':
+    case 'kicked': {
+      const reason = valueText(d.reason, '原因未知', 100)
+      const sameName = /duplicate|already|same name|重名|同名/i.test(reason)
       return {
         kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', alarm: true,
-        text: `[MC] 被服务器踢出：${cut(d.reason ?? '原因未知', 100)}；body 会尝试重连，别再自动重试同一个动作。`,
+        text: sameName
+          ? `[MC] 被服务器踢出：${reason}。这通常是同服已有同名 bot/玩家（一个服上同 owner 只留一个 bot，换 username 再 join）。`
+          : `[MC] 被服务器踢出：${reason}；body 会尝试重连，别再自动重试同一个动作。`,
       }
+    }
     case 'idle_disconnect':
       return {
         kind: 'event', tags: ['mc', 'connection'], priority: 'notice', merge: 'idle_disconnect',
-        text: `[MC] 暂停太久，身体已自动断开（${REASON_TEXT[d.reason] ?? d.reason ?? '安全原因'}）。要接着玩先 mcb_join，收尾就 mcb_leave。`,
+        text: `[MC] 暂停太久，身体已自动断开（${REASON_TEXT[d.reason] ?? valueText(d.reason, '安全原因', 60)}）。要接着玩先 mcb_join，收尾就 mcb_leave。`,
       }
     case 'task_done':
     case 'task_failed':
@@ -448,7 +460,7 @@ export function eventLine(event, status = null) {
       case 'stopped': return ''
       case 'safety_resume': return '已恢复'
       case 'emergency': return `保命动作：${d.reason ?? ''}`
-      case 'safety_stop': return `暂停：${REASON_TEXT[d.reason] ?? d.reason ?? ''}`
+      case 'safety_stop': return `暂停：${REASON_TEXT[d.reason] ?? valueText(d.reason, '安全原因', 60)}`
       default: {
         const described = describe(event, status, { mentionNames: DEFAULTS.mentionNames })
         return described ? described.text.replace(/^\[MC\]\s*/, '') : cut(JSON.stringify(d), 90)

@@ -72,13 +72,17 @@ async function startFakeBody({ connected = true } = {}) {
         state.requests.push(input)
         if (state.doDelay) await sleep(state.doDelay)
         if (state.doError) return send(409, { ok: false, error: state.doError })
-        const step = input.steps?.[0] ?? {}
-        if (step.op === 'task') return send(200, { ok: true, task: { id: 't-1', kind: step.kind, state: 'queued' } })
-        if (step.op === 'events') return send(200, { ok: true, results: [{ index: 0, op: 'events', result: { events: state.events, seq: state.seq } }] })
-        if (step.op === 'tasks') return send(200, { ok: true, results: [{ index: 0, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] }] })
-        if (step.op === 'resume') { state.paused = false; state.pausedReason = null; return send(200, { ok: true, results: [{ index: 0, op: 'resume', result: { paused: false } }] }) }
-        if (step.op === 'say') return send(200, { ok: true, results: [{ index: 0, op: 'say', result: { ok: true } }] })
-        return send(200, { ok: true, results: input.steps.map((row) => ({ op: row.op, result: { text: `did:${row.op}` } })) })
+        const results = []
+        for (const step of input.steps ?? []) {
+          // 模拟真 body：task 之前的 steps 结果一并返回，然后立即返回 taskId。
+          if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
+          if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
+          else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] })
+          else if (step.op === 'resume') { state.paused = false; state.pausedReason = null; results.push({ index: results.length, op: 'resume', result: { paused: false } }) }
+          else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
+          else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
+        }
+        return send(200, { ok: true, results })
       })
     }
     if (url.pathname === '/v1/safety/stop' && req.method === 'POST') {
@@ -392,6 +396,26 @@ test('事件流：body 编号归零（被杀后重启）时不重放旧事件，
     const text = link.pushed.join('\n')
     assert.match(text, /编号归零/)
     assert.match(text, /不重放旧事件/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：wait 的 durationMs 容错成 body 的 ms；cancel+task 两步都回结果', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    await link.tools.mcb_do.execute({ steps: [{ op: 'wait', params: { durationMs: 8000 } }] })
+    const waited = body.state.requests.at(-1).steps[0]
+    assert.equal(waited.op, 'wait')
+    assert.equal(waited.params.ms, 8000)
+
+    const combo = await link.tools.mcb_do.execute({ steps: [{ op: 'cancel', taskId: 't-9' }, { op: 'task', kind: 'mine', params: { block: 'dirt', count: 2 } }] })
+    assert.match(combo.text, /\[cancel\]/)
+    assert.match(combo.text, /任务 t-1（mine）已接受/)
+    assert.ok(combo.text.indexOf('[cancel]') < combo.text.indexOf('已接受'), 'cancel 结果应在任务结果之前')
   } finally {
     await link.cleanup()
     await body.close()

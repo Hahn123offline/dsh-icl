@@ -135,3 +135,22 @@ test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与
   for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade']) assert.ok(OPS.includes(op), op)
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
 })
+
+test('事件闸门：kicked 的 reason 是对象时显示真实原因，同名/重复登录要指出来', () => {
+  const plain = collect([{ seq: 1, type: 'kicked', data: { reason: { text: 'You are already logged in' } } }])
+  assert.doesNotMatch(plain.signals[0].text, /\[object Object\]/)
+  assert.match(plain.signals[0].text, /already logged in/)
+  assert.match(plain.signals[0].text, /同名/)
+  const normal = collect([{ seq: 2, type: 'kicked', data: { reason: 'banned' } }])
+  assert.match(normal.signals[0].text, /banned/)
+  assert.doesNotMatch(normal.signals[0].text, /同名/)
+})
+
+test('事件闸门：重连耗尽在窗口内只报一次（body 会连发两条）', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const first = gate.take([{ seq: 1, type: 'reconnect_exhausted', data: { attempts: 3 } }], { status: null })
+  const second = gate.take([{ seq: 2, type: 'reconnect_exhausted', data: { attempts: 3, reason: 'reconnect-failed' } }], { status: null })
+  assert.equal(first.signals.length, 1)
+  assert.equal(second.signals.length, 0)
+})

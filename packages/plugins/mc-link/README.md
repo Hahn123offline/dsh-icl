@@ -23,7 +23,7 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 | `doTimeoutMs` | 120000 | `mcb_do` 单次请求等待上限（超时返回"先查状态"而不是裸错） |
 | `bodyEntry` | `packages/mc-body/src/cli.mjs` | 要 spawn 的 body 入口 |
 | `stateDir` | `C:/DSH/icl/.state/mc-live` | body 的 tasks/body.jsonl/stderr 落盘处 |
-| `serversFile` | （无） | 可选第二份服务器清单；不隐式读仓库根 `config/mc-servers.json`，避免两处定义 |
+| `serversFile` | （无） | 可选第二份服务器清单；**不隐式读仓库根 `config/mc-servers.json`**——那个文件是遗留物，已由本插件的 `servers.json` 取代，保留只为避免动别人的路径 |
 | `chatPerMinute` | 6 | 游戏内聊天合并后的分钟限额 |
 
 ## 提示词分层（docs/PROMPT-CONTRACT.md）

@@ -101,8 +101,11 @@ export function createBodySupervisor({
     if (detail.spawnError) lines.push(`进程启动失败：${detail.spawnError}`)
     if (detail.exitCode != null || detail.exitSignal) lines.push(`进程${describeExit(detail.exitCode, detail.exitSignal)}`)
     const stderr = detail.stderrTail ?? []
-    const interesting = stderr.filter((line) => /error|refused|EADDRINUSE|failed|timeout|connect|kicked|exhausted/i.test(line)).slice(-2)
-    if (interesting.length) lines.push(`body 日志：${interesting.join(' / ')}`)
+    // node 打的多行错误对象会混进 "syscall: 'connect'," 这种碎片；丢掉纯 JSON 行再挑关键词。
+    const meaningful = stderr.filter((line) => line && !/^\s*[{}\[\],]+\s*$/.test(line) && !/^\s*[a-z_]+:\s/.test(line))
+    const preferred = meaningful.filter((line) => /ECONNREFUSED|EADDRINUSE|ERR_MODULE_NOT_FOUND|Cannot find module|connect failed|kicked|exhausted|timeout/i.test(line))
+    const picked = (preferred.length ? preferred : meaningful).slice(-2)
+    if (picked.length) lines.push(`body 日志：${picked.join(' / ')}`)
     else if (stderr.length) lines.push(`body 日志最后一行：${stderr.slice(-1)[0]}`)
     if (!lines.length) lines.push('body 没有在限定时间内连上服务器（没有进程退出信息）')
     return lines.join('；')
@@ -252,7 +255,7 @@ export function createBodySupervisor({
     }
     const detail = h && !h.alive ? describeHandle(h) : describeHandle(h ?? handle)
     await stop({ reason: 'start-timeout' }).catch(() => {})
-    throw new Error(`mc-body 没能在 ${Math.round((startTimeoutMs ?? 30_000) / 1000)}s 内连上 ${target.host}:${target.port}。${failureText(detail)}${lastError ? `；HTTP：${lastError?.message ?? lastError}` : ''}`)
+    throw new Error(`mc-body 没能在 ${Math.round((startTimeoutMs ?? 30_000) / 1000)}s 内连上 ${target.host}:${target.port}（常见原因：服务器没开、端口写错、被服务器踢、同服已有同名 bot）。${failureText(detail)}${lastError ? `；HTTP：${lastError?.message ?? lastError}` : ''}`)
   }
 
   /** 只结束"本会话 spawn 的"进程；外部 body 交给调用方安全停止。 */
