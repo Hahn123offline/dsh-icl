@@ -172,6 +172,7 @@ try {
       }
     }
     if (task && ['done', 'failed', 'cancelled', 'interrupted', 'unknown'].includes(task.state)) terminalAt = terminalAt || Date.now()
+    if (child.exitCode != null) { metrics.bodyDiedEarly = true; break }
     if (terminalAt && Date.now() - terminalAt > 10_000) break
     if (status.paused) {
       pausedAt = pausedAt || Date.now()
@@ -195,6 +196,7 @@ try {
   await sleep(1500)
   try { if (child.exitCode == null) child.kill('SIGKILL') } catch { /* ignore */ }
   metrics.bodyExit = child.exitCode
+  try { metrics.bodyExitRecord = JSON.parse(fs.readFileSync(path.join(out, 'body-exit.json'), 'utf8')) } catch { /* 被硬杀时没有 */ }
   logStream.end()
 }
 
@@ -223,6 +225,7 @@ const summary = [
   `- reconnect events: ${JSON.stringify(metrics.reconnectEvents)}`,
   `- pathStats: ${JSON.stringify(metrics.pathStats ?? null)}`,
   `- watchdog suppressed: ${metrics.watchdogSuppressed} by=${JSON.stringify(metrics.final?.watchdog?.suppressedBy ?? {})}`,
+  `- body exit: code=${metrics.bodyExit ?? 'null'}${metrics.bodyExitRecord ? ` reason=${metrics.bodyExitRecord.reason}` : ''}${metrics.bodyDiedEarly ? '（提前退出）' : ''}`,
   `- error: ${metrics.error ?? 'none'}`,
   `- checks: ${JSON.stringify(metrics.checks)}`,
   `- result: ${pass ? 'PASS' : 'FAIL'}`,

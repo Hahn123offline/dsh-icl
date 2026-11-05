@@ -59,6 +59,9 @@ export function createBody({
   chatRateMs = 1000,
   lowHealth = 10,
   pausedDisconnectMs = 120_000,
+  // 退出归因钩子：身体不知道“进程为什么退出”，但把这些可判定的时机交给宿主记录。
+  onIdleDisconnect = null,
+  onShutdownRequest = null,
 } = {}) {
   if (!adapter) throw new Error('body 需要 adapter')
 
@@ -409,6 +412,7 @@ export function createBody({
         if (!paused || closed) return
         push('idle_disconnect', { reason: pausedReason, afterMs: pausedDisconnectMs })
         try { void Promise.resolve(adapter.disconnect?.()).catch(() => {}) } catch { /* ignore */ }
+        try { onIdleDisconnect?.({ reason: pausedReason, afterMs: Number(pausedDisconnectMs) }) } catch { /* 宿主钩子失败不影响身体 */ }
       }, Number(pausedDisconnectMs))
       if (typeof pausedTimer.unref === 'function') pausedTimer.unref()
     }
@@ -817,8 +821,17 @@ export function createBody({
     return { events: events.filter((e) => e.seq > from), seq }
   }
 
+  // 上层要求进程退出（而非硬杀）：交给宿主的钩子记录归因，再优雅收尾。
+  async function shutdownRequest(reason = 'requested') {
+    push('shutdown_requested', { reason: String(reason) })
+    if (typeof onShutdownRequest === 'function') {
+      try { return await onShutdownRequest(String(reason)) } catch (error) { return { ok: false, error: String(error?.message ?? error) } }
+    }
+    return { ok: true, note: 'body 无宿主退出钩子，仅记录事件' }
+  }
+
   return {
     start, stop, status, eventsSince, createTask, getTask, listTasks, cancelTask, resumeTask,
-    safetyStop, resume, ingest, inspect, doPlan, chat, push, watchdogTick,
+    safetyStop, resume, ingest, inspect, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }

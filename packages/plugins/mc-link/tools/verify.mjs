@@ -124,7 +124,8 @@ try {
   const left = await tools.mcb_leave.execute({})
   log(`mcb_leave（默认只停 body）: ${left.text}`)
   check('leave 报告安全停止结果', /安全停止：成功/.test(left.text), left.text.split('；')[0] ?? '')
-  check('leave 报告进程怎么结束（pid）', /body 进程：已结束（pid/.test(left.text))
+  check('leave 结论先行（第一句就说干不干净）', /^(已完全收工|收工完成但没完全干净)/.test(left.text), left.text.split('；')[0] ?? '')
+  check('leave 报告进程怎么结束（pid）', /body 进程：(已结束|已正常退出)（pid/.test(left.text))
   check('leave 报告还挂着的 focus/goal', /还挂着：focus 1 个/.test(left.text))
   await wait(800)
   let dead = false
@@ -136,6 +137,7 @@ try {
   const cleaned = await tools.mcb_leave.execute({ cleanup: true })
   log(`mcb_leave（cleanup:true）: ${cleaned.text}`)
   check('cleanup 释放 focus 租约', /收尾清理：focus 释放 1 个/.test(cleaned.text) && host.services.focus.list().length === 0)
+  check('cleanup 后结论是"已完全收工"', /已完全收工/.test(cleaned.text), cleaned.text.split('；')[0] ?? '')
   const again = await tools.mcb_leave.execute({ cleanup: true })
   check('leave 幂等（第二次没有可清的东西，不报错）', /没有启动过|没有挂着的|都空了/.test(again.text), again.text)
   check('cleanup 之后没有残留 focus 租约', host.services.focus.list().length === 0)

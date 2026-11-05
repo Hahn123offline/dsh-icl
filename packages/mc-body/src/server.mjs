@@ -53,6 +53,10 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
         const input = await readJson(req)
         return json(res, 200, { ok: true, result: await body.inspect(input.kind, input.params ?? {}) })
       }
+      if (req.method === 'POST' && url.pathname === '/v1/shutdown') {
+        const input = await readJson(req).catch(() => ({}))
+        return json(res, 200, { ok: true, ...(await body.shutdownRequest(input.reason ?? 'api')) })
+      }
       if (req.method === 'POST' && url.pathname === '/v1/chat') {
         const input = await readJson(req)
         await body.chat(input.text)
