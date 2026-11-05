@@ -63,3 +63,17 @@ test('卸载插件后 gate 恢复，普通 push 重新放行', async () => {
   host.disable('gate-test')
   assert.equal(host.services.delivery.push({ source: { plugin: 'blocked' }, content: { text: 'y' } }).accepted, true)
 })
+
+test('addGate 组合：多来源规则叠加，后注册者不会覆盖先注册者', async () => {
+  const host = createHost({ log: () => {} })
+  const delivery = host.services.delivery
+  const offA = delivery.addGate(() => ({ accept: true }))
+  const offB = delivery.addGate((entry) => (entry.source.plugin === 'qq' ? { accept: false, reason: 'muted' } : { accept: true }))
+  assert.equal(delivery.gateCount(), 2)
+  assert.equal(delivery.push({ source: { plugin: 'qq' }, content: { text: 'x' } }).blocked, true)
+  assert.equal(delivery.push({ source: { plugin: 'time' }, content: { text: '闹钟' } }).accepted, true)
+  offB()
+  assert.equal(delivery.push({ source: { plugin: 'qq' }, content: { text: 'y' } }).accepted, true)
+  offA()
+  assert.equal(delivery.gateCount(), 0)
+})

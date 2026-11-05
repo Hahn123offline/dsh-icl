@@ -563,7 +563,7 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
   const inflight = new Map()       // batchId -> 条目
   let seq = 0
   let droppedCount = 0
-  let gate = null
+  const gates = []
   let blockedCount = 0
   let gateErrorCount = 0
 
@@ -573,7 +573,7 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
 
   return {
     push({ to = 'session', channel = 'conversation', source = {}, content = {}, batchKey = null, exactlyOnce = true } = {}) {
-      if (typeof gate === 'function') {
+      if (gates.length) {
         const entry = {
           to: String(to),
           channel: String(channel),
@@ -581,14 +581,17 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
           content: { text: String(content.text ?? '') },
           batchKey: batchKey == null ? null : String(batchKey),
         }
-        let decision = { accept: true }
-        try { decision = gate(entry) ?? { accept: true } } catch {
-          gateErrorCount += 1
-          decision = { accept: true, gateError: true } // fail-open
-        }
-        if (!decision?.accept) {
-          blockedCount += 1
-          return { accepted: false, blocked: true, reason: decision?.reason ?? 'gate' }
+        // 组合裁决：任何一个 gate 拒绝就拦下；单个 gate 抛错 fail-open 并计数。
+        for (const gateFn of gates) {
+          let decision = { accept: true }
+          try { decision = gateFn(entry) ?? { accept: true } } catch {
+            gateErrorCount += 1
+            continue
+          }
+          if (!decision?.accept) {
+            blockedCount += 1
+            return { accepted: false, blocked: true, reason: decision?.reason ?? 'gate' }
+          }
         }
       }
       const seqNo = Number(source.seq)
@@ -615,8 +618,20 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
       return { accepted: true, id: item.id }
     },
 
-    /** 安装 push-time gate；返回上一个 gate（供卸载时恢复）。 */
-    setGate(fn) { const previous = gate; gate = typeof fn === 'function' ? fn : null; return previous },
+    /** 安装 push-time gate（旧接口，替换全部）；返回上一个 gate（供卸载时恢复）。 */
+    setGate(fn) {
+      const previous = gates.length ? gates[gates.length - 1] : null
+      gates.length = 0
+      if (typeof fn === 'function') gates.push(fn)
+      return previous
+    },
+    /** 追加一个 push-time gate；返回注销函数。组合裁决：全部 accept 才进队列。 */
+    addGate(fn) {
+      if (typeof fn !== 'function') throw new Error('delivery.addGate 需要函数')
+      gates.push(fn)
+      return () => { const i = gates.indexOf(fn); if (i >= 0) gates.splice(i, 1) }
+    },
+    gateCount() { return gates.length },
     /** 被 gate 拦下的 push 数（可观测出口）。 */
     blockedCount() { return blockedCount },
     /** gate 自己抛错、被 fail-open 放行的次数。 */
