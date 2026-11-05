@@ -508,9 +508,10 @@ export function createBody({
   function checkOxygen(status) {
     const oxygen = Number(status.oxygen)
     if (!Number.isFinite(oxygen)) return
-    const submerged = status.submerged === true
-    if ((submerged && oxygen <= 5) || oxygen <= 2) {
-      alertWatchdog('danger', 'low-oxygen', { oxygen, submerged }, () => safetyStop('low-oxygen'))
+    // 只有真的在水下才把氧值当危险：陆地/未初始化时 mineflayer 也可能给 0，不能因此误停。
+    const underwater = status.submerged === true
+    if (underwater && oxygen <= 5) {
+      alertWatchdog('danger', 'low-oxygen', { oxygen, submerged: underwater }, () => safetyStop('low-oxygen'))
     }
   }
 

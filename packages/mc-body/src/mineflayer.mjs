@@ -201,6 +201,27 @@ export function createMineflayerAdapter({
     if (typeof reconnectTimer.unref === 'function') reconnectTimer.unref()
   }
 
+  // 出生安全检查要等 chunk 加载完：spawn 事件比区块数据早，早读会读到 null 误判安全。
+  async function finalizeSpawnSafety(b) {
+    try {
+      if (typeof b.waitForChunksToLoad === 'function') {
+        await Promise.race([b.waitForChunksToLoad(), sleep(5000)])
+      }
+    } catch { /* 等不到就用现有数据判 */ }
+    await sleep(200)
+    if (bot !== b || !spawned) return
+    const safety = evaluateSpawnSafety()
+    spawnSafety = { ...safety, at: Date.now() }
+    if (safety.unsafe) {
+      safePoint = null
+      emit('spawn_unsafe', safety)
+    } else {
+      const pos = currentPosition()
+      safePoint = pos ? { ...pos } : null
+      emit('spawn_safe', safety)
+    }
+  }
+
   function evaluateSpawnSafety() {
     const pos = currentPosition()
     const feet = blockNameAt(0, 0, 0)
@@ -252,20 +273,12 @@ export function createMineflayerAdapter({
         reconnectExhausted = false
         reconnectNextDelayMs = null
         lastError = null
-        const safety = evaluateSpawnSafety()
-        spawnSafety = { ...safety, at: Date.now() }
-        if (safety.unsafe) {
-          safePoint = null
-          emit('spawn_unsafe', safety)
-        } else {
-          const pos = currentPosition()
-          safePoint = pos ? { ...pos } : null
-          emit('spawn_safe', safety)
-        }
-        emit('spawn', { position: currentPosition(), safety })
+        emit('spawn', { position: currentPosition() })
         if (hasSpawnedBefore) emit('reconnected', { position: currentPosition() })
         hasSpawnedBefore = true
         settle(resolve, undefined)
+        // 出生安全在 chunk 加载后再判，不拿 null 当安全。
+        void finalizeSpawnSafety(b)
       })
       b.once('error', (error) => {
         lastError = String(error?.message ?? error)
@@ -748,7 +761,7 @@ export function createMineflayerAdapter({
         return { ok: true, reason, action: 'jump-off-danger', block: hostile?.name ?? null }
       }
       if (Number(bot.food) <= 14) await eatIfNeeded(signal, null)
-      if (bot.entity?.isInWater || (Number.isFinite(bot.oxygenLevel) && bot.oxygenLevel <= 6)) {
+      if (bot.entity?.isInWater) {
         bot.setControlState('jump', true)
         await sleep(900)
         bot.setControlState('jump', false)

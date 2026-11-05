@@ -82,16 +82,21 @@ try {
     return status?.connected ? status : null
   }, 90_000, 'body connect')
   metrics.connected = true
+  // 出生安全是 chunk 加载后才判的：等判定结果，避免在“还不知道安不安全”时下任务。
+  const safeStatus = await waitFor(async () => {
+    const status = await get('/v1/status')
+    return status?.adapter?.spawnSafety ? status : null
+  }, 20_000, 'spawn safety')
   metrics.initial = {
-    position: status0.adapter?.position ?? null,
-    health: status0.adapter?.health ?? null,
-    food: status0.adapter?.food ?? null,
-    spawnSafety: status0.adapter?.spawnSafety ?? null,
-    paused: status0.paused,
+    position: safeStatus.adapter?.position ?? null,
+    health: safeStatus.adapter?.health ?? null,
+    food: safeStatus.adapter?.food ?? null,
+    spawnSafety: safeStatus.adapter?.spawnSafety ?? null,
+    paused: safeStatus.paused,
   }
-  const spawnUnsafe = Boolean(status0.adapter?.spawnSafety?.unsafe)
-  if (status0.paused) {
-    throw new Error(`body 启动即暂停：${status0.pausedReason ?? 'unknown'}（spawn 不安全？）`)
+  const spawnUnsafe = Boolean(safeStatus.adapter?.spawnSafety?.unsafe)
+  if (safeStatus.paused || spawnUnsafe) {
+    throw new Error(`body 启动即暂停/出生不安全：${safeStatus.pausedReason ?? 'spawn-unsafe'}`)
   }
   metrics.spawnUnsafe = spawnUnsafe
 
@@ -143,6 +148,8 @@ try {
       pathStats: status.adapter?.pathStats,
     })}\n`, 'utf8')
     if (task?.progress && JSON.stringify(task.progress) !== JSON.stringify(lastProgress)) lastProgress = task.progress
+    // 只在有任务时更新：任务结束后 status.task 是 null，不能把终态覆盖掉。
+    if (task) metrics.lastTask = task
     const events = await get(`/v1/events?since=${cursor}`).catch(() => null)
     if (events?.events?.length) {
       for (const event of events.events) {
@@ -156,8 +163,12 @@ try {
         if (String(event.type).startsWith('task_')) {
           metrics.taskEvents.push({ type: event.type, seq: event.seq, state: event.data?.task?.state, error: event.data?.task?.error })
           if (event.data?.task) metrics.lastTask = event.data.task
-          if (['task_done', 'task_failed', 'task_cancelled', 'task_interrupted', 'task_unknown'].includes(event.type)) terminalAt = terminalAt || Date.now()
+          if (['task_done', 'task_failed', 'task_cancelled', 'task_interrupted', 'task_unknown'].includes(event.type)) {
+            metrics.terminalTask = event.data?.task ?? null
+            terminalAt = terminalAt || Date.now()
+          }
         }
+        if (metrics.taskEvents.length > 200) metrics.taskEvents.splice(0, metrics.taskEvents.length - 200)
       }
     }
     if (task && ['done', 'failed', 'cancelled', 'interrupted', 'unknown'].includes(task.state)) terminalAt = terminalAt || Date.now()
@@ -187,7 +198,7 @@ try {
   logStream.end()
 }
 
-const task = metrics.lastTask ?? metrics.final?.task ?? null
+const task = metrics.terminalTask ?? metrics.lastTask ?? metrics.final?.task ?? null
 const terminalState = task?.state ?? null
 const doneReason = task?.state === 'done' ? (task?.result?.reason ?? null) : null
 metrics.checks.noDeath = metrics.deaths === 0
