@@ -571,3 +571,9 @@ node tools/cache-probe.mjs diff --run cache-bf2
 3. 这段是"当前事实"还是"该怎么用工具"？后者 → 工具 description / skills，不进 system。
 4. 我新加的段是不是在 order < 800？那它必须**整场不变**，否则缓存全废。
 5. 改完跑一次 `node tools/cache-probe.mjs run … --gap 65 --rounds 6`，看 `firstDiff=-1`、`hit≈100%`。
+6. **layout 改动后的固定复核（2026-11-06 第一屏净化 P0-1 已按此做过）**：
+   `node tools/cache-layout-audit.mjs --run <改前 run> --run <改后 run>`，看三项——
+   ①system append/replace 与"文本恒等"（期望 1/0、firstDiff=-1）；②system 字符/字节 + tools count/hash（只准变长度，不准变 hash）；
+   ③`systemHasDynamicFacts=false` + facts 快照 sections 仍含 `icl:facts` + ≤1 条/轮。
+   P0-1 结果：system 5011→2294 字符（8485→5762 字节，-32.1% bytes）、tools 34/`7047e6c4f3e8` 不变、facts 布局未动、firstDiff=-1；
+   命中硬数字待本地 run（云端不可测）。详见 `docs/FIRST-SCREEN.md` §10。
