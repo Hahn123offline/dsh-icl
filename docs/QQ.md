@@ -23,7 +23,8 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 452 pass | `npm test` |
+| 全量测试 | ✅ 468 pass | `npm test` |
+| **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **完整性差距研究（旧项目 vs 我们，P0/P1/P2 路线）** | ✅ 已完成 | [QQ-GAP.md](QQ-GAP.md) |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
@@ -332,12 +333,13 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 
 - `index.mjs` **不 import 发送实现**：keys 打开时才 `await import('./send-tool.mjs')`；`send-tool` 才 import `outbound.mjs` 的 `createOutbound`。
 - **目标**：只接受私聊 QQ 号，且必须在 `allowPrivate` 里；phase 1 再要求等于 `ownerQQ`（默认配置 3429502459）。群/富媒体/多目标广播的代码不存在（静态安全测试守着 `send_group_msg` 不出现）。
-- **内容**：纯文本、非空、≤`maxSendChars`（默认 2000）、敏感信息拦截（`api_key/token/password/sk-…/PRIVATE KEY` 等默认 pattern，可配置）。
-- **限速**：同 peer 最小间隔 5s、每分钟最多 10、同文 60s 去重、每轮最多 1 条（`turn-end` 重置）。
+- **内容**：纯文本、非空、≤`maxSendChars`（默认 2000）、敏感信息拦截（`api_key/token/password/sk-…/PRIVATE KEY` 等默认 pattern，可配置）。发送前 Markdown 会转纯文本（`markdownToPlain` 可关）。
+- **人类化（P0-3）**：一段回复可拆成 **1–8 条气泡**；条间默认 1–3s、20% 概率 5–10s 长停顿（`gapMode: auto|fixed|typing|byLength`，typing 按 1.4 字/秒估算）；单条超 `maxMessageChars`（默认 500）自动切分，**URL 整条保留、emoji 不被切开**；一条输入被拆成过多气泡时整体拒绝（不发半截）。
+- **限速**：同 peer 最小间隔 5s、每分钟最多 10、每小时最多 60（按气泡数预留）、同文 60s 去重、每轮最多 1 次调用（`turn-end` 重置）。
 - **回执三态**：`ok`（retcode=0 且有 message_id）/ `rejected`（后端明确拒绝）/ `unknown`（超时/连接断/无回执）。**unknown 不自动重试**（OneBot 无幂等键，盲重试会双发）。
-- **失败不冒充成功**：工具文本明确写"没发出去：原因"；`qq_status` 暴露 `send.recent`（时间/peer/outcome/messageId/ms）与计数。
-- **kill switch**：每次调用重读 live config；运行中把 `allowSend` 改成 false，下一次调用立即拒绝。
-- **审计**：`auditFile` JSONL 每条 `{at,kind:'send',peerId,chars,textHash,outcome,messageId,ms,error?}`，**不存正文全文**。
+- **失败不冒充成功**：工具文本明确写"没发出去：原因"；多气泡时如实报"已发 k/N，其余未发送"（失败即停、不重试）；`qq_status` 暴露 `send.recent`（时间/peer/outcome/sent/total/messageId/ms）与计数。
+- **kill switch**：每次调用**和每条气泡前**重读 live config；运行中把 `allowSend` 改成 false，下一次/下一气泡立即拒绝。
+- **审计**：`auditFile` JSONL **每条气泡一行** `{at,kind:'send',peerId,chars,textHash,outcome,messageId,ms,batch:{index,total},error?}`，**不存正文全文**。
 - 传输走**独立的出站 WS 连接**（与只读入站分开）：入站连接仍保持 `framesSent===0`；出站连接单独统计帧数。
 
 真实 shadow 的"只收"边界（只读模式仍适用）：
@@ -370,9 +372,14 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 | `ownerQQ` | `null` | phase 1 唯一允许回复的私聊对象 | 非 null 时发送目标必须等于它；lab 设 `3429502459` |
 | `auditFile` | `''` | 发送审计 JSONL | 只存 `textHash/chars/outcome/messageId/ms`，不存正文 |
 | `sendTimeoutMs` | `15000` | 动作回执超时 | 超时 → `unknown`（不自动重试） |
-| `sendMinIntervalMs` / `sendMaxPerMinute` / `sendSameTextWindowMs` | `5000` / `10` / `60000` | 发送限速/防抖 | 超限 → "没发出去：限流/重复内容" |
-| `maxSendsPerTurn` | `1` | 每轮最多发几条 | 默认 1；`turn-end` 后重置 |
-| `maxSendChars` | `2000` | 单条文本上限 | 超出直接拒绝（不自动切分） |
+| `sendMinIntervalMs` / `sendMaxPerMinute` / `sendMaxPerHour` / `sendSameTextWindowMs` | `5000` / `10` / `60` / `60000` | 发送限速/防抖 | 按气泡数预留；超限 → "没发出去：限流/重复内容" |
+| `maxSendsPerTurn` | `1` | 每轮最多几次发送调用 | 默认 1；`turn-end` 后重置（一次调用内可有多条气泡） |
+| `maxSendChars` | `2000` | 单条输入文本上限 | 超出直接拒绝（不自动截断） |
+| `markdownToPlain` | `true` | 发送前 Markdown→纯文本 | 关掉则原样发送（不推荐） |
+| `burstEnabled` / `burstMaxMessages` / `maxMessageChars` | `true` / `8` / `500` | 多气泡开关/单次上限/每条长度 | 超过气泡上限整体拒绝；单条超长按 URL/emoji 安全切分 |
+| `burstIntervalMinMs` / `burstIntervalMaxMs` / `longGapProbability` / `longGapMinMs` / `longGapMaxMs` | `1000` / `3000` / `0.2` / `5000` / `10000` | 气泡间隔与长停顿 | `gapMode=auto` 时生效；fixed/typing/byLength 另有参数 |
+| `gapMode` | `auto` | 间隔模式 | `auto｜fixed｜typing｜byLength`；typing 用 1.4 字/秒 |
+| `sleepImpl` / `randomImpl` | `null` | 测试注入 | 生产不填 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -632,9 +639,10 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 381 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 468 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
-node --test packages/core/test/qq-send.test.mjs        # 11 pass（phase 1 出站）
+node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
+node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -741,12 +749,16 @@ lead 已停旧应用/移走启动项、SnowLuma 由用户手动开着。phase 0 
 
 ### 13.6 phase 1 出站（fake 已验证；真实窗口待 lead 指令）
 
-`node --test packages/core/test/qq-send.test.mjs` → **11 pass**，覆盖：三钥匙关闭不注册 `qq_send`；成功只发 1 帧
+`node --test packages/core/test/qq-send.test.mjs` → **18 pass**，覆盖：三钥匙关闭不注册 `qq_send`；成功只发 1 帧
 `send_private_msg`（`user_id`/`message` 正确、审计 ok 且不存正文、`qq_status` 显示三态）；每轮上限 + turn-end 重置；
-后端拒绝→`rejected`；无回执超时→`unknown` 且不自动重试；群/非白名单/非 QQ 号拒绝；空/超长/敏感拒绝；5s 限速；
-60s 同文去重；kill switch；审计四种结果。假后端动作记录里只有 `send_private_msg`、没有 `send_group_msg`。
-真实 QQ 窗口按 §10.1 等 lead 指令，证据要求：SnowLuma 日志 `send_private_msg` 恰 1 次/轮、`send_group_msg` 0 次、
-用户只收到 1 条、`status.json` 的 `send.recent.outcome=ok`、审计 1 行且无正文。
+后端拒绝→`rejected`；无回执超时→`unknown` 且不自动重试；群/非白名单/非 QQ 号拒绝；空/超长/敏感拒绝；限速；
+同文去重；kill switch；审计四种结果；**P0-3 新增**：markdown→纯文本、`messages[]` 多气泡、长文切分不丢内容、
+气泡超额拒绝、部分成功 k/N、多气泡中途 kill switch、按气泡数预留每分钟上限。假后端动作记录里只有
+`send_private_msg`、没有 `send_group_msg`。
+`node --test packages/core/test/qq-humanize.test.mjs` → **9 pass**（mdToPlain 边界、代理对/URL 安全切分、
+typing 档位、planBurst 各模式与上限、frequency gate）。
+真实 QQ 窗口按 §10.1 等 lead 指令，证据要求：SnowLuma 日志 `send_private_msg` 次数=气泡数、`send_group_msg` 0 次、
+用户收到对应条数、`status.json` 的 `send.recent.outcome=ok` 且 sent/total 正确、审计行数=气泡数且无正文。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

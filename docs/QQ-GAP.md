@@ -159,10 +159,12 @@
 
 > lead 2026-11-06 拍板：路线优先级 P0-1 > P0-3 > P0-2；实际实施**先 P0-3**（纯函数、零外部依赖）**再 P0-1**（账本/补课），然后 P0-2。GPU/lab 长测期间纯单测 + fake。
 
-**P0-3 出站人类化（预计 1.5–2 人日）**
-- 移植 `mdToPlain`（含代理对安全/URL 保护/表格/列表）、`planBurst`（≤8、1–3s、20% 长停顿、500 字/条、8/min 60/h）、`typingMs`（1.4 字/秒 + PACES）、`splitForQQ`（4000 字、换行/代理对/URL 不切断）。
-- 接入现有 `qq_send`：参数 `messages[]`/`pace`/`gapMode`；保持 owner-only、三钥匙、审计无正文、每轮上限（可调为"每轮 1 次工具调用 ≤N 气泡"）、unknown 不重试。
-- 验收：
+**P0-3 出站人类化（预计 1.5–2 人日；✅ 2026-11-06 已落地）**
+- ✅ 实现：`packages/plugins/qq/src/humanize.mjs`（mdToPlain / splitForQQ / splitLongText / typingMs / planBurst / rateCheck）
+  + `send-tool.mjs` 接入 `messages[]`、`markdownToPlain`、多气泡节奏、长文切分、逐气泡守卫、部分成功 k/N、审计逐气泡。
+- ✅ 测试：`qq-humanize.test.mjs` 9 条（纯函数边界）+ `qq-send.test.mjs` 18 条（含 markdown/多气泡/切分/超额/kill switch/部分成功）；
+  全量 `npm test` 468 pass。真实窗口（1 次 `messages=[3 条]` + kill switch）等 lead 批准。
+- 验收（原计划）：
   - 单测覆盖旧测试同款语义（单条无延迟/间隔区间/长停顿概率/按长度/fixed/上限/频率/语气档位/切分不切 emoji/URL 完整）——fake + 注入 random/sleep。
   - fake OneBot 执行多气泡：恰 N 帧、每帧 ≤500 字、间隔落在配置区间、markdown 已被清理、过频被拒且**不发帧**。
   - 真实窗口（需 lead 批准）：一次 `qq_send(messages=[3 条])` → SnowLuma 日志 3 次 `send_private_msg`、无群、用户收到 3 条；中途 kill switch → 剩余气泡不发且工具返回"已发 k/N"。

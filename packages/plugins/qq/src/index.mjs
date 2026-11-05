@@ -67,10 +67,25 @@ const DEFAULTS = Object.freeze({
   sendTimeoutMs: 15_000,
   sendMinIntervalMs: 5000,
   sendMaxPerMinute: 10,
+  sendMaxPerHour: 60,
   sendSameTextWindowMs: 60_000,
   maxSendsPerTurn: 1,
   maxSendChars: 2000,
   sensitivePatterns: null,
+  // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
+  burstEnabled: true,
+  burstMaxMessages: 8,
+  burstIntervalMinMs: 1000,
+  burstIntervalMaxMs: 3000,
+  longGapProbability: 0.2,
+  longGapMinMs: 5000,
+  longGapMaxMs: 10_000,
+  maxMessageChars: 500,
+  gapMode: 'auto',
+  markdownToPlain: true,
+  // 测试注入（生产不填）：sleep / random
+  sleepImpl: null,
+  randomImpl: null,
   // 测试/lab 注入点：默认用 globalThis.WebSocket
   webSocketImpl: null,
 })
@@ -91,11 +106,16 @@ export function normalizeQqConfig(input = {}) {
   cfg.deliverBackfill = cfg.deliverBackfill === true
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
+  cfg.burstEnabled = cfg.burstEnabled !== false
+  cfg.markdownToPlain = cfg.markdownToPlain !== false
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
+  cfg.gapMode = ['auto', 'fixed', 'typing', 'byLength'].includes(String(cfg.gapMode)) ? String(cfg.gapMode) : 'auto'
+  cfg.sleepImpl = typeof input.sleepImpl === 'function' ? input.sleepImpl : null
+  cfg.randomImpl = typeof input.randomImpl === 'function' ? input.randomImpl : null
   cfg.url = String(cfg.url ?? '')
   cfg.token = String(cfg.token ?? '')
   cfg.snowlumaHomeDir = String(cfg.snowlumaHomeDir ?? '')
@@ -447,7 +467,7 @@ export async function apply(ctx) {
     const send = s.send ?? {}
     if (send.registered) {
       const recent = send.recent
-      const outcomeText = recent ? `最近一次发送：${stamp(recent.at)} → ${recent.peerId}，结果=${recent.outcome}${recent.messageId ? `，messageId=${recent.messageId}` : ''}${recent.error ? `（${recent.error}）` : ''}` : '最近一次发送：还没有'
+      const outcomeText = recent ? `最近一次发送：${stamp(recent.at)} → ${recent.peerId}，结果=${recent.outcome}${Number.isFinite(Number(recent.total)) ? `（${recent.sent ?? 0}/${recent.total} 条）` : ''}${recent.messageId ? `，messageId=${recent.messageId}` : ''}${recent.error ? `（${recent.error}）` : ''}` : '最近一次发送：还没有'
       const counts = send.counts ?? {}
       lines.push(`出站：已启用（phase 1 只回 owner/白名单私聊；本轮已发 ${send.perTurn?.sent ?? 0}/${send.perTurn?.limit ?? '?'} 条；累计 ok ${counts.ok ?? 0} / rejected ${counts.rejected ?? 0} / unknown ${counts.unknown ?? 0} / 拒绝 ${counts.refused ?? 0}）`)
       lines.push(`${outcomeText}${send.auditFile ? `；审计：${send.auditFile}` : ''}`)

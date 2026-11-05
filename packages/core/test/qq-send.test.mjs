@@ -39,9 +39,16 @@ function baseConfig(fake, dir, overrides = {}) {
     sendTimeoutMs: 500,
     sendMinIntervalMs: 0,
     sendMaxPerMinute: 10,
+    sendMaxPerHour: 60,
     sendSameTextWindowMs: 0,
     maxSendsPerTurn: 10,
     maxSendChars: 2000,
+    burstEnabled: true,
+    burstMaxMessages: 8,
+    burstIntervalMinMs: 10,
+    burstIntervalMaxMs: 20,
+    longGapProbability: 0,
+    maxMessageChars: 500,
     auditFile: path.join(dir, 'audit.jsonl'),
     retryTickMs: 20,
     ...overrides,
@@ -233,5 +240,110 @@ test('审计：每次结果（ok/rejected/unknown/refused）都有一条，且�
       assert.ok(Number.isFinite(row.chars))
       assert.equal(String(row.text ?? ''), '')
     }
+  } finally { await env.cleanup() }
+})
+
+/* ── P0-3 人类化：markdown / 多气泡 / 长文切分 / 部分成功 ── */
+
+test('markdown→纯文本：发出的是清理后的文本，审计仍只有 hash', async () => {
+  const env = await setup()
+  try {
+    const result = await env.tool().execute({ text: '**你好**，`世界`~' })
+    assert.equal(result.outcome, 'ok')
+    const actions = env.fake.sendActions()
+    assert.equal(actions.length, 1)
+    assert.equal(actions[0].params.message, '你好，世界~')
+    assert.equal(JSON.stringify(env.audit()).includes('你好，世界~'), false)
+  } finally { await env.cleanup() }
+})
+
+test('多气泡：messages[] 按顺序发成 N 帧，结果/审计如实记录', async () => {
+  const env = await setup()
+  try {
+    const result = await env.tool().execute({ messages: ['第一句', '第二句'] })
+    assert.match(result.text, /已发出去 2 条/)
+    const actions = env.fake.sendActions()
+    assert.deepEqual(actions.map((a) => a.params.message), ['第一句', '第二句'])
+    const status = env.qq.status()
+    assert.equal(status.send.recent.sent, 2)
+    assert.equal(status.send.recent.total, 2)
+    assert.equal(status.send.recent.outcome, 'ok')
+    assert.equal(env.audit().length, 2)
+    assert.deepEqual(env.audit().map((row) => row.batch.index), [1, 2])
+  } finally { await env.cleanup() }
+})
+
+test('长文切分：单条超 maxMessageChars 被拆成多条气泡，内容不丢', async () => {
+  const env = await setup({ maxMessageChars: 5 })
+  try {
+    const text = '一'.repeat(12)
+    const result = await env.tool().execute({ text })
+    assert.match(result.text, /已发出去 3 条/)
+    const messages = env.fake.sendActions().map((a) => a.params.message)
+    assert.equal(messages.length, 3)
+    assert.equal(messages.join(''), text)
+    for (const message of messages) assert.ok(message.length <= 5)
+  } finally { await env.cleanup() }
+})
+
+test('气泡数超过单次上限：拒绝且零帧', async () => {
+  const env = await setup({ maxMessageChars: 2, burstMaxMessages: 2 })
+  try {
+    const result = await env.tool().execute({ text: 'abcde' })
+    assert.match(result.text, /没发出去：.*超过单次上限/)
+    assert.equal(result.refused, true)
+    assert.equal(env.fake.sendActions().length, 0)
+  } finally { await env.cleanup() }
+})
+
+test('部分成功：第 2 条失败即停，如实报已发 1/2，不重试', async () => {
+  const env = await setup({}, { actionMode: 'ok' })
+  try {
+    const tool = env.tool()
+    const first = await tool.execute({ text: '第一条' })
+    assert.equal(first.outcome, 'ok')
+    env.fake.setActionMode('reject')
+    const second = await tool.execute({ text: '第二条' })
+    assert.match(second.text, /没发出去：后端拒绝/)
+    assert.equal(second.outcome, 'rejected')
+    assert.equal(env.fake.sendActions().length, 2)
+    assert.equal(env.audit().at(-1).outcome, 'rejected')
+  } finally { await env.cleanup() }
+})
+
+test('kill switch 在多气泡中途生效：剩余气泡不发，报 k/N', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-send-'))
+  const fake = await createFakeOneBot({ port: 0, token: TOKEN })
+  let config = null
+  config = baseConfig(fake, dir, {
+    sleepImpl: async () => { config.allowSend = false },
+    maxSendsPerTurn: 10,
+  })
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config })
+  await host.enable('qq')
+  const qq = host.shared.get('qq')
+  await waitFor(() => qq.status().send?.transport?.connected === true)
+  try {
+    const tool = host.services.tools.list().find((t) => t.name === 'qq_send')
+    const result = await tool.execute({ messages: ['第一句', '第二句'] })
+    assert.match(result.text, /没发出去：出站已关闭/)
+    assert.match(result.text, /已发 1\/2/)
+    assert.equal(fake.sendActions().length, 1)
+    assert.equal(qq.status().send.recent.sent, 1)
+    assert.equal(qq.status().send.recent.total, 2)
+  } finally {
+    host.disable('qq')
+    await fake.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('每分钟上限按气泡数预留：计划超过上限时拒绝且零帧', async () => {
+  const env = await setup({ sendMaxPerMinute: 2 })
+  try {
+    const result = await env.tool().execute({ messages: ['a', 'b', 'c'] })
+    assert.match(result.text, /限流：每分钟最多 2 条/)
+    assert.equal(env.fake.sendActions().length, 0)
   } finally { await env.cleanup() }
 })
