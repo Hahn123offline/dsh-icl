@@ -22,13 +22,19 @@ function readProviders(file) {
 
 export function normalizeConfig(input = {}) {
   const stateDir = resolvePath(input.stateDir, defaultStateDir())
-  const personaFile = resolvePath(input.personaFile, path.join(REPO_ROOT, 'prompts', 'live.md'))
+  // 提示词分三层（用户 2026-11-05 批准的契约，见 docs/PROMPT-CONTRACT.md）：
+  //   人格 prompts/persona.md —— 她是谁、怎么说话（全局常量，不出现工具名）
+  //   仿真 prompts/sim.md     —— 她在这个环境里怎么生活、这些工具如何配合（全局，几乎不变）
+  //   工具教学                —— 每个工具自己的 description + 按需 skills（不进全局提示词）
+  const personaFile = resolvePath(input.personaFile, path.join(REPO_ROOT, 'prompts', 'persona.md'))
+  const simulationFile = resolvePath(input.simulationFile, path.join(REPO_ROOT, 'prompts', 'sim.md'))
   const dreamPersonaFile = resolvePath(input.dreamPersonaFile, path.join(REPO_ROOT, 'prompts', 'dream.md'))
   const providersFile = resolvePath(input.providersFile, path.join(REPO_ROOT, 'config', 'icl.local.json'))
   const providers = Array.isArray(input.providers) ? input.providers : readProviders(providersFile)
   return {
     stateDir,
     personaFile,
+    simulationFile,
     dreamPersonaFile,
     providersFile,
     providers,
@@ -43,6 +49,7 @@ export function normalizeConfig(input = {}) {
     dreamAt: String(input.dreamAt ?? '23:00'),
     compactionTriggerChars: Math.max(1000, Number(input.compactionTriggerChars ?? 12_000)),
     persona: readText(personaFile, ''),
+    simulation: readText(simulationFile, ''),
     dreamPersona: readText(dreamPersonaFile, ''),
     rawFile: resolvePath(input.rawFile, path.join(stateDir, 'session-events.jsonl')),
     focusFile: resolvePath(input.focusFile, path.join(stateDir, 'focus.json')),

@@ -35,7 +35,8 @@
             config:
               presetId: icl-loop
               stateDir: C:/DSH/icl/.state/loop-state
-              personaFile: C:/DSH/icl/prompts/live.md
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
               tickMs: 200
               timeTickMs: 1000
               plugins:
@@ -72,7 +73,8 @@
             config:
               presetId: icl-mc
               stateDir: C:/DSH/icl/.state/mc-state
-              personaFile: C:/DSH/icl/prompts/live.md
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
               tickMs: 500
               timeTickMs: 1000
               mcBaseUrl: http://127.0.0.1:54836
