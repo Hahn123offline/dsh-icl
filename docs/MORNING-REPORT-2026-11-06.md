@@ -1,6 +1,6 @@
 # 晨间报告：E1 夜间长测 + 夜间交付（2026-11-06）
 
-> 读者：用户。长测 `night-1` 00:24–08:24（8h，本地 coder390，54838 survival，bot ICL-night-1），本报告由 lead 汇总；细节证据在 `.state/lab/night-1/`（morning-report.md / metrics.jsonl / anomalies.jsonl / checkpoint/ / strategy.jsonl）。
+> 读者：用户。长测 `night-1` 00:24–06:51（预算 8h，**因 supervisor 测试脚手架 TDZ bug 在 06:51 提前退出**；核心睡眠/醒来/dream/dawn 全链路已覆盖；本地 coder390，54838 survival，bot ICL-night-1），本报告由 lead 汇总；细节证据在 `.state/lab/night-1/`（morning-report.md / metrics.jsonl / anomalies.jsonl / checkpoint/ / strategy.jsonl）。
 
 ## 1. 一句话
 
@@ -23,7 +23,7 @@
 | **06:39:07** | **醒来**：一条合并消息"整理完了…"+"（你睡觉时）积压了 17 条消息…"；`spans=[]`、`queue=0` |
 | **06:49:06** | **dawn 只响一次**（"天亮了，该起了。"），`fired` 增 dawn 键 |
 | 06:39+ | body 重连（17,65,-59 hp19/food17）、mode 回 task；本地模型仍会在 craft/path 上触发 breaker（supervisor 管） |
-| 08:24 | 8h 预算到，supervisor 写 morning-report（含三问原文） |
+| 06:51 | supervisor 崩溃（`Cannot access 'nowMs' before initialization`，测试脚手架 TDZ bug），自动写 morning-report 后退出；8h 预算未跑满（剩余 ~1.5h），但睡眠/醒来/dream/dawn 已全部覆盖 |
 
 ## 3. 关键数字
 
@@ -68,7 +68,7 @@
 3. cache：night-1 8h cache 数字（清醒/睡眠分窗，双口径 hit）+ 第一屏净化后三场景回归。
 4. 需要你拍板：B 站 C 路线、沙箱试点、红队 P0（第一屏净化/暂停语义/QQ 私聊穿 focus）、E2 24h 长测。
 
-## 7. 遗留（不阻塞）
+## 7. 长测提前退出说明（06:51）`n`n- 原因：supervisor `tools/mc-night.mjs` 在 06:51 触发 TDZ（`nowMs` 未初始化），已通知 owner 修复；属**测试脚手架 bug，非产品代码**（产品 body/mc-link/time/bridge 未崩溃）。`n- 影响：原 8h 预算只跑了 **6.5h**；但目标验证段（02:09 入睡 → 06:39 醒 → 06:49 dawn → dream）全部在退出前完成并有独立证据；错过的只是"醒来后继续玩"的 1.5h 观察窗。`n- 决定：不再补跑（等用户决定是否另开一次"清醒宏/装备验收"短跑）。`n`n## 8. 遗留（不阻塞）
 
 - 本地模型在 MC 长任务上的退化重复：宏已能兜住重复劳动，但"何时用宏/何时自己动手"的提示词教学还需用真服 A/B 调；`autoTool` 默认 true 可改。
 - 睡前收兵策略：提前 20–30 分钟、`hp≤8` 不再 resume、MC 侧 leave（supervisor 明早改）。
@@ -76,3 +76,4 @@
 - `time-events.jsonl` 在旧构建缺失（预期），新构建部署后验证。
 - dream consume/index 0 需一次"有内容可消费"的梦境验证（下次长测）。
 - 第一屏净化（红队 P0-1）尚未实施；等待你拍板。
+
