@@ -73,6 +73,8 @@ export function createMineflayerAdapter({
   let lastPacketAt = 0
   let safePoint = null
   let spawnSafety = null
+  let movements = null
+  let environment = null
   const pathStats = { resets: 0, recoveries: 0, stuck: 0, carves: 0 }
 
   function emit(type, data = {}) { try { onEvent(type, data) } catch { /* 事件坏不能拖垮身体 */ } }
@@ -121,6 +123,31 @@ export function createMineflayerAdapter({
       .sort((a, b) => a.distance - b.distance)
   }
 
+  // 环境预检：进服/出生后告诉上层“这张图现在能干什么”（寻路可用性 + 附近资源分布）。
+  function probeEnvironment(radius = 16) {
+    const countBlocks = (name, max = 8) => {
+      const def = bot?.registry?.blocksByName?.[name]
+      if (!def) return 0
+      try { return (bot.findBlocks({ matching: def.id, maxDistance: radius, count: max }) ?? []).length } catch { return 0 }
+    }
+    const resources = {}
+    for (const name of ['oak_log', 'spruce_log', 'birch_log', 'stone', 'dirt', 'grass_block', 'iron_ore', 'coal_ore', 'water']) {
+      resources[name] = countBlocks(name)
+    }
+    const logs = (resources.oak_log ?? 0) + (resources.spruce_log ?? 0) + (resources.birch_log ?? 0)
+    const ores = (resources.iron_ore ?? 0) + (resources.coal_ore ?? 0)
+    return {
+      pathfinder: Boolean(bot?.pathfinder && movements),
+      radius,
+      resources,
+      surface: blockNameAt(0, -1, 0),
+      summary: bot?.pathfinder
+        ? `寻路可用；附近原木 ${logs} / 矿石 ${ores} / 石 ${resources.stone ?? 0} / 土 ${resources.dirt ?? 0}`
+        : '寻路不可用（只能原地挖/放）',
+      at: Date.now(),
+    }
+  }
+
   function reconnectSummary() {
     if (!autoReconnect) return null
     return {
@@ -160,6 +187,8 @@ export function createMineflayerAdapter({
       reconnect: reconnectSummary(),
       lastError,
       danger: inspectDanger(),
+      pathfinder: Boolean(bot?.pathfinder),
+      environment,
       packetSilentMs: lastPacketAt ? Math.max(0, Date.now() - lastPacketAt) : null,
       safePoint,
       spawnSafety,
@@ -211,7 +240,8 @@ export function createMineflayerAdapter({
     await sleep(200)
     if (bot !== b || !spawned) return
     const safety = evaluateSpawnSafety()
-    spawnSafety = { ...safety, at: Date.now() }
+    environment = probeEnvironment()
+    spawnSafety = { ...safety, environment, at: Date.now() }
     if (safety.unsafe) {
       safePoint = null
       emit('spawn_unsafe', safety)
@@ -274,7 +304,10 @@ export function createMineflayerAdapter({
         fn(value)
       }
       b.once('spawn', () => {
-        try { b.pathfinder?.setMovements(new Movements(b)) } catch (error) { log(`movements unavailable: ${error?.message ?? error}`) }
+        try {
+          movements = new Movements(b)
+          b.pathfinder?.setMovements(movements)
+        } catch (error) { log(`movements unavailable: ${error?.message ?? error}`) }
         spawned = true
         lastPacketAt = Date.now()
         reconnectAttempts = 0
@@ -352,10 +385,12 @@ export function createMineflayerAdapter({
   }
 
   // 单次尝试：盯“是否更靠近目标”，只有不再刷新最好距离超过 stallMs 才判卡（不是“有没有动”）。
-  function walkOnce(goal, target, { signal, progress, stallMs, timeoutMs }) {
+  // arriveRange 显式传入（GoalNear 只有 rangeSq，没有 range，不能从 goal 上读）。
+  function walkOnce(goal, target, { signal, progress, stallMs, timeoutMs, arriveRange = 1.5 }) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(abortReason(signal))
       if (!bot?.pathfinder) return reject(new Error('pathfinder-unavailable'))
+      const arrivedWithin = Math.max(1.2, Number(arriveRange) || 1.5)
       const tracker = createProgressTracker({ stallMs: Math.max(500, Number(stallMs) || pathStallMs) })
       let settled = false
       let ticker = null
@@ -382,7 +417,7 @@ export function createMineflayerAdapter({
         if (!pos) return finish(reject, new Error('no-position'))
         const distance = distanceTo(pos, target)
         progress?.({ distance: round1(distance), target })
-        if (distance <= Math.max(1.2, Number(goal.range) || 1.5)) return finish(resolve, { arrived: true, distance })
+        if (distance <= arrivedWithin) return finish(resolve, { arrived: true, distance })
         const result = tracker.update(distance)
         if (result.stalled) return finish(resolve, { arrived: false, stalled: true, distance, best: result.best, sinceBestMs: result.sinceBestMs })
       }, tickMs)
@@ -409,7 +444,7 @@ export function createMineflayerAdapter({
     const away = { x: pos.x - (target.x - pos.x), y: pos.y, z: pos.z - (target.z - pos.z) }
     try {
       const outcome = await walkOnce(makeGoal({ x: away.x, y: away.y, z: away.z }, 2), away, {
-        signal, progress: null, stallMs: Math.max(1200, pathStallMs), timeoutMs: 4000,
+        signal, progress: null, stallMs: Math.max(1200, pathStallMs), timeoutMs: 4000, arriveRange: 2,
       })
       return Boolean(outcome.arrived)
     } catch (error) {
@@ -445,11 +480,28 @@ export function createMineflayerAdapter({
     return cleared
   }
 
+  // 可达性预检（不动身体、只算路）：任务开始前就能给上级 "no-path"，而不是跑一半才失败。
+  function canReach(target, range = 1.5, timeoutMs = 2500) {
+    if (!bot?.pathfinder || !movements) return false
+    try {
+      const result = bot.pathfinder.getPathTo(movements, makeGoal(target, range), Math.max(500, Number(timeoutMs) || 2500))
+      return Boolean(result && Array.isArray(result.path) && result.path.length > 0)
+    } catch { return false }
+  }
+
   async function gotoWithRecovery(params = {}, signal, progress) {
     const { x, y, z, range = 1.5 } = params
     if (![x, y, z].every((n) => Number.isFinite(Number(n)))) throw new Error('goto 需要 x/y/z')
     if (!bot?.pathfinder) throw new Error('pathfinder-unavailable')
     const target = { x: Number(x), y: Number(y), z: Number(z) }
+    // 预检：A* 直接说没路，就别跑脱困阶梯（那只会让任务看起来“还在动”）。
+    if (params.precheck !== false && !canReach(target, range, params.precheckTimeoutMs ?? 2500)) {
+      emit('path_precheck', { target, reachable: false, kind: params.__kind ?? 'goto' })
+      const error = new Error('no-path（起点到目标没有可达路径；换目标或调 range/radius）')
+      error.name = 'NoPathError'
+      error.result = { arrived: false, reason: 'no-path', precheck: true, target }
+      throw error
+    }
     const timeoutMs = Math.max(2000, Number(params.timeoutMs) || pathTimeoutMs)
     const stallMs = Math.max(1000, Number(params.stallMs) || pathStallMs)
     const startedAt = Date.now()
@@ -478,10 +530,19 @@ export function createMineflayerAdapter({
       }
       checkAbort(signal)
       attempts += 1
-      const outcome = await walkOnce(makeGoal(target, range), target, {
-        signal, progress, stallMs,
-        timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
-      })
+      let outcome
+      try {
+        outcome = await walkOnce(makeGoal(target, range), target, {
+          signal, progress, stallMs,
+          timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
+          arriveRange: range,
+        })
+      } catch (error) {
+        // 单次 walk 超时/异常不是任务失败：继续阶梯（repath→jump→backoff→carve），最后统一判 stuck。
+        if (signal?.aborted) throw abortReason(signal)
+        lastDistance = round1(distanceTo(currentPosition(), target)) ?? lastDistance
+        continue
+      }
       if (outcome.arrived) {
         if (index > 0) {
           pathStats.recoveries += 1
@@ -682,31 +743,43 @@ export function createMineflayerAdapter({
     const defs = blockNames.map((name) => bot.registry.blocksByName[name]).filter(Boolean)
     let collected = 0
     let trips = 0
+    let moveFailures = 0
     let missed = 0
     let eaten = 0
     let lastTripAt = 0
     let reason = 'duration'
     const skipped = new Set()
+
+    // 换点/找资源：目标高度优先用出生时的地表高度，避免在坑里朝坑壁要路。
+    async function wander(spread, label) {
+      const base = currentPosition()
+      if (!base) return false
+      const y = Number.isFinite(safePoint?.y) ? safePoint.y : base.y
+      const tx = base.x + (Math.random() * 2 - 1) * spread
+      const tz = base.z + (Math.random() * 2 - 1) * spread
+      trips += 1
+      try {
+        await gotoWithRecovery({ x: tx, y, z: tz, range: 2, timeoutMs: 10_000, stallMs: 2000, precheckTimeoutMs: 1500 }, signal, (p) => progress?.({ collected, targetCount, trips, eaten, label, move: p }))
+        moveFailures = 0
+        return true
+      } catch (error) {
+        if (signal?.aborted) throw error
+        moveFailures += 1
+        progress?.({ collected, targetCount, trips, eaten, label, moveError: String(error?.message ?? error) })
+        return false
+      }
+    }
+
     while (Date.now() < deadline && collected < targetCount) {
       checkAbort(signal)
       if (await eatIfNeeded(signal, progress)) eaten += 1
       if (collected > 0 && collected % tripEvery === 0 && collected !== lastTripAt) {
         lastTripAt = collected
-        const base = currentPosition()
-        if (base) {
-          const tx = base.x + (Math.random() * 2 - 1) * radius * 1.5
-          const tz = base.z + (Math.random() * 2 - 1) * radius * 1.5
-          trips += 1
-          try {
-            await gotoWithRecovery({ x: tx, y: base.y, z: tz, range: 2, timeoutMs: 12_000, stallMs: 2500 }, signal, (p) => progress?.({ collected, targetCount, trips, eaten, move: p }))
-          } catch (error) {
-            if (signal?.aborted) throw error
-            progress?.({ collected, targetCount, trips, eaten, moveError: String(error?.message ?? error) })
-            if (trips >= 12) { reason = 'stuck'; break }
-          }
-          await sleep(180)
-          continue
-        }
+        await wander(radius * 1.5, 'trip')
+        // 只有“连续多次走不过去”才算卡住；单纯换点次数多不是失败。
+        if (moveFailures >= 5) { reason = 'stuck'; break }
+        await sleep(180)
+        continue
       }
       const block = defs.length ? findMineable(defs, radius, skipped) : null
       if (block) {
@@ -721,33 +794,29 @@ export function createMineflayerAdapter({
             skipped.add(blockKey(block.position))
             missed += 1
             progress?.({ collected, targetCount, trips, eaten, noEffect: block.name })
-            if (missed >= 6) { reason = 'no-effect'; break }
+            if (missed >= 8) { reason = 'no-effect'; break }
             continue
           }
           await pickupNearby(signal, progress)
           collected += 1
           missed = 0
+          moveFailures = 0
           progress?.({ collected, targetCount, trips, eaten, block: block.name })
         } catch (error) {
           if (signal?.aborted) throw error
           skipped.add(blockKey(block.position))
           missed += 1
           progress?.({ collected, targetCount, trips, eaten, mineError: String(error?.message ?? error) })
-          if (missed >= 4) { reason = 'no-target'; break }
+          if (missed >= 6) {
+            // 目标都够不着/挖不动：换点再试，而不是立刻判死。
+            missed = 0
+            await wander(radius, 'no-target')
+            if (moveFailures >= 5) { reason = 'no-target'; break }
+          }
         }
       } else {
-        const base = currentPosition()
-        if (!base) { reason = 'no-position'; break }
-        const tx = base.x + (Math.random() * 2 - 1) * radius
-        const tz = base.z + (Math.random() * 2 - 1) * radius
-        trips += 1
-        try {
-          await gotoWithRecovery({ x: tx, y: base.y, z: tz, range: 2, timeoutMs: 12_000, stallMs: 2500 }, signal, (p) => progress?.({ collected, targetCount, trips, eaten, move: p }))
-        } catch (error) {
-          if (signal?.aborted) throw error
-          progress?.({ collected, targetCount, trips, eaten, moveError: String(error?.message ?? error) })
-          if (trips >= 12) { reason = 'stuck'; break }
-        }
+        await wander(radius, 'no-target')
+        if (moveFailures >= 5) { reason = 'stuck'; break }
       }
       await sleep(180)
     }
@@ -846,20 +915,46 @@ export function createMineflayerAdapter({
       if (!def) throw new Error(`未知方块：${blockName}`)
       const count = Math.max(1, Math.min(128, Number(params.count) || 1))
       const radius = Math.max(2, Math.min(48, Number(params.radius) || 8))
+      const reach = Math.max(1.5, Math.min(4, Number(params.reach) || 3))
+      const maxPathMs = Math.max(10_000, Math.min(90_000, Number(params.maxPathMs) || 30_000))
+      const startedAt = Date.now()
       let mined = 0
       let missed = 0
       const skipped = new Set()
+
+      // 任务开始的可达性预检：找不到目标 → no-target；找得到但走不过去 → 立刻 no-path。
+      const candidates = []
+      for (const candidate of bot.findBlocks({ matching: def.id, maxDistance: radius, count: 24 }) ?? []) {
+        const block = bot.blockAt(candidate)
+        if (!block || digSafetyError(block)) continue
+        candidates.push(block)
+      }
+      if (!candidates.length) throw taskFailure('mine: no-target', { mined, radius, block: blockName })
+      const reachable = candidates.find((block) => canReach(block.position, reach, 2000))
+      if (!reachable) {
+        emit('path_precheck', { target: null, block: blockName, candidates: candidates.length, reachable: false, kind: 'mine' })
+        throw taskFailure('mine: no-path', {
+          mined,
+          candidates: candidates.length,
+          detail: '在 radius 内找到方块但都不可达；换目标/调 radius，或先走到开阔处',
+        })
+      }
+
       while (mined < count) {
         checkAbort(signal)
+        if (mined === 0 && Date.now() - startedAt > maxPathMs) {
+          throw taskFailure('mine: no-path', { mined, detail: `首个目标 ${Math.round(maxPathMs / 1000)}s 内没走到` })
+        }
         const block = findMineable([def], radius, skipped)
         if (!block) throw taskFailure('mine: no-target', { mined })
         try {
-          await gotoWithRecovery({ x: block.position.x, y: block.position.y, z: block.position.z, range: Math.max(1, Math.min(4, Number(params.reach) || 2)), timeoutMs: 12_000, stallMs: 2500 }, signal, progress)
+          // 任务开头已预检过；循环内不再重复 A* 预检，避免每个方块都算两次路。
+          await gotoWithRecovery({ x: block.position.x, y: block.position.y, z: block.position.z, range: reach, timeoutMs: 8000, stallMs: 2000, precheck: false }, signal, progress)
         } catch (error) {
           if (signal?.aborted) throw error
           skipped.add(blockKey(block.position))
           missed += 1
-          if (missed >= 3) throw taskFailure('mine: no-path', { mined, detail: String(error?.message ?? error) })
+          if (missed >= 2) throw taskFailure('mine: no-path', { mined, detail: String(error?.message ?? error) })
           await sleep(300)
           continue
         }
@@ -955,6 +1050,60 @@ export function createMineflayerAdapter({
     return true
   }
 
+  const SOLID_FILLER = /^(dirt|grass_block|cobblestone|stone|sand|gravel|oak_planks|spruce_planks|birch_planks|cobbled_deepslate|netherrack|andesite|diorite|granite)$/
+
+  // 放单块：给可操作原因（太远/被占/没支撑/悬空/没落下去），必要时先补一层支撑。
+  async function placeOne(at, { wanted = '', autoSupport = false, findItem = () => null } = {}) {
+    const playerPos = currentPosition()
+    if (!playerPos) return { ok: false, reason: '身体没有位置信息' }
+    const distance = distanceTo(playerPos, { x: at.x + 0.5, y: at.y + 0.5, z: at.z + 0.5 })
+    if (Number.isFinite(distance) && distance > 4.5) return { ok: false, reason: `太远（${round1(distance)} 格 > 4.5）` }
+    const current = bot.blockAt(new Vec3(at.x, at.y, at.z))
+    if (current && !/air/.test(current.name)) return { ok: false, reason: `目标位置被 ${current.name} 占用` }
+    const refPos = new Vec3(at.x, at.y - 1, at.z)
+    let ref = bot.blockAt(refPos)
+    let support = null
+    if (!ref || /(air|water|lava)/.test(ref.name)) {
+      const filler = (bot.inventory?.items?.() ?? []).find((item) => SOLID_FILLER.test(item.name))
+      const belowRef = bot.blockAt(refPos.offset(0, -1, 0))
+      if (autoSupport && filler && belowRef && !/(air|water|lava)/.test(belowRef.name)) {
+        try {
+          await bot.equip(filler, 'hand')
+          await bot.placeBlock(belowRef, new Vec3(0, 1, 0))
+          await sleep(150)
+          ref = bot.blockAt(refPos)
+          support = filler.name
+        } catch { /* 补支撑失败就按没支撑报错 */ }
+      }
+      if (!ref || /(air|water|lava)/.test(ref.name)) {
+        const refName = ref?.name ?? '未加载'
+        return { ok: false, reason: `目标下方没有支撑（下方是 ${refName}）；先放一块垫底、传 autoSupport:true，或换位置` }
+      }
+    }
+    let item = null
+    if (wanted) {
+      const found = findItem(wanted)
+      if (!found) return { ok: false, reason: `背包没有 ${wanted}` }
+      await bot.equip(found, 'hand')
+      item = found.name
+    } else {
+      item = bot.heldItem?.name ?? null
+    }
+    await faceBlock(ref)
+    try {
+      await bot.placeBlock(ref, new Vec3(0, 1, 0))
+    } catch (error) {
+      const message = String(error?.message ?? error)
+      if (/still air/i.test(message)) return { ok: false, reason: '放不上去：没有可附着的面（悬空/目标格被自己挡住）；先垫底或换位置' }
+      if (/(not in reach|too far|out of range)/i.test(message)) return { ok: false, reason: '距离太远（需要站到 4.5 格内）' }
+      return { ok: false, reason: `放置失败：${message.slice(0, 120)}` }
+    }
+    await sleep(150)
+    const after = bot.blockAt(new Vec3(at.x, at.y, at.z))
+    if (after && /air/.test(after.name)) return { ok: false, reason: '方块没落下去（可能被服务端拒绝/目标被占）' }
+    return { ok: true, item, support }
+  }
+
   async function runOp(op, params = {}) {
     if (!bot?.player) throw new Error('not connected')
     if (['move', 'goto', 'patrol', 'explore', 'follow', 'mine'].includes(op)) {
@@ -1014,22 +1163,30 @@ export function createMineflayerAdapter({
       return { dug: block.name, position: block.position, tool }
     }
     if (op === 'place') {
-      const pos = params.pos ?? params
-      if (pos?.x == null) throw new Error('place 需要 pos')
-      const item = String(params.item ?? params.name ?? '')
-      if (item) {
-        const found = (bot.inventory?.items?.() ?? []).find((i) => i.name === item || i.name.includes(item))
-        if (!found) throw new Error(`背包没有 ${item}`)
-        await bot.equip(found, 'hand')
+      const raw = params.positions ?? params.pos ?? params
+      const list = Array.isArray(raw) ? raw : [raw]
+      const coords = list
+        .map((entry) => (entry?.x != null
+          ? { x: Math.floor(Number(entry.x)), y: Math.floor(Number(entry.y)), z: Math.floor(Number(entry.z)) }
+          : null))
+        .filter(Boolean)
+      if (!coords.length) throw new Error('place 需要 pos 或 positions[]（x/y/z）；可传多坐标，会从下往上排')
+      coords.sort((a, b) => a.y - b.y) // 从下往上：先垫底，再往上放
+      const wanted = String(params.item ?? params.name ?? '')
+      const findItem = (name) => (bot.inventory?.items?.() ?? []).find((i) => i.name === name || i.name.includes(name)) ?? null
+      if (wanted && !findItem(wanted)) throw new Error(`背包没有 ${wanted}`)
+      const placed = []
+      const skipped = []
+      for (const at of coords) {
+        const outcome = await placeOne(at, { wanted, autoSupport: params.autoSupport === true, findItem })
+        if (outcome.ok) placed.push({ ...at, item: outcome.item, support: outcome.support ?? null })
+        else skipped.push({ ...at, reason: outcome.reason })
       }
-      const targetPos = new Vec3(Number(pos.x), Number(pos.y), Number(pos.z))
-      const current = bot.blockAt(targetPos)
-      if (current && !/(air|water)/.test(current.name)) throw new Error(`place: 目标位置不是空气（${current.name}）`)
-      // place 需要支撑：下方参考方块必须实心，否则会放空（踩坑档案 #15）。
-      const ref = bot.blockAt(new Vec3(Number(pos.x), Number(pos.y) - 1, Number(pos.z)))
-      if (!ref || /(air|water|lava)/.test(ref.name)) throw new Error('place: 目标下方没有实心参考方块（需要支撑）')
-      await bot.placeBlock(ref, new Vec3(0, 1, 0))
-      return { placed: item || 'held' }
+      if (!placed.length) {
+        const reasons = [...new Set(skipped.map((row) => row.reason))].join('；')
+        throw new Error(`place: 一个都没放成（${reasons}）`)
+      }
+      return { placed, skipped, placedCount: placed.length, skippedCount: skipped.length }
     }
     if (op === 'equip') {
       const item = String(params.item ?? params.name ?? '')

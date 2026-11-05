@@ -406,6 +406,34 @@ test('body：adapter 结构化失败 → task_failed 且保留 result/reason', a
   await body.stop()
 })
 
+test('body：暂停超时触发 idle_disconnect + 宿主退出钩子（退出归因）', async () => {
+  const idle = []
+  const adapter = fakeAdapter()
+  const body = createBody({
+    adapter, watchdogMs: 500, pausedDisconnectMs: 60,
+    onIdleDisconnect: (info) => idle.push(info),
+  })
+  await body.start()
+  body.ingest('stuck', {})
+  assert.equal(body.status().paused, true)
+  await waitFor(() => idle.length === 1, 2000, 'idle hook')
+  assert.equal(idle[0].reason, 'stuck')
+  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'idle_disconnect'))
+  await body.stop()
+})
+
+test('body：/v1/shutdown 请求交给宿主退出钩子（reason 归因）', async () => {
+  let requested = null
+  const adapter = fakeAdapter()
+  const body = createBody({ adapter, onShutdownRequest: async (reason) => { requested = reason; return { ok: true, willExit: true } } })
+  await body.start()
+  const result = await body.shutdownRequest('lab-done')
+  assert.equal(result.ok, true)
+  assert.equal(requested, 'lab-done')
+  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'shutdown_requested' && e.data.reason === 'lab-done'))
+  await body.stop()
+})
+
 test('body：已暂停后不再刷 health_drop，只计 suppressed', async () => {
   const adapter = fakeAdapter()
   const { body } = await startedBody({ adapter, watchdogMs: 10 })
