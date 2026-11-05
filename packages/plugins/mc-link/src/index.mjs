@@ -309,10 +309,21 @@ export function apply(ctx) {
   async function join({ host = null, port = null, username = null, server = null } = {}) {
     const target = resolveTarget({ host, port, server })
     if (username) target.username = String(username).slice(0, 16)
-    const out = await supervisor.ensure(target)
+    let out = await supervisor.ensure(target)
     joinedServer = { host: target.host, port: target.port }
     sessionTouchedMc = true
     lastStatus = out.status
+    // body 的 environment 摘要由它的看门狗周期算，刚连上时可能还是 null；
+    // 当事人反馈"连上两眼一抹黑，光找一棵树花两次调用"——这里短等它算出来，
+    // 把"出生点 + 附近资源"一起放进 join 的返回（最多 1.2s，拿不到就算了）。
+    if (!lastStatus?.adapter?.environment?.summary) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        const fresh = await refreshStatus()
+        if (fresh) { lastStatus = fresh; out = { ...out, status: fresh } }
+        if (lastStatus?.adapter?.environment?.summary) break
+      }
+    }
     return { ...out, joined: { ...joinedServer } }
   }
 
@@ -874,7 +885,7 @@ export function apply(ctx) {
               properties: {
                 op: { type: 'string', description: '动作名；task=下长任务，events/tasks/cancel/resume/say=查询与控制，其余是单步动作。' },
                 kind: { type: 'string', description: 'task 的任务类型：mine/goto/patrol/explore/follow/routine/chat。' },
-                params: { type: 'object', additionalProperties: true, description: '动作参数：task 的 mine 用 {block,count,radius}；goto 用 {x,y,z,range}；routine 用 {durationMs}；dig/place/use/equip/toss/craft 等用 {item/name/pos/target}。' },
+                params: { type: 'object', additionalProperties: true, description: '动作参数：task 的 mine 用 {block,count,radius}（block 也可以写成 name 或 kind，body 三选一都认）；goto 用 {x,y,z,range}；routine 用 {durationMs}；dig/place/use/equip/toss/craft 等用 {item/name/pos/target}。' },
                 text: { type: 'string', description: 'say 的内容（≤200 字，不能以 / 开头）。' },
                 taskId: { type: 'string', description: 'cancel 的任务 id，如 t-1。' },
                 since: { type: 'number', description: 'events 的起始 seq；不填=上次轮询之后的新事件，填 0=从头（很长）。' },
