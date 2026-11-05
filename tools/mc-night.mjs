@@ -16,7 +16,7 @@ import net from 'node:net'
 import { spawn } from 'node:child_process'
 import {
   DEFAULT_PORT, REPO_ROOT, STATE_ROOT, apiFor, cleanupStrayBodies, countTurnEnds,
-  isPidAlive, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
+  findLabBodyPids, isPidAlive, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, sleep, textOfMessage, tsSlug, writeJson,
 } from './lab-lib.mjs'
 
@@ -124,6 +124,7 @@ const state = {
   lastIdleNudgeAt: null,
   lastAlarmAt: {},
   lastMetricsTickAt: null,
+  lastReapAt: null,
   sleepEnteredAt: null,
   sleepFlushedAt: null,
   sleepDirectSeen: 0,
@@ -543,7 +544,7 @@ async function handleSleepBoundary({ stats, nowMs, sleeping }) {
     state.sleepEnteredAt = nowIso()
     state.sleepDirectSeen = 0
     state.lastStepAt = nowIso()
-    recordStrategy('sleep-boundary', '进入睡眠：停 playbook 定时器；60s grace 后处理在飞 turn/队列')
+    recordStrategy('sleep-boundary', `进入睡眠：停 playbook 定时器；${cfg.sleepGraceSec}s grace 后处理在飞 turn/队列`)
   }
   if (state.sleepFlushedAt) {
     const directs = readEvents().filter((event) => event.type === 'user/message'
@@ -615,8 +616,44 @@ function consumeTimeEvents() {
   return recorded
 }
 
-function plannedSleepAt() {
-  try {
+/**
+ * 睡眠期防复活：进入 sleep 后若 body 进程/54902 仍存活 → 先 sleep-safe `/v1/shutdown`，
+ * 再不行直接 kill 进程树；每 5 分钟最多执行一次，记 `sleep-body-reap`。
+ * 背景：02:11 睡眠边界时，模型在飞 turn 里 `mcb_join` 把身体拉起来（spawn 23980），
+ * 之后整夜无人操作被怪连杀 3 次才 quarantine；不能依赖 body 自己自保。
+ */
+async function reapSleepingBody(sleeping) {
+  if (!sleeping) return 0
+  const nowMs = Date.now()
+  const last = state.lastReapAt ? Date.parse(state.lastReapAt) : 0
+  if (nowMs - last < 5 * 60_000) return 0
+  const pids = await findLabBodyPids(cfg.mcUser)
+  const portAlive = await tcpOk(cfg.mcPort, 700)
+  if (!pids.length && !portAlive) return 0
+  state.lastReapAt = nowIso()
+  recordStrategy('sleep-body-reap', `睡眠期发现 body 存活（pids=${pids.join(',') || '无'}，54902=${portAlive}）：sleep-safe shutdown → kill 兜底`, { pids, portAlive })
+  if (portAlive) {
+    try {
+      await fetch(`http://127.0.0.1:${cfg.mcPort}/v1/shutdown`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'sleep-safe reap (supervisor)' }),
+        signal: AbortSignal.timeout(8000),
+      })
+      await sleep(2000)
+    } catch (error) { log(`sleep reap shutdown 失败：${String(error?.message ?? error)}`) }
+  }
+  let killed = 0
+  for (const pid of await findLabBodyPids(cfg.mcUser)) {
+    await killPidTree(pid)
+    killed += 1
+  }
+  appendAnomaly('sleep-body-reap', 0, { pids, portAlive, killed })
+  recordStrategy('sleep-body-reap', `睡眠期 body 已回收：pid ${pids.join(',') || '无'}，kill ${killed} 个`, { pids, portAlive, killed })
+  return killed
+}
+
+function plannedSleepAt() {  try {
     const data = readJson(path.join(runDir, 'state', cfg.preset, 'time.json'), null)
     const schedule = (data?.schedules ?? []).find((item) => item.id === 'night:main-sleep')
     const at = dateValue(schedule?.at)
@@ -1205,6 +1242,8 @@ async function main() {
     await handleSleepBoundary({ stats, nowMs, sleeping })
     // 消费 time 侧 sleep-boundary 事件文件（只记录；不重复 cancel）
     try { consumeTimeEvents() } catch (error) { log(`time-events 消费失败：${String(error?.message ?? error)}`) }
+    // 睡眠期防复活：body 存活则 sleep-safe shutdown → kill 兜底（每 5 分钟最多一次）
+    try { await reapSleepingBody(sleeping) } catch (error) { log(`sleep-body-reap 失败：${String(error?.message ?? error)}`) }
     const turnAgeSec = stats.inTurn && stats.turnStartAt ? Math.round((nowMs - stats.turnStartAt) / 1000) : 0
     const lastEventAgeSec = stats.lastEventAt ? Math.round((nowMs - stats.lastEventAt) / 1000) : null
     // 活跃的长回合不 cancel（本地模型一个回合可跑 10+ 分钟仍在推进）；只在"停住/无事件"或超绝对上限时打断。
