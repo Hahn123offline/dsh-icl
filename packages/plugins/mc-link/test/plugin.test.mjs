@@ -696,6 +696,33 @@ test('mcb_join：睡眠期（time.phase=sleeping）拒绝重连，force:true 才
   }
 })
 
+test('mcb_do：睡眠期只允许收尾 op（tasks/events/cancel/say），新任务/新动作被拒；醒来恢复', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port, timePhase: 'sleeping' })
+  try {
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'task', kind: 'mine', params: { block: 'dirt', count: 1 } }] }), /在睡觉[\s\S]*只能收尾/)
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: { x: 1, y: 2, z: 3 } } }] }), /在睡觉/)
+    const tasks = await link.tools.mcb_do.execute({ steps: [{ op: 'tasks' }] })
+    assert.match(tasks.text, /\[tasks\]/)
+    const cancel = await link.tools.mcb_do.execute({ steps: [{ op: 'cancel', taskId: 't-1' }] })
+    assert.match(cancel.text, /\[cancel\]/)
+    const say = await link.tools.mcb_do.execute({ steps: [{ op: 'say', text: '我要睡了' }] })
+    assert.match(say.text, /\[say\]/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+  const body2 = await startFakeBody()
+  const awake = await mountLink({ port: body2.port, timePhase: 'awake' })
+  try {
+    const out = await awake.tools.mcb_do.execute({ steps: [{ op: 'task', kind: 'mine', params: { block: 'dirt', count: 1 } }] })
+    assert.match(out.text, /已接受/)
+  } finally {
+    await awake.cleanup()
+    await body2.close()
+  }
+})
+
 test('mcb_join：成功时带 body preflight 环境摘要（新版 body 的"服务器小卡片"）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
