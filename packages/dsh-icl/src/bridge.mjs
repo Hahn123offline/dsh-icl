@@ -442,10 +442,23 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 事件 ─────────────────────────────────────────────── */
 
+  /** 会改 facts 文本的工具名白名单（工具结果出现即标 dirty，下一步刷新快照）。 */
+  function isFactsTool(rawName) {
+    const name = String(rawName ?? '')
+    return name.startsWith('time_') || name.startsWith('memo') || name.startsWith('lexicon_learn')
+  }
+
   function onEvent(session, event) {
     if (!state.session || String(session?.id) !== String(state.session.id)) return
     // 记当前 turn：facts 快照节流按 turn 刷新（turn/start 是 DSH 每轮第一件事）。
+    // 缓存键是 turn 号：会话恢复/重放若复用同一 turn 号，bind/unbind 会清空缓存（够用）；
+    // 若将来支持同一 session 内 rewind，需要额外的 generation 计数，别只靠 turn。
     if (event?.type === 'turn/start') state.turn = Number.isFinite(Number(event.data?.turn)) ? Number(event.data.turn) : state.turn
+    // 模型在 turn 内自己改事实的工具（time_*/memo*/lexicon_learn）——它们出现在 facts 文本里
+    // （下一个安排/静音到/待办计数/词汇），必须标 dirty，否则同一 turn 后面几十步仍是旧值。
+    // 注：silent schedule（如 dream:nightly）走 signals.emit 不走 delivery，不在此列，
+    // 允许陈旧到轮末（它通常不产生模型消息）；MC 环境事实按 §7.7 豁免。
+    if (event?.type === 'tool/result' && isFactsTool(event.data?.name ?? event.data?.tool)) state.factsDirty = true
     appendRaw(session, event)
     if (event?.type !== 'turn/end') return
     const seq = Number(event.seq)

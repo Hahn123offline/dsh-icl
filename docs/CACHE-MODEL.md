@@ -465,14 +465,23 @@ node tools/cache-probe.mjs diff --run cache-bf2
      无快照 **49–50 tok**（净 **+142 tok**）；prompt 增量 +244 vs +51（净 **+190 tok 上下文**）。
      MC 39 步/轮 ⇒ 不节流约 **+7.2K tok 上下文/轮、+5.4K prefill tok/轮**；节流后 ≈ **+190 / +142**。
    - **实现（turn 级缓存 + 事件 dirty）**：同一 turn 内各 step 复用第一份 facts 文本（≤1 条快照/轮）；
-     **事件类事实**标 dirty 并**下一步必刷新（stale ≤ 1 步）**：focus enter/leave/换焦点（`focus.onChange`）、
-     delivery 发出（`time_arrange`/`time_cancel`/sleep/wake 等通知走 `tick`）。
+     dirty → **下一步必刷新（stale ≤ 1 步）** 的来源有：
+     1. focus enter/leave/换焦点（`focus.onChange`）；
+     2. delivery 发出（time 的 sleep/wake 等**通知类**事件走 `tick`）；
+     3. **turn 内模型自己改事实的工具**：`tool/result` 名命中白名单 `time_*` / `memo*` / `lexicon_learn`
+        （`time_arrange/edit/cancel/pause/resume/mute/unmute`、`memo*`、`lexicon_learn`；白名单见 `bridge.isFactsTool`）。
+     **stale 边界**：以上三类 stale ≤ 1 步；**silent schedule（走 `signals.emit` 不走 delivery，如 `dream:nightly`）**
+     与非白名单工具不置 dirty，允许陈旧到轮末；**MC 环境事实**按豁免允许整轮陈旧。
    - **豁免（不是 bug）**：MC 环境事实（位置/血量/背包）允许**整轮陈旧**，以 `mcb_status`/`mcb_inventory` 为准；
      换来 MC 回合不再每步追加一条快照。bridge 代码里已写明。
    - **DSH 侧有没有更干净的方式**：本版本 `RuntimeContextProjection.project()` 只产出 append 消息，没有 replace API
      （只有系统提示词投影有 replace 分支），所以只能在 ICL 侧节流；将来 DSH 支持快照 replace 可以去掉节流。
    - **测量**：bridge 单测（同一 turn 5 次求值 = 1 次刷新；focus enter/leave 各 +1 次刷新且内容含新焦点；
+     `time_arrange` 工具结果 → 下一步快照含新安排；只读工具不重置节流；delivery 通知 → +1 次刷新；
      `factsEveryStep` 关闭节流时每步刷新）；云端 lab 冒烟（`cache-throttle-smoke`：3 轮，1 条快照/轮，system 零 replace）。
+   - **hit% 口径**：节流冒烟两组都是云端 `deepseek-account`（没有引擎 `cache-probe-engine.jsonl`），**云端不可测 hit%**；
+     本地 hit% 由 `cache-bf2`/`cache-af2` 的本地 A/B 证明，节流只减少 append（方向非回归）。严格复核需本地同场景
+     `ICL_FACTS_EVERY_STEP=1` vs 默认的对照（lead 已安排 mc-lab 在本地验收 run 上 `cache-probe rebuild` 补证据）。
    - **开关**：默认节流；`factsEveryStep: true`（config）或 `ICL_FACTS_EVERY_STEP=1`（env，**仅测量**）可退回每步求值。
 
 ---
