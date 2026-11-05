@@ -1401,17 +1401,30 @@ export function createMineflayerAdapter({
     if (op === 'dig') {
       const block = blockAtTarget(params)
       if (!block) throw new Error('dig: 找不到目标方块（给出 pos，或 name/kind + radius）')
+      const pos = block.position
+      const targetText = `${block.name} @ ${pos.x},${pos.y},${pos.z}`
+      // 坐标过期/已被挖掉是最常见的“挖了没反应”：直接说清，别让它以为是工具问题。
+      if (!block.name || /(^air$|cave_air|void_air)/.test(block.name)) {
+        throw new Error(`dig: 目标位置是空气（${targetText}，坐标可能已过期或方块已被挖掉）；改用 {"op":"mine","params":{"block":"oak_log","count":N}}（自动选目标/寻路），或先 mcb_scan 重新取坐标`)
+      }
+      const distance = distanceTo(currentPosition(), pos.offset(0.5, 0.5, 0.5))
+      if (Number.isFinite(distance) && distance > 4.5) {
+        throw new Error(`dig: 目标太远（${round1(distance)} 格 > 4.5，${targetText}）；先 goto 到目标 3 格内再来，或直接用 mine task（自动寻路）`)
+      }
       const unsafe = digSafetyError(block)
       if (unsafe) throw new Error(`dig: ${unsafe}`)
-      const before = bot.blockAt(block.position)
+      const before = bot.blockAt(pos)
       const tool = await equipBestTool(block, new AbortController().signal)
       await faceBlock(block)
       await digBlock(block, new AbortController().signal)
       await sleep(200)
-      const after = bot.blockAt(block.position)
-      if (before && after && after.name === before.name) throw new Error('dig: 方块没有变化（可能太远/工具不对）')
+      const after = bot.blockAt(pos)
+      if (before && after && after.name === before.name) {
+        const held = bot.heldItem?.name ?? '空手'
+        throw new Error(`dig: 方块没有变化（${targetText}，距 ${round1(distance) ?? '?'} 格，手持 ${held}）；可能被挡住/不是可挖方块；改用 {"op":"mine","params":{"block":"${before.name}","count":N}} 或先 face/look 确认视线`)
+      }
       await pickupNearby(new AbortController().signal, null)
-      return { dug: block.name, position: block.position, tool }
+      return { dug: block.name, position: pos, tool, distance: round1(distance) }
     }
     if (op === 'place') {
       const raw = params.positions ?? params.pos ?? params
