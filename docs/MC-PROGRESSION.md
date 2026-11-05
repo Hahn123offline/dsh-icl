@@ -164,3 +164,5 @@
 2. 宏：bridge/build/sort/shelter/farm；`tunnel` stairs/blocked 用例；build 蓝图校验 + 真服。
 3. 技能/文案：mcb_help collect/tunnel（mc-link 已写）→ build/shelter 待实现后补；play.md 已有“重复劳动用宏”。
 4. 复盘：把本 §7 与 mc-lab 数字表合成早报；MC-LEAVE/sleep-safe 作为验收流程一部分。
+
+- `环境卡死/运维` · **睡眠期 body 被意外复活并连死 3 次**（2026-11-06 02:34）：02:11 mc-lab sleep-safe shutdown 后，02:34 body 又被拉起、无人操作被怪连杀（death #11–13：23,67,-44 / 31,74,-36 / 16,64,-40）→ body 触发 **quarantine（3 死/120s）自行断开**（安全逻辑正确）。02:42 复核 54902 已释放、sleep 期无新 death；已请 mc-lab 查"谁重启 body"并在睡眠模式禁止自动复活。教训：sleep-safe 必须校验"body 进程已死 + 睡眠期禁止 auto-restart"，否则睡眠期会丢掉落/被杀。
