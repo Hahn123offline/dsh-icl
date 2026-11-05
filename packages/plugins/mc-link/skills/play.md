@@ -65,6 +65,9 @@
 - 睡醒或没睡成都不用等：`mcb_status` 会显示时间和位置。
 - **睡着时身体会被管理面收起来**（避免夜里被怪反复击杀）：`time` 处于 sleeping 时 `mcb_join` 会被拒绝，
   不要自己重连；醒来后再 `mcb_join`。只有用户明确要求"现在就去玩"时才用 `mcb_join {force:true}`。
+- **睡眠期只能收尾**：`mcb_leave` / `mcb_status` / `mcb_look` / `mcb_inventory` / `{"op":"tasks"}` /
+  `{"op":"events"}` / `{"op":"cancel"}` / `{"op":"say"}`；新的 `task`、`dig`、`goto` 等动作会被拒绝
+  （"醒来再做"）。要睡之前把手里的任务 cancel 掉、说一句晚安、必要时 `mcb_leave`。
 
 ## 收尾（离开）
 

@@ -937,7 +937,20 @@ export function apply(ctx) {
         },
         required: ['steps'],
       },
-      async execute({ steps, safety } = {}) { return runDo(steps, safety) },
+      async execute({ steps, safety } = {}) {
+        // 睡眠期只允许"收尾"：查台账/事件、取消任务、说一句晚安；新任务/新动作醒来再做。
+        // （time 的睡眠语义：收到该睡了 → 收尾 → 停；管理面也可能在睡眠期把身体收起来。）
+        if (timePhase() === 'sleeping') {
+          const list = Array.isArray(steps) ? steps : []
+          const SAFE = new Set(['tasks', 'events', 'cancel', 'say'])
+          const blocked = list.find((step) => !SAFE.has(String(step?.op ?? '').trim()))
+          if (blocked) {
+            record({ kind: 'sleep-guard', at: Date.now(), op: String(blocked?.op ?? '') })
+            throw new Error(`现在在睡觉（time 的睡眠安排生效中）：只能收尾——mcb_leave / mcb_status / {"op":"tasks"} / {"op":"events"} / {"op":"cancel"} / {"op":"say"}；新的任务或动作醒来再做。`)
+          }
+        }
+        return runDo(steps, safety)
+      },
     },
     {
       name: 'mcb_help',
