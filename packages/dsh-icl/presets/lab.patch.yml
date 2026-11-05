@@ -90,6 +90,12 @@
               simulationFile: prompts/sim.md
               tickMs: 200
               timeTickMs: 1000
+              # 第一屏净化（红队 P0-1）：与 icl-lab 同 4 段 shadow；产品 preset 要开需用户批准。
+              purifySections:
+                - 'harness:identity'
+                - 'ui:deliverable-file-references'
+                - 'harness:source'
+                - 'app:web-surface'
               mcBaseUrl: '__LAB_MC_BASE__'
               pluginConfig:
                 mc-link:
