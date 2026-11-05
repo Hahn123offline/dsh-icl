@@ -17,11 +17,16 @@ function statusBody(state) {
   return {
     ok: true,
     version: 'mc-body/v1',
+    connected: state.connected,
+    online: state.connected,
     paused: state.paused,
     pausedReason: state.pausedReason,
+    safety: { paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true },
     task: state.task,
     queue: [],
     eventsSeq: state.seq,
+    reconnect: state.reconnect ?? { attempts: 0, max: 3, exhausted: false, pending: false, lastError: null },
+    watchdog: { ticks: 5, alerts: 1, suppressed: state.suppressed ?? 0, healthDropSuppressed: 0 },
     adapter: {
       connected: state.connected,
       host: '127.0.0.1',
@@ -72,13 +77,22 @@ async function startFakeBody({ connected = true } = {}) {
         state.requests.push(input)
         if (state.doDelay) await sleep(state.doDelay)
         if (state.doError) return send(409, { ok: false, error: state.doError })
-        const step = input.steps?.[0] ?? {}
-        if (step.op === 'task') return send(200, { ok: true, task: { id: 't-1', kind: step.kind, state: 'queued' } })
-        if (step.op === 'events') return send(200, { ok: true, results: [{ index: 0, op: 'events', result: { events: state.events, seq: state.seq } }] })
-        if (step.op === 'tasks') return send(200, { ok: true, results: [{ index: 0, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] }] })
-        if (step.op === 'resume') { state.paused = false; state.pausedReason = null; return send(200, { ok: true, results: [{ index: 0, op: 'resume', result: { paused: false } }] }) }
-        if (step.op === 'say') return send(200, { ok: true, results: [{ index: 0, op: 'say', result: { ok: true } }] })
-        return send(200, { ok: true, results: input.steps.map((row) => ({ op: row.op, result: { text: `did:${row.op}` } })) })
+        const results = []
+        for (const step of input.steps ?? []) {
+          // 模拟真 body：task 之前的 steps 结果一并返回，然后立即返回 taskId。
+          if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
+          if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
+          else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] })
+          else if (step.op === 'resume') {
+            state.paused = false
+            state.pausedReason = null
+            // 真 body：带 taskId 走 resumeTask 返回被恢复的任务；不带则是安全暂停的解除。
+            results.push({ index: results.length, op: 'resume', result: step.taskId ? { id: step.taskId, kind: 'mine', state: 'running' } : { paused: false } })
+          }
+          else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
+          else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
+        }
+        return send(200, { ok: true, results })
       })
     }
     if (url.pathname === '/v1/safety/stop' && req.method === 'POST') {
@@ -339,18 +353,50 @@ test('事件→信号：掉血/死亡刷屏合并限流，一轮不刷屏', asyn
   }
 })
 
-test('事件→信号：task_done 带 reason 的消息说"没达成"而不是"完成"', async () => {
+test('事件→信号：task_failed 带原因码时消息给出失败原因与下一步', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
-    body.push({ type: 'task_done', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 0, reason: 'no-target' } } } })
+    body.push({ type: 'task_failed', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, state: 'failed', error: 'mine: no-target', result: { mined: 0 } } } })
     await link.api.poll()
     await link.adapter.drainOnce()
     const text = link.pushed.join('\n')
-    assert.match(text, /没达成/)
+    assert.match(text, /任务失败/)
     assert.match(text, /no-target/)
     assert.match(text, /radius/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：body 活着但没连上（重连中）时显示离线原因与重连次数，不假在线', async () => {
+  const body = await startFakeBody({ connected: false })
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.reconnect = { attempts: 2, max: 3, exhausted: false, pending: true, lastError: 'socketClosed' }
+    const out = await link.tools.mcb_status.execute({})
+    assert.match(out.text, /未连接/)
+    assert.doesNotMatch(out.text, /MC 身体：已连接/)
+    assert.match(out.text, /离线原因/)
+    assert.match(out.text, /重连：第 2\/3 次/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：resume 带 taskId 时显示被恢复的任务', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.doError = null
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'resume', taskId: 't-7' }] })
+    assert.match(out.text, /\[resume\]/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.taskId, 't-7')
+    assert.equal(sent.op, 'resume')
   } finally {
     await link.cleanup()
     await body.close()
@@ -392,6 +438,26 @@ test('事件流：body 编号归零（被杀后重启）时不重放旧事件，
     const text = link.pushed.join('\n')
     assert.match(text, /编号归零/)
     assert.match(text, /不重放旧事件/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：wait 的 durationMs 容错成 body 的 ms；cancel+task 两步都回结果', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    await link.tools.mcb_do.execute({ steps: [{ op: 'wait', params: { durationMs: 8000 } }] })
+    const waited = body.state.requests.at(-1).steps[0]
+    assert.equal(waited.op, 'wait')
+    assert.equal(waited.params.ms, 8000)
+
+    const combo = await link.tools.mcb_do.execute({ steps: [{ op: 'cancel', taskId: 't-9' }, { op: 'task', kind: 'mine', params: { block: 'dirt', count: 2 } }] })
+    assert.match(combo.text, /\[cancel\]/)
+    assert.match(combo.text, /任务 t-1（mine）已接受/)
+    assert.ok(combo.text.indexOf('[cancel]') < combo.text.indexOf('已接受'), 'cancel 结果应在任务结果之前')
   } finally {
     await link.cleanup()
     await body.close()

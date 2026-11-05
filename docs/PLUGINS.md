@@ -19,7 +19,7 @@
 | `dream` | 995 | 0 | — | 可用待调 | 7 个默认 job 的夜间整理流水线（另有废弃的 `slang`） |
 | `rhythm` | 109 | 0 | — | 遗留兼容 | 旧 nightly 时钟；默认不启用，time 接管 |
 | `loop-probe` | 90 | 0 | — | 测试接缝 | 闭环外部信号注入；只在 `icl-loop` preset 启用 |
-| `mc-link` | 380 | 11 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → signals/world；默认不启用，`icl-mc` preset |
+| `mc-link` | 380 | 11 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → 工具面 + signals（不注册 world source）；默认不启用，`icl-mc`/`icl-mc-lab` preset |
 | `time` | 618 | 7 | `time_status` `time_arrange` `time_list` `time_edit` `time_cancel` `time_pause` `time_resume` | 可用待调 | 日程、睡眠、目标的时钟 |
 | `compaction` | 77 | 0 | — | 可用待调 | 把早前对话压成摘要再注入 |
 | `persona` | 85 | 0 | — | 可用待调 | 人格卡与版本历史 |
@@ -140,10 +140,15 @@
 
 ### mc-link（实验接缝，默认不启用）
 
-- **工具**：`mcb_status`、`mcb_task`（异步，返回 taskId）、`mcb_cancel`、`mcb_resume`、`mcb_events`、`mcb_say`（纯文本、≤200 字符、1 秒限速、拒绝 `/` 命令）。
-- **配置**：`baseUrl`（默认 `http://127.0.0.1:54836`）、`pollMs`（1200）、`focus`（`mc`）、`logFile`。
-- **依赖**：`packages/mc-body` 的 `mc-body/v1` HTTP；`ctx.signals.offer`；`ctx.services.get('world')`。
-- **状态**：只懂契约，不 import mineflayer。任务完成/失败/安全停止通过 signals 回来；world 增加 MC 状态。只在 `icl-mc` preset 启用。`tools/mc-observer.mjs` 是更早的只读诊断探针，不是最终 body。
+- **工具**：11 个 —— `mcb_servers`、`mcb_lan`、`mcb_join`、`mcb_leave`、`mcb_status`、`mcb_look`、`mcb_scan`、`mcb_map`、`mcb_inventory`、`mcb_do`、`mcb_help`。
+  `mcb_join` 会 spawn/复用 `mc-body` 子进程并等到真连接；`mcb_leave` 只杀本会话 spawn 的进程。
+  长任务/单步动作/任务台账/事件/取消/恢复/发言都走 `mcb_do` 的 steps op（`task`/`dig`/`tasks`/`events`/`cancel`/`resume`/`say`…）；
+  深层文档在 `skills/*.md`，用 `mcb_help {skill}` 按需读（`play` 是开一局主入口）。
+- **配置**：`baseUrl`（默认 `http://127.0.0.1:54836`）、`listenPort`（默认取 baseUrl 端口 = body 端口，只此一处）、`pollMs`（1200）、`focus`（`mc`）、`doTimeoutMs`（120000）、`bodyEntry`、`stateDir`、`logFile`、`serversFile`（可选）、`chatPerMinute`（6）。
+  服务器清单的**唯一定义**是 `packages/plugins/mc-link/servers.json`（flat `54837` / survival `54838`）；仓库根 `config/mc-servers.json` 是遗留文件，不再被读取。
+- **依赖**：`packages/mc-body` 的 `mc-body/v1` HTTP；`ctx.signals.offer`；`ctx.tools` / `ctx.prompt`。**不**注册 world source（MC 状态只属于 MC 会话，见 `docs/MC-STATUS.md`）。
+- **提示词**：只注册两个事实段 `mc:status`（order 900，≤1 行 ≤120 字）、`mc:skills`（901，条件命中）；操作教学在工具 description 与 `skills/`，不占全局提示词（`docs/PROMPT-CONTRACT.md`）。
+- **状态**：只懂契约，不 import mineflayer。任务完成/失败/中断、安全停止、聊天、断线/重连按分级限流后作为 `plugin:mc` 信号进入会话（掉落/死亡刷屏会合并、危险事件带 `alarm`）；不穿透 time 的睡眠 gate。只在 `icl-mc`/`icl-mc-lab` preset 启用。`tools/mc-observer.mjs` 是更早的只读诊断探针，不是最终 body。
 
 ### dsh-raw
 

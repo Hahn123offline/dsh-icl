@@ -48,13 +48,46 @@ test('事件闸门：死亡在窗口内合并，3 次以上额外升级一次', 
   assert.ok(second.signals.length + third.signals.length <= 3, '死亡不能每条都投递')
 })
 
-test('事件闸门：task_done 带 reason 翻译成"没达成"，正常挖到给数量', () => {
-  const failed = taskEventText('task_done', { task: { id: 't-1', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 0, reason: 'no-target' } } })
-  assert.match(failed, /没达成/)
-  assert.match(failed, /no-target/)
-  assert.match(failed, /radius/)
-  const ok = taskEventText('task_done', { task: { id: 't-2', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 4 } } })
+test('事件闸门：task_failed 带 body 原因码时翻成下一步（no-target/no-path/…）', () => {
+  const noTarget = taskEventText('task_failed', { task: { id: 't-1', kind: 'mine', params: { block: 'oak_log', count: 4 }, error: 'mine: no-target', result: { mined: 0 } } })
+  assert.match(noTarget, /任务失败/)
+  assert.match(noTarget, /no-target/)
+  assert.match(noTarget, /radius/)
+  assert.match(noTarget, /进度/)
+  const noPath = taskEventText('task_failed', { task: { id: 't-2', kind: 'mine', error: 'mine: no-path' } })
+  assert.match(noPath, /mcb_map/)
+  const ok = taskEventText('task_done', { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 4 } } })
   assert.match(ok, /挖了 4/)
+})
+
+test('事件闸门：task_unknown 是"结果未知"而非失败；task_paused 是断线挂起，要显式 resume', () => {
+  const unknown = taskEventText('task_unknown', { task: { id: 't-5', kind: 'mine', error: 'timeout', outcomeUnknown: true } })
+  assert.match(unknown, /结果未知/)
+  assert.match(unknown, /不能当成失败/)
+  assert.match(unknown, /mcb_status/)
+  const paused = taskEventText('task_paused', { task: { id: 't-6', kind: 'routine', state: 'paused', pausedReason: 'disconnect' }, reason: 'disconnect' })
+  assert.match(paused, /任务暂停/)
+  assert.match(paused, /resume/)
+  assert.match(paused, /"taskId":"t-6"/)
+  assert.match(paused, /不会自动续跑/)
+  const resumed = taskEventText('task_resumed', { task: { id: 't-6', kind: 'routine', state: 'running' } })
+  assert.match(resumed, /任务继续/)
+})
+
+test('事件闸门：离线/重连提示分级（offline 不重复，resume_required 讲清旧任务 paused）', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const out = gate.take([
+    { seq: 1, type: 'offline', data: { reason: 'socketClosed', willReconnect: true } },
+    { seq: 2, type: 'disconnected', data: { reason: 'socketClosed' } },
+  ], { status: null })
+  assert.equal(out.signals.length, 1, 'offline 与 disconnected 是同一次断线，只报一条')
+  assert.match(out.signals[0].text, /离线|断开/)
+  const required = gate.take([{ seq: 3, type: 'resume_required', data: { reason: 'reconnect' } }], { status: null })
+  assert.equal(required.signals.length, 1)
+  assert.match(required.signals[0].text, /仍暂停/)
+  assert.match(required.signals[0].text, /resume/)
+  assert.match(required.signals[0].text, /paused/)
 })
 
 test('事件闸门：任务事件在窗口内不重复投递同一条', () => {
@@ -134,4 +167,23 @@ test('事件闸门：eventLine 把事件写成台账行（含 quiet 事件细节
 test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与 body 漂移）', () => {
   for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade']) assert.ok(OPS.includes(op), op)
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
+})
+
+test('事件闸门：kicked 的 reason 是对象时显示真实原因，同名/重复登录要指出来', () => {
+  const plain = collect([{ seq: 1, type: 'kicked', data: { reason: { text: 'You are already logged in' } } }])
+  assert.doesNotMatch(plain.signals[0].text, /\[object Object\]/)
+  assert.match(plain.signals[0].text, /already logged in/)
+  assert.match(plain.signals[0].text, /同名/)
+  const normal = collect([{ seq: 2, type: 'kicked', data: { reason: 'banned' } }])
+  assert.match(normal.signals[0].text, /banned/)
+  assert.doesNotMatch(normal.signals[0].text, /同名/)
+})
+
+test('事件闸门：重连耗尽在窗口内只报一次（body 会连发两条）', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const first = gate.take([{ seq: 1, type: 'reconnect_exhausted', data: { attempts: 3 } }], { status: null })
+  const second = gate.take([{ seq: 2, type: 'reconnect_exhausted', data: { attempts: 3, reason: 'reconnect-failed' } }], { status: null })
+  assert.equal(first.signals.length, 1)
+  assert.equal(second.signals.length, 0)
 })

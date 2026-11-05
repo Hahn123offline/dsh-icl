@@ -60,8 +60,12 @@ export function apply(ctx) {
   const pollMs = Math.max(500, Number(raw.pollMs) || 1200)
   const focus = String(raw.focus ?? 'mc')
   const bodyPort = Number(raw.listenPort ?? new URL(base).port ?? 54836)
-  const stateDir = path.resolve(String(raw.stateDir ?? 'C:/DSH/icl/.state/mc-live'))
-  const bodyEntry = String(raw.bodyEntry ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
+  // bot 名：配置优先；lab 里用环境变量按 owner 区分（两个都叫 ICL 会被服务器互踢）。
+  const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
+  // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
+  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
+  const bodyEntry = String(raw.bodyEntry ?? process.env.ICL_MC_BODY_ENTRY ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)
 
@@ -82,7 +86,7 @@ export function apply(ctx) {
   const gate = createEventGate({
     config: {
       chatPerMinute: raw.chatPerMinute,
-      mentionNames: [String(raw.username ?? 'ICL')],
+      mentionNames: [botName],
       ...(raw.signalWindows ?? {}),
     },
   })
@@ -264,7 +268,7 @@ export function apply(ctx) {
     if (!targetHost) throw new Error(`mcb_join 需要 host（或 server 名）。已知服务器：${list.map((row) => `${row.name} ${row.host}:${row.port}`).join('、') || '（空）'}；先 mcb_servers / mcb_lan。`)
     const targetPort = Number(port ?? configured?.port ?? 25565)
     if (!Number.isFinite(targetPort) || targetPort <= 0) throw new Error(`端口不合法：${port}。用 1–65535 的数字。`)
-    return { host: targetHost, port: targetPort, username: String(raw.username ?? 'ICL').slice(0, 16) }
+    return { host: targetHost, port: targetPort, username: botName }
   }
 
   async function join({ host = null, port = null, username = null, server = null } = {}) {
@@ -279,7 +283,7 @@ export function apply(ctx) {
 
   async function leave() {
     const own = supervisor.state()
-    const externalConnected = Boolean(lastStatus?.adapter?.connected) && !own.owns
+    const externalConnected = isConnected(lastStatus) && !own.owns
     let safety = 'ok'
     try {
       await call('/v1/safety/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'leave' }), timeoutMs: 1200 })
@@ -308,16 +312,30 @@ export function apply(ctx) {
     return `${task.kind} ${task.state}${extra}`
   }
 
+  /** body 顶层 connected 是权威（断线事件先于 adapter 状态），不能只看 adapter.connected。 */
+  function isConnected(status) {
+    if (!status) return false
+    if (status.connected != null) return Boolean(status.connected)
+    return Boolean(status.adapter?.connected)
+  }
+
   function statusLine() {
     const s = lastStatus
     const own = supervisor.state()
-    if (s?.adapter?.connected) {
-      const a = s.adapter
+    const a = s?.adapter ?? {}
+    if (isConnected(s)) {
       const p = a.position
       const pos = p ? `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}` : '?'
       const paused = s.paused ? ` · 暂停(${REASON_TEXT[s.pausedReason] ?? s.pausedReason ?? '安全'})` : ''
       const bag = Number.isFinite(Number(a.inventoryCount)) ? ` · 背包${Number(a.inventoryCount)}` : ''
       return clampLine(`MC｜在线 ${a.host}:${a.port} · ${pos} · ${taskInline(s.task)}${paused} · 血${Math.round(Number(a.health ?? 0))}/20${bag}`)
+    }
+    if (s) {
+      // body HTTP 活着但没连上：重连中/被踢/暂停太久。
+      const reconnect = s.reconnect
+      const why = s.safety?.offlineReason ?? s.pausedReason ?? null
+      const state = reconnect?.exhausted ? '重连失败' : reconnect?.pending || reconnect?.attempts ? `重连中(${reconnect.attempts ?? '?'})` : '离线'
+      return clampLine(`MC｜${state}${why ? `（${String(why).slice(0, 40)}）` : ''} · ${taskInline(s.task)}`)
     }
     if (own.owns && own.alive) return clampLine(`MC｜body 在启动（pid ${own.pid ?? '?'}），还没连上 ${own.host}:${own.port}`)
     if (own.owns && own.exitCode != null) return clampLine(`MC｜身体进程已退出（${describeExit(own.exitCode, own.exitSignal)}）；要重连 mcb_join`)
@@ -379,11 +397,14 @@ export function apply(ctx) {
     const rows = tasks.slice(-Math.max(1, Number(limit) || 10))
     return rows.map((task) => {
       const bits = [`#${task.id}`, task.kind, task.state]
+      if (task.state === 'paused' && task.pausedReason) bits.push(`paused=${task.pausedReason}`)
+      if (task.outcomeUnknown) bits.push('outcome=unknown')
       if (task.error) bits.push(`error=${task.error}`)
       if (task.result) {
         const result = task.result
         if (result.reason) bits.push(`reason=${result.reason}`)
         else if (result.mined != null) bits.push(`mined=${result.mined}`)
+        else if (result.collected != null) bits.push(`collected=${result.collected}`)
         else if (result.arrived) bits.push('arrived')
       }
       return bits.join(' ')
@@ -396,7 +417,13 @@ export function apply(ctx) {
     if (result?.text != null) return `[${op}] ${result.text}`
     if (op === 'tasks') return `[tasks]\n${renderTasks(result)}`
     if (op === 'events') return `[events]\n${renderEvents(result)}`
-    if (op === 'resume') return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复；旧的 running 任务已中断，要续做请重新下任务'}`
+    if (op === 'resume') {
+      // resume 带 taskId 时 body 返回被恢复的任务；不带时返回 {paused}（安全暂停的解除）。
+      if (result && result.id && result.kind) return `[resume] 任务 ${result.id}（${result.kind}）${result.state ?? 'running'}：已继续`
+      if (result?.paused === false) return '[resume] 已解除安全暂停；之前的任务已中断，要续做请重新下任务'
+      if (result?.error) return `[resume] 没能恢复：${result.error}`
+      return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复'}`
+    }
     if (op === 'cancel') return `[cancel] ${result?.id ?? row?.taskId ?? '?'} ${result?.state ?? ''}`.trim()
     if (op === 'say') return `[say] ${result?.ok === false ? '没发出去' : '已发送'}`
     if (result == null) return `[${op}] 已完成（没有返回内容）`
@@ -439,6 +466,11 @@ export function apply(ctx) {
         step.text = text
       }
       if (op === 'cancel' && !raw.taskId) throw new Error(`${where} cancel 需要 taskId；先 {"op":"tasks"} 看任务台账。`)
+      // wait 的 body 参数叫 ms；模型常写 durationMs，这里做一次容错，避免"等了 8 秒"实际只等 500ms。
+      if (op === 'wait') {
+        const params = raw.params && typeof raw.params === 'object' ? raw.params : {}
+        step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
+      }
       if (op === 'events' && raw.since == null) step.since = lastSeq
       return step
     })
@@ -459,17 +491,24 @@ export function apply(ctx) {
         timeoutMs,
       })
       lastStatus = await refreshStatus() ?? lastStatus
-      if (body.task) return { text: `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。` }
       const parts = (body.results ?? []).map(renderRow)
+      if (body.task) {
+        // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
+        // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
+        const head = `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。`
+        return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+      }
       return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
     } catch (error) {
       if (isTimeoutError(error) || error?.code === 'timeout') return { text: doTimeoutText(timeoutMs) }
       const message = String(error?.message ?? error)
-      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；补一句"下一步"。
-      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，或 mcb_leave 收尾'
+      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；再补一句"下一步"。
+      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，任务被挂起就带 taskId，或 mcb_leave 收尾'
         : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
-          : /not connected|未连接/.test(message) ? '；先 mcb_join'
-            : ''
+          : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
+            : /队列已满|429/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑，等它结束或 cancel'
+              : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
+                : ''
       throw new Error(`${message}${hint}`)
     }
   }
@@ -533,8 +572,8 @@ export function apply(ctx) {
     },
     {
       name: 'mcb_status',
-      summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/body 进程状态。只读。',
-      description: '返回多行事实。未连接时看进程行：有退出码说明进程崩了（mcb_join 重试会重新起进程并带上原因），有 pid 但没连上说明还在启动/重连。暂停行给 pausedReason（death/health-drop/low-health/low-oxygen/stuck/disconnect），恢复用 mcb_do 的 resume op。任务行给 kind/state/进度；队列是还没跑的任务。任务历史用 {"steps":[{"op":"tasks"}]}。',
+      summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/重连/body 进程状态。只读。',
+      description: '返回多行事实。连接行以 body 顶层 connected 为准（断线/重连/被踢时不会假在线）；离线会附原因与是否在重连。任务行给 kind/state：paused=断线挂起（结果未定，重连后用 {"op":"resume","taskId":"t-x"} 继续），unknown=超时结果未知（先看背包/位置再决定），failed 带 error 原因。暂停行给 pausedReason（death/health-drop/low-health/low-oxygen/stuck/disconnect），解除用 {"op":"resume"}。任务历史用 {"steps":[{"op":"tasks"}]}。',
       when: ['行动前确认位置/血量/任务', '任务事件之后核对真实结果', '怀疑掉线/卡死'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -548,17 +587,25 @@ export function apply(ctx) {
           return { text: lines.join('\n') }
         }
         const a = status.adapter ?? {}
+        const connected = isConnected(status)
+        const offlineReason = status.safety?.offlineReason ?? null
         const lines = [
-          `MC 身体：${a.connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}`,
+          `MC 身体：${connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}${!connected && offlineReason ? `（离线原因：${String(offlineReason).slice(0, 120)}）` : ''}`,
           `玩家：${(a.players ?? []).join('、') || '无'}`,
           `位置：${a.position ? `${Math.round(a.position.x)}, ${Math.round(a.position.y)}, ${Math.round(a.position.z)}` : '未知'} · 维度 ${a.dimension ?? '?'}`,
           `生命/饥饿/氧气：${Math.round(Number(a.health ?? 0))}/20，${Math.round(Number(a.food ?? 0))}/20，${Number.isFinite(Number(a.oxygen)) ? Math.round(Number(a.oxygen)) : '?'}`,
           `背包：${Number.isFinite(Number(a.inventoryCount)) ? `${Number(a.inventoryCount)} 件` : '未知'}`,
-          `任务：${status.task ? `${status.task.kind} ${status.task.state}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
+          `任务：${status.task ? `${status.task.kind} ${status.task.state}${status.task.outcomeUnknown ? '（结果未知）' : ''}${status.task.state === 'paused' ? '（断线挂起，可 resume taskId 继续）' : ''}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
         ]
+        const reconnect = status.reconnect
+        if (reconnect && (reconnect.pending || reconnect.attempts || reconnect.exhausted)) {
+          lines.push(`重连：第 ${reconnect.attempts ?? 0}/${reconnect.max ?? '?'} 次${reconnect.exhausted ? '（已放弃，需要 mcb_join）' : ''}${reconnect.lastError ? ` · ${String(reconnect.lastError).slice(0, 80)}` : ''}`)
+        }
         if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
         const ownState = supervisor.state()
         if (ownState.owns) lines.push(`进程：本会话启动 pid ${ownState.pid ?? '?'}${ownState.alive ? '（运行中）' : '（已退出）'}`)
+        const suppressed = Number(status.watchdog?.suppressed ?? 0) + Number(status.watchdog?.healthDropSuppressed ?? 0)
+        if (suppressed) lines.push(`body 抑制：watchdog 已合并 ${suppressed} 条重复告警（同类不再逐条叫）`)
         const stats = gate.stats()
         if (stats.suppressed) lines.push(`通知：最近抑制 ${stats.suppressed} 条重复事件`)
         return { text: lines.join('\n') }
@@ -575,7 +622,7 @@ export function apply(ctx) {
     {
       name: 'mcb_inventory',
       summary: '看背包和手持物品（名字+数量）。只读。',
-      description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：body 的任务完成事件不代表掉落一定进了背包（mine 可能 reason=no-effect）。合成/熔炼/交易前先看材料够不够。',
+      description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：task_done 只表示达成了 body 的判据（mine 是背包净增达标），物品还可能散落在地上；task_failed/unknown 时更要看背包确认到底有没有到手。合成/熔炼/交易前先看材料够不够。',
       when: ['合成/熔炼/放置之前', '任务完成后核对产物'],
       parameters: { type: 'object', properties: {} },
       async execute() { return inspect('inventory') },
@@ -612,7 +659,7 @@ export function apply(ctx) {
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）。查询/控制：{"op":"tasks"}（台账含 result/error）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解除暂停；队列已清空，要续做重新下任务）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。决定做大事/任务完成或失败时用 say 说一句。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）；wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}（台账含 state/error/result）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解安全暂停；旧任务已中断）、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。说一句的时机见 mcb_help play。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],
