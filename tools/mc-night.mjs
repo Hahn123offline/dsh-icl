@@ -697,17 +697,28 @@ async function checkpoint(kind = 'tick') {
 /* ── 会话提示 ─────────────────────────────────────────── */
 
 /**
- * 唯一的直投通道。**硬约束：睡眠/暂停期不许直投**。
+ * 唯一的直投通道。**硬约束：睡眠/暂停/静音期不许直投**。
  * 直投走 DSH `session/prompt`，绕过 signals→delivery→time gate；睡眠期注入会唤醒模型、
  * 破坏"睡眠期静默"验证（2026-11-06 02:11:27 死亡提示就是这样污染了一轮 28s 的工具活动）。
- * 需要在她睡着时提醒的，应走 signals（time 会按 sleeping 进积压），或等醒来再投。
+ * 判据：`time.json.phase !== 'awake'`（sleeping/paused）**或** `time.json.lock != null`（静音锁，
+ * 不改变 phase，所以必须单独查）或本 supervisor 处于 sleep 模式。
+ * 需要在她睡着/静音时提醒的，应走 signals（time 会按 gate 进积压），或等醒来再投。
  */
 async function sendPrompt(text, { timeoutSec = 600, allowWhileSleeping = false } = {}) {
-  const phase = sleepPhaseNow().phase
-  const sleepingNow = state.mode === 'sleep' || (phase != null && phase !== 'awake')
+  let timeState = null
+  try { timeState = readJson(path.join(runDir, 'state', cfg.preset, 'time.json'), null) } catch { /* ignore */ }
+  const phase = timeState?.phase ?? null
+  const muted = timeState?.lock != null
+  const sleepingNow = state.mode === 'sleep' || (phase != null && phase !== 'awake') || muted
   if (sleepingNow && !allowWhileSleeping) {
-    appendRow(path.join(runDir, 'skipped-injections.jsonl'), { at: nowIso(), reason: 'sleeping', phase, text: String(text).slice(0, 300) })
-    log(`睡眠期丢弃直投（不唤醒）：${String(text).slice(0, 60)}…`)
+    appendRow(path.join(runDir, 'skipped-injections.jsonl'), {
+      at: nowIso(),
+      reason: muted ? 'muted' : (phase && phase !== 'awake' ? String(phase) : 'sleep'),
+      phase,
+      muted,
+      text: String(text).slice(0, 300),
+    })
+    log(`睡眠/静音期丢弃直投（不唤醒）：${String(text).slice(0, 60)}…（phase=${phase} muted=${muted}）`)
     return null
   }
   const meta = labMeta()
