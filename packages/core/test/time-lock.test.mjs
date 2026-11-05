@@ -548,7 +548,7 @@ test('睡眠/静音期间不发清醒节拍，醒来/解除后恢复', async () 
 
 test('清醒节拍每小时有上限，超限可观测', async () => {
   let virtualNow = MON_0900
-  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, idleSec: 30, maxPerHour: 2 } } })
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, idleSec: 30, maxPerHour: 2, cappedShortMax: 0 } } })
   emitTurnEnd(host)
   let ticks = 0
   for (let i = 0; i < 4; i += 1) {
@@ -570,6 +570,40 @@ test('awakeTick.enabled:false 时完全不自检（长跑/测试可关）', asyn
   api.tick()
   assert.doesNotMatch(drainText(host), /清醒节拍/)
   assert.equal(api.heartbeat().enabled, false)
+})
+
+test('turn-start 记录模型活动开始时间，heartbeat.lastModelCallAt 用它', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  host.services.signals.emit({ from: { plugin: 'dsh' }, kind: 'event', text: 'turn-start', tags: ['turn-start'], meta: { seq: 7 } })
+  virtualNow += 5_000
+  const heartbeat = api.heartbeat()
+  assert.equal(heartbeat.lastTurnStartAt, MON_0900)
+  assert.equal(heartbeat.lastModelCallAt, MON_0900)
+  emitTurnEnd(host, 8)
+  assert.equal(api.heartbeat().lastTurnEndAt, virtualNow)
+  assert.equal(api.heartbeat().lastModelCallAt, MON_0900, 'turn-start 仍是最新的模型活动开始')
+})
+
+test('清醒节拍 capped 后降频：短提示有上限、之后安静等窗口', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, idleSec: 30, maxPerHour: 1, cappedSec: 60, cappedShortWindowSec: 600, cappedShortMax: 1 } } })
+  emitTurnEnd(host)
+  virtualNow += 31_000
+  api.tick()
+  assert.match(drainText(host), /清醒节拍/, '第一条正常节拍')
+  // 第 2 次到点就命中上限，之后每 cappedSec 检查一次、cappedShortMax 内只发一条短提示
+  virtualNow += 31_000
+  api.tick()
+  virtualNow += 61_000
+  api.tick()
+  const short = drainText(host)
+  assert.match(short, /清醒节拍/)
+  assert.match(short, /醒着 \d+ 秒没有回合；手上没事的话/, 'capped 后发短提示')
+  virtualNow += 61_000
+  api.tick()
+  assert.doesNotMatch(drainText(host), /清醒节拍/, '短提示达到上限后不再刷')
+  assert.equal(api.heartbeat().capped, true)
 })
 
 /* ───────────────────────── 静默失败 / 重启 ───────────────────────── */
@@ -629,3 +663,4 @@ test('暂停中重启：pausedAt 持久化，resume 后仍然后移', async () =
   secondApi.tick()
   assert.match(drainText(second), /重启后的闹钟/)
 })
+

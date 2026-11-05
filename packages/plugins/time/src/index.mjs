@@ -420,6 +420,9 @@ export function apply(ctx) {
   const awakeMaxPerHour = Math.max(1, Number(awakeCfg.maxPerHour ?? 60))
   const awakeRetrySec = Math.max(5, Number(awakeCfg.retrySec ?? 30))
   const awakeDuringFocus = awakeCfg.duringFocus !== false
+  const awakeCappedSec = Math.max(60, Number(awakeCfg.cappedSec ?? 600))
+  const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
+  const awakeCappedShortMax = Math.max(0, Number(awakeCfg.cappedShortMax ?? 3))
   const dir = path.dirname(stateFile)
 
   // 测试时钟（config.testClock:true 时才允许 inbox clock 命令）：只在 time 自己的时间视图上
@@ -460,6 +463,7 @@ export function apply(ctx) {
     lastAwakeTickAt: null,
     awakeTickDueAt: null,
     awakeTickSentAt: [],
+    awakeTickShortSentAt: [],
     awakeTickCappedAt: null,
     turnEnds: 0,
     heartbeatOverdueLoggedAt: null,
@@ -487,6 +491,7 @@ export function apply(ctx) {
       state.inboxOffset = Number(saved.inboxOffset) > 0 ? Number(saved.inboxOffset) : 0
       state.stats = { ...blank().stats, ...(saved.stats && typeof saved.stats === 'object' ? saved.stats : {}) }
       state.awakeTickSentAt = Array.isArray(saved.awakeTickSentAt) ? saved.awakeTickSentAt.map(Number).filter(Number.isFinite).slice(-120) : []
+      state.awakeTickShortSentAt = Array.isArray(saved.awakeTickShortSentAt) ? saved.awakeTickShortSentAt.map(Number).filter(Number.isFinite).slice(-20) : []
       for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt']) {
         state[key] = Number(saved[key]) > 0 ? Number(saved[key]) : null
       }
@@ -648,14 +653,16 @@ export function apply(ctx) {
     if (state.awakeTickDueAt != null) { state.awakeTickDueAt = null; dirty = true }
   }
 
-  function awakeTickText(at) {
+  function awakeTickText(at, { short = false } = {}) {
     const idleSec = state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null
+    if (short) return `清醒节拍：醒着 ${idleSec ?? '?'} 秒没有回合；手上没事的话，看一眼状态再决定。`
     const bits = [`清醒节拍：距上次回合结束 ${idleSec ?? '?'} 秒`]
     bits.push(`现在 ${stampAt(at, timeZone)}，醒着`)
     const focusLease = focusApi?.current?.()
     if (focusLease) bits.push(`专注：${focusLease.title ?? focusLease.label ?? '?'}`)
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条`)
-    return `${bits.join('；')}。手上有事就继续做；没事就查一下状态（time_status / world_status / focus_status）再决定下一步——不要空转，也不要重复同一个工具调用。`
+    // 只给事实 + 可选的下一步，不用命令式措辞，也不催她重复同一个动作。
+    return `${bits.join('；')}。可以接着做手上的事，也可以看 time_status / world_status / focus_status 决定下一步。`
   }
 
   /** tick 里调用：到点就发一次清醒节拍（每轮 turn-end 会重置 dueAt）。 */
@@ -668,13 +675,29 @@ export function apply(ctx) {
     const hourAgo = at - 3_600_000
     state.awakeTickSentAt = (Array.isArray(state.awakeTickSentAt) ? state.awakeTickSentAt : []).filter((ts) => Number(ts) > hourAgo)
     if (state.awakeTickSentAt.length >= awakeMaxPerHour) {
-      state.awakeTickDueAt = at + awakeIdleSec * 1000
-      if (!state.awakeTickCappedAt || at - state.awakeTickCappedAt > 3_600_000) {
+      if (!state.awakeTickCappedAt) {
         state.awakeTickCappedAt = at
         log('warn', 'time.awake-tick.capped', { maxPerHour: awakeMaxPerHour })
       }
+      // 命中上限后：降频到 cappedSec 一次；cap 后前 cappedShortWindowSec 分钟内只发短提示
+      // （最多 cappedShortMax 条），之后安静等滚动窗口释放，不刷屏。
+      if (at - Number(state.awakeTickCappedAt) <= awakeCappedShortWindowSec * 1000) {
+        state.awakeTickShortSentAt = (Array.isArray(state.awakeTickShortSentAt) ? state.awakeTickShortSentAt : []).filter((ts) => at - Number(ts) <= awakeCappedShortWindowSec * 1000)
+        if (state.awakeTickShortSentAt.length < awakeCappedShortMax) {
+          const outcome = send({ kind: 'notice', text: awakeTickText(at, { short: true }), tags: ['awake-tick', 'heartbeat', 'short'] })
+          if (outcome && outcome.accepted === false) {
+            state.awakeTickDueAt = at + awakeRetrySec * 1000
+            return false
+          }
+          state.awakeTickShortSentAt = [...state.awakeTickShortSentAt, at].slice(-20)
+        }
+      }
+      state.awakeTickDueAt = at + awakeCappedSec * 1000
+      dirty = true
       return false
     }
+    // 滚动窗口释放后恢复正常节拍
+    if (state.awakeTickCappedAt && at - state.awakeTickCappedAt > 3_600_000) state.awakeTickCappedAt = null
     const outcome = send({ kind: 'notice', text: awakeTickText(at), tags: ['awake-tick', 'heartbeat'] })
     if (outcome && outcome.accepted === false) {
       // 投递失败（会话忙）：短重试，不静默放弃
@@ -1479,6 +1502,7 @@ export function apply(ctx) {
       thresholdSec: awakeIdleSec,
       lastTurnEndAt,
       lastTurnStartAt: state.lastTurnStartAt ?? null,
+      lastModelCallAt: state.lastTurnStartAt ?? lastTurnEndAt,
       idleSec,
       nextTickAt: state.awakeTickDueAt ?? null,
       lastAwakeTickAt: state.lastAwakeTickAt ?? null,
@@ -1849,6 +1873,16 @@ export function apply(ctx) {
       log('info', 'time.delivery-gate', { installed: true })
     } catch (error) { log('warn', 'time.delivery-gate', { error: String(error?.message ?? error) }) }
   }
+
+  // turn-start：记录模型活动开始时间（bridge 提供）；没有它时 lastModelCallAt 退化到 turn-end。
+  ctx.signals.on({ tags: ['turn-start'] }, (signal) => {
+    try {
+      state.lastTurnStartAt = nowTime()
+      const seq = Number(signal?.meta?.seq)
+      if (Number.isFinite(seq)) state.lastTurnSeq = seq
+      dirty = true
+    } catch (error) { log('warn', 'time.turn-start', { error: String(error?.message ?? error) }) }
+  })
 
   // turn-end：目标续推 + 心跳；没有目标时安排清醒节拍（见 onTurnEnd）。
   ctx.signals.on({ tags: ['turn-end'] }, (signal) => {
