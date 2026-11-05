@@ -301,6 +301,10 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
   const steps = []
   let bodyState = { bodyCount: 0, bodyPids: [], bodyAlive: false }
   // 断言窗口：从"上一次断言之后"到"这次断言"，把两次断言之间所有 turn（含 crash signal 自主唤醒的 turn）都算进来。
+  // 断言窗口：从"上一个动作边界"（prompt / wait / kill-body）到本次断言。
+  // 断言本身不推进边界——一轮里多个 assert 都要看同一段链路（工具调用发生在 prompt 回合里，
+  // 若每个 assert 都推进边界，第二个 assert 就什么都看不到了；c2/c3 的 A 就是这样误判的）。
+  // 动作边界之后的自主 turn（crash signal 叫醒的那种）也会算进断言窗口（mc-link C 的诉求）。
   let assertBoundarySeq = startSeq
   const lastSeqNow = () => Number(orderedEvents(eventsFile).at(-1)?.seq) || 0
 
@@ -333,11 +337,13 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
     const began = Date.now()
     try {
       if (step.op === 'prompt') {
+        assertBoundarySeq = lastSeqNow()
         const window = await say(step.text, Number(step.timeoutSec ?? 300))
         steps.push({ id, op: 'prompt', ok: true, ms: Date.now() - began, text: subst(step.text), turn: window?.turn ?? null, turnStartSeq: window?.seqs?.[0] ?? null, turnEndSeq: window?.seqs?.[1] ?? null, tools: window?.tools ?? [], assistant: window?.assistant ?? '' })
         console.log(`[scene] ${id} → turn ${window?.turn}，工具 [${(window?.tools ?? []).join(',')}]`)
       } else if (step.op === 'wait') {
         await sleep(Number(step.seconds ?? 1) * 1000)
+        assertBoundarySeq = lastSeqNow()
         steps.push({ id, op: 'wait', ok: true, ms: Date.now() - began })
       } else if (step.op === 'kill-body') {
         await refreshBody()
@@ -346,6 +352,8 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         await killPidTree(target)
         await sleep(1200)
         await refreshBody()
+        // kill 之后是新的动作边界：后面的断言专门看"掉线之后"的 notice/自主 turn/状态复核。
+        assertBoundarySeq = lastSeqNow()
         steps.push({ id, op: 'kill-body', ok: true, ms: Date.now() - began, killedPid: target, bodyAfter: bodyState })
         console.log(`[scene] ${id} → 已 kill body pid=${target}，剩余 body=${bodyState.bodyCount}`)
       } else if (step.op === 'snapshot') {
@@ -369,8 +377,6 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         for (const row of results) checks.push({ id, required, ok: row.ok, kind: row.kind, detail: row.detail })
         steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, windowStartSeq: assertBoundarySeq, windowEndSeq: lastSeqNow(), checks: results })
         console.log(`[scene] ${id} ${ok ? '✓' : required ? '✗' : '⚠'} ${results.map((row) => `${row.kind}:${row.ok ? 'ok' : 'fail'}`).join(' ')}`)
-        // 断言窗口是滚动前进的：下一次 assert 从此刻开始，避免把更早的调用重复算进来。
-        assertBoundarySeq = lastSeqNow()
       } else {
         throw new Error(`未知 op：${step.op}`)
       }
