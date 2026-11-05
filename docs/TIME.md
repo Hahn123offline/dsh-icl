@@ -298,3 +298,16 @@ S2 = 到点唤醒一次且多一轮（minTurns=2）；S4 = 睡眠拦截 + 醒来
 | misc-minute-check | 本契约版，故意跨分钟（gap 32s） | 4 轮 / 102s | 5060 | **1** | 无（只有一份） |
 
 结论：`时间：日期+周几+时段` 后，跨分钟不再产生新的 `system/message`，也不再每轮 append 一整段系统提示词。工具面：34 个工具、`toolsChars` 18910（+inspect 时注意 `time_mute/time_unmute` 是新增变量）。
+
+### 独立复核（misc，真实装配 `createHost` + time + 虚拟时钟，2026-11-05）
+
+| 断言 | 实测 |
+|---|---|
+| 睡着时 `emit({from:dsh,kind:event,text:'turn-end'})` | `accepted:true`，time backlog 0→0（旧版会 +1，醒来变成 `[dsh] turn-end`） |
+| 睡着时外部消息（qq, to:model） | `blocked:true, reason:'sleeping'`，backlog 0→1 |
+| 睡着时释放 focus 租约 | 摘要走 signals → 被拦；delivery 里没有 focus 批次（旧版 `delivery.push` 会直塞） |
+| 醒来 | 只释放 1 批合并摘要：`（你睡觉时）积压了 2 条消息：· [qq]… · [focus/backlog]…`，backlog 清 0 |
+| 静音锁 | `time_mute` 后 qq `blocked:'muted'` → backlog 1；`tags:['safety','alarm']` 紧急 `accepted:true`；`time_unmute` 释放 |
+| 工具面 | 9 个 time 工具，manifest 与注册一致 |
+
+注：睡眠期 `delivery.pendingCount()` 可能为 1——那是"要睡了"唤醒通知本身，不是 turn-end 漏入；turn-end 前后 backlog/pending 都不变。
