@@ -239,7 +239,7 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | GUI/transcript | 事实显示为 runtime-context 快照，不再是 system 提示词的一部分 | 展示位置变化，内容不变 |
 | ICL 原文层 / dream | 桥内按 `source.kind!=='user'` 过滤；`dsh-raw` 另有 `/^(Current runtime context|Time sampled|…)/` 过滤 → 快照不会进原文/dream wash | 否 |
 | 旧宿主兼容 | 无 `systemPrompt.context` 时退回全量单段（缓存差但语义完整），有测试 | 否 |
-| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同代码 A/B；生产默认必须是 B（不设该变量）。唯一读取点在 `bridge.registerPrompt()` 的短路（`!== ''1''`），不设时行为完全由 config 决定；**合并后可按 lead 决定删掉该 env 分支**（删之前它也不会被业务代码误用） | 不是产品路径 |
+| `ICL_FACTS_IN_SYSTEM=1` | **测量专用**开关，强制旧的"事实进 system"行为，用来做同代码 A/B；生产默认必须是 B（不设该变量）。它不是产品配置、不会出现在 preset 文档里，**release/handover 前应删**。唯一读取点在 `bridge.registerPrompt()` 的短路（`!== ''1''`），不设时行为完全由 config 决定；删之前也不会被业务代码误用 | 不是产品路径 |
 
 ### 5.3 before / after 数字
 
@@ -353,6 +353,10 @@ node tools/cache-probe.mjs run --scenario tools/scenarios/cache-facts-6.json \
   --port 57104 --run cache-af2 --model local --gap 65 --rounds 6
 ```
 
+> **`ICL_FACTS_IN_SYSTEM=1` 仅用于测量**：它不是产品配置、不会出现在 preset 文档或用户可见设置里；
+> 生产默认必须是 B（不设该变量），**release/handover 前应删掉这个 env 分支**（唯一读取点是
+> `bridge.registerPrompt()` 的短路；删掉它不需要改任何默认行为）。
+
 `run` 会：记录引擎日志字节偏移 → `lab.mjs up/script/export/down` → 解析新增的 `request_done` →
 按轮对齐（时间窗）→ 从事件流重建 system diff / toolsHash → 落 `cache-probe.json` +
 `cache-probe-engine.jsonl`。
@@ -365,7 +369,10 @@ node tools/cache-probe.mjs run --scenario tools/scenarios/cache-facts-6.json \
 - **污染窗口**：`retained_sessions_limit=4`，别的会话的本地流量会踢掉你的 retained session。
   记录每轮 `request_done` 的 `server_instance_id` / 时间窗，与第三方窗口重叠就作废重跑。
   已知污染窗口：2026-11-05 18:21:22–18:23:49（mc-lab 的 t3 走了本地 ninfer；本文件的 A/B 均不在此窗口）。
-  18:37:31–18:37:5x 有一次锁文件被误写/误删的插曲（mc-lab 自测 bug），核实无模型请求，不影响本轮 A/B。
+- **锁文件插曲（记录，不隐藏）**：2026-11-05 18:37:31–18:37:5x，mc-lab 自测锁逻辑时把根锁
+  `C:\DSH\icl\.state\locks\llama.lock` 误覆盖（owner 从 cache 变成 mc-lab）后又删除，随后已逐字恢复。
+  核实该实例只建会话 + `selectModel`、**没有发任何 prompt（无模型请求）**，且落在 before/after 的稳态区间，
+  对本文件数据无影响。根因是旧锁实现只在 `pid` 存活时才拒绝；已改成"owner 不是自己就无条件拒绝"。
 - `--gap` 单位是**秒**（不是毫秒）；`--model local` 会占 GPU 车道并上锁。
 - 跨分钟/跨事实变化必须**显式制造**：`time` 段已经是"日期+时段"（无分钟级），
   纯等待不一定会变；`cache-facts-6` 用 `time_arrange` 让"下一个安排"每轮变早。
