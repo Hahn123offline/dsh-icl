@@ -190,7 +190,8 @@ test('桥：系统段只含静态段，动态事实走 systemPrompt.context', as
   let minute = '18:00'
   host.services.prompt.section({ name: 'probe-static', order: 20, text: () => '你是小千。' })
   host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => `时间：${minute}` })
-  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), factsEveryStep: true } })
+  // 这条只测布局拆分；节流由下面两条测试单独覆盖。
   bridge.start()
 
   const core = ctx.sections_.get('icl:core')
@@ -209,6 +210,84 @@ test('桥：系统段只含静态段，动态事实走 systemPrompt.context', as
   bridge.dispose()
   assert.equal(ctx.contexts_.size, 0, 'dispose 要撤掉 facts context')
   assert.equal(ctx.sections_.size, 0)
+})
+
+test('桥：facts 快照按 turn 节流（同一 turn 内不重复追加）', async () => {
+  const root = tempRoot('layout-throttle')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let minute = '18:00'
+  host.services.prompt.section({ name: 'probe-static', order: 20, text: () => '你是小千。' })
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => `时间：${minute}` })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const facts = ctx.contexts_.get('icl:facts')
+  const session = fakeSession('s1')
+  bridge.bindSession(session)
+  bridge.bindAgent(fakeAgent(session))
+
+  bridge.onEvent(session, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+  assert.equal(facts.text({}), '时间：18:00')
+  minute = '18:01'
+  assert.equal(facts.text({}), '时间：18:00', '同一 turn 内复用第一份快照（最多 1 条/轮）')
+  bridge.onEvent(session, { type: 'tool/result', seq: 2, data: {} })
+  assert.equal(facts.text({}), '时间：18:00', '轮内之后 step 仍复用')
+  for (let i = 0; i < 5; i += 1) assert.equal(facts.text({}), '时间：18:00', '同 turn 多次求值复用')
+  assert.equal(bridge.status().stats.factsRefreshes, 1, '同一 turn 只刷新一次快照')
+
+  bridge.onEvent(session, { type: 'turn/start', seq: 3, data: { turn: 2 } })
+  assert.equal(facts.text({}), '时间：18:01', '新 turn 刷新一次')
+  assert.ok(bridge.status().stats.factsRefreshes >= 2)
+  bridge.dispose()
+})
+
+test('桥：节流下 focus enter/leave 标 dirty，下一步快照含新焦点（stale≤1）', async () => {
+  const root = tempRoot('layout-focus-dirty')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  host.services.prompt.section({
+    name: 'probe-facts',
+    order: 880,
+    text: () => {
+      const lease = host.services.focus.current()
+      return lease ? `专注：${lease.label}` : '专注：无'
+    },
+  })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const facts = ctx.contexts_.get('icl:facts')
+  const session = fakeSession('s1')
+  bridge.bindSession(session)
+  bridge.bindAgent(fakeAgent(session))
+
+  bridge.onEvent(session, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+  assert.equal(facts.text({}), '专注：无')
+
+  // 轮内进入 focus：必须在下一次求值就看到（事件类事实 stale ≤ 1 步）
+  const lease = host.services.focus.enter({ label: 'mc', title: '玩 MC' })
+  assert.equal(facts.text({}), '专注：mc', 'focus enter 后下一步快照含新焦点')
+  const refreshes = bridge.status().stats.factsRefreshes
+  assert.equal(facts.text({}), '专注：mc')
+  assert.equal(bridge.status().stats.factsRefreshes, refreshes, '同 turn 后续复用')
+
+  lease.release()
+  assert.equal(facts.text({}), '专注：无', 'focus leave 也标 dirty')
+  bridge.dispose()
+})
+
+test('桥：factsEveryStep=true 时退回每步求值（旧行为）', async () => {
+  const root = tempRoot('layout-every-step')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let minute = '18:00'
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => `时间：${minute}` })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), factsEveryStep: true } })
+  bridge.start()
+  const facts = ctx.contexts_.get('icl:facts')
+  assert.equal(facts.text({}), '时间：18:00')
+  minute = '18:01'
+  assert.equal(facts.text({}), '时间：18:01', '关掉节流后每步都刷新')
+  bridge.dispose()
 })
 
 test('桥：没有动态事实时 facts context 返回空（DSH 会跳过空段）', async () => {
@@ -376,7 +455,8 @@ test('桥：agent/pre-step 把本轮上下文追加进这一批消息', async ()
   assert.equal(decision.messages.length, 3)
   assert.ok(decision.messages[2].id.startsWith('icl-ctx-'))
   assert.match(decision.messages[2].content[0].text, /早前聊过那只猫/)
-  assert.equal(decision.messages[2].source.kind, 'runtime-context')
+  assert.equal(decision.messages[2].source.kind, 'plugin:icl', '注入的 <icl-context> 必须是 producer-owned，不能冒充 DSH 的 runtime-context')
+  assert.notEqual(decision.messages[2].source.kind, 'runtime-context', '撞 DSH 快照投影会导致每轮多 append 一份快照')
   assert.equal(decision.startsRequestSeries, true, '不能丢掉 waterfall 的其它字段')
   bridge.dispose()
 })
