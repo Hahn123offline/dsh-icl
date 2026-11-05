@@ -202,3 +202,49 @@ test('lifecycle：dispose 会发 SIGTERM，不把子进程留在后台', async (
   assert.ok(child.signals.includes('SIGTERM'))
   assert.equal(supervisor.owns(), false)
 })
+
+test('lifecycle：退出归因从 stderr 的 exit reason= 或 body-exit.json 读出来，lastExit 可查', async () => {
+  const dir = tmpDir()
+  let child = null
+  let probes = 0
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: dir,
+    startTimeoutMs: 3000,
+    spawnImpl: () => { child = new FakeChild(9006); return child },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+  })
+  await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
+  child.stderr.emit('data', '[mc-body] exit reason=idle-timeout code=0\n')
+  child.emit('exit', 0, null)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const last = supervisor.lastExit()
+  assert.ok(last)
+  assert.equal(last.exitInfo?.reason, 'idle-timeout')
+  assert.equal(last.code, 0)
+  assert.equal(supervisor.owns(), false)
+})
+
+test('lifecycle：body-exit.json 优先（带 status 快照），waitExit 能等到进程自己退出', async () => {
+  const dir = tmpDir()
+  let child = null
+  let probes = 0
+  const supervisor = createBodySupervisor({
+    bodyPort: 54901,
+    bodyEntry: 'cli.mjs',
+    stateDir: dir,
+    startTimeoutMs: 3000,
+    spawnImpl: () => { child = new FakeChild(9007); return child },
+    fetchStatus: async () => { probes += 1; return probes > 1 ? statusOf(true) : null },
+  })
+  await supervisor.ensure({ host: '127.0.0.1', port: 54837, username: 'ICL' })
+  fs.writeFileSync(path.join(dir, 'body-exit.json'), JSON.stringify({ reason: 'api-shutdown', at: Date.now(), status: { connected: true, paused: false, taskId: 't-9', lastError: null } }), 'utf8')
+  setTimeout(() => child.emit('exit', 0, null), 30)
+  const exited = await supervisor.waitExit(1500)
+  assert.equal(exited, true)
+  const last = supervisor.lastExit()
+  assert.equal(last.exitInfo?.source, 'body-exit.json')
+  assert.equal(last.exitInfo?.reason, 'api-shutdown')
+  assert.equal(last.exitInfo?.status?.taskId, 't-9')
+})

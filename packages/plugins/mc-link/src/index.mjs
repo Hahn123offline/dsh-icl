@@ -54,6 +54,26 @@ function readServersFile(file) {
   } catch { return [] }
 }
 
+/** mc-body 的退出归因（body-exit.json / stderr exit reason=）→ 人话。 */
+const EXIT_REASON_TEXT = Object.freeze({
+  sigterm: '收到 SIGTERM（外部要求停止，不是崩溃）',
+  sigint: '收到 SIGINT（Ctrl-C）',
+  'api-shutdown': '通过 /v1/shutdown 主动停止',
+  'idle-timeout': '暂停太久被自动下线',
+  'reconnect-exhausted': '重连次数耗尽，服务器可能没开/被踢',
+  'uncaught-exception': '未捕获异常崩溃（body 自己的 bug）',
+  'unhandled-rejection': '未处理的 Promise 拒绝（body 自己的 bug）',
+  'startup-error': '启动失败（连不上/参数错）',
+})
+
+function exitReasonText(event) {
+  const reason = event?.exitInfo?.reason
+  if (reason) return EXIT_REASON_TEXT[String(reason)] ?? `退出原因 ${reason}`
+  if (event?.signal) return describeExit(event.code, event.signal)
+  if (event?.code === 0) return '正常退出（code 0，没有归因文件）'
+  return '被强制结束/崩溃（body 没留下退出归因）'
+}
+
 export function apply(ctx) {
   const raw = ctx.config ?? {}
   const base = String(raw.baseUrl ?? raw.mcBaseUrl ?? DEFAULT_BASE).replace(/\/+$/, '')
@@ -80,6 +100,7 @@ export function apply(ctx) {
   let reachable = false
   let lastExitAt = 0
   let lastLostReportAt = 0
+  let exitTimes = []
   let lastLan = []
   let joinedServer = null
 
@@ -151,15 +172,29 @@ export function apply(ctx) {
       record({ kind: 'lifecycle', ...event })
       if (event.type === 'body-spawn') { pendingRestart = true; return }
       if (event.type === 'body-exit') {
+        const before = lastStatus
         lastExitAt = Date.now()
         lastStatus = null
         reachable = false
+        exitTimes.push(lastExitAt)
+        exitTimes = exitTimes.filter((at) => lastExitAt - at <= 600_000)
         if (event.expected) return
-        const tail = Array.isArray(event.stderrTail) ? event.stderrTail.filter(Boolean).slice(-2).join(' / ') : ''
+        const exitCount = exitTimes.length
+        const reason = exitReasonText(event)
+        const deadTask = before?.task
+          ? `死时任务 ${before.task.kind} ${before.task.state}${before.task.progress ? `（${JSON.stringify(before.task.progress).slice(0, 80)}）` : ''}`
+          : '死时没有任务在跑'
+        const deadPos = before?.adapter?.position
+          ? `，位置 ${Math.round(before.adapter.position.x)},${Math.round(before.adapter.position.y)},${Math.round(before.adapter.position.z)}`
+          : ''
+        const info = event.exitInfo?.status?.lastError ? `；最后错误：${String(event.exitInfo.status.lastError).slice(0, 100)}` : ''
+        const tail = Array.isArray(event.stderrTail)
+          ? event.stderrTail.filter((line) => line && !/^\s*\[out\]\s*$/.test(line) && !/spawn_safe|spawn|connected as|path_stuck|path_recovered|heartbeat|http:\/\//i.test(line)).slice(-1)[0]
+          : ''
         sendSignal({
           kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
           id: `mc:exit:${event.pid ?? '?'}:${event.at}`,
-          text: `[MC] 身体进程退出了（${describeExit(event.code, event.signal)}）${tail ? `；日志：${tail}` : ''}。要重连就 mcb_join（会重新起进程），不玩了就 mcb_leave 收尾。`,
+          text: `[MC] 身体进程退出了：${reason}（${describeExit(event.code, event.signal)}；本会话第 ${exitCount} 次退出${exitCount > 1 ? `，近 10 分钟 ${exitCount} 次` : ''}）。${deadTask}${deadPos}${info}${tail ? `；最后日志：${tail}` : ''}。旧任务不会自动续跑；先 mcb_status 看背包/位置，再决定 mcb_join 重连还是 mcb_leave 收尾。`,
         })
       }
     },
@@ -312,32 +347,52 @@ export function apply(ctx) {
 
   async function leave({ cleanup = false } = {}) {
     const own = supervisor.state()
+    const beforeTask = lastStatus?.task ?? null
     const externalConnected = isConnected(lastStatus) && !own.owns
     let safety = 'failed'
     try {
       await call('/v1/safety/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'leave' }), timeoutMs: 1200 })
       safety = 'ok'
     } catch { safety = 'unreachable' }
-    const killed = await supervisor.stop({ reason: 'leave' })
+    // 新版 body 支持 POST /v1/shutdown：走干净退出（code 0 + body-exit.json 归因）。
+    // 旧 body 没有这个端点 → 404，退回原来的 safety/stop + SIGTERM，不报错。
+    // 只对"本会话 spawn 的"进程用：外部 body 只能安全停止，不能替别人关。
+    let shutdown = own.owns ? 'unsupported' : 'external'
+    if (own.owns) {
+      try {
+        await call('/v1/shutdown', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'leave' }), timeoutMs: 1500 })
+        shutdown = 'ok'
+      } catch { shutdown = 'unsupported' }
+    }
+    let cleanExit = false
+    if (shutdown === 'ok') cleanExit = await supervisor.waitExit(2000)
+    const killed = cleanExit ? { killed: false, clean: true, pid: own.pid ?? null } : await supervisor.stop({ reason: 'leave' })
+    const exitInfo = supervisor.lastExit()
     lastStatus = null
     joinedServer = null
     primed = false
     lastSeq = 0
 
-    const lines = []
-    lines.push(safety === 'ok'
-      ? '安全停止：成功（当前任务已中断）'
-      : safety === 'unreachable' ? '安全停止：body 已不在，请求跳过' : '安全停止：失败（body 没响应）')
-    if (killed.killed) {
-      const how = killed.forced ? 'SIGKILL 强杀' : 'SIGTERM 正常退出'
-      lines.push(`body 进程：已结束（pid ${killed.pid ?? '?'}，${how}）`)
-    } else {
-      lines.push('body 进程：本会话没有启动过，无需停止')
-    }
-    if (externalConnected) lines.push('注意：连着的 body 不是本会话启动的，只发了安全停止，没有杀进程（那个进程由启动方负责）')
-
     const focusLeases = modelFocusLeases()
     const goals = mcTimeGoals()
+    const details = []
+    const processLine = () => {
+      if (killed.clean) {
+        const why = exitInfo?.exitInfo?.reason ? EXIT_REASON_TEXT[exitInfo.exitInfo.reason] ?? `退出原因 ${exitInfo.exitInfo.reason}` : '正常退出'
+        return `body 进程：已正常退出（pid ${killed.pid ?? '?'}，${why}；code ${exitInfo?.code ?? 0}）`
+      }
+      if (killed.killed) return `body 进程：已结束（pid ${killed.pid ?? '?'}，${killed.forced ? 'SIGKILL 强杀' : 'SIGTERM 正常退出'}）`
+      return 'body 进程：本会话没有启动过，无需停止'
+    }
+    if (externalConnected) details.push('body 还不是本会话启动的：只发了安全停止，进程由启动方负责（所以它还在线）')
+    details.push(safety === 'ok'
+      ? (beforeTask
+        ? `安全停止：成功（任务 ${beforeTask.kind} ${beforeTask.id ?? ''} 已中断）`.replace('  ', ' ')
+        : '安全停止：成功（当时没有任务在跑）')
+      : safety === 'unreachable' ? '安全停止：body 已不在，请求跳过' : '安全停止：失败（body 没响应）')
+    details.push(processLine())
+    if (shutdown === 'unsupported') details.push('（这个 body 不支持 /v1/shutdown，只能用 SIGTERM 结束）')
+
     if (cleanup) {
       const failed = []
       let released = 0
@@ -351,30 +406,28 @@ export function apply(ctx) {
           try { time.removeGoal(goal.id); cancelled += 1 } catch { failed.push(`goal:${goal.id}`) }
         }
       } catch { /* time 不存在：下面用剩余数量报告 */ }
-      lines.push(`收尾清理：focus 释放 ${released} 个、MC 持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
-      const leftFocus = modelFocusLeases()
-      const leftGoals = mcTimeGoals()
-      const leftover = timeLeftover()
-      if (leftFocus.length || leftGoals.length) {
-        lines.push(`清理后仍挂着：focus ${leftFocus.length} 个${leftGoals.length ? `、MC 目标 ${leftGoals.length} 个（${leftGoals.map((goal) => goal.id).slice(0, 3).join('、')}）` : ''}`)
-      } else {
-        lines.push('清理后：focus 和 MC 持续目标都空了')
-      }
-      if (leftover) {
-        const bits = [`schedule ${leftover.schedules} 个（闹钟不会因 leave 消失）`, `积压 ${leftover.queue} 条`]
-        if (leftover.lock) bits.push(`时间锁：${leftover.lock.reason ?? '有'}`)
-        lines.push(`time 侧没动：${bits.join('、')}`)
-      }
-    } else {
-      const hanging = []
-      if (focusLeases.length) hanging.push(`focus ${focusLeases.length} 个（${focusLeases.map((lease) => lease.label).slice(0, 3).join('、')}）`)
-      if (goals.length) hanging.push(`MC 持续目标 ${goals.length} 个（${goals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
-      lines.push(hanging.length
-        ? `还挂着：${hanging.join('；')}——不想被持续叫醒就 mcb_leave {cleanup:true} 一起清，或分开 focus_leave / time_cancel`
-        : 'focus/goal：没有挂着的，不会被叫醒')
+      details.push(`收尾清理：focus 释放 ${released} 个、MC 持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
     }
-    lines.push('下一轮 mcb_status 应显示未连接（幂等：可以再调一次确认）')
-    return lines.join('；')
+
+    // 结论先行：先给"干净没有"，再给分项。她自己说过要能把分项拼成一句结论。
+    const leftFocus = modelFocusLeases()
+    const leftGoals = mcTimeGoals()
+    const leftover = timeLeftover()
+    const hanging = []
+    if (externalConnected) hanging.push('外部 body 仍在线')
+    if (leftFocus.length) hanging.push(`focus ${leftFocus.length} 个（${leftFocus.map((lease) => lease.label).slice(0, 3).join('、')}）`)
+    if (leftGoals.length) hanging.push(`MC 持续目标 ${leftGoals.length} 个（${leftGoals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
+    const verdict = hanging.length
+      ? `收工完成但没完全干净：${hanging.join('；')}${leftFocus.length || leftGoals.length ? '——要一起清就 mcb_leave {cleanup:true}，或分开 focus_leave / time_cancel' : ''}`
+      : '已完全收工：body 已退出，focus 和 MC 持续目标都空着，不会被游戏事件叫醒'
+    if (!cleanup && (leftFocus.length || leftGoals.length)) details.push(`还挂着：${hanging.join('；')}`)
+    if (leftover) {
+      const bits = [`schedule ${leftover.schedules} 个（闹钟不会因 leave 消失）`, `积压 ${leftover.queue} 条`]
+      if (leftover.lock) bits.push(`时间锁：${leftover.lock.reason ?? '有'}`)
+      details.push(`time 侧没动：${bits.join('、')}`)
+    }
+    details.push('下一轮 mcb_status 应显示未连接（幂等：可以再调一次确认）')
+    return [verdict, ...details].join('；')
   }
 
   // ── 状态与提示词（只陈述事实，不教导）────────────────────────────────────
@@ -716,6 +769,11 @@ export function apply(ctx) {
         if (reconnect && (reconnect.pending || reconnect.attempts || reconnect.exhausted)) {
           lines.push(`重连：第 ${reconnect.attempts ?? 0}/${reconnect.max ?? '?'} 次${reconnect.exhausted ? '（已放弃，需要 mcb_join）' : ''}${reconnect.lastError ? ` · ${String(reconnect.lastError).slice(0, 80)}` : ''}`)
         }
+        if (Array.isArray(status.pausedTasks) && status.pausedTasks.length) {
+          lines.push(`断线挂起的任务：${status.pausedTasks.map((task) => `#${task.id} ${task.kind}`).join('、')}（可 {"op":"resume","taskId":"…"} 继续）`)
+        }
+        if (status.adapter?.environment?.summary) lines.push(`环境：${String(status.adapter.environment.summary).slice(0, 160)}`)
+        if (status.adapter?.pathfinder && status.adapter.pathfinder.available === false) lines.push('寻路：不可用（body 的 pathfinder 没加载；只能手挖/短距移动）')
         if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
         const ownState = supervisor.state()
         if (ownState.owns) lines.push(`进程：本会话启动 pid ${ownState.pid ?? '?'}${ownState.alive ? '（运行中）' : '（已退出）'}`)
@@ -778,19 +836,24 @@ export function apply(ctx) {
     {
       name: 'mcb_map',
       summary: '看脚下方块层的字符小地图（#实心 .空 ~水 ≈岩浆 ?未加载）。只读。参数：radius 可选。',
-      description: '用来判断地形：前面是墙/悬崖/水/岩浆。radius 默认 4 格、最大 8（超过按 8，地图是 (2r+1)² 的字符网格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标；想找远处某类方块用 mcb_scan。',
+      description: '用来判断地形：前面是墙/悬崖/水/岩浆。**只显示脚下一层（单层 y）**，不是整个工地的立视图——挖出的坑、垒高的台阶要在那一层的地图上看。radius 默认 4 格、最大 8（超过按 8，地图是 (2r+1)² 的字符网格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标；想找远处某类方块用 mcb_scan。',
       when: ['goto/寻路失败', '判断悬崖、水域、洞窟'],
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: { radius: { type: 'number', description: '地图半径（格），默认 4，最大 8。' } },
       },
-      async execute({ radius } = {}) { return inspect('map', { radius }) },
+      async execute({ radius } = {}) {
+        const body = await inspect('map', { radius })
+        const y = lastStatus?.adapter?.position?.y
+        const layer = Number.isFinite(Number(y)) ? `（y≈${Math.round(Number(y)) - 1} 这一层）` : ''
+        return { text: `${body.text}\n（只显示脚下一层${layer}：挖出来的坑/垒高的台阶要到那一层的地图上才看得到，不是整个工地的立视图）` }
+      },
     },
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。attack/use 不会替你走过去：先 goto 到 3-4 格内再打/用。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],

@@ -14,6 +14,7 @@ import manifest from '../manifest.json' with { type: 'json' }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function statusBody(state) {
+  const extra = state.extra ?? {}
   return {
     ok: true,
     version: 'mc-body/v1',
@@ -24,6 +25,7 @@ function statusBody(state) {
     safety: { paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true },
     task: state.task,
     queue: [],
+    pausedTasks: extra.pausedTasks,
     eventsSeq: state.seq,
     reconnect: state.reconnect ?? { attempts: 0, max: 3, exhausted: false, pending: false, lastError: null },
     watchdog: { ticks: 5, alerts: 1, suppressed: state.suppressed ?? 0, healthDropSuppressed: 0 },
@@ -39,6 +41,8 @@ function statusBody(state) {
       inventoryCount: 4,
       nearby: { villager: 1 },
       dimension: 'overworld',
+      environment: extra.environment,
+      pathfinder: extra.pathfinder,
     },
   }
 }
@@ -322,7 +326,7 @@ test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归�
     const left = await link.tools.mcb_leave.execute({})
     assert.match(left.text, /不是本会话启动的/)
     assert.match(left.text, /body 进程：本会话没有启动过/)
-    assert.match(left.text, /focus\/goal：没有挂着的/)
+    assert.match(left.text, /外部 body 仍在线/)
     assert.equal(body.state.paused, true, 'leave 必须先安全停止')
   } finally {
     await link.cleanup()
@@ -486,13 +490,13 @@ test('mcb_leave：默认只停 body 但报告还挂着什么；cleanup:true 释�
     assert.match(left.text, /安全停止：成功/)
     assert.match(left.text, /body 进程：本会话没有启动过|body 进程：已结束/)
     assert.match(left.text, /不是本会话启动的/)
-    assert.match(left.text, /还挂着：focus 1 个/)
+    assert.match(left.text, /还挂着：.*focus 1 个/)
     assert.match(left.text, /cleanup:true/)
     assert.equal(body.state.paused, true, 'leave 必须先安全停止')
 
     const cleaned = await link.tools.mcb_leave.execute({ cleanup: true })
     assert.match(cleaned.text, /收尾清理：focus 释放 1 个/)
-    assert.match(cleaned.text, /清理后：focus 和 MC 持续目标都空了/)
+    assert.match(cleaned.text, /已完全收工/)
     assert.equal(link.host.services.focus.list().length, 0, 'cleanup 应释放模型 focus 租约')
     // 幂等：再调一次不报错、不重复清
     const again = await link.tools.mcb_leave.execute({ cleanup: true })
@@ -533,6 +537,69 @@ test('mcb_do：dig/place 的 pos 写成 [x,y,z] 也规整成 {x,y,z} 再交给 b
     assert.deepEqual(sent.params.pos, { x: 12, y: -60, z: 14 })
     const text = body.state.requests.at(-1).steps[0]
     assert.equal(text.op, 'dig')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('门控：普通任务事件在 focus 里进积压，安全 alarm 能打断（mc-link 只标 tags，不自己做穿透）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    // 模拟模型在一个不相干的专注里（label 不是 'mc'）。
+    const lease = link.host.services.focus.enter({ label: 'act:reading', owner: 'focus', title: '在读东西' })
+    body.push({ type: 'task_done', data: { task: { id: 't-1', kind: 'mine', result: { mined: 1 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.equal(link.pushed.length, 0, '普通任务事件不该打断别的专注')
+    const backlog = link.host.services.focus.backlog()
+    assert.ok(backlog.some((row) => row.focus === 'mc'), `应进 mc 积压：${JSON.stringify(backlog)}`)
+
+    body.push({ type: 'safety_stop', data: { reason: 'low-health' } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /安全停止：血量过低/, '真危险事件要能进专注')
+    lease.release()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /积压/, '离开专注后应看到积压摘要')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_map：返回里注明"只显示脚下一层"，避免把单层地图当整个工地', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    const out = await link.tools.mcb_map.execute({ radius: 6 })
+    assert.match(out.text, /inspect:map/)
+    assert.match(out.text, /只显示脚下一层/)
+    assert.match(out.text, /y≈/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：展示新 body 的 environment/pathfinder/pausedTasks（旧 body 没有就不显示）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.extra = {
+      pausedTasks: [{ id: 't-4', kind: 'mine', state: 'paused' }],
+      environment: { summary: '附近原木 0 / 石 0 / 土 120；纯超平坦' },
+      pathfinder: { available: true },
+    }
+    const out = await link.tools.mcb_status.execute({})
+    assert.match(out.text, /断线挂起的任务：#t-4 mine/)
+    assert.match(out.text, /环境：附近原木 0/)
+    body.state.extra = { pathfinder: { available: false } }
+    const out2 = await link.tools.mcb_status.execute({})
+    assert.match(out2.text, /寻路：不可用/)
   } finally {
     await link.cleanup()
     await body.close()
