@@ -15,6 +15,11 @@ const args = process.argv.slice(2)
 const arg = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback }
 const listenPort = Number(arg('--port', 54901))
 const serverName = String(arg('--server', 'flat'))
+const mcHost = arg('--mc-host', null)
+const mcPort = arg('--mc-port', null)
+const directTarget = mcHost && mcPort ? { host: String(mcHost), port: Number(mcPort) } : null
+const joinArgs = directTarget ? { ...directTarget, username: 'ICL-mclink-1' } : { server: serverName }
+const targetLabel = directTarget ? `${directTarget.host}:${directTarget.port}` : '127.0.0.1:54837'
 const bodyEntry = arg('--body-entry', null)
 const root = path.resolve(arg('--state', path.join(import.meta.dirname, '..', '..', '..', '..', '.state', 'mc-link-verify')))
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -33,6 +38,7 @@ function check(name, ok, detail = '') {
   if (!ok) process.exitCode = 1
 }
 
+const base = `http://127.0.0.1:${listenPort}`
 const host = createHost({ log: () => {} })
 host.registerPlugin(manifest, mcLink, {
   config: {
@@ -63,9 +69,9 @@ try {
   log(`mcb_servers:\n${servers.text}`)
   check('servers 单一定义里有 flat 54837', /flat\s+127\.0\.0\.1:54837/.test(servers.text))
 
-  const joined = await tools.mcb_join.execute({ server: serverName })
+  const joined = await tools.mcb_join.execute(joinArgs)
   log(`mcb_join: ${joined.text}`)
-  check('join 真的连上服务器', /已连接 127\.0\.0\.1:54837/.test(joined.text), joined.text)
+  check('join 真的连上服务器', joined.text.includes(`已连接 ${targetLabel}`), joined.text)
   const own1 = api.supervisor()
   check('body 是本会话 spawn 的（有 pid）', own1.owns && own1.pid > 0, `pid=${own1.pid}`)
 
@@ -94,6 +100,30 @@ try {
   log(`任务事件（会话收到的原话）：\n${taskEvent}`)
   check('任务完成/失败事件回到会话且有 taskId', /任务/.test(taskEvent), taskEvent.split('\n').slice(-1)[0] ?? '')
 
+  // S. 外部管理面 /v1/shutdown（模拟"睡眠期收身体保命"）：必须算 expected、不崩溃、不自动重启
+  const extPid = api.supervisor().pid
+  const beforeExt = pushed.length
+  const shutdownRes = await fetch(`${base}/v1/shutdown`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'sleep-safe: verify' }),
+  }).then((r) => r.json()).catch((error) => ({ ok: false, error: String(error?.message ?? error) }))
+  log(`外部 /v1/shutdown → ${JSON.stringify(shutdownRes)}（body pid ${extPid}）`)
+  await wait(1800)
+  await api.poll()
+  const extText = pushed.slice(beforeExt).join('\n')
+  const extState = api.supervisor()
+  check('外部 /v1/shutdown 被接受', shutdownRes?.ok === true, JSON.stringify(shutdownRes))
+  check('外部干净关闭不产生崩溃告警', !/身体进程退出/.test(extText), extText.split('\n').slice(-1)[0] ?? '')
+  check('外部干净关闭后没有自动重启（本会话无 body）', extState.owns === false, `owns=${extState.owns} pid=${extState.pid}`)
+  const extStatus = await tools.mcb_status.execute({})
+  log(`外部关闭后 mcb_status:\n${extStatus.text}`)
+  check('mcb_status 报未连接', /未连接/.test(extStatus.text))
+  check('mcb_status 说明上次退出是预期内（不是崩溃）', /上次退出：.*预期内/.test(extStatus.text), extStatus.text.split('\n').find((line) => line.startsWith('上次退出')) ?? '')
+  const backAgain = await tools.mcb_join.execute(joinArgs)
+  log(`外部关闭后 mcb_join: ${backAgain.text}`)
+  check('外部关闭后 mcb_join 能重新起 body', backAgain.text.includes('已连接'), backAgain.text)
+  const afterBack = api.supervisor()
+  check('重新 join 得到新的 body 进程', afterBack.owns && afterBack.pid && afterBack.pid !== extPid, `new pid=${afterBack.pid}`)
+
   // C. 任务运行中 kill body：会话必须看到"进程退出 + 原因"，不能假在线
   const killPid = api.supervisor().pid
   log(`kill body pid=${killPid}`)
@@ -109,7 +139,7 @@ try {
   check('掉线后 status 不假在线', /未连接/.test(afterCrash.text) && !/已连接/.test(afterCrash.text))
 
   // C2. 能重连，且旧任务不自动续跑
-  const rejoined = await tools.mcb_join.execute({ server: serverName })
+  const rejoined = await tools.mcb_join.execute(joinArgs)
   log(`mcb_join（重连）: ${rejoined.text}`)
   const own2 = api.supervisor()
   check('重连起了一个新 body 进程', own2.owns && own2.pid && own2.pid !== killPid, `new pid=${own2.pid}`)
@@ -148,7 +178,7 @@ try {
     '# mc-link 真实链路自测（C/E）',
     '',
     `- 时间：${new Date().toISOString()}`,
-    `- body HTTP：127.0.0.1:${listenPort}；MC 服务器：${serverName}（127.0.0.1:54837）`,
+    `- body HTTP：127.0.0.1:${listenPort}；MC 服务器：${targetLabel}${directTarget ? '' : `（${serverName}）`}`,
     `- 结果：${checks.filter((row) => row.ok).length}/${checks.length} 通过`,
     '',
     '## 检查项',

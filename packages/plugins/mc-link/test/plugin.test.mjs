@@ -468,12 +468,17 @@ test('mcb_do：resume 带 taskId 时显示被恢复的任务', async () => {
   }
 })
 
-test('事件→信号：body 失去响应时报告（不假在线），恢复后不再重复报', async () => {
+test('事件→信号：body 失去响应时报告（不假在线），但单次 HTTP 失败不报警（外部干净关闭有亚秒空窗）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
     await body.close()
+    // 第一次失败：可能只是 /v1/shutdown 的 HTTP 先断、exit 事件后到——不报警。
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.doesNotMatch(link.pushed.join('\n'), /连不上 body/, '单次失败不报警')
+    // 连续第二次失败才确认失联并报警。
     await link.api.poll()
     await link.adapter.drainOnce()
     assert.match(link.pushed.join('\n'), /连不上 body/)
