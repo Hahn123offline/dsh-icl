@@ -102,3 +102,10 @@
 
 - 长任务（挖矿/跑图）出发前先 `{"op":"eat"}` 吃到饱食 >14；包里常备食物（面包/熟肉/苹果）。
 - body 会在 mine/goto 前和 mine 循环里自动吃，但**包里没食物时吃不了**——先补食物。
+
+## 装备/工具（自己拿对工具，2026-11-06）
+
+- 先 `mcb_inventory`：看“手持（快捷栏 N）”“快捷栏：★1 ... ｜ 2 ...”，每件工具标了 `(pickaxe/axe/shovel)` 和耐久。
+- 换手持：`mcb_do {"steps":[{"op":"equip","params":{"item":"stone_pickaxe"}}]}`；或直接选中快捷栏：`{"op":"equip","params":{"slot":3}}`。
+- 挖之前确认：石头/矿石要**镐**，木头用斧/空手，土用锹。body 会在 mine/dig 前自动换对工具，并在结果里注明；**如果背包没有合适工具，任务会立刻失败并告诉你下一步做什么**（比如“先 craft stone_pickaxe”），不要原地重试。
+- 想自己决定用哪把：mine/dig 传 `"autoTool": false`，然后自己 equip。
