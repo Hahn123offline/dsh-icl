@@ -612,6 +612,12 @@ export function apply(ctx) {
       return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复'}`
     }
     if (op === 'cancel') return `[cancel] ${result?.id ?? row?.taskId ?? '?'} ${result?.state ?? ''}`.trim()
+    if (op === 'pickup') {
+      const picked = result?.picked ?? 0
+      const names = Array.isArray(result?.items) ? result.items : []
+      const left = result?.left
+      return `[pickup] 捡到 ${picked} 个${names.length ? `（${names.slice(0, 6).join('、')}${names.length > 6 ? '…' : ''}）` : ''}${left != null ? `；附近还剩 ${left} 个掉落` : ''}`
+    }
     if (op === 'say') return `[say] ${result?.ok === false ? '没发出去' : '已发送'}`
     if (result == null) return `[${op}] 已完成（没有返回内容）`
     return `[${op}] ${JSON.stringify(result).slice(0, 400)}`
@@ -727,7 +733,7 @@ export function apply(ctx) {
       const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，任务被挂起就带 taskId，或 mcb_leave 收尾'
         : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
           : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
-            : /队列已满|429/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑，等它结束或 cancel'
+            : /队列已满|429|409|上一个 do 动作还在执行/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑；长动作一律用 {"op":"task"} 提交，别并发单步 op'
               : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
                 : ''
       throw new Error(`${message}${hint}`)
@@ -935,9 +941,10 @@ export function apply(ctx) {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
-宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（每 5–10% 或 10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；提交后不要用 wait 轮询。重复劳动优先用宏（别逐方块 mine/goto）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery}（直线通道；stairs 契约预留暂未实现）；bridge/build/sort/shelter/farm 同族（build 用 blueprint，明早）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
-单步：dig|place|use|equip|toss|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
-失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码换目标/补工具/清背包/换方向）。参数示例用 mcb_help collect/tunnel。`,
+宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
+重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下阶梯}（直线通道）、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；pickup 捡附近掉落 {radius,max} 返回 picked/items/left，别 goto 自己坐标；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码换目标/补工具/清背包/换方向）。示例用 mcb_help collect/tunnel。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
       avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
       safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],

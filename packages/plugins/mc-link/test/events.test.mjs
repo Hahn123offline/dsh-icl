@@ -167,13 +167,13 @@ test('事件闸门：eventLine 把事件写成台账行（含 quiet 事件细节
 test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与 body 漂移）', () => {
   for (const op of ['task', 'tasks', 'events', 'cancel', 'resume', 'say', 'dig', 'goto', 'mine', 'craft', 'trade', 'sleep']) assert.ok(OPS.includes(op), op)
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
-  for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm']) {
+  for (const kind of ['collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm']) {
     assert.ok(TASK_KINDS.includes(kind), `宏 kind 缺失：${kind}`)
     assert.ok(MACRO_KINDS.includes(kind), `MACRO_KINDS 缺失：${kind}`)
   }
 })
 
-test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把）', () => {
+test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {
   const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
   assert.match(collected, /宏完成/)
   assert.match(collected, /收集到 8 个 oak_log/, '优先用 net（背包净增）')
@@ -182,6 +182,21 @@ test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格
   assert.match(tunnel, /宏完成/)
   assert.match(tunnel, /往east挖了 8 格/)
   assert.match(tunnel, /放火把 1/)
+  const stairs = taskEventText('task_done', { task: { id: 't-3', kind: 'tunnel', params: { direction: 'east', length: 8, stairs: true }, result: { done: 8, total: 8, direction: 'east', height: 2, torches: 0, stairs: true } } })
+  assert.match(stairs, /向下阶梯/)
+})
+
+test('宏：bridge/build/shelter/sort/deposit/farm 的 task_done 各自说人话', () => {
+  const bridge = taskEventText('task_done', { task: { id: 't-1', kind: 'bridge', params: { direction: 'north' }, result: { direction: 'north', done: 10, width: 1, materialsUsed: 10 } } })
+  assert.match(bridge, /bridge.*往north铺了 10 格/s)
+  const build = taskEventText('task_done', { task: { id: 't-2', kind: 'build', params: {}, result: { placed: 12, skipped: 1, layer: 3, totalLayers: 3 } } })
+  assert.match(build, /build.*放了 12 块，跳过 1/)
+  const shelter = taskEventText('task_done', { task: { id: 't-3', kind: 'shelter', params: {}, result: { walls: 16, roof: 9, door: 1 } } })
+  assert.match(shelter, /shelter.*墙 16、顶 9、门 1/)
+  const deposit = taskEventText('task_done', { task: { id: 't-4', kind: 'deposit', params: {}, result: { action: 'put', moved: 5, kept: 2 } } })
+  assert.match(deposit, /deposit.*存入 5 件/)
+  const farm = taskEventText('task_done', { task: { id: 't-5', kind: 'farm', params: { crop: 'wheat' }, result: { tilled: 4, planted: 4, crop: 'wheat' } } })
+  assert.match(farm, /farm.*开垦 4、播种 4 格 wheat/)
 })
 
 test('宏：失败码都有可操作提示（needs-tool/inventory-full/needs-material/blocked/unsafe/partial）', () => {
@@ -192,7 +207,10 @@ test('宏：失败码都有可操作提示（needs-tool/inventory-full/needs-mat
     ['tunnel: blocked', /水\/岩浆\/基岩|绕开/],
     ['tunnel: unsafe', /安全护栏/],
     ['build: partial', /只完成了一部分/],
-    ['unsupported task: bridge', /还没实现|先用 collect/],
+    ['farm: no-water', /没有水|引水/],
+    ['farm: no-site', /可开垦/],
+    ['tunnel: unsupported', /不支持这个参数组合/],
+    ['unsupported task: bridge', /beta|未开放/],
   ]
   for (const [error, pattern] of cases) {
     const text = taskEventText('task_failed', { task: { id: 't-3', kind: error.split(':')[0], error } })
