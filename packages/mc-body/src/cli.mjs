@@ -43,10 +43,22 @@ let body = null
 let http = null
 let exiting = false
 let exitReason = null
+// stderr 环形缓冲：崩溃时连 stderr 一起写进 body-exit.json（不再“只有退出码”）。
+const stderrTail = []
+const rawConsoleError = console.error.bind(console)
+console.error = (...parts) => {
+  try {
+    const line = parts.map((part) => (part instanceof Error ? `${part.name}: ${part.message}` : String(part))).join(' ')
+    stderrTail.push(line.slice(0, 600))
+    while (stderrTail.length > 30) stderrTail.shift()
+  } catch { /* ignore */ }
+  rawConsoleError(...parts)
+}
 
 function snapshot() {
   try {
     const status = body?.status?.() ?? {}
+    const recent = body?.eventsSince?.(Math.max(0, Number(status.eventsSeq ?? 0) - 12))?.events ?? []
     return {
       pid: process.pid,
       at: Date.now(),
@@ -54,11 +66,16 @@ function snapshot() {
       paused: status.paused ?? null,
       pausedReason: status.pausedReason ?? null,
       taskId: status.task?.id ?? null,
+      taskState: status.task?.state ?? null,
+      queue: (status.queue ?? []).length,
+      pausedTasks: (status.pausedTasks ?? []).map((task) => task.id),
       eventsSeq: status.eventsSeq ?? null,
       lastError: status.adapter?.lastError ?? null,
       reconnect: status.reconnect ?? null,
+      recentEvents: recent.map((event) => ({ seq: event.seq, type: event.type, data: event.data })).slice(-12),
+      stderrTail: stderrTail.slice(-10),
     }
-  } catch { return { pid: process.pid, at: Date.now(), snapshotError: true } }
+  } catch { return { pid: process.pid, at: Date.now(), snapshotError: true, stderrTail: stderrTail.slice(-10) } }
 }
 
 function writeJson(file, value) {
@@ -90,11 +107,24 @@ async function shutdown(reason, detail = null, code = 0) {
   if (exiting) return
   exiting = true
   recordExit(reason, detail, code)
+  // 兜底：body.stop()/http.close() 若因 adapter 卡住不返回，也要在 2.5s 内退出（否则进程永远挂着）。
+  const force = setTimeout(() => process.exit(code), 2500)
   try { await body?.stop?.() } catch { /* ignore */ }
   try { await http?.close?.() } catch { /* ignore */ }
   try { fs.unlinkSync(aliveFile) } catch { /* ignore */ }
+  clearTimeout(force)
   process.exit(code)
 }
+
+// 所有退出路径都归因：SIGTERM/SIGINT/显式 shutdown/依赖或未捕获错误直接退出。
+process.on('SIGINT', () => { void shutdown('sigint', null, 0) })
+process.on('SIGTERM', () => { void shutdown('sigterm', null, 0) })
+process.on('uncaughtException', (error) => { void shutdown('uncaught-exception', error?.stack ?? String(error), 1) })
+process.on('unhandledRejection', (reason) => { void shutdown('unhandled-rejection', reason instanceof Error ? reason.stack : String(reason), 1) })
+process.on('exit', (code) => {
+  // 走到这里还没写过原因 = 依赖/其他代码直接 process.exit：至少留下 panic 归因 + stack 不能有，但 status 在。
+  if (!exitReason) recordExit(code === 0 ? 'clean-exit' : 'exit-code', `process exited with code ${code}（非本进程 shutdown 路径）`, code)
+})
 
 const adapter = createMineflayerAdapter({
   host, port, username,
@@ -143,11 +173,19 @@ try {
 const initial = body.status()
 console.log(`[mc-body] initial connected=${initial.connected} paused=${initial.paused}${initial.pausedReason ? `(${initial.pausedReason})` : ''} name=${username}`)
 
+// 自检钩子（只给验证归因用）：模拟 crash/静默 exit，检查 body-exit.json 是否带 reason+stack。
+const selftestCrash = arg('--selftest-crash', null)
+if (selftestCrash) {
+  console.error(`[mc-body] selftest-crash=${selftestCrash}（1.5s 后触发，仅验证退出归因）`)
+  const timer = setTimeout(() => {
+    if (selftestCrash === 'uncaught') throw new Error('selftest: uncaught exception')
+    if (selftestCrash === 'rejection') { void Promise.reject(new Error('selftest: unhandled rejection')) ; return }
+    if (selftestCrash === 'exit1') { process.exit(1); return }
+    if (selftestCrash === 'exit0') { process.exit(0); return }
+  }, 1500)
+  if (typeof timer.unref === 'function') timer.unref()
+}
+
 // 心跳文件：被硬 kill 时，上层至少能从最后一条 alive 判断“进程是在哪个状态下被杀的”。
 const aliveTimer = setInterval(() => { if (!exiting) writeJson(aliveFile, snapshot()) }, Math.max(1000, Math.min(10_000, Number(watchdogMs) || 2000)))
 if (typeof aliveTimer.unref === 'function') aliveTimer.unref()
-
-process.on('SIGINT', () => { void shutdown('sigint', null, 0) })
-process.on('SIGTERM', () => { void shutdown('sigterm', null, 0) })
-process.on('uncaughtException', (error) => { void shutdown('uncaught-exception', error?.stack ?? String(error), 1) })
-process.on('unhandledRejection', (reason) => { void shutdown('unhandled-rejection', reason instanceof Error ? reason.stack : String(reason), 1) })
