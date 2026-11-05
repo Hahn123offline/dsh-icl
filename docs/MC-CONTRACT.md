@@ -213,3 +213,10 @@ ICL 集成测试：
 - 不修改 `dsh-mc-agent`；
 - 不在公开服务器/大群做第一次运行；
 - 不先做“最小 mine N 然后拆掉”的临时工具面。
+
+### 工具与装备（v1.1，2026-11-06 用户要求）
+
+- **装备归模型管**：`mcb_inventory` 返回手持、9 格快捷栏（当前选中槽）、每件物品的 `toolFor`（pickaxe/axe/shovel/shears）、工具等级与耐久；`mcb_do` 的 `equip {item}` / `equip {slot:1-9}` 由模型自由换装备。
+- **动作前置判定**：`mine`/`dig` 开始前检查方块所需工具与手持；手持不合适但背包有更合适 → body **自动换上**并在 `progress`/结果标 `autoTool:true`（事件 `auto_tool`）；**没有可用工具/等级不够 → 立即 `failed`**，`task.result` 带 `needsTool`/`suggestCraft` 与可执行步骤，禁止原地重试。`autoTool:false` 可让模型完全自己决定。
+- **脚本兜底仅限自动反应**：战斗/低血/危险/掉落时 body 自动切武器/食物（emergency）；普通挖掘/采集不替模型做目标决策。
+- `mcb_do` 单步长动作（mine/goto/explore）建议改用 `{"op":"task"}` 提交（body 有台账/事件/取消，且不阻塞请求）。

@@ -3,6 +3,9 @@
 // 行为契约见 docs/MC-LEARNED.md §2.3/2.5；不 import 第三方 dsh-mc-agent 代码。
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
+import {
+  describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassOfItem, toolTier,
+} from './tools.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -804,6 +807,98 @@ export function createMineflayerAdapter({
     return tool.name
   }
 
+  // ---- 工具/装备：可见、可自己选、挖前自动判定（用户 2026-11-06 要求）-------------------
+  function inventoryCounts() {
+    const counts = {}
+    for (const item of bot.inventory?.items?.() ?? []) counts[item.name] = (counts[item.name] ?? 0) + (Number(item.count) || 0)
+    return counts
+  }
+
+  function describeHeld() {
+    const item = bot.heldItem
+    if (!item) return { name: null, count: 0, toolFor: null, tier: 0, tierName: null }
+    return { name: item.name, count: item.count ?? 1, ...describeItemTool(item.name) }
+  }
+
+  function toolRequirement(blockOrName) {
+    const blockName = typeof blockOrName === 'string' ? blockOrName : String(blockOrName?.name ?? '')
+    const className = requiredToolClass(blockName) ?? preferredToolClass(blockName)
+    const requiredClass = requiredToolClass(blockName)
+    const requiredTier = requiredTierForBlock(blockName)
+    const counts = inventoryCounts()
+    const best = pickBestTool(bot.inventory?.items?.() ?? [], blockName)
+    const held = describeHeld()
+    const heldMatches = Boolean(held.toolFor && className && held.toolFor === className)
+    const heldAdequate = heldMatches && (requiredTier === 0 || held.tier >= requiredTier)
+    const bestAdequate = Boolean(best?.item && (requiredTier === 0 || best.tier >= requiredTier))
+    return {
+      blockName,
+      className,
+      requiredClass,
+      requiredTier,
+      requiredTierName: requiredTier > 0 ? (TIER_NAME[requiredTier] ?? String(requiredTier)) : null,
+      held,
+      heldMatches,
+      heldAdequate,
+      best,
+      bestAdequate,
+      counts,
+      needsTool: Boolean(requiredClass) && !heldAdequate && !bestAdequate,
+    }
+  }
+
+  /**
+   * 挖之前确认工具：手持合适就用；不合适但有更合适 → 自动换上（autoTool 默认 true）；
+   * 没有可用工具 → 返回 ok:false + 可执行建议（needsTool/suggestCraft），调用方必须立刻失败，禁止重试。
+   */
+  async function ensureToolFor(blockOrName, { signal = null, autoTool = true } = {}) {
+    checkAbort(signal)
+    const requirement = toolRequirement(blockOrName)
+    if (requirement.heldAdequate) return { ok: true, ...requirement, autoEquipped: false, equipped: requirement.held.name }
+    if (autoTool !== false && requirement.bestAdequate) {
+      try {
+        await bot.equip(requirement.best.item, 'hand')
+        emit('auto_tool', { block: requirement.blockName, equipped: requirement.best.item.name, from: requirement.held.name })
+        return { ok: true, ...requirement, autoEquipped: true, equipped: requirement.best.item.name }
+      } catch (error) {
+        if (signal?.aborted) throw error
+      }
+    }
+    // 判定为“不能挖”：必须给非空原因与下一步
+    const suggestCraft = requirement.requiredClass ? suggestToolCraft(requirement.requiredClass, Math.max(1, requirement.requiredTier), requirement.counts) : null
+    const neededToolText = requirement.requiredClass
+      ? `${requirement.requiredTierName ?? ''}${requirement.requiredClass}`.trim()
+      : (requirement.className ?? '合适工具')
+    return {
+      ok: false,
+      ...requirement,
+      autoEquipped: false,
+      neededTool: neededToolText,
+      suggestCraft,
+      reason: requirement.requiredClass
+        ? `当前手持 ${requirement.held.name ?? '空手'}，挖 ${requirement.blockName} 需要 ${neededToolText}${requirement.best?.item ? `（你有 ${requirement.best.item.name}，但等级不够）` : '（背包里没有可用工具）'}`
+        : `当前手持 ${requirement.held.name ?? '空手'}，挖 ${requirement.blockName} 不是最佳工具（有 ${requirement.best?.item?.name ?? '无'} 可以换）`,
+    }
+  }
+
+  function needsToolError(action, requirement) {
+    const hint = requirement.suggestCraft
+    const steps = hint?.steps?.slice(0, 3).join(' → ') ?? '先 mcb_inventory 看材料，做一把对应工具'
+    const error = new Error(`${action}: ${requirement.reason}。下一步：${steps}`)
+    error.name = 'TaskFailedError'
+    error.result = {
+      reason: `${action}: needs-tool`,
+      needsTool: requirement.neededTool,
+      held: requirement.held.name,
+      block: requirement.blockName,
+      requiredTier: requirement.requiredTier,
+      suggestCraft: hint?.craft ?? null,
+      suggestion: steps,
+    }
+    emit('needs_tool', error.result)
+    return error
+  }
+
   async function pickupNearby(signal, progress) {
     if (!bot?.player) return 0
     await sleep(250)
@@ -870,6 +965,7 @@ export function createMineflayerAdapter({
     let collected = 0
     let trips = 0
     let moveFailures = 0
+    let toolFailures = 0
     let missed = 0
     let eaten = 0
     let lastTripAt = 0
@@ -909,9 +1005,17 @@ export function createMineflayerAdapter({
       }
       const block = defs.length ? findMineable(defs, radius, skipped) : null
       if (block) {
+        const blockTool = await ensureToolFor(block, { signal, autoTool: params.autoTool })
+        if (!blockTool.ok && blockTool.requiredClass) {
+          // 挖不动（缺镐等）：跳过这个目标，别在同一个方块上反复失败。
+          skipped.add(blockKey(block.position))
+          toolFailures += 1
+          progress?.({ collected, targetCount, trips, eaten, needsTool: blockTool.neededTool, held: blockTool.held.name, block: block.name })
+          if (toolFailures >= 3) { reason = 'needs-tool'; break }
+          continue
+        }
         const before = bot.blockAt(block.position)
         try {
-          await equipBestTool(block, signal)
           await faceBlock(block)
           await digBlock(block, signal)
           await sleep(150)
@@ -1058,6 +1162,9 @@ export function createMineflayerAdapter({
       const radius = Math.max(2, Math.min(48, Number(params.radius) || 8))
       const reach = Math.max(1.5, Math.min(4, Number(params.reach) || 3))
       const maxPathMs = Math.max(10_000, Math.min(90_000, Number(params.maxPathMs) || 30_000))
+      // 工具前置判定：空手/错工具挖石头会永远失败。没有可用工具就立刻带“怎么做”失败，禁止原地重试。
+      const startTool = await ensureToolFor(blockName, { signal, autoTool: params.autoTool })
+      if (!startTool.ok && startTool.requiredClass) throw needsToolError('mine', startTool)
       const startedAt = Date.now()
       let mined = 0
       let missed = 0
@@ -1142,6 +1249,8 @@ export function createMineflayerAdapter({
         }
         const block = findMineable([def], radius, skipped)
         if (!block) throw taskFailure('mine: no-target', { mined })
+        const toolCheck = await ensureToolFor(block, { signal, autoTool: params.autoTool })
+        if (!toolCheck.ok && toolCheck.requiredClass) throw needsToolError('mine', toolCheck)
         const approachDistance = round1(distanceTo(currentPosition(), block.position))
         try {
           // 预检已在任务开头做过；循环内不重复 A*，直接走，失败再降级到“原地挖”。
@@ -1153,17 +1262,16 @@ export function createMineflayerAdapter({
           if (Number.isFinite(distance) && distance <= 4.5) {
             const before = bot.blockAt(block.position)
             try {
-              await equipBestTool(block, signal)
               await faceBlock(block)
               await digBlock(block, signal)
               await sleep(220)
               const after = bot.blockAt(block.position)
               if (before && after && after.name !== before.name) {
-                emit('dig_fallback', { block: block.name, distance, reason: 'walk-failed-dig-in-place' })
+                emit('dig_fallback', { block: block.name, distance, reason: 'walk-failed-dig-in-place', tool: toolCheck.equipped })
                 await pickupNearby(signal, progress)
                 mined += 1
                 missed = 0
-                progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, fallback: true, net: net() })
+                progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, fallback: true, tool: toolCheck.equipped, autoTool: toolCheck.autoEquipped, net: net() })
                 if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
                 await sleep(120)
                 continue
@@ -1187,7 +1295,7 @@ export function createMineflayerAdapter({
           continue
         }
         const before = bot.blockAt(block.position)
-        const tool = await equipBestTool(block, signal)
+        const tool = toolCheck.equipped ?? null
         await faceBlock(block)
         try {
           await digBlock(block, signal)
@@ -1210,7 +1318,7 @@ export function createMineflayerAdapter({
         await pickupNearby(signal, progress)
         mined += 1
         missed = 0
-        progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, tool, net: net() })
+        progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, tool, autoTool: toolCheck.autoEquipped, net: net() })
         if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
         await sleep(150)
       }
@@ -1413,8 +1521,11 @@ export function createMineflayerAdapter({
       }
       const unsafe = digSafetyError(block)
       if (unsafe) throw new Error(`dig: ${unsafe}`)
+      // 工具前置：错工具/空手挖石头必须立刻带下一步失败，不能反复“挖了没变化”。
+      const toolCheck = await ensureToolFor(block, { signal: null, autoTool: params.autoTool })
+      if (!toolCheck.ok && toolCheck.requiredClass) throw needsToolError('dig', toolCheck)
       const before = bot.blockAt(pos)
-      const tool = await equipBestTool(block, new AbortController().signal)
+      const tool = toolCheck.equipped ?? bot.heldItem?.name ?? null
       await faceBlock(block)
       await digBlock(block, new AbortController().signal)
       await sleep(200)
@@ -1424,7 +1535,7 @@ export function createMineflayerAdapter({
         throw new Error(`dig: 方块没有变化（${targetText}，距 ${round1(distance) ?? '?'} 格，手持 ${held}）；可能被挡住/不是可挖方块；改用 {"op":"mine","params":{"block":"${before.name}","count":N}} 或先 face/look 确认视线`)
       }
       await pickupNearby(new AbortController().signal, null)
-      return { dug: block.name, position: pos, tool, distance: round1(distance) }
+      return { dug: block.name, position: pos, tool, autoTool: toolCheck.autoEquipped, distance: round1(distance) }
     }
     if (op === 'place') {
       const raw = params.positions ?? params.pos ?? params
@@ -1453,11 +1564,25 @@ export function createMineflayerAdapter({
       return { placed, skipped, placedCount: placed.length, skippedCount: skipped.length }
     }
     if (op === 'equip') {
+      // 两种用法：{item:"stone_pickaxe"} 装备到手上；{slot:3} 选中快捷栏第 3 格（1–9，手持物品跟着变）。
+      const slot = Number(params.slot)
+      if (Number.isFinite(slot) && slot >= 1 && slot <= 9) {
+        bot.setQuickBarSlot(Math.round(slot) - 1)
+        const held = describeHeld()
+        return { selectedSlot: Math.round(slot), held: held.name, toolFor: held.toolFor, tier: held.tier }
+      }
       const item = String(params.item ?? params.name ?? '')
+      if (!item) throw new Error('equip 需要 item（物品名）或 slot（快捷栏 1–9）')
       const found = (bot.inventory?.items?.() ?? []).find((i) => i.name === item || i.name.includes(item))
       if (!found) throw new Error(`背包没有 ${item}`)
-      await bot.equip(found, params.destination ?? 'hand')
-      return { equipped: found.name }
+      const destination = params.destination ?? 'hand'
+      await bot.equip(found, destination)
+      if (destination === 'hand') {
+        // bot.equip 会把它换到手持；顺手同步快捷栏选中状态，保证 inventory 里“当前选中槽”正确。
+        try { bot.setQuickBarSlot(bot.quickBarSlot ?? 0) } catch { /* ignore */ }
+      }
+      const held = describeHeld()
+      return { equipped: found.name, destination, held: held.name, selectedSlot: (bot.quickBarSlot ?? 0) + 1, toolFor: held.toolFor, tier: held.tier }
     }
     if (op === 'toss') {
       const item = String(params.item ?? params.name ?? '')
@@ -1746,11 +1871,45 @@ export function createMineflayerAdapter({
     if (!bot?.player) throw new Error('not connected')
     const pos = bot.entity?.position
     if (kind === 'inventory') {
-      const items = (bot.inventory?.items?.() ?? []).map((item) => ({ name: item.name, count: item.count, slot: item.slot }))
-      const held = bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null
+      const describe = (item) => {
+        if (!item) return null
+        const max = Number(item.maxDurability)
+        const used = Number(item.durabilityUsed)
+        const tool = describeItemTool(item.name)
+        return {
+          name: item.name, count: item.count, slot: item.slot,
+          toolFor: tool.toolFor, tier: tool.tier, tierName: tool.tierName,
+          durability: Number.isFinite(max) && Number.isFinite(used) ? { used, max, left: max - used } : null,
+        }
+      }
+      const items = (bot.inventory?.items?.() ?? []).map(describe)
+      const held = describe(bot.heldItem)
+      const quickBarSlot = Number(bot.quickBarSlot) || 0
+      const slots = bot.inventory?.slots ?? []
+      const hotbar = []
+      for (let index = 0; index < 9; index += 1) {
+        const item = slots[36 + index]
+        const tool = item ? describeItemTool(item.name) : { toolFor: null, tier: 0, tierName: null }
+        hotbar.push({
+          slot: index + 1,
+          selected: index === quickBarSlot,
+          name: item?.name ?? null,
+          count: item?.count ?? 0,
+          toolFor: tool.toolFor,
+          tier: tool.tier,
+        })
+      }
+      const hotbarText = hotbar.map((row) => `${row.selected ? '★' : ' '}${row.slot} ${row.name ? `${row.name}×${row.count}${row.toolFor ? `(${row.toolFor})` : ''}` : '空'}`).join(' ｜ ')
+      const heldText = held ? `${held.name}×${held.count}${held.toolFor ? `（${held.toolFor}${held.tierName ? `·${held.tierName}` : ''}）` : ''}${held.durability ? ` 耐久 ${held.durability.left}/${held.durability.max}` : ''}` : '空手'
+      const bagText = items.length ? items.map((item) => `${item.name}×${item.count}${item.toolFor ? `(${item.toolFor}${item.tierName ? `·${item.tierName}` : ''}${item.durability ? `·耐久${item.durability.left}` : ''})` : ''}`).join('、') : '背包是空的。'
       return {
-        text: items.length ? items.map((item) => `${item.name} ×${item.count}`).join('、') : '背包是空的。',
-        data: { items, held },
+        text: [
+          `手持（快捷栏 ${quickBarSlot + 1}）：${heldText}`,
+          `快捷栏：${hotbarText}`,
+          `背包：${bagText}`,
+          held?.toolFor ? '' : '提示：挖石头/矿石需要镐；挖之前先确认手持（mcb_do equip item 或 slot）。',
+        ].filter(Boolean).join('\n'),
+        data: { items, held, hotbar, selectedSlot: quickBarSlot + 1 },
       }
     }
     if (kind === 'look') {
@@ -1761,15 +1920,20 @@ export function createMineflayerAdapter({
       } catch { /* ignore */ }
       const entities = Object.values(bot.entities ?? {})
         .filter((entity) => entity !== bot.entity && entity.position)
-        .map((entity) => ({ name: entity.name ?? entity.username ?? entity.type, distance: Math.round(entity.position.distanceTo(pos) * 10) / 10 }))
-        .sort((a, b) => a.distance - b.distance).slice(0, 6)
+        .map((entity) => ({
+          name: entity.name ?? entity.username ?? entity.type,
+          distance: Math.round(entity.position.distanceTo(pos) * 10) / 10,
+          position: { x: Math.round(entity.position.x * 10) / 10, y: Math.round(entity.position.y * 10) / 10, z: Math.round(entity.position.z * 10) / 10 },
+          id: entity.id,
+        }))
+        .sort((a, b) => a.distance - b.distance).slice(0, 8)
       return {
         text: [
           `位置：${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}；朝向 yaw=${Math.round(bot.entity.yaw * 180 / Math.PI)}°`,
           `生命/饥饿/氧气：${bot.health}/${bot.food}/${oxygenValue() ?? '?'}`,
           `手持：${bot.heldItem?.name ?? '空'}`,
           `视线方块：${block ? `${block.name} @ ${block.position.x},${block.position.y},${block.position.z}` : '没有'}`,
-          `附近：${entities.length ? entities.map((entity) => `${entity.name}(${entity.distance}m)`).join('、') : '无'}`,
+          `附近：${entities.length ? entities.map((entity) => `${entity.name}(${entity.distance}m${entity.position ? ` @ ${entity.position.x},${entity.position.y},${entity.position.z}` : ''})`).join('、') : '无'}`,
         ].join('\n'),
         data: { position: pos, block, entities, health: bot.health, food: bot.food },
       }
@@ -1810,6 +1974,9 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+
+
 
 
 
