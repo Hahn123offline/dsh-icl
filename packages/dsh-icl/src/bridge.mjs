@@ -56,6 +56,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     releaseClaim: null,
     tools: new Map(),          // name -> { off, def }
     sectionOff: null,
+    factsOff: null,
     offSurface: null,
     offRaw: null,
     offHistory: null,
@@ -65,7 +66,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     raw: [],
     rawSeen: new SeqSet(),
     injected: new Set(),
-    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0 },
+    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false },
   }
 
   function report(where, error) {
@@ -129,20 +130,67 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 提示词 ───────────────────────────────────────────── */
 
+  // 静态段上界：ICL 内部 order < 800 的段（人格 20、仿真 25）是全场稳定的，进系统提示词；
+  // order ≥ 800 的易变事实段（时间/世界 890、focus 875、mc:status 900…）每轮都可能变，
+  // 一走系统提示词就等于让本地引擎整条前缀缓存作废（见 docs/CACHE-MODEL.md）。
+  const FACTS_MIN_ORDER = 800
+
   function registerPrompt() {
     if (state.sectionOff) return
-    const section = toDshPromptSection({
-      host,
-      sessionId: () => state.session?.id ?? null,
-      name: 'icl:core',
-      order: 30,
-      onError: (error) => report('prompt.section', error),
-    })
-    try {
+    // DSH 的 systemPrompt.context() 是"每步可变的当前上下文"官方通道：内容变化时
+    // 它追加一条 runtime-context 消息（只追加、不替换），并自带
+    // "This snapshot supersedes earlier runtime-context snapshots." 的语义。
+    // 老宿主/假 ctx 没有这个 API 时退回旧的"单 section 全量"行为。
+    const canUseContext = typeof ctx.systemPrompt?.context === 'function'
+      && config.factsInRuntimeContext !== false
+      && process.env.ICL_FACTS_IN_SYSTEM !== '1'
+    const registerSection = (range) => {
+      const section = toDshPromptSection({
+        host,
+        sessionId: () => state.session?.id ?? null,
+        name: 'icl:core',
+        order: 30,
+        range,
+        onError: (error) => report('prompt.section', error),
+      })
       const off = ctx.systemPrompt?.section?.(section)
-      state.sectionOff = typeof off === 'function' ? off : null
+      return typeof off === 'function' ? off : null
+    }
+    try {
+      state.sectionOff = registerSection(canUseContext ? { maxOrder: FACTS_MIN_ORDER - 1 } : null)
       if (!state.sectionOff) report('prompt.section', new Error('ctx.systemPrompt.section 缺失'))
     } catch (error) { report('prompt.section', error) }
+    if (!canUseContext) {
+      // 降级原因只记一次，便于线上区分"宿主不支持"还是"配置/实验开关"。
+      log({ msg: 'icl.prompt-layout', layout: 'single-section', reason: typeof ctx.systemPrompt?.context !== 'function' ? 'no-systemPrompt.context' : 'disabled-by-config' })
+      return
+    }
+    try {
+      const off = ctx.systemPrompt.context({
+        name: 'icl:facts',
+        order: 850,
+        text: () => {
+          try {
+            return host.services.prompt.assemble({ sessionId: state.session?.id ?? undefined }, { minOrder: FACTS_MIN_ORDER })
+          } catch (error) {
+            report('prompt.context', error)
+            return ''
+          }
+        },
+      })
+      state.factsOff = typeof off === 'function' ? off : () => {}
+      state.stats.factsInContext = true
+      log({ msg: 'icl.prompt-layout', layout: 'static+facts-context', staticMaxOrder: FACTS_MIN_ORDER - 1, factsOrder: 850 })
+    } catch (error) {
+      report('prompt.context', error)
+      // 注册失败不能让事实丢失：撤掉静态段，退回旧的全量单段（缓存差，但语义完整）。
+      try { state.sectionOff?.() } catch { /* ignore */ }
+      state.sectionOff = null
+      try {
+        state.sectionOff = registerSection(null)
+        state.stats.factsInContext = false
+      } catch (inner) { report('prompt.section', inner) }
+    }
   }
 
   /* ── 原文层：实时 session 事件，不扫文件 ───────────────── */
@@ -474,6 +522,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     if (state.timer) { clearInterval(state.timer); state.timer = null }
     try { state.offSurface?.() } catch { /* ignore */ }
     try { state.sectionOff?.() } catch { /* ignore */ }
+    try { state.factsOff?.() } catch { /* ignore */ }
     try { state.offRaw?.() } catch { /* ignore */ }
     try { state.offHistory?.() } catch { /* ignore */ }
     saveFocus()

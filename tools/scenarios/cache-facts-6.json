@@ -1,0 +1,12 @@
+{
+  "name": "cache-facts-6",
+  "purpose": "前缀缓存 A/B 专用：每轮用 time_arrange 制造一次真实的事实变化（下一个安排越来越早），让系统提示词/运行时上下文里的动态事实每轮都变。轮数少、每轮跨分钟（lab --gap 65），用来对比“动态事实在系统提示词里”与“动态事实走 runtime-context 快照”两种布局下的引擎前缀命中。注意：这是缓存测量场景，不是人格/能力验收场景。",
+  "rounds": [
+    { "id": "f1", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"30m\",\"mode\":\"wake\",\"message\":\"cache-r1\"}。调用完只回复：ok。" },
+    { "id": "f2", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"25m\",\"mode\":\"wake\",\"message\":\"cache-r2\"}。调用完只回复：ok。" },
+    { "id": "f3", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"20m\",\"mode\":\"wake\",\"message\":\"cache-r3\"}。调用完只回复：ok。" },
+    { "id": "f4", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"15m\",\"mode\":\"wake\",\"message\":\"cache-r4\"}。调用完只回复：ok。" },
+    { "id": "f5", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"10m\",\"mode\":\"wake\",\"message\":\"cache-r5\"}。调用完只回复：ok。" },
+    { "id": "f6", "text": "这一轮只做一件事：调用 time_arrange，参数 {\"in\":\"5m\",\"mode\":\"wake\",\"message\":\"cache-r6\"}。调用完只回复：ok。" }
+  ]
+}

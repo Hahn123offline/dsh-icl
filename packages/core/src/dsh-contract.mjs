@@ -99,15 +99,21 @@ export function toDshUserMessage(text, { id = null, source = { kind: 'user' } } 
   }
 }
 
-/** 系统提示词段：text 是函数，每次装配求值，不重注册。 */
-export function toDshPromptSection({ host, sessionId = null, name = 'icl:core', order = 30, onError = null }) {
+/**
+ * 系统提示词段：text 是函数，每次装配求值，不重注册。
+ *
+ * `range`（可选 {minOrder,maxOrder}）用来把 ICL 的段切成"静态块 / 易变事实块"：
+ * DSH 对系统提示词的新增/替换是整段语义，本地引擎又按前缀保留 KV，
+ * 所以静态段进 systemPrompt.section、易变段由调用方注册成 runtime-context。
+ */
+export function toDshPromptSection({ host, sessionId = null, name = 'icl:core', order = 30, onError = null, range = null }) {
   const currentSession = typeof sessionId === 'function' ? sessionId : () => sessionId
   return {
     name,
     order,
     text: () => {
       try {
-        return host.services.prompt.assemble({ sessionId: currentSession() ?? undefined })
+        return host.services.prompt.assemble({ sessionId: currentSession() ?? undefined }, range)
       } catch (error) {
         onError?.(error)
         return ''
