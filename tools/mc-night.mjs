@@ -894,11 +894,15 @@ function renderReport() {  const metrics = readJsonl(metricsFile)
   try {
     const sleepInjections = readJson(path.join(runDir, 'sleep-direct-injections.json'), null)
     const skippedCount = readJsonl(path.join(runDir, 'skipped-injections.jsonl')).length
+    const anomalies = readJsonl(path.join(runDir, 'anomalies.jsonl'))
+    const leakCount = anomalies.filter((row) => row.type === 'sleep-delivery-leak').length
+    const mcLinkRows = readJsonl(path.join(runDir, 'state', cfg.preset, 'mc-link.jsonl'))
+    const sleepGuardCount = mcLinkRows.filter((row) => JSON.stringify(row).includes('sleep-guard')).length
     if (sleepInjections) {
-      push(`- 睡眠期外部直投：**${sleepInjections.count} 次**（${sleepInjections.sleepStart} → 最后 turn/end ${sleepInjections.lastTurnEndAt}，修复前；来源 ${JSON.stringify(sleepInjections.bySource ?? {})}）；之后静默；guard 修复后 skipped=${skippedCount}`)
+      push(`- 睡眠期外部直投：**${sleepInjections.count} 次**（${sleepInjections.sleepStart} → 最后 turn/end ${sleepInjections.lastTurnEndAt}，修复前；来源 ${JSON.stringify(sleepInjections.bySource ?? {})}）；guard 修复后 skipped=${skippedCount} · sleep-delivery-leak=${leakCount}（02:32 边界处理之后）· mc-link sleep-guard 命中=${sleepGuardCount} · 入睡 grace=${cfg.sleepGraceSec}s（与 time sleepGraceSec 对齐）`)
       push(`  - 证据：\`${path.join(runDir, 'sleep-direct-injections.json')}\`（seq 全量在文件内；另有 strategy.jsonl type=sleep-direct-injection-corrected）`)
     } else {
-      push(`- 睡眠期外部直投：未清点（文件缺失）；guard 后 skipped=${skippedCount}`)
+      push(`- 睡眠期外部直投：未清点（文件缺失）；guard 后 skipped=${skippedCount} · sleep-delivery-leak=${leakCount} · sleep-guard=${sleepGuardCount}`)
     }
   } catch (error) { push(`- 睡眠期外部直投：读取失败（${String(error?.message ?? error)}）`) }
   push(`- 死亡：${state.lastDeaths} 次（**当前 lab 代**；body.jsonl 跨代保留，报告只统计最后一个 ledger_loaded 之后，避免把上一代 replay 当成本代）· 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
