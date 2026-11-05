@@ -45,14 +45,18 @@
                 - eager-recall
                 - model-manager
                 - time
-                - dream
-                - compaction
-                - editor
+                - dream                - editor
                 - bili
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     # 第二里程碑：在上面的基础上加 mc-link；body 用 mc-lab 自己的端口（54900），
     # bot 名与服务器由 mc-link/mc-body 的配置决定，不共用用户账号 Hahn123_。
     - id: preset-icl-mc-lab
@@ -88,11 +92,15 @@
                 - eager-recall
                 - model-manager
                 - time
-                - dream
-                - compaction
-                - editor
+                - dream                - editor
                 - mc-link
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'

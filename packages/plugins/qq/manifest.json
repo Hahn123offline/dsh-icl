@@ -1,0 +1,9 @@
+{
+  "id": "qq",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["qq_status"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}

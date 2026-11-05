@@ -143,6 +143,41 @@ test('gate 自己抛错时 fail-open，并留下计数', () => {
   assert.equal(signals.stats().gateErrors, 1)
 })
 
+test('gate 只拦 to:model：事件总线不被睡眠/静音拦截，也不计数', () => {
+  const { signals } = service()
+  signals.setGate(() => ({ accept: false, reason: 'sleeping' }))
+  const got = []
+  signals.on({ kind: 'event' }, (signal) => got.push(signal.text))
+  signals.emit({ from: { plugin: 'dsh' }, kind: 'event', text: 'turn-end', tags: ['turn-end'] })
+  assert.deepEqual(got, ['turn-end'], 'to:plugin 的事件不该被人门拦下')
+  assert.equal(signals.stats().blocked, 0)
+  assert.equal(signals.stats().accepted, 1)
+})
+
+test('addGate 组合：全部 accept 才放行，注销后互不影响', () => {
+  const { signals, delivered } = service()
+  const offA = signals.addGate(() => ({ accept: true }))
+  const offB = signals.addGate(() => ({ accept: false, reason: 'b-blocked' }))
+  assert.equal(signals.gates().length, 2)
+  const blocked = signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'hi' })
+  assert.equal(blocked.blocked, true)
+  assert.equal(blocked.reason, 'b-blocked')
+  offB()
+  assert.equal(signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: 'hi' }).accepted, true)
+  assert.equal(delivered.length, 1)
+  offA()
+  assert.equal(signals.gates().length, 0)
+})
+
+test('旧 setGate 是替换语义（不会和 addGate 叠加）', () => {
+  const { signals } = service()
+  signals.addGate(() => ({ accept: true }))
+  signals.setGate(() => ({ accept: true }))
+  assert.equal(signals.gates().length, 1)
+  signals.setGate(null)
+  assert.equal(signals.gates().length, 0)
+})
+
 test('订阅者抛错不拖垮其它订阅者，并计数', () => {
   const { signals } = service()
   const got = []

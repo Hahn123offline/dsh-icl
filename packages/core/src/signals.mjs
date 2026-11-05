@@ -71,7 +71,7 @@ function matches(filter, signal) {
 export function createSignalService({ now = () => Date.now(), dedupeWindowMs = 86_400_000, log = () => {} } = {}) {
   const seen = new Map()
   const listeners = new Set()
-  let gate = null
+  const gates = []
   let deliver = null
   let autoId = 0
   const counters = {
@@ -124,20 +124,26 @@ export function createSignalService({ now = () => Date.now(), dedupeWindowMs = 8
     }
     if (seen.has(signal.id)) { counters.deduped += 1; return { accepted: false, deduped: true, id: signal.id } }
 
-    let decision = { accept: true }
-    if (typeof gate === 'function') {
-      try { decision = gate(signal) ?? { accept: true } } catch (error) {
-        counters.gateErrors += 1
-        try { log({ msg: 'signals.gate-fail', error: String(error?.message ?? error) }) } catch { /* ignore */ }
-        // gate 坏了不能把所有消息一起静音：fail-open，并在 stats 里留痕
-        decision = { accept: true, gateError: true }
+    let blockedDecision = null
+    // 拦截只作用于 to:'model'（给模型的消息）。事件总线（emit = to:'plugin'）是插件间
+    // 通知，不是"被打扰"，不能被睡眠/静音拦下，更不能进积压当用户消息。
+    if (signal.to === SIGNAL_TO.MODEL) {
+      for (const gateFn of gates) {
+        let decision = { accept: true }
+        try { decision = gateFn(signal) ?? { accept: true } } catch (error) {
+          counters.gateErrors += 1
+          try { log({ msg: 'signals.gate-fail', error: String(error?.message ?? error) }) } catch { /* ignore */ }
+          // 单个 gate 坏了不能把所有消息一起静音：fail-open，并在 stats 里留痕
+          continue
+        }
+        if (!decision?.accept) { blockedDecision = decision; break }
       }
     }
-    if (!decision?.accept) {
+    if (blockedDecision) {
       counters.blocked += 1
       // 关键：blocked 不写 seen。时间模块把内容抄进自己的积压队列；
       // 其它 gate 放行后，同一条信号可以原样重试。
-      return { accepted: false, blocked: true, id: signal.id, reason: decision?.reason ?? 'gate' }
+      return { accepted: false, blocked: true, id: signal.id, reason: blockedDecision?.reason ?? 'gate' }
     }
 
     if (signal.to === SIGNAL_TO.PLUGIN) {
@@ -171,13 +177,28 @@ export function createSignalService({ now = () => Date.now(), dedupeWindowMs = 8
     offer,
     emit: (input) => offer({ ...input, to: SIGNAL_TO.PLUGIN }),
     on,
-    /** 时间模块接管纵向拦截；返回上一个 gate。 */
-    setGate(fn) { const prev = gate; gate = typeof fn === 'function' ? fn : null; return prev },
+    /**
+     * 设置"唯一"拦截层（旧接口）：替换全部已有 gate，返回最后一个被替换的。
+     * 多来源需要共存时用 addGate（组合裁决：全部 accept 才放行）。
+     */
+    setGate(fn) {
+      const previous = gates.length ? gates[gates.length - 1] : null
+      gates.length = 0
+      if (typeof fn === 'function') gates.push(fn)
+      return previous
+    },
+    /** 追加一个 gate；返回注销函数。所有 gate 都 accept 才算放行。 */
+    addGate(fn) {
+      if (typeof fn !== 'function') throw new Error('signals.addGate 需要函数')
+      gates.push(fn)
+      return () => { const i = gates.indexOf(fn); if (i >= 0) gates.splice(i, 1) }
+    },
+    gates: () => gates.slice(),
     /** 默认投递器（host 里接 delivery）。 */
     setDeliver(fn) { const prev = deliver; deliver = typeof fn === 'function' ? fn : null; return prev },
     kinds: () => [...SIGNAL_KINDS],
     routes: () => [...SIGNAL_ROUTES],
-    stats: () => ({ ...counters, listeners: listeners.size }),
-    peekGate: () => gate,
+    stats: () => ({ ...counters, listeners: listeners.size, gates: gates.length }),
+    peekGate: () => gates[0] ?? null,
   }
 }
