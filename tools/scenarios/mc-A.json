@@ -7,8 +7,8 @@
     {
       "op": "prompt",
       "id": "call-to-play",
-      "text": "去 {{server}} 服玩一会儿：砍几棵树、看看周围。最多做 12 次工具调用、5 分钟内就回来，用一句话告诉我你做了什么、在哪。",
-      "timeoutSec": 420
+      "text": "去 {{server}} 服连上，然后在附近砍一棵 oak_log（用 mcb_do mine），成功或失败都回来用一句话告诉我：你在哪、砍到没有。最多 8 次工具调用，别在寻路上死磕。",
+      "timeoutSec": 600
     },
     { "op": "assert", "id": "found-server", "toolAny": ["mcb_servers", "mcb_lan", "mcb_join"], "required": true },
     { "op": "assert", "id": "really-joined", "toolAll": ["mcb_join"], "required": true },
