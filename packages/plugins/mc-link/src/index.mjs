@@ -60,8 +60,12 @@ export function apply(ctx) {
   const pollMs = Math.max(500, Number(raw.pollMs) || 1200)
   const focus = String(raw.focus ?? 'mc')
   const bodyPort = Number(raw.listenPort ?? new URL(base).port ?? 54836)
-  const stateDir = path.resolve(String(raw.stateDir ?? 'C:/DSH/icl/.state/mc-live'))
-  const bodyEntry = String(raw.bodyEntry ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
+  // bot 名：配置优先；lab 里用环境变量按 owner 区分（两个都叫 ICL 会被服务器互踢）。
+  const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
+  // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
+  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
+  const bodyEntry = String(raw.bodyEntry ?? process.env.ICL_MC_BODY_ENTRY ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)
 
@@ -82,7 +86,7 @@ export function apply(ctx) {
   const gate = createEventGate({
     config: {
       chatPerMinute: raw.chatPerMinute,
-      mentionNames: [String(raw.username ?? 'ICL')],
+      mentionNames: [botName],
       ...(raw.signalWindows ?? {}),
     },
   })
@@ -264,7 +268,7 @@ export function apply(ctx) {
     if (!targetHost) throw new Error(`mcb_join 需要 host（或 server 名）。已知服务器：${list.map((row) => `${row.name} ${row.host}:${row.port}`).join('、') || '（空）'}；先 mcb_servers / mcb_lan。`)
     const targetPort = Number(port ?? configured?.port ?? 25565)
     if (!Number.isFinite(targetPort) || targetPort <= 0) throw new Error(`端口不合法：${port}。用 1–65535 的数字。`)
-    return { host: targetHost, port: targetPort, username: String(raw.username ?? 'ICL').slice(0, 16) }
+    return { host: targetHost, port: targetPort, username: botName }
   }
 
   async function join({ host = null, port = null, username = null, server = null } = {}) {
@@ -277,24 +281,99 @@ export function apply(ctx) {
     return { ...out, joined: { ...joinedServer } }
   }
 
-  async function leave() {
+  /** 模型自己（focus_enter）正在用的专注租约；别的插件/时间的租约不碰。 */
+  function modelFocusLeases() {
+    try { return (ctx.focus?.list?.() ?? []).filter((lease) => lease.owner === 'focus') } catch { return [] }
+  }
+
+  /** 时间的持续目标（"游戏收尾"范围：focus==='mc' 或未来的 'mc:*' 命名空间）。 */
+  function mcTimeGoals() {
+    try {
+      const time = ctx.services?.get?.('time')
+      if (!time?.goals) return []
+      return time.goals().filter((goal) => {
+        const tag = String(goal.focus ?? '')
+        return tag === focus || tag.startsWith(`${focus}:`)
+      })
+    } catch { return [] }
+  }
+
+  /** time 侧剩下的东西（schedules/lock/queue）——不碰，但要如实告诉她还有什么会叫醒她。 */
+  function timeLeftover() {
+    try {
+      const time = ctx.services?.get?.('time')
+      if (!time) return null
+      const schedules = time.schedules?.() ?? []
+      const queue = time.queue?.() ?? []
+      const lock = time.lock?.() ?? null
+      return { schedules: schedules.length, queue: queue.length, lock }
+    } catch { return null }
+  }
+
+  async function leave({ cleanup = false } = {}) {
     const own = supervisor.state()
-    const externalConnected = Boolean(lastStatus?.adapter?.connected) && !own.owns
-    let safety = 'ok'
+    const externalConnected = isConnected(lastStatus) && !own.owns
+    let safety = 'failed'
     try {
       await call('/v1/safety/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'leave' }), timeoutMs: 1200 })
-    } catch { safety = 'skipped' }
+      safety = 'ok'
+    } catch { safety = 'unreachable' }
     const killed = await supervisor.stop({ reason: 'leave' })
     lastStatus = null
     joinedServer = null
     primed = false
     lastSeq = 0
+
     const lines = []
-    if (killed.killed) lines.push(`已停止本会话启动的 body（pid ${killed.pid ?? '?'}${killed.forced ? '，SIGKILL' : ''}）`)
-    else lines.push('本会话没有启动 body，没有进程要停')
-    if (externalConnected) lines.push('注意：连着的 body 不是本会话启动的，我只发了安全停止，没有杀它（进程由启动方负责）')
-    if (safety === 'skipped') lines.push('body 已经不在，安全停止请求跳过')
-    lines.push('focus/goal 没有动：不需要持续唤醒时，自己 time_cancel + focus_leave')
+    lines.push(safety === 'ok'
+      ? '安全停止：成功（当前任务已中断）'
+      : safety === 'unreachable' ? '安全停止：body 已不在，请求跳过' : '安全停止：失败（body 没响应）')
+    if (killed.killed) {
+      const how = killed.forced ? 'SIGKILL 强杀' : 'SIGTERM 正常退出'
+      lines.push(`body 进程：已结束（pid ${killed.pid ?? '?'}，${how}）`)
+    } else {
+      lines.push('body 进程：本会话没有启动过，无需停止')
+    }
+    if (externalConnected) lines.push('注意：连着的 body 不是本会话启动的，只发了安全停止，没有杀进程（那个进程由启动方负责）')
+
+    const focusLeases = modelFocusLeases()
+    const goals = mcTimeGoals()
+    if (cleanup) {
+      const failed = []
+      let released = 0
+      for (const lease of focusLeases) {
+        try { lease.release(); released += 1 } catch { failed.push(`focus:${lease.label}`) }
+      }
+      let cancelled = 0
+      try {
+        const time = ctx.services?.get?.('time')
+        for (const goal of goals) {
+          try { time.removeGoal(goal.id); cancelled += 1 } catch { failed.push(`goal:${goal.id}`) }
+        }
+      } catch { /* time 不存在：下面用剩余数量报告 */ }
+      lines.push(`收尾清理：focus 释放 ${released} 个、MC 持续目标取消 ${cancelled} 个${failed.length ? `；没清成功：${failed.join('、')}` : ''}`)
+      const leftFocus = modelFocusLeases()
+      const leftGoals = mcTimeGoals()
+      const leftover = timeLeftover()
+      if (leftFocus.length || leftGoals.length) {
+        lines.push(`清理后仍挂着：focus ${leftFocus.length} 个${leftGoals.length ? `、MC 目标 ${leftGoals.length} 个（${leftGoals.map((goal) => goal.id).slice(0, 3).join('、')}）` : ''}`)
+      } else {
+        lines.push('清理后：focus 和 MC 持续目标都空了')
+      }
+      if (leftover) {
+        const bits = [`schedule ${leftover.schedules} 个（闹钟不会因 leave 消失）`, `积压 ${leftover.queue} 条`]
+        if (leftover.lock) bits.push(`时间锁：${leftover.lock.reason ?? '有'}`)
+        lines.push(`time 侧没动：${bits.join('、')}`)
+      }
+    } else {
+      const hanging = []
+      if (focusLeases.length) hanging.push(`focus ${focusLeases.length} 个（${focusLeases.map((lease) => lease.label).slice(0, 3).join('、')}）`)
+      if (goals.length) hanging.push(`MC 持续目标 ${goals.length} 个（${goals.map((goal) => goal.theme ?? goal.id).slice(0, 2).join('、')}）`)
+      lines.push(hanging.length
+        ? `还挂着：${hanging.join('；')}——不想被持续叫醒就 mcb_leave {cleanup:true} 一起清，或分开 focus_leave / time_cancel`
+        : 'focus/goal：没有挂着的，不会被叫醒')
+    }
+    lines.push('下一轮 mcb_status 应显示未连接（幂等：可以再调一次确认）')
     return lines.join('；')
   }
 
@@ -308,16 +387,30 @@ export function apply(ctx) {
     return `${task.kind} ${task.state}${extra}`
   }
 
+  /** body 顶层 connected 是权威（断线事件先于 adapter 状态），不能只看 adapter.connected。 */
+  function isConnected(status) {
+    if (!status) return false
+    if (status.connected != null) return Boolean(status.connected)
+    return Boolean(status.adapter?.connected)
+  }
+
   function statusLine() {
     const s = lastStatus
     const own = supervisor.state()
-    if (s?.adapter?.connected) {
-      const a = s.adapter
+    const a = s?.adapter ?? {}
+    if (isConnected(s)) {
       const p = a.position
       const pos = p ? `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}` : '?'
       const paused = s.paused ? ` · 暂停(${REASON_TEXT[s.pausedReason] ?? s.pausedReason ?? '安全'})` : ''
       const bag = Number.isFinite(Number(a.inventoryCount)) ? ` · 背包${Number(a.inventoryCount)}` : ''
       return clampLine(`MC｜在线 ${a.host}:${a.port} · ${pos} · ${taskInline(s.task)}${paused} · 血${Math.round(Number(a.health ?? 0))}/20${bag}`)
+    }
+    if (s) {
+      // body HTTP 活着但没连上：重连中/被踢/暂停太久。
+      const reconnect = s.reconnect
+      const why = s.safety?.offlineReason ?? s.pausedReason ?? null
+      const state = reconnect?.exhausted ? '重连失败' : reconnect?.pending || reconnect?.attempts ? `重连中(${reconnect.attempts ?? '?'})` : '离线'
+      return clampLine(`MC｜${state}${why ? `（${String(why).slice(0, 40)}）` : ''} · ${taskInline(s.task)}`)
     }
     if (own.owns && own.alive) return clampLine(`MC｜body 在启动（pid ${own.pid ?? '?'}），还没连上 ${own.host}:${own.port}`)
     if (own.owns && own.exitCode != null) return clampLine(`MC｜身体进程已退出（${describeExit(own.exitCode, own.exitSignal)}）；要重连 mcb_join`)
@@ -379,11 +472,14 @@ export function apply(ctx) {
     const rows = tasks.slice(-Math.max(1, Number(limit) || 10))
     return rows.map((task) => {
       const bits = [`#${task.id}`, task.kind, task.state]
+      if (task.state === 'paused' && task.pausedReason) bits.push(`paused=${task.pausedReason}`)
+      if (task.outcomeUnknown) bits.push('outcome=unknown')
       if (task.error) bits.push(`error=${task.error}`)
       if (task.result) {
         const result = task.result
         if (result.reason) bits.push(`reason=${result.reason}`)
         else if (result.mined != null) bits.push(`mined=${result.mined}`)
+        else if (result.collected != null) bits.push(`collected=${result.collected}`)
         else if (result.arrived) bits.push('arrived')
       }
       return bits.join(' ')
@@ -396,11 +492,44 @@ export function apply(ctx) {
     if (result?.text != null) return `[${op}] ${result.text}`
     if (op === 'tasks') return `[tasks]\n${renderTasks(result)}`
     if (op === 'events') return `[events]\n${renderEvents(result)}`
-    if (op === 'resume') return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复；旧的 running 任务已中断，要续做请重新下任务'}`
+    if (op === 'resume') {
+      // resume 带 taskId 时 body 返回被恢复的任务；不带时返回 {paused}（安全暂停的解除）。
+      if (result && result.id && result.kind) return `[resume] 任务 ${result.id}（${result.kind}）${result.state ?? 'running'}：已继续`
+      if (result?.paused === false) return '[resume] 已解除安全暂停；之前的任务已中断，要续做请重新下任务'
+      if (result?.error) return `[resume] 没能恢复：${result.error}`
+      return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复'}`
+    }
     if (op === 'cancel') return `[cancel] ${result?.id ?? row?.taskId ?? '?'} ${result?.state ?? ''}`.trim()
     if (op === 'say') return `[say] ${result?.ok === false ? '没发出去' : '已发送'}`
     if (result == null) return `[${op}] 已完成（没有返回内容）`
     return `[${op}] ${JSON.stringify(result).slice(0, 400)}`
+  }
+
+  /** 坐标点：接受 {x,y,z} 或 [x,y,z]（模型两种写法都用过），统一成 body 认的对象。 */
+  function posObject(value) {
+    if (Array.isArray(value) && value.length >= 3) {
+      const [x, y, z] = value.map(Number)
+      if ([x, y, z].every(Number.isFinite)) return { x, y, z }
+    }
+    if (value && typeof value === 'object') {
+      const { x, y, z } = value
+      if ([x, y, z].every((n) => Number.isFinite(Number(n)))) return { x: Number(x), y: Number(y), z: Number(z) }
+    }
+    return null
+  }
+
+  function fixPositions(params) {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return params
+    const next = { ...params }
+    if (next.pos != null) next.pos = posObject(next.pos) ?? next.pos
+    if (next.target != null) {
+      const point = posObject(next.target)
+      if (point) next.target = { pos: point }
+      else if (typeof next.target === 'object' && next.target.pos != null) {
+        next.target = { ...next.target, pos: posObject(next.target.pos) ?? next.target.pos }
+      }
+    }
+    return next
   }
 
   /** 校验/规整 steps：错误必须能指导下一步，不能把 body 的 "未知任务：undefined" 原样丢给她。 */
@@ -439,7 +568,19 @@ export function apply(ctx) {
         step.text = text
       }
       if (op === 'cancel' && !raw.taskId) throw new Error(`${where} cancel 需要 taskId；先 {"op":"tasks"} 看任务台账。`)
+      // wait 的 body 参数叫 ms；模型常写 durationMs，这里做一次容错，避免"等了 8 秒"实际只等 500ms。
+      if (op === 'wait') {
+        const params = raw.params && typeof raw.params === 'object' ? raw.params : {}
+        step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
+      }
       if (op === 'events' && raw.since == null) step.since = lastSeq
+      // 坐标容错：params.pos / params.target 或顶层 pos/target，可以写 [x,y,z] 也可以写 {x,y,z}。
+      step.params = fixPositions(step.params)
+      if (step.pos != null) step.pos = posObject(step.pos) ?? step.pos
+      if (step.target != null) {
+        const point = posObject(step.target)
+        if (point) step.target = { pos: point }
+      }
       return step
     })
   }
@@ -459,17 +600,24 @@ export function apply(ctx) {
         timeoutMs,
       })
       lastStatus = await refreshStatus() ?? lastStatus
-      if (body.task) return { text: `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。` }
       const parts = (body.results ?? []).map(renderRow)
+      if (body.task) {
+        // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
+        // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
+        const head = `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。`
+        return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+      }
       return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
     } catch (error) {
       if (isTimeoutError(error) || error?.code === 'timeout') return { text: doTimeoutText(timeoutMs) }
       const message = String(error?.message ?? error)
-      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；补一句"下一步"。
-      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，或 mcb_leave 收尾'
+      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；再补一句"下一步"。
+      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，任务被挂起就带 taskId，或 mcb_leave 收尾'
         : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
-          : /not connected|未连接/.test(message) ? '；先 mcb_join'
-            : ''
+          : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
+            : /队列已满|429/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑，等它结束或 cancel'
+              : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
+                : ''
       throw new Error(`${message}${hint}`)
     }
   }
@@ -501,7 +649,7 @@ export function apply(ctx) {
     {
       name: 'mcb_join',
       summary: '连接 MC 服务器：必要时启动 mc-body 进程，并等到真正连上；只负责连接，不建 focus/goal。',
-      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符）。成功返回服务器与连接状态，之后用 mcb_status 复核。失败会给可读原因：进程退出码 + body 日志最后几行、端口被占/被别的 body 占着、服务器没开或端口错（reconnect_exhausted）。失败时不留下半死进程，修好原因后可以直接再 join。',
+      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服必须唯一；默认 ICL，lab/多 owner 用 ICL_MC_BOT_NAME 区分）。成功返回服务器与连接状态，之后用 mcb_status 复核。失败会给可读原因：进程退出码 + body 日志、端口被占/被别的 body 占着、服务器没开或端口错、同名 bot 被踢。失败不留半死进程，修好原因后可再 join。想认真投入时：连上后 focus_enter 要带 activity:"mc"（MC 事件才和专注同一空间），再用 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾用 mcb_leave {cleanup:true}。',
       when: ['被叫去玩，或她自己想玩', 'mcb_status 显示未连接、服务器已经开着'],
       avoid: ['body 已经连在另一台服务器：先 mcb_leave', '只想随便玩一小会儿：连上直接玩，不必建 focus/goal'],
       parameters: {
@@ -511,7 +659,7 @@ export function apply(ctx) {
           server: { type: 'string', description: 'mcb_servers/mcb_lan 返回的服务器名，如 flat、survival。优先用它，不用记端口。' },
           host: { type: 'string', description: '服务器地址；和 server 二选一。' },
           port: { type: 'number', description: '服务器端口；默认 25565。' },
-          username: { type: 'string', description: '游戏内名字，≤16 字符；默认 ICL。' },
+          username: { type: 'string', description: '游戏内名字，≤16 字符，同服唯一；默认 ICL。两个 bot 同名会互相踢。' },
         },
       },
       async execute(args = {}) {
@@ -524,17 +672,23 @@ export function apply(ctx) {
     },
     {
       name: 'mcb_leave',
-      summary: '退出 MC：安全停止并结束本会话启动的 body 进程；不取消 focus/goal。',
-      description: '先 POST /v1/safety/stop，再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部启动的 body 只安全停止、不杀进程（返回值里会说明）。之后 mcb_status 应显示未连接。不想被持续唤醒时，自己先 time_cancel（取消 goal）再 focus_leave；mcb_leave 不会替你做这两件事。',
-      when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）'],
-      avoid: ['只离开游戏但想保留持续目标：focus/time 不用动，直接 leave'],
-      parameters: { type: 'object', properties: {} },
-      async execute() { return { text: await leave() } },
+      summary: '退出 MC：安全停止并结束本会话启动的 body；可选 cleanup 一并清 focus/goal。',
+      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部启动的 body 只安全停止、不杀进程（返回里说明）。返回值会报告：安全停止是否成功、进程怎么结束、focus 和 MC 持续目标还挂着什么。默认只停 body（既定语义）；不想被持续叫醒就带 cleanup：释放模型自己的 focus 租约、取消 focus=="mc" 的 time 持续目标（不碰 schedules/积压/时间锁）。幂等，可重复调用确认。',
+      when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）', '收工：想同时清掉 focus 和 MC 持续目标'],
+      avoid: ['只离开游戏但想保留持续目标：默认 leave 就行，别带 cleanup'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          cleanup: { type: 'boolean', description: '默认 false：只停 body 并报告还剩什么。true：同时释放 focus 租约、取消 focus="mc" 的 time 持续目标（不碰闹钟/积压）。' },
+        },
+      },
+      async execute({ cleanup = false } = {}) { return { text: await leave({ cleanup: Boolean(cleanup) }) } },
     },
     {
       name: 'mcb_status',
-      summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/body 进程状态。只读。',
-      description: '返回多行事实。未连接时看进程行：有退出码说明进程崩了（mcb_join 重试会重新起进程并带上原因），有 pid 但没连上说明还在启动/重连。暂停行给 pausedReason（death/health-drop/low-health/low-oxygen/stuck/disconnect），恢复用 mcb_do 的 resume op。任务行给 kind/state/进度；队列是还没跑的任务。任务历史用 {"steps":[{"op":"tasks"}]}。',
+      summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/重连/body 进程状态。只读。',
+      description: '返回多行事实。连接行以 body 顶层 connected 为准（断线/重连/被踢时不会假在线）；离线会附原因与是否在重连。任务行给 kind/state：paused=断线挂起（结果未定，重连后用 {"op":"resume","taskId":"t-x"} 继续），unknown=超时结果未知（先看背包/位置再决定），failed 带 error 原因。暂停行给 pausedReason（death/health-drop/low-health/low-oxygen/stuck/disconnect），解除用 {"op":"resume"}。任务历史用 {"steps":[{"op":"tasks"}]}。',
       when: ['行动前确认位置/血量/任务', '任务事件之后核对真实结果', '怀疑掉线/卡死'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -548,17 +702,25 @@ export function apply(ctx) {
           return { text: lines.join('\n') }
         }
         const a = status.adapter ?? {}
+        const connected = isConnected(status)
+        const offlineReason = status.safety?.offlineReason ?? null
         const lines = [
-          `MC 身体：${a.connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}`,
+          `MC 身体：${connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}${!connected && offlineReason ? `（离线原因：${String(offlineReason).slice(0, 120)}）` : ''}`,
           `玩家：${(a.players ?? []).join('、') || '无'}`,
           `位置：${a.position ? `${Math.round(a.position.x)}, ${Math.round(a.position.y)}, ${Math.round(a.position.z)}` : '未知'} · 维度 ${a.dimension ?? '?'}`,
           `生命/饥饿/氧气：${Math.round(Number(a.health ?? 0))}/20，${Math.round(Number(a.food ?? 0))}/20，${Number.isFinite(Number(a.oxygen)) ? Math.round(Number(a.oxygen)) : '?'}`,
           `背包：${Number.isFinite(Number(a.inventoryCount)) ? `${Number(a.inventoryCount)} 件` : '未知'}`,
-          `任务：${status.task ? `${status.task.kind} ${status.task.state}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
+          `任务：${status.task ? `${status.task.kind} ${status.task.state}${status.task.outcomeUnknown ? '（结果未知）' : ''}${status.task.state === 'paused' ? '（断线挂起，可 resume taskId 继续）' : ''}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
         ]
+        const reconnect = status.reconnect
+        if (reconnect && (reconnect.pending || reconnect.attempts || reconnect.exhausted)) {
+          lines.push(`重连：第 ${reconnect.attempts ?? 0}/${reconnect.max ?? '?'} 次${reconnect.exhausted ? '（已放弃，需要 mcb_join）' : ''}${reconnect.lastError ? ` · ${String(reconnect.lastError).slice(0, 80)}` : ''}`)
+        }
         if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
         const ownState = supervisor.state()
         if (ownState.owns) lines.push(`进程：本会话启动 pid ${ownState.pid ?? '?'}${ownState.alive ? '（运行中）' : '（已退出）'}`)
+        const suppressed = Number(status.watchdog?.suppressed ?? 0) + Number(status.watchdog?.healthDropSuppressed ?? 0)
+        if (suppressed) lines.push(`body 抑制：watchdog 已合并 ${suppressed} 条重复告警（同类不再逐条叫）`)
         const stats = gate.stats()
         if (stats.suppressed) lines.push(`通知：最近抑制 ${stats.suppressed} 条重复事件`)
         return { text: lines.join('\n') }
@@ -575,15 +737,15 @@ export function apply(ctx) {
     {
       name: 'mcb_inventory',
       summary: '看背包和手持物品（名字+数量）。只读。',
-      description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：body 的任务完成事件不代表掉落一定进了背包（mine 可能 reason=no-effect）。合成/熔炼/交易前先看材料够不够。',
+      description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：task_done 只表示达成了 body 的判据（mine 是背包净增达标），物品还可能散落在地上；task_failed/unknown 时更要看背包确认到底有没有到手。合成/熔炼/交易前先看材料够不够。',
       when: ['合成/熔炼/放置之前', '任务完成后核对产物'],
       parameters: { type: 'object', properties: {} },
       async execute() { return inspect('inventory') },
     },
     {
       name: 'mcb_scan',
-      summary: '扫描附近某类方块的位置和距离。只读。参数：name 必填，radius/count 可选。',
-      description: 'name 用 Minecraft 方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest、water、lava。radius 默认 8（方块格），count 默认 8，结果按距离排序。返回空表示这个范围内没有——把 radius 调大或换块名，不要换任务重试同一件事。',
+      summary: '扫描附近某类方块的位置和距离（按距离升序）。只读。参数：name 必填，radius/count 可选。',
+      description: 'name 用 Minecraft 方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest。body 的硬限制：radius 默认 16、最大 48；count 默认 8、最大 64（超过按 64）。结果按距离升序、只列 count 个；到上限时返回会附一句"可能还有更多"。返回"附近没有 X"表示范围内真的没有——先调大 radius 或换块名，别假装它存在。',
       when: ['下 mine 任务之前确认目标存在', '找工作台/熔炉/箱子/矿', '脱困时找方向'],
       parameters: {
         type: 'object',
@@ -591,28 +753,44 @@ export function apply(ctx) {
         required: ['name'],
         properties: {
           name: { type: 'string', description: '方块 id，如 oak_log、stone、iron_ore。' },
-          radius: { type: 'number', description: '搜索半径（格），默认 8。' },
-          count: { type: 'number', description: '最多返回几个，默认 8。' },
+          radius: { type: 'number', description: '搜索半径（格），默认 16，最大 48。' },
+          count: { type: 'number', description: '最多列几个（按距离最近的），默认 8，最大 64。' },
         },
       },
-      async execute({ name, radius, count } = {}) { return inspect('scan', { name, radius, count }) },
+      async execute({ name, radius, count } = {}) {
+        const body = await inspect('scan', { name, radius, count })
+        const text = String(body.text ?? '')
+        const lines = text.split('\n').filter((line) => line.trim())
+        const rowLines = lines.filter((line) => line.includes('@'))
+        const others = lines.filter((line) => !line.includes('@'))
+        if (!rowLines.length) return { text }
+        // count 要真的生效：body 可能给多了（或被它的上限截断），这里按 count 只列最近的几行并说清楚。
+        const wanted = Math.max(1, Math.min(64, Number(count) || 8))
+        const kept = rowLines.slice(0, wanted)
+        const note = rowLines.length >= 64
+          ? '（已到 body 上限 64 个，可能还有更多：缩小 radius 或换更具体的方块名）'
+          : rowLines.length >= wanted
+            ? `（只列最近的 ${kept.length} 个（count=${wanted}），可能还有更多：调大 count（≤64）或缩小 radius）`
+            : ''
+        return { text: [...others, ...kept].join('\n') + (note ? `\n${note}` : '') }
+      },
     },
     {
       name: 'mcb_map',
       summary: '看脚下方块层的字符小地图（#实心 .空 ~水 ≈岩浆 ?未加载）。只读。参数：radius 可选。',
-      description: '用来判断地形：前面是墙/悬崖/水/岩浆。radius 默认 8（格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标。',
+      description: '用来判断地形：前面是墙/悬崖/水/岩浆。radius 默认 4 格、最大 8（超过按 8，地图是 (2r+1)² 的字符网格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标；想找远处某类方块用 mcb_scan。',
       when: ['goto/寻路失败', '判断悬崖、水域、洞窟'],
       parameters: {
         type: 'object',
         additionalProperties: false,
-        properties: { radius: { type: 'number', description: '地图半径（格），默认 8。' } },
+        properties: { radius: { type: 'number', description: '地图半径（格），默认 4，最大 8。' } },
       },
       async execute({ radius } = {}) { return inspect('map', { radius }) },
     },
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务用 {"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId，进度/完成以事件回来）；单步动作用 {"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（会阻塞到完成，最长约 120s，超时会提示先查状态、不要原样重试）。查询/控制：{"op":"tasks"}（台账含 result/error）、{"op":"events"}（默认只列上次之后的新事件，可加 since）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}（解除暂停；队列已清空，要续做重新下任务）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。决定做大事/任务完成或失败时用 say 说一句。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],

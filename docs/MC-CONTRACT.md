@@ -96,7 +96,7 @@ Minecraft 私服 / 局域网
 
 | kind | 参数 | 成功条件 |
 |---|---|---|
-| `mine` | `block`, `count`, `radius` | 背包中该物品增加 ≥ count，或明确 `no-target` |
+| `mine` | `block`, `count`, `radius` | 背包中该物品净增 ≥ count；`no-target` / `no-effect` / `no-path` / `dig-failed` 记 `failed`（带 reason，不伪装成功） |
 | `goto` | `x`,`y`,`z`,`range` | 到达 range 内 |
 | `patrol` | `points[]` 或 `radius` | 走完点/时间，未卡死 |
 | `explore` | `radius`,`durationMs` | 探索时间到，位置有变化 |
@@ -107,19 +107,23 @@ v1 不开放：任意命令、OP、PvP、大范围破坏、公共服务器。
 
 ### 状态机
 
-`queued → running → done | failed | cancelled | interrupted`
+`queued → running → done | failed | cancelled | interrupted | paused | unknown`
 
+- `done`：目标真的达成（背包净增 / 到达 / 时限内正常结束）；
+- `failed`：明确失败（no-target / no-effect / no-path / dig-failed / timeout），带 reason；
+- `interrupted`：被安全停止/取消/外部事件打断，保留原因与进度；
+- `paused`：断线/会话断开导致暂停；重连后**不自动续跑**，要显式 resume；
+- `unknown`：超时或断线时结果不可知（可能已生效），不能当失败也不能当成功，先复核；
 - 同一 body 同时最多 1 个 running，其余 queued；
 - `cancel` 必须让 mineflayer 停止当前动作（停止寻路/挖掘/控制状态）；
-- `interrupted` 用于低血、死亡、断线、玩家 @ 等安全打断，保留原因和进度；
-- 任务有 deadline；超时进入 `failed(timeout)`；
 - 同一 `idempotencyKey` 重复提交返回原 task，不重复执行。
 
-### 查询/取消
+### 查询/取消/恢复
 
 - `GET /v1/tasks/:id`
 - `GET /v1/tasks?state=running`
 - `POST /v1/tasks/:id/cancel`
+- `POST /v1/tasks/:id/resume`（只用于 `paused`；断线重连后由 ICL 显式决定要不要继续）
 
 ## 6. 事件
 
@@ -140,8 +144,8 @@ v1 不开放：任意命令、OP、PvP、大范围破坏、公共服务器。
 事件类型：
 
 - `chat` / `join` / `leave` / `death`
-- `task_queued` / `task_started` / `task_progress` / `task_done` / `task_failed` / `task_cancelled` / `task_interrupted`
-- `stuck` / `disconnected` / `reconnected` / `safety_stop`
+- `task_queued` / `task_started` / `task_progress` / `task_done` / `task_failed` / `task_paused` / `task_unknown` / `task_cancelled` / `task_interrupted`
+- `stuck` / `disconnected` / `reconnected` / `reconnect_exhausted` / `safety_stop`
 - `body_error`（mineflayer 异常，带可读原因）
 
 事件只追加，有 seq；body 启动时 ICL 不重放旧历史（`since=latest`），恢复会话时显式 replay。

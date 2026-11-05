@@ -17,11 +17,16 @@ function statusBody(state) {
   return {
     ok: true,
     version: 'mc-body/v1',
+    connected: state.connected,
+    online: state.connected,
     paused: state.paused,
     pausedReason: state.pausedReason,
+    safety: { paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true },
     task: state.task,
     queue: [],
     eventsSeq: state.seq,
+    reconnect: state.reconnect ?? { attempts: 0, max: 3, exhausted: false, pending: false, lastError: null },
+    watchdog: { ticks: 5, alerts: 1, suppressed: state.suppressed ?? 0, healthDropSuppressed: 0 },
     adapter: {
       connected: state.connected,
       host: '127.0.0.1',
@@ -65,20 +70,38 @@ async function startFakeBody({ connected = true } = {}) {
       return send(200, { ok: true, seq: state.seq, events: state.events.filter((event) => event.seq > since) })
     }
     if (url.pathname === '/v1/inspect' && req.method === 'POST') {
-      return read((input) => send(200, { ok: true, result: { text: `inspect:${input.kind}` } }))
+      return read((input) => {
+        if (input.kind === 'scan' && state.scanRows != null) {
+          const name = input.params?.name ?? 'dirt'
+          const text = state.scanRows > 0
+            ? Array.from({ length: state.scanRows }, (_, i) => `${name} @ ${i},-60,0（${(i * 0.5 + 0.5).toFixed(1)}m）`).join('\n')
+            : `附近没有 ${name}。`
+          return send(200, { ok: true, result: { text } })
+        }
+        return send(200, { ok: true, result: { text: `inspect:${input.kind}` } })
+      })
     }
     if (url.pathname === '/v1/do' && req.method === 'POST') {
       return read(async (input) => {
         state.requests.push(input)
         if (state.doDelay) await sleep(state.doDelay)
         if (state.doError) return send(409, { ok: false, error: state.doError })
-        const step = input.steps?.[0] ?? {}
-        if (step.op === 'task') return send(200, { ok: true, task: { id: 't-1', kind: step.kind, state: 'queued' } })
-        if (step.op === 'events') return send(200, { ok: true, results: [{ index: 0, op: 'events', result: { events: state.events, seq: state.seq } }] })
-        if (step.op === 'tasks') return send(200, { ok: true, results: [{ index: 0, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] }] })
-        if (step.op === 'resume') { state.paused = false; state.pausedReason = null; return send(200, { ok: true, results: [{ index: 0, op: 'resume', result: { paused: false } }] }) }
-        if (step.op === 'say') return send(200, { ok: true, results: [{ index: 0, op: 'say', result: { ok: true } }] })
-        return send(200, { ok: true, results: input.steps.map((row) => ({ op: row.op, result: { text: `did:${row.op}` } })) })
+        const results = []
+        for (const step of input.steps ?? []) {
+          // 模拟真 body：task 之前的 steps 结果一并返回，然后立即返回 taskId。
+          if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
+          if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
+          else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] })
+          else if (step.op === 'resume') {
+            state.paused = false
+            state.pausedReason = null
+            // 真 body：带 taskId 走 resumeTask 返回被恢复的任务；不带则是安全暂停的解除。
+            results.push({ index: results.length, op: 'resume', result: step.taskId ? { id: step.taskId, kind: 'mine', state: 'running' } : { paused: false } })
+          }
+          else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
+          else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
+        }
+        return send(200, { ok: true, results })
       })
     }
     if (url.pathname === '/v1/safety/stop' && req.method === 'POST') {
@@ -290,7 +313,7 @@ test('mcb_join：失败给进程退出码 + body 日志（不是"没有连上"�
   }
 })
 
-test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归本会话；goal/focus 不被动', async () => {
+test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归本会话；focus/goal 不被动', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
@@ -298,7 +321,8 @@ test('mcb_leave：复用外部 body 时只安全停止，说清楚进程不归�
     assert.match(joined.text, /已连接 127\.0\.0\.1:54837/)
     const left = await link.tools.mcb_leave.execute({})
     assert.match(left.text, /不是本会话启动的/)
-    assert.match(left.text, /focus\/goal 没有动/)
+    assert.match(left.text, /body 进程：本会话没有启动过/)
+    assert.match(left.text, /focus\/goal：没有挂着的/)
     assert.equal(body.state.paused, true, 'leave 必须先安全停止')
   } finally {
     await link.cleanup()
@@ -339,18 +363,50 @@ test('事件→信号：掉血/死亡刷屏合并限流，一轮不刷屏', asyn
   }
 })
 
-test('事件→信号：task_done 带 reason 的消息说"没达成"而不是"完成"', async () => {
+test('事件→信号：task_failed 带原因码时消息给出失败原因与下一步', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
-    body.push({ type: 'task_done', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, result: { mined: 0, reason: 'no-target' } } } })
+    body.push({ type: 'task_failed', data: { task: { id: 't-3', kind: 'mine', params: { block: 'oak_log', count: 4 }, state: 'failed', error: 'mine: no-target', result: { mined: 0 } } } })
     await link.api.poll()
     await link.adapter.drainOnce()
     const text = link.pushed.join('\n')
-    assert.match(text, /没达成/)
+    assert.match(text, /任务失败/)
     assert.match(text, /no-target/)
     assert.match(text, /radius/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：body 活着但没连上（重连中）时显示离线原因与重连次数，不假在线', async () => {
+  const body = await startFakeBody({ connected: false })
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.reconnect = { attempts: 2, max: 3, exhausted: false, pending: true, lastError: 'socketClosed' }
+    const out = await link.tools.mcb_status.execute({})
+    assert.match(out.text, /未连接/)
+    assert.doesNotMatch(out.text, /MC 身体：已连接/)
+    assert.match(out.text, /离线原因/)
+    assert.match(out.text, /重连：第 2\/3 次/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：resume 带 taskId 时显示被恢复的任务', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.doError = null
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'resume', taskId: 't-7' }] })
+    assert.match(out.text, /\[resume\]/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.taskId, 't-7')
+    assert.equal(sent.op, 'resume')
   } finally {
     await link.cleanup()
     await body.close()
@@ -392,6 +448,91 @@ test('事件流：body 编号归零（被杀后重启）时不重放旧事件，
     const text = link.pushed.join('\n')
     assert.match(text, /编号归零/)
     assert.match(text, /不重放旧事件/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：wait 的 durationMs 容错成 body 的 ms；cancel+task 两步都回结果', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    await link.tools.mcb_do.execute({ steps: [{ op: 'wait', params: { durationMs: 8000 } }] })
+    const waited = body.state.requests.at(-1).steps[0]
+    assert.equal(waited.op, 'wait')
+    assert.equal(waited.params.ms, 8000)
+
+    const combo = await link.tools.mcb_do.execute({ steps: [{ op: 'cancel', taskId: 't-9' }, { op: 'task', kind: 'mine', params: { block: 'dirt', count: 2 } }] })
+    assert.match(combo.text, /\[cancel\]/)
+    assert.match(combo.text, /任务 t-1（mine）已接受/)
+    assert.ok(combo.text.indexOf('[cancel]') < combo.text.indexOf('已接受'), 'cancel 结果应在任务结果之前')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_leave：默认只停 body 但报告还挂着什么；cleanup:true 释放 focus/goal 且幂等', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const joined = await link.tools.mcb_join.execute({ server: 'flat' })
+    assert.match(joined.text, /已连接 127\.0\.0\.1:54837/)
+    // 模型自己建的 focus 租约（focus_enter 的 owner 就是 'focus'）+ 一条 MC 持续目标（time 不在测试里，用不上）。
+    link.host.services.focus.enter({ label: 'mc', owner: 'focus', title: '在 MC 里玩' })
+    const left = await link.tools.mcb_leave.execute({})
+    assert.match(left.text, /安全停止：成功/)
+    assert.match(left.text, /body 进程：本会话没有启动过|body 进程：已结束/)
+    assert.match(left.text, /不是本会话启动的/)
+    assert.match(left.text, /还挂着：focus 1 个/)
+    assert.match(left.text, /cleanup:true/)
+    assert.equal(body.state.paused, true, 'leave 必须先安全停止')
+
+    const cleaned = await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.match(cleaned.text, /收尾清理：focus 释放 1 个/)
+    assert.match(cleaned.text, /清理后：focus 和 MC 持续目标都空了/)
+    assert.equal(link.host.services.focus.list().length, 0, 'cleanup 应释放模型 focus 租约')
+    // 幂等：再调一次不报错、不重复清
+    const again = await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.match(again.text, /没有启动过|无需停止/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_scan：按 count 说明截断（到上限说"可能还有更多"），不再假装列表完整', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.scanRows = 20
+    const out = await link.tools.mcb_scan.execute({ name: 'dirt', radius: 6, count: 5 })
+    assert.match(out.text, /只列最近的 5 个（count=5）/)
+    assert.match(out.text, /可能还有更多/)
+    body.state.scanRows = 64
+    const capped = await link.tools.mcb_scan.execute({ name: 'dirt', count: 200 })
+    assert.match(capped.text, /已到 body 上限 64 个/)
+    body.state.scanRows = 2
+    const small = await link.tools.mcb_scan.execute({ name: 'dirt', count: 8 })
+    assert.doesNotMatch(small.text, /可能还有更多/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：dig/place 的 pos 写成 [x,y,z] 也规整成 {x,y,z} 再交给 body', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: [12, -60, 14] } }] })
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.deepEqual(sent.params.pos, { x: 12, y: -60, z: 14 })
+    const text = body.state.requests.at(-1).steps[0]
+    assert.equal(text.op, 'dig')
   } finally {
     await link.cleanup()
     await body.close()

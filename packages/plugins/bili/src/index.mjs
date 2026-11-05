@@ -12,10 +12,33 @@ const PY = String(process.env.BILI_PYTHON ?? 'C:\\Users\\ai_admin\\.dsh\\bili-du
 const ICL_ROOT = process.env.ICL_ROOT ?? 'C:/DSH/qwenstuff/icl'
 const RUNNER = process.env.BILI_RUNNER ?? path.join(ICL_ROOT, 'tools', 'bili-run.py')
 const STORYBOARD_CLI = process.env.STORYBOARD_CLI ?? 'C:\\Users\\ai_admin\\.dsh\\profiles\\desktop\\node_modules\\dsh-video-storyboard\\bin\\storyboard.mjs'
+const BILI_DIR = process.env.BILI_DIR ?? 'C:\\Users\\ai_admin\\.dsh\\bili-duty'
+
+/**
+ * 依赖预检：换机器时最常见的是"解释器/桥接脚本不在"。
+ * 直接抛 execFile 的栈是没法行动的，所以分开说清楚缺哪一个、怎么补。
+ * 返回 null = 可用，否则返回给模型看的错误串。
+ */
+function preflight(kind) {
+  if (kind === 'frames') {
+    if (!fs.existsSync(STORYBOARD_CLI)) {
+      return `看不成画面：找不到 storyboard CLI（${STORYBOARD_CLI}）。用 STORYBOARD_CLI 环境变量指向 dsh-video-storyboard 的 bin/storyboard.mjs。文字类工具（bili_watch / bili_comments）不受影响。`
+    }
+    return null
+  }
+  const missing = []
+  if (!fs.existsSync(PY)) missing.push(`python 解释器（${PY}）→ 用 BILI_PYTHON 指向 bili-duty 的 .venv\\Scripts\\python.exe`)
+  if (!fs.existsSync(RUNNER)) missing.push(`桥接脚本（${RUNNER}）→ 用 BILI_RUNNER 或 ICL_ROOT 指向 bili-run.py 所在仓库`)
+  if (!fs.existsSync(BILI_DIR)) missing.push(`bili-duty 目录（${BILI_DIR}）→ 用 BILI_DIR 指过去`)
+  if (!missing.length) return null
+  return `用不了 bili：缺 ${missing.join('；')}。这是本机接缝，补齐路径后重试（不是视频或网络的问题）。`
+}
 
 function callTool(fn, args, { timeout = 60000 } = {}) {
+  const blocked = preflight('tools')
+  if (blocked) return Promise.resolve({ ok: false, error: blocked, missingDeps: true })
   return new Promise((resolve) => {
-    execFile(PY, [RUNNER, fn, JSON.stringify(args)], { timeout, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', BILI_DIR: process.env.BILI_DIR ?? 'C:\\Users\\ai_admin\\.dsh\\bili-duty' } }, (error, stdout, stderr) => {
+    execFile(PY, [RUNNER, fn, JSON.stringify(args)], { timeout, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PYTHONIOENCODING: 'utf-8', BILI_DIR } }, (error, stdout, stderr) => {
       if (error) return resolve({ ok: false, error: String(error.message || error) })
       const text = String(stdout ?? '').trim()
       if (!text) return resolve({ ok: false, error: String(stderr ?? '').slice(0, 200) || 'empty' })
@@ -104,7 +127,8 @@ export function apply(ctx) {
   // 看画面：把 B 站视频交给 dsh-video-storyboard 的 CLI，拿回宫格图 + 时间轴
   ctx.tools.register({
     name: 'bili_frames',
-    summary: 'See the actual frames: a storyboard grid plus a timeline, sent to you as an image. Use it for videos without subtitles or when the visual content is the point.',
+    summary: 'Storyboard grid FILE for a video: the picture is NOT attached - you get the timeline and a file path to open with read_file.',
+    description: 'Use it when a video has no subtitles or the visual content is the point. It writes the grid to disk and reports the path; read that file to actually look at the frames. For long videos pass from/to to scan one stretch.',
     when: ['a video has no subtitles', 'the title or description is not enough to know what it shows'],
     avoid: ['very long videos - pass from/to to look at one stretch'],
     parameters: {
@@ -116,6 +140,8 @@ export function apply(ctx) {
       },
     },
     async execute({ target, from = null, to = null, cells = 6 } = {}) {
+      const blocked = preflight('frames')
+      if (blocked) return { text: blocked }
       const m = String(target).match(/BV[0-9A-Za-z]{8,12}/)
       const bvid = m ? m[0] : String(target).trim()
       const url = bvid.startsWith('http') ? bvid : `https://www.bilibili.com/video/${bvid}`
@@ -141,7 +167,12 @@ export function apply(ctx) {
         if (data.transcript?.chars) timeline += `\n字幕：${String(data.transcript.chars)} 字`
       } catch { /* manifest 缺失也没关系 */ }
       const described = ctx.config.visionEnabled === false ? '' : await describeSheet(ctx, sheet)
-      const lines = [`已切好宫格图：${sheet}`, timeline]
+      const lines = [
+        `已切好宫格图：${sheet}`,
+        // 别让模型以为画面已经在眼前：DSH 只收到这句文本 + 路径。
+        '（这张图没有直接发给你；要看画面就用 read_file 读上面这个路径。）',
+        timeline,
+      ]
       if (described) lines.push('', '画面描述：', described)
       return { text: lines.join('\n').slice(0, limit), imagePath: sheet }
     },
