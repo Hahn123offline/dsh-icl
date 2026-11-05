@@ -1074,7 +1074,7 @@ async function main() {
         : pickupStuck
           ? `你连续 ${loop.count} 次重复同一个调用（它可能"成功"但没用）：${loop.args.slice(0, 120)}。注意：**goto 不会捡东西**。捡掉落物要：mcb_look 看 item 实体距离/方向 → 走到它旁边 1 格内 → wait；死亡掉落 5 分钟内消失，捡不到就放弃换目标。下一步只做这一个动作：${nextStep.text}。`
           : digStuck
-            ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
+            ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。先 mcb_inventory 看手持：石头要镐、木头要斧、泥土要锹，挖之前先 mcb_equip 换对工具（没镐就先做木镐：木板→木棍→workbench）。然后改用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
             : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
       try { await sendPrompt(steer, { timeoutSec: 300 }) } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
       if (state.loopBreakers >= 2) {
