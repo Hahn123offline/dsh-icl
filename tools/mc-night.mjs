@@ -1037,14 +1037,17 @@ async function main() {
         await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
       } catch (error) { log(`loop-breaker cancel 失败：${String(error?.message ?? error)}`) }
       await sleep(2500)
-      // dig / goto 捡物 特定 steer（她爱用 goto+dig 旧坐标、以为 goto 能捡东西）
+      // dig / goto 捡物 / 缺材料 特定 steer（她爱用 goto+dig 旧坐标、以为 goto 能捡东西、没木头还反复 craft）
       const digStuck = /dig|方块没有变化|没有变化/.test(`${loop.name} ${loop.error}`)
       const pickupStuck = loop.kind === 'same-call-ok' || /goto/.test(loop.name)
-      const steer = pickupStuck
-        ? `你连续 ${loop.count} 次重复同一个调用（它可能"成功"但没用）：${loop.args.slice(0, 120)}。注意：**goto 不会捡东西**。捡掉落物要：mcb_look 看 item 实体距离/方向 → 走到它旁边 1 格内 → wait；死亡掉落 5 分钟内消失，捡不到就放弃换目标。下一步只做这一个动作：${nextStep.text}。`
-        : digStuck
-          ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
-          : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
+      const materialStuck = /没有可用配方|材料不够|缺 oak_log|缺.*原木/.test(String(loop.error))
+      const steer = materialStuck
+        ? `你背包里没有木头（oak_log×0），所以 craft 木板做不出来。下一步只做一个动作：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":1}}]}（用 mine task，不要 goto+dig 指定坐标）；砍到 1 个 oak_log 后再 craft。不要继续空 craft。`
+        : pickupStuck
+          ? `你连续 ${loop.count} 次重复同一个调用（它可能"成功"但没用）：${loop.args.slice(0, 120)}。注意：**goto 不会捡东西**。捡掉落物要：mcb_look 看 item 实体距离/方向 → 走到它旁边 1 格内 → wait；死亡掉落 5 分钟内消失，捡不到就放弃换目标。下一步只做这一个动作：${nextStep.text}。`
+          : digStuck
+            ? `你连续 ${loop.count} 次在同一个 dig 调用上失败：${String(loop.error).slice(0, 120)}。改用这个：先 mcb_scan {"name":"oak_log","radius":32} 拿新坐标，然后只用 mine task：mcb_do {"steps":[{"op":"mine","params":{"block":"oak_log","count":8}}]}；不要再用 goto+dig 旧坐标。`
+            : `你已连续 ${loop.count} 次重复同一个失败调用：${String(loop.error).slice(0, 140)}。当前状态：${bodyNow.connected ? `已连接 ${bodyNow.position ?? ''} 血 ${bodyNow.health ?? '?'}/${bodyNow.food ?? '?'}` : '未连接'}。下一步只能做这一个动作：${nextStep.text}；禁止用原参数重试。`
       try { await sendPrompt(steer, { timeoutSec: 300 }) } catch (error) { log(`loop-breaker 提示失败：${String(error?.message ?? error)}`) }
       if (state.loopBreakers >= 2) {
         log('循环熔断升级：重启 lab 会话清上下文并降级 op 集')
