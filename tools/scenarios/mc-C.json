@@ -7,7 +7,7 @@
     {
       "op": "prompt",
       "id": "join-and-task",
-      "text": "进 flat 服（127.0.0.1:54837，名字 ICL-mclab-1），然后用 mcb_do 挖一点 oak_log（mine）。确认任务在跑就告诉我，不用一直等结果。",
+      "text": "进 flat 服（server:flat，username:ICL-mclab-1），然后用 mcb_do 挖 8 个 dirt（泥土）。确认任务在跑就告诉我，不用一直等结果。",
       "timeoutSec": 480
     },
     { "op": "assert", "id": "joined", "toolAll": ["mcb_join"], "required": true },
@@ -16,6 +16,7 @@
     { "op": "wait", "seconds": 6 },
     { "op": "kill-body", "id": "kill-body" },
     { "op": "wait", "seconds": 8 },
+    { "op": "assert", "id": "body-gone", "bodyAlive": false, "required": true },
     {
       "op": "prompt",
       "id": "notice-disconnect",
@@ -23,7 +24,8 @@
       "timeoutSec": 300
     },
     { "op": "assert", "id": "checked-after-crash", "toolAny": ["mcb_status", "mcb_look", "mcb_join"], "required": true },
-    { "op": "assert", "id": "admitted-disconnect", "assistantContains": ["掉线", "断", "未连接", "重连", "失败"], "required": false },
+    { "op": "assert", "id": "admitted-disconnect", "assistantContains": ["掉线", "断", "未连接", "重连", "失败", "停"], "required": false },
+    { "op": "assert", "id": "status-sees-disconnected", "toolResultContains": { "names": ["mcb_status", "mcb_look"], "any": ["未连接", "掉线", "断开", "disconnect", "body"] }, "required": false },
     { "op": "snapshot", "id": "after-recovery" }
   ],
   "interview": [

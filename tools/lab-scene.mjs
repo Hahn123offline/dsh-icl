@@ -81,9 +81,38 @@ function descendantsOf(table, rootPid) {
 }
 
 /** lab dsh 进程树里属于 mc-body 的子进程。 */
-export async function bodyProcesses(dshPid) {
+export async function bodyProcesses(metaOrPid) {
+  // 首选 mc-link 自己的 lifecycle 台账（state/<preset>/mc-link.jsonl 的 body-spawn/body-exit）：
+  // 不依赖再 spawn PowerShell，也不会因为一次 WMI 查询抖动就把"body 明明活着"判成没有。
+  if (metaOrPid && typeof metaOrPid === 'object') {
+    const fromLedger = bodyPidsFromLedger(metaOrPid)
+    if (fromLedger.length) return fromLedger.map((pid) => ({ ProcessId: pid, ParentProcessId: null, CommandLine: '(mc-link.jsonl body-spawn)' }))
+    const dshPid = metaOrPid.pids?.dsh
+    if (!dshPid) return []
+    return processDescendantsBody(dshPid)
+  }
+  return processDescendantsBody(metaOrPid)
+}
+
+/** 从 mc-link.jsonl 读当前活着的 body pid（最后一次 lifecycle 是 body-spawn 且进程还在）。 */
+function bodyPidsFromLedger(meta) {
+  const file = path.join(meta.runDir ?? '', 'state', String(meta.preset ?? ''), 'mc-link.jsonl')
+  const rows = readJsonl(file)
+  const last = new Map()
+  for (const row of rows) {
+    if (row?.type !== 'body-spawn' && row?.type !== 'body-exit') continue
+    const pid = Number(row.pid)
+    if (!Number.isFinite(pid) || pid <= 0) continue
+    last.set(pid, row.type === 'body-spawn')
+  }
+  const alive = []
+  for (const [pid, spawned] of last) if (spawned && isPidAlive(pid)) alive.push(pid)
+  return alive
+}
+
+async function processDescendantsBody(dshPid) {
   const table = await processTable()
-  return descendantsOf(table, dshPid).filter((row) => /mc-body|mc_body|mcbody/i.test(String(row.CommandLine ?? '')))
+  return descendantsOf(table, dshPid).filter((row) => /mc-body|mc_body|mcbody|cli\.mjs/i.test(String(row.CommandLine ?? '')))
 }
 
 /* ── 场景执行 ─────────────────────────────────────────── */
@@ -217,9 +246,23 @@ export async function runScene({ run, sceneFile, interview = true }) {
   const lastSeqNow = () => Number(orderedEvents(eventsFile).at(-1)?.seq) || 0
 
   async function refreshBody() {
-    const procs = await bodyProcesses(meta.pids?.dsh)
+    const procs = await bodyProcesses(meta)
     bodyState = { bodyCount: procs.length, bodyPids: procs.map((row) => Number(row.ProcessId)), bodyAlive: procs.length > 0 }
     return bodyState
+  }
+
+  // 场景前置：清掉上一场/探测留下的 body，保证 A/C/E 每次从"未连接"开始，可连跑 3 次。
+  const preCleanup = { killedPids: [] }
+  await refreshBody()
+  if (bodyState.bodyCount) {
+    for (const pid of bodyState.bodyPids) {
+      await killPidTree(pid)
+      preCleanup.killedPids.push(pid)
+    }
+    await sleep(1500)
+    await refreshBody()
+    preCleanup.forced = true
+    console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
   }
 
   const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, text, timeoutSec)
@@ -343,6 +386,7 @@ export async function runScene({ run, sceneFile, interview = true }) {
     ok,
     checks,
     steps,
+    preCleanup,
     body: bodyState,
     cleanup,
     interview: answers,
@@ -378,6 +422,7 @@ function renderVerdict(verdict, meta) {
   push(`- run：\`${verdict.runId}\` · preset：\`${verdict.preset}\` · 模型：${verdict.model?.provider ?? '?'} / ${verdict.model?.model ?? '?'}`)
   push(`- session：\`${verdict.sessionId}\` · 端口：${meta.port}`)
   push(`- 时间：${verdict.startedAt} → ${verdict.endedAt}（${(verdict.durationMs / 1000).toFixed(1)}s） · seq ${verdict.startSeq} → ${verdict.endSeq}`)
+  if (verdict.preCleanup?.killedPids?.length) push(`- 前置清理：杀掉上一场残留 body pid ${verdict.preCleanup.killedPids.join(',')}（保证本场从"未连接"开始）`)
   push(`- 判据：docs/MC-ACCEPTANCE.md（机器断言=链路证据；三问=当事人自述，不算链路证据）`)
   push()
   push('## 断言')
