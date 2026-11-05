@@ -391,6 +391,31 @@ test('qq_status 是可读的只读工具，明确说不能发', async () => {
   host.disable('qq')
 })
 
+test('影子状态文件：给 lab / runbook 的可观测出口（连接态 + 零出站）', async () => {
+  FakeWebSocket.reset()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-status-'))
+  const statusFile = path.join(dir, 'status.json')
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig({ statusFile, statusIntervalMs: 500 }) })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(privateEvent({ messageId: 9501, text: '状态文件' })))
+  const ok = await waitFor(() => {
+    try {
+      const data = JSON.parse(fs.readFileSync(statusFile, 'utf8'))
+      return data.connection?.connected === true && data.stats?.delivered >= 1
+    } catch { return false }
+  })
+  assert.equal(ok, true, '状态文件应被原子写出并反映连接/投递')
+  const data = JSON.parse(fs.readFileSync(statusFile, 'utf8'))
+  assert.equal(data.readOnlyInvariant.framesSent, 0)
+  assert.equal(data.groupPolicy, 'ignore')
+  assert.equal(data.sendEnabled, false)
+  host.disable('qq')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
 /* ── 3. 回环层：真 WebSocket + 假 OneBot 服务 ─────────── */
 
 test('真 WebSocket 回环：收得到、进 delivery、客户端一个字节都不发', async () => {

@@ -51,6 +51,8 @@ const DEFAULTS = Object.freeze({
   signalTtlMs: 1_800_000,
   // 观测/记录
   recordFile: '',
+  statusFile: '',
+  statusIntervalMs: 5000,
   promptLine: false,
   // 连接
   reconnectMinMs: 1000,
@@ -80,7 +82,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -91,6 +93,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.selfId = cfg.selfId == null ? null : String(cfg.selfId)
   cfg.dedupeFile = String(cfg.dedupeFile ?? '')
   cfg.recordFile = String(cfg.recordFile ?? '')
+  cfg.statusFile = String(cfg.statusFile ?? '')
   cfg.sendApproval = String(cfg.sendApproval ?? '')
   cfg.webSocketImpl = typeof input.webSocketImpl === 'function' ? input.webSocketImpl : null
   return cfg
@@ -160,6 +163,22 @@ export function apply(ctx) {
   let disposed = false
 
   const recordFile = cfg.recordFile ? resolvePath(cfg.recordFile) : ''
+  const statusFile = cfg.statusFile ? resolvePath(cfg.statusFile) : ''
+  let statusTimer = null
+
+  /** 影子状态落盘：给 lab / runbook 一个"不看进程也能判断在不在听"的出口（原子写）。 */
+  function writeStatusFile() {
+    if (!statusFile) return
+    try {
+      fs.mkdirSync(path.dirname(statusFile), { recursive: true })
+      const tmp = `${statusFile}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify({ at: now(), ...status() }, null, 1), 'utf8')
+      fs.renameSync(tmp, statusFile)
+    } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.status-file', error: String(error?.message ?? error) })
+    }
+  }
+
   function record(row) {
     if (!recordFile) return
     try {
@@ -308,6 +327,11 @@ export function apply(ctx) {
     ctx.log({ msg: 'qq.inbound-start', url: sanitizeUrl(endpoint.url), uin: endpoint.uin ?? null, source: endpoint.source, groups: 'ignored', send: 'disabled' })
     retryTimer = setInterval(retryTick, Math.max(200, cfg.retryTickMs))
     if (typeof retryTimer.unref === 'function') retryTimer.unref()
+    if (statusFile) {
+      writeStatusFile()
+      statusTimer = setInterval(writeStatusFile, Math.max(500, cfg.statusIntervalMs))
+      if (typeof statusTimer.unref === 'function') statusTimer.unref()
+    }
   }
 
   function status() {
@@ -328,6 +352,7 @@ export function apply(ctx) {
       gate: gate.counters(),
       stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length },
       recordFile: recordFile || null,
+      statusFile: statusFile || null,
       dedupe: { size: dedupe.size(), file: cfg.dedupeFile || null },
       readOnlyInvariant: { framesSent: conn.framesSent ?? 0, expected: 0 },
     }
@@ -385,10 +410,12 @@ export function apply(ctx) {
   ctx.onDispose(() => {
     disposed = true
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null }
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     try { connector?.stop() } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.connector.stop', error: String(error?.message ?? error) })
     }
     connector = null
+    writeStatusFile()
     const flushed = gate.flush()
     if (flushed?.error) ctx.log({ level: 'warn', msg: 'qq.dedupe.save', error: flushed.error })
     try { offShared?.() } catch { /* 注销器已执行 */ }
