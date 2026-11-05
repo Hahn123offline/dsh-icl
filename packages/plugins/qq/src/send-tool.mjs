@@ -246,21 +246,29 @@ export async function registerSendTool({
 
   ctx.tools.register({
     name: 'qq_send',
-    summary: 'Reply to a QQ private chat with one or more short text bubbles. Only the owner/allowlisted private chat is allowed; groups are never allowed. Markdown is converted to plain text; a long reply is split into up to 8 bubbles with human-like gaps. If the result is unknown, do not resend blindly.',
-    when: ['you want to answer a private QQ message you just read', 'you want the reply to feel like a few short chat bubbles instead of one long block'],
-    avoid: ['groups', 'images/voice/files', 'broadcast to multiple people', 'sending the same text twice', 'retrying after an unknown result'],
+    summary: '发 QQ 私聊（唯一 QQ 发送工具）：一段话或 1–8 条短气泡，只能 owner/白名单私聊，群不存在。回复前先确认这是不是该回的那条（详见 qq_help 的 reply 策略）。',
+    when: [
+      '你刚看到一条 QQ 私聊、判断该回',
+      '想把回复拆成几条短气泡，而不是一大段',
+    ],
+    avoid: [
+      '群消息（群发送不存在）',
+      '图片/语音/文件/表情/引用回复（这些能力不存在，别用文字假装）',
+      '结果 unknown 时盲目重发（可能双发；用 qq_status 核对）',
+      '对方只是发表情/图片且没问话时硬猜内容',
+    ],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        text: { type: 'string', description: 'Single plain text reply (Markdown is converted to plain text). Use messages[] instead for multiple bubbles.' },
+        text: { type: 'string', description: '单条纯文本回复（Markdown 会转纯文本）。要多气泡用 messages[]。' },
         messages: {
           type: 'array', items: { type: 'string' },
-          description: '1–8 short messages to send as separate bubbles. Long content may be split further; total bubbles must stay within the configured limit.',
+          description: '1–8 条短消息，逐条作为气泡发送；过长内容可能再拆，总气泡数受上限约束。',
         },
-        to: { type: 'string', description: 'Target QQ number (private only). Omit to use the configured owner / single allowlisted peer.' },
-        pace: { type: 'string', description: 'Typing pace used by gapMode=typing: thoughtful | normal | quick | blast.' },
-        gapMode: { type: 'string', description: 'auto (default; 1–3s with occasional 5–10s pause) | fixed | typing | byLength.' },
-        gapMs: { type: 'number', description: 'Fixed gap for gapMode=fixed (ms).' },
+        to: { type: 'string', description: '目标 QQ 号（只能私聊）。省略则用配置的 owner / 唯一白名单私聊。' },
+        pace: { type: 'string', description: 'gapMode=typing 时的打字节奏：thoughtful | normal | quick | blast。' },
+        gapMode: { type: 'string', description: '气泡间隔：auto（默认，1–3s，偶尔 5–10s）| fixed | typing | byLength。' },
+        gapMs: { type: 'number', description: 'gapMode=fixed 时的固定间隔（毫秒）。' },
       },
     },
     async execute(args) { return execute(args) },

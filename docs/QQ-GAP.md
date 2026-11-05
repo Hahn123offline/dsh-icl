@@ -111,7 +111,7 @@
 | 积压 nudge/digest | dsh-qq `nudge.js`（156 行）：soft 10min/hard 45min、cooldown、6/h、batch digest 文案 | ⚠️ focus backlog 摘要 + time 醒来重放，无"轻推" | P1；可直接移植纯函数接 focus backlog | 1.5 | P1 |
 | 自我唤醒（self-wake） | focus-core `selfwake.js`：30–90min、1/h、idle 90s、focus 时不唤 | ⚠️ time 有日程；无"她想主动冒泡" | P1/P2 | 1 | P2 |
 | 注意力状态机 | dsh-qq `attention.js`（58 行纯函数）：idle/group/own-time/sleep/silent + messageDecision + urgent 关键词 | ❌ | P1 可移植为 signal 决策纯函数 | 0.5 | P1 |
-| 世界状态/摘要注入 | focus-core `attention.js` renderContext/renderWorld；ICL prompt sections | ⚠️ ICL 有 focus/time 段；无 QQ 专属一行 | P1 加 ≤1 行事实段（体积预算） | 0.5 | P1 |
+| 世界状态/摘要注入 | focus-core `attention.js` renderContext/renderWorld；ICL prompt sections | ✅ QQ 策略改走按需 `qq_help` + tool description（不占静态段）；说话人信封已进正文/meta | 若将来要"QQ 有积压"一行，走 runtime-context（facts）并与 cache 对表 | 0.5 | P1（剩余） |
 
 ### 1.5 群 / 社交（phase 2，暂缓）
 
@@ -150,6 +150,11 @@
    - 图片进模型走 DSH attachment/`ImageBlock` 正道；不可用时降级为文本提示 + 按需工具取图，**事件不能丢**；
    - 改 `packages/dsh-icl` 前后先 `git merge master`，把语义影响写进 `docs/CACHE-MODEL.md §7` 的"QQ 图片通道"小节（不改 cache 的数字/结论），并给 cache 留言。
 6. **人类化（P0-3）不碰 focus/time**：多气泡仍是一次 `qq_send` 调用；用 `turn-end` 信号维护每轮预算；每个气泡发送前重查 kill switch/权限；不得跨轮残留定时器（dispose 清理）。
+7. **策略与信封（F1/F3、A2/B1/B2 的 QQ 部分）**：
+   - 策略文本只放 `qq_help` skill（`packages/plugins/qq/skills/reply.md`）与 tool description **按需**；**不进静态 system 段**（cache/第一屏）。
+   - 入站正文带来源信封 `[QQ私聊·主人]`/`[QQ私聊]`，结构化字段在 `meta.qq.envelope`；补课叠加 `[补课]`；time 重放保留 text（信封随 text 一起保留）。
+   - **跨模块剩余项**（不在 QQ 插件里做）：bridge 需要把 delivery entry 的 `meta.qq.envelope` 渲染成 `[外部消息 · QQ私聊 · owner]` 或独立 summary；
+     "被 focus 拦过"的标记需要 bridge/focus 在重放/摘要时补，QQ 侧不伪造。详见 `docs/QQ.md §7.5`。
 
 ---
 
@@ -175,7 +180,7 @@
   `src/onebot-http.mjs`（独立 OneBot HTTP 动作端，入站 WS 仍 framesSent=0）；connector 增加 open 回调
   （first/reconnect + downtime）；gate 增加 `backfilled` 通道（`[补课]`/tag/meta + `stale-backfill` 判旧）；
   index 接线 + `gap/ledger/http` 状态 + `qq_status` 文本。
-- ✅ 测试：`qq-backfill.test.mjs` 6 条（账本/契约/集成断线补回/不双投/超龄/HTTP 失败）；全量 527 pass。
+- ✅ 测试：`qq-backfill.test.mjs` 6 条（账本/契约/集成断线补回/不双投/超龄/HTTP 失败）；全量 540 pass。
 - 边界（必须说清）：水位 = `signals.offer` 被接受（进入 delivery 队列、未被 time/focus 拦下）；
   bridge ack 在 dsh-icl，插件拿不到，不能宣称"用户已看到"。
 - 未做（有意）：`mark_msg_as_read`/`mark_private_msg_as_read` 不在 P0 调用（会把已读同步到用户 QQ，属产品决定）；
@@ -190,7 +195,7 @@
   `reply-cache.mjs`（`get_msg` 慢取 120s、收消息等待可配、并发去重/负缓存、归属校验、pending 占位）、
   `forward.mjs`（节点形状兼容、嵌套≤2 层、≤12 条/1200 字）、`media.mjs`（http(s)/禁内网/8MB/魔数/`get_image` 兜底）；
   index 在闸门前异步 enrich（普通文本仍同步路径），补课也走同一 enrich；`meta.qq` 增加 media/files/forwardIds/replyId/atSelf。
-- ✅ 测试：`qq-rich.test.mjs` 11 条（段/提取/引用/转发/媒体安全/插件集成/focus 语义）；全量 527 pass。
+- ✅ 测试：`qq-rich.test.mjs` 11 条（段/提取/引用/转发/媒体安全/插件集成/focus 语义）；全量 540 pass。
 - 边界：**图片/文件字节还没有进模型**（只有文本占位 + meta）；真正进上下文要 DSH attachment/`ImageBlock` 通道，
   按 lead 要求单独申请；届时遵守 CACHE-MODEL §7、改 bridge 前 merge master、给 cache 留言。
 - 原验收计划（剩余项）：
@@ -300,11 +305,12 @@
 
 - `packages/plugins/qq/src/{connector,normalize,gate,outbound,send-tool,index}.mjs`；
   P0-3 新增 `humanize.mjs`；P0-1 新增 `ledger.mjs`（SQLite 账本/水位）、`backfill.mjs`（补课契约）、`onebot-http.mjs`（独立 HTTP 动作端）；
-  P0-2 新增 `rich.mjs`（段/媒体/文件/转发/引用提取）、`reply-cache.mjs`（引用慢取）、`forward.mjs`（转发展开）、`media.mjs`（安全抓取/校验）。
+  P0-2 新增 `rich.mjs`（段/媒体/文件/转发/引用提取）、`reply-cache.mjs`（引用慢取）、`forward.mjs`（转发展开）、`media.mjs`（安全抓取/校验）；
+  策略/信封新增 `skills/reply.md`（按需 `qq_help`）与 `meta.qq.envelope`（正文来源前缀）。
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 527 pass。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 540 pass。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证

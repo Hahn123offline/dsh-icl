@@ -252,7 +252,7 @@ test('只读入站：私聊进 signals/delivery；群、陌生人、重复被挡
   ws.emit('message', eventFrame(privateEvent({ text: '晚上开会吗', messageId: 9001 })))
   const [batch] = host.services.delivery.drain('session')
   assert.ok(batch, '应进入 delivery')
-  assert.equal(batch.text, '测试：晚上开会吗')
+  assert.equal(batch.text, '[QQ私聊] 测试：晚上开会吗')
   assert.equal(batch.entries[0].source.plugin, 'qq')
   host.services.delivery.ack(batch.id)
 
@@ -280,7 +280,7 @@ test('只读入站：私聊进 signals/delivery；群、陌生人、重复被挡
   // 影子记录：accepted / duplicate / not-allowlisted（群不落文本）
   const rows = fs.readFileSync(recordFile, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line))
   assert.deepEqual(rows.map((row) => row.kind), ['accepted', 'dropped', 'dropped'])
-  assert.equal(rows[0].text, '测试：晚上开会吗')
+  assert.equal(rows[0].text, '晚上开会吗')
   assert.equal(rows[1].code, 'duplicate')
   assert.equal(rows[2].code, 'not-allowlisted')
   assert.ok(!rows.some((row) => row.code === 'group'))
@@ -393,7 +393,7 @@ test('qq_status 是可读的只读工具，明确说不能发', async () => {
   assert.match(result.text, /群消息：整类忽略/)
   assert.match(result.text, /出站：关闭/)
   assert.match(result.text, /只读不变量：入站连接客户端已发帧 0/)
-  assert.match(result.text, /最近一条私聊：.*测试（10001） #9601：测试：最近一条/)
+  assert.match(result.text, /最近一条私聊：.*测试（10001） #9601：最近一条/)
   host.disable('qq')
 })
 
@@ -449,7 +449,7 @@ test('真 WebSocket 回环：收得到、进 delivery、客户端一个字节都
     assert.equal(delivered, true, '应投递到 signals/delivery')
     const [batch] = host.services.delivery.drain('session')
     assert.ok(batch)
-    assert.equal(batch.text, '回环：真实 WebSocket')
+    assert.equal(batch.text, '[QQ私聊] 回环：真实 WebSocket')
     host.services.delivery.ack(batch.id)
     // 只读不变量：连接期间客户端没有发出任何字节（close 帧在断言之后才可能发生）
     assert.equal(fake.clientDataChunks(), 0)

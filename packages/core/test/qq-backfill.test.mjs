@@ -173,6 +173,7 @@ test('插件集成：断线期间的消息在重连后补回，不双投；gap �
     const text = batches.map((b) => b.text).join('\n')
     assert.match(text, /\[补课\] .*断线期间一/)
     assert.match(text, /\[补课\] .*断线期间二/)
+    assert.match(text, /\[QQ私聊·主人\] \[补课\] .*断线期间一/, '补课消息也带说话人信封')
     assert.doesNotMatch(text, /我自己发的/)
     for (const batch of batches) host.services.delivery.ack(batch.id)
     // 已读动作不应被调用（P0 只补课，不替用户标已读）

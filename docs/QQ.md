@@ -23,11 +23,13 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 527 pass | `npm test` |
+| 全量测试 | ✅ 540 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条）；图片真正进模型待 DSH attachment（单独申请） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
 | **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
+| **F1/F3 QQ 策略进 sim（按需，不进静态 system）** | ✅ `qq_help` 工具 + `skills/reply.md`；qq_status/qq_send 描述承载边界 | §7.5、`src/index.mjs`、`skills/reply.md` |
+| **A2/B1/B2 说话人信封（QQ 部分）** | ✅ 正文前缀 + `meta.qq.envelope`；bridge 侧剩余项见 §7.5 | `src/index.mjs`、`qq-envelope.test.mjs` |
 | **完整性差距研究（旧项目 vs 我们，P0/P1/P2 路线）** | ✅ 已完成 | [QQ-GAP.md](QQ-GAP.md) |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
@@ -281,6 +283,22 @@ SnowLuma WS(3001) ─► connector.onEvent ─► （P0-2）引用解析/转发�
 ⚠️ `tags:alarm` 的全局特权按 time 的 `docs/TIME.md §9` 是**已知风险，不是安全边界**——QQ/其它来源不要依赖它做"紧急穿透"；
 QQ 私聊不自动带 `alarm`/`safety`。time 静音锁的紧急配额按 `alarm/safety/emergency` 标签放行，那些标签只能由真正的紧急来源提供。
 
+### 5.4 最终语义（冻结，2026-11-06）
+
+这些是 QQ 入站/唤醒的**最终口径**，模拟/提示词/工具描述都以它为准（不要在不同文档里另立一套）：
+
+1. **私聊默认 ambient**：signal `tags:['qq','private']`，**不自动带 `mention`/`at`**。
+   普通 focus 会把它拦进积压；time 睡眠/暂停也会拦下并重放。不要期待私聊一定打断当前工作。
+2. **只有显式 @ 才穿**：私聊消息里出现 @ 到自己（`rich.atSelf`）→ `tags` 加 `at`，
+   普通 focus 按默认 `pierce:mention` 放行；`interruptible:false`（sacred）仍拦。
+3. **admin/alarm 不自动授予**：`tags:['admin']` / `['alarm']` 的 privileged 只属于真正来源
+   （管理通道/紧急事件）。QQ 私聊（包括 owner 私聊）不会自造这些标签；需要"叫醒"用 time schedule 的 `allow`。
+4. **群不接**：本轮群消息整类丢弃（连只读都不收），不存在"看过群"；群阶段另立设计。
+5. **策略入口按需**：`qq_help`（skill=`reply`）承载"何时回/不回/优先级/信封"；不要把这些文本写进 system 静态段，
+   也不要每轮注入。`qq_status`/`qq_send` 的 tool description 只放当前动作的关键边界。
+6. **说话人信封**：正文前缀 `[QQ私聊·主人]` / `[QQ私聊]`，`meta.qq.envelope` 存结构化来源；
+   补课加 `[补课]`；睡觉重放由 time 加"你睡觉时"前缀。详见 §7.5。
+
 ## 6. 与 time 静音锁的接口（给 time owner 的对接点）
 
 **接口面只有 `signals` 的 `from/kind/tags` 三个字段。** QQ 不读 time 的 phase、不调用 time API、不抢 gate。
@@ -408,6 +426,35 @@ OneBot 段 ──► rich.mjs（纯格式化）
 
 配置：`richEnabled`、`replyResolveEnabled`/`replyIngestWaitMs`/`replyResolveTtlMs`、`forwardExpandEnabled`/`forwardExpandMax`/`forwardExpandMaxChars`。
 
+### 7.5 说话人信封与策略入口（F1/F3、A2/B1/B2 的 QQ 部分）
+
+**插件侧已完成（不碰 dsh-icl）：**
+
+- **正文信封**：入站 signal 的 `text` 前缀
+  - `[QQ私聊·主人]`：`peerId === ownerQQ`
+  - `[QQ私聊]`：白名单里的其他人（含 `allowAllPrivate` 下的陌生人；gate 仍按白名单裁决）
+  - 补课消息：`[QQ私聊·主人] [补课] …`（gate 的 `[补课]` 在信封之后）
+  - time 睡眠重放：time 会在前面再加“（你睡觉时）”；因为 envelope 已写进 `signal.text`，time backlog 的 text 会原样保留。
+- **结构化信封**：`signal.meta.qq.envelope = { channel:'qq', scope:'private', senderKind:'owner'|'allowlisted'|'stranger',
+  peerId, senderId, senderName, activity, backfilled, at, receivedAt, messageId }`（`qq_status` 的 `stats.recent.lastAccepted.envelope` 可查）。
+- **配置**：`senderEnvelope`（默认 true）可关；关掉后正文回到裸 `${senderName}：${text}`。
+- **策略入口（F1/F3）**：`qq_help` 工具按需读 `packages/plugins/qq/skills/reply.md`（何时回/不回、私聊优先级、
+  群不接、信封含义、发送三态）。**不进 system 静态段**：默认不注册任何 `qq:*` prompt section；
+  `qq_status`/`qq_send` 的 tool description 只写当前动作的边界（每轮都会随工具表出现，但只是短描述，不是策略全文）。
+  如果将来想在每轮加一句“QQ 有积压”的提示，应该走 **runtime-context（facts）**，并先与 cache 对表；不要塞静态段。
+
+**跨模块剩余项（写给 bridge/ICL owner；不要现在改 dsh-icl）：**
+
+1. **结构化信封过桥**：`packages/dsh-icl/src/bridge.mjs` 的 notice 目前只用 `batch.text` + 固定 summary“外部消息”。
+   建议 bridge 从 delivery batch 条目里读 `meta.qq.envelope`（需要 delivery/signals 透传 signal.meta，或在 batch entry 上带 `meta`），
+   渲染成 `[外部消息 · QQ私聊 · owner]` 或独立 summary 行；**不要**在 bridge 里重复判断 owner（以 `envelope.senderKind` 为准）。
+   若暂时不改 bridge，正文前缀已能让模型分清来源。
+2. **“被拦过”的可见性**：QQ 插件只能看到 `signals.offer` 被接受；focus deferral 发生在 `host.setDeliver`（信号已 accepted），
+   time 拦截会进 time backlog。所以 QQ 侧**不伪造**“被 focus 拦过”的字段。
+   现有可依赖事实：time 重放带“（你睡觉时）”；focus 释放摘要来自 text（信封保留）。
+   若要在正文里显式标“这条曾在专注时被拦”，需要 bridge/focus 在重放/摘要时补标记（跨模块项）。
+3. **状态提示**：`qq_status` 已经有最近一条/回执/gap；若要在提示词里给“有人找你”一行，属于 runtime-context 改动（同上）。
+
 ## 8. 权限与开关
 
 插件全部配置（`host.registerPlugin(... config)` / preset 的 `pluginConfig.qq`）：
@@ -449,6 +496,7 @@ OneBot 段 ──► rich.mjs（纯格式化）
 | `richEnabled` | `true` | 入站富内容总开关 | 关：回到纯占位文本；开：引用/转发在闸门前慢取 |
 | `replyResolveEnabled` / `replyIngestWaitMs` / `replyResolveTtlMs` | `true` / `2000` / `1800000` | 引用解析开关/收消息等待/缓存 TTL | 等不到放占位，不阻塞；归属不符返回 null |
 | `forwardExpandEnabled` / `forwardExpandMax` / `forwardExpandMaxChars` | `true` / `2` / `1200` | 合并转发展开 | 深度/条数/字数都有上限；失败保留 id 占位 |
+| `senderEnvelope` | `true` | 说话人信封（正文前缀 + `meta.qq.envelope`） | 关掉后正文回到裸 `${senderName}：${text}`；结构化字段也随之不写 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -708,12 +756,13 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 527 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 540 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
 node --test packages/core/test/qq-backfill.test.mjs    # 6 pass（账本/补课契约/断线补回/gap）
 node --test packages/core/test/qq-rich.test.mjs        # 11 pass（富段/引用/转发/媒体安全/focus 语义）
+node --test packages/core/test/qq-envelope.test.mjs    # 5 pass（说话人信封/qq_help/工具描述边界）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -858,6 +907,15 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 - 插件集成：富消息（图片+文件+引用+转发）进 delivery，正文含 `[引用 测试：原话在这]` 与 `【转发展开 …】`。
 - **focus 语义（红队修复）**：纯函数断言私聊 tags 只有 `['qq','private']`，不自动 mention/admin/alarm/safety；
   显式 @ 才加 `at`。集成断言普通私聊在 focus 下进积压、@ 才穿；admin/alarm 仍 privileged；sacred 连 @ 也不穿。
+
+### 13.9 说话人信封 + 策略入口（F1/F3、A2/B1/B2 QQ 部分）
+
+`node --test packages/core/test/qq-envelope.test.mjs` → **5 pass**：
+- owner 私聊：正文 `[QQ私聊·主人] 主人：…`；`stats.recent.lastAccepted.envelope` 有 channel/scope/senderKind/peerId/senderName/backfilled/messageId。
+- 白名单非 owner：`[QQ私聊]`，不冒充主人；`senderEnvelope:false` 回到裸正文。
+- `qq_help`：列表/全文/未知条目；`skills()` 暴露 reply；默认 `prompt.names()` 没有 `qq*`（策略不占静态 system 段）。
+- 工具描述边界：qq_status 的 avoid 明确“群、不要每轮查、发消息用 qq_send”；qq_help 指向 qq_status/qq_send。
+- 补课信封在 `qq-backfill` 集成里断言：`[QQ私聊·主人] [补课] …`。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

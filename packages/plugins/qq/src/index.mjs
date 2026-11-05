@@ -32,6 +32,13 @@ import { senderIdOf } from './normalize.mjs'
 
 export const name = 'qq'
 
+// 按需读的聊天策略（不进静态 system 段；通过 qq_help 工具按需读，避免 cache/第一屏成本）。
+const PLUGIN_DIR = path.join(import.meta.dirname, '..')
+const SKILL_DIR = path.join(PLUGIN_DIR, 'skills')
+const SKILLS = Object.freeze([
+  { id: 'reply', file: 'reply.md', title: 'QQ 聊天策略：何时回/不回、私聊优先级、群边界、谁在说话' },
+])
+
 const DEFAULTS = Object.freeze({
   // 总开关：不显式 true 就完全不连
   enabled: false,
@@ -95,6 +102,8 @@ const DEFAULTS = Object.freeze({
   forwardExpandEnabled: true,
   forwardExpandMax: 2,
   forwardExpandMaxChars: 1200,
+  // 说话人信封：正文前缀 + meta.qq.envelope；只影响 QQ 自己的可读性，不碰 bridge
+  senderEnvelope: true,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -135,6 +144,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.richEnabled = cfg.richEnabled !== false
   cfg.replyResolveEnabled = cfg.replyResolveEnabled !== false
   cfg.forwardExpandEnabled = cfg.forwardExpandEnabled !== false
+  cfg.senderEnvelope = cfg.senderEnvelope !== false
   cfg.allowPrivate = pickList(cfg.allowPrivate)
   for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars']) {
     const n = Number(cfg[key])
@@ -469,6 +479,43 @@ export async function apply(ctx) {
     return ingestEvent(raw, { backfilled })
   }
 
+  function senderKindOf(peerId) {
+    const peer = String(peerId ?? '')
+    if (cfg.ownerQQ != null && peer === String(cfg.ownerQQ)) return 'owner'
+    if (cfg.allowPrivate.map(String).includes(peer)) return 'allowlisted'
+    return 'stranger'
+  }
+
+  function envelopeLabelFor(kind) {
+    return kind === 'owner' ? '[QQ私聊·主人]' : '[QQ私聊]'
+  }
+
+  /**
+   * A2/B1/B2 说话人信封（QQ 侧）：
+   *   · 正文前加不可伪造的来源标签（owner/白名单），让模型不用靠猜；
+   *   · 结构化字段放 meta.qq.envelope（渠道/会话/发送者/是否补课/时间），供后续工具与 bridge 使用；
+   *   · 不伪造"被 focus/time 拦过"——那由 time 的重放前缀/积压摘要表达；补课由 gate 的 `[补课]` 表达。
+   * 文字会随 time backlog 的 text 一起重放（envelope 不丢）；bridge 若要独立渲染来源需读 meta（见 docs/QQ.md §7.5）。
+   */
+  function applySenderEnvelope(signal, decision) {
+    if (!cfg.senderEnvelope) return
+    const kind = senderKindOf(decision.peerId)
+    signal.text = `${envelopeLabelFor(kind)} ${signal.text}`
+    signal.meta.qq.envelope = {
+      channel: 'qq',
+      scope: 'private',
+      senderKind: kind,
+      peerId: String(decision.peerId),
+      senderId: decision.senderId == null ? null : String(decision.senderId),
+      senderName: String(decision.senderName ?? ''),
+      activity: signal.from.activity,
+      backfilled: decision.backfilled === true,
+      at: decision.messageAt ?? null,
+      receivedAt: decision.receivedAt ?? null,
+      messageId: decision.messageId == null ? null : String(decision.messageId),
+    }
+  }
+
   function ingestEvent(event, { backfilled = false } = {}) {
     const decision = gate.admit(event, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
     if (!decision.accept) {
@@ -480,6 +527,7 @@ export async function apply(ctx) {
       return decision
     }
     const signal = decision.signal
+    applySenderEnvelope(signal, decision)
     stats.accepted += 1
     stats.recent.lastAccepted = {
       at: decision.messageAt,
@@ -487,7 +535,8 @@ export async function apply(ctx) {
       peerId: decision.peerId,
       senderName: decision.senderName,
       messageId: decision.messageId,
-      text: String(signal.text ?? '').slice(0, 80),
+      text: String(decision.text ?? '').slice(0, 80),
+      envelope: signal.meta.qq.envelope ?? null,
       backfilled: decision.backfilled === true,
     }
     signal.expiresAt = decision.receivedAt + cfg.signalTtlMs
@@ -502,7 +551,7 @@ export async function apply(ctx) {
           sentAt: decision.messageAt,
           receivedAt: decision.receivedAt,
           sender: decision.senderName,
-          text: decision.text ?? '',
+          text: signal.text,
           mention: true,
           media: null,
         })
@@ -515,13 +564,14 @@ export async function apply(ctx) {
     record({
       kind: 'accepted',
       id: signal.id,
-      text: signal.text,
+      text: decision.text,
       messageAt: decision.messageAt,
       receivedAt: decision.receivedAt,
       peerId: decision.peerId,
       messageId: decision.messageId,
       backfilled: decision.backfilled === true,
       segments: signal.meta.qq.segments,
+      envelope: signal.meta.qq.envelope ?? null,
     })
     offer(signal)
     return decision
@@ -712,15 +762,43 @@ export async function apply(ctx) {
     return lines.join('\n')
   }
 
+  function skillIndexText() {
+    return `可用的 QQ 策略条目：${SKILLS.map((s) => `${s.id}（${s.title}）`).join('；')}。用 {skill:"reply"} 读全文；第一次处理 QQ 私聊先读它。`
+  }
+
+  function helpText(skill) {
+    const raw = String(skill ?? '').trim()
+    if (!raw) return skillIndexText()
+    const needle = raw.toLowerCase()
+    const hit = SKILLS.find((s) => s.id === needle) ?? SKILLS.find((s) => s.title.toLowerCase().includes(needle))
+      ?? SKILLS.find((s) => s.id.includes(needle))
+    if (!hit) return `没有这个条目：${raw}。${skillIndexText()}`
+    try {
+      return fs.readFileSync(path.join(SKILL_DIR, hit.file), 'utf8')
+    } catch (error) {
+      return `读不到策略文档 ${hit.id}：${String(error?.message ?? error)}`
+    }
+  }
+
   ctx.tools.register({
     name: 'qq_status',
-    summary: sendKeysNow()
-      ? 'Check the QQ link: connection, inbound receipt stats, and the last outbound send result (ok / rejected / unknown).'
-      : 'Check the read-only QQ link: whether it is connected, what it received, what it dropped and why.',
-    when: ['you want to know whether QQ private messages are reaching you', 'a QQ message seemed missing', 'you want to know whether your last QQ reply went out'],
-    avoid: ['expecting to send through this tool - sending is a separate qq_send tool'],
+    summary: '查看 QQ 私聊的当前状态：最近一条消息、最近一次发送回执（ok/rejected/unknown）、断线补课与积压计数。只读，不发送。',
+    when: ['回复前确认是否真的有人找你', '怀疑 QQ 消息丢了，或断线后想知道补课结果', '发送结果未知时核对回执'],
+    avoid: ['把它当每轮必查的仪表盘（会占上下文）', '想看群消息（本轮群整类不接）', '想发消息（用 qq_send）'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() { return { text: statusText() } },
+  })
+
+  ctx.tools.register({
+    name: 'qq_help',
+    summary: '读 QQ 聊天策略（按需，不常驻）：何时该回/不回、私聊优先级、群为什么没接、谁在说话（说话人信封）。不带参数列出条目。',
+    when: ['不确定 QQ 消息该不该回、该怎么理解 [补课]/积压/信封', '第一次处理 QQ 私聊'],
+    avoid: ['需要现状或回执（用 qq_status）', '要发消息（用 qq_send）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: { skill: { type: 'string', description: '策略 id（当前只有 reply）；不填列出可用条目。' } },
+    },
+    async execute({ skill } = {}) { return { text: helpText(skill) } },
   })
 
   // 给 driver / 测试读的共享能力（不暴露给模型）
@@ -732,6 +810,8 @@ export async function apply(ctx) {
       gateCounters: () => gate.counters(),
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
+      skills: () => SKILLS.map((s) => ({ ...s })),
+      help: (skill) => helpText(skill),
     })
   } catch (error) {
     ctx.log({ level: 'warn', msg: 'qq.shared.provide-fail', error: String(error?.message ?? error) })
