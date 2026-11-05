@@ -122,6 +122,9 @@ const state = {
   lastIdleNudgeAt: null,
   lastAlarmAt: {},
   lastMetricsTickAt: null,
+  sleepEnteredAt: null,
+  sleepFlushedAt: null,
+  sleepDirectSeen: 0,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -498,6 +501,71 @@ function heartbeatFromEvents(events) {
     if (['assistant/message', 'step/start', 'turn/start'].includes(event.type)) lastModelActivityAt = Math.max(lastModelActivityAt ?? 0, time)
   }
   return { lastToolCallAt, lastTurnEndAt, lastModelActivityAt }
+}
+
+/** 进入睡眠时清掉 DSH 队列里"醒着时投递、睡着后才送达"的直投，避免污染睡眠静默。 */
+async function flushPendingPrompts(reason) {
+  const meta = labMeta()
+  if (!meta?.sessionId) return 0
+  const api = apiFor(cfg.port)
+  let removed = 0
+  try {
+    const ids = await api._readSessionQueue(meta.sessionId, AbortSignal.timeout(8000))
+    for (const id of ids) {
+      try {
+        const response = await api.callUnary('session/updateQueue', { sessionId: meta.sessionId, itemId: id, action: { kind: 'remove' } }, undefined, 'long')
+        if (response?.result?.ok) removed += 1
+      } catch { /* 单条移除失败不阻塞 */ }
+    }
+  } catch (error) {
+    log(`读取/清理会话队列失败：${String(error?.message ?? error)}`)
+  }
+  if (removed) recordStrategy('sleep-boundary-flush', `进入睡眠：清掉 ${removed} 条排队中的直投（${reason}）`, { removed, reason })
+  return removed
+}
+
+/**
+ * 睡眠边界处理（只做一次）：
+ * 1) 记录 sleepEnteredAt 并停 playbook；2) 最多 60s grace 让在写的收尾结束；
+ * 3) grace 后仍在飞 → 一次 session/cancel；4) 清掉队列里残留直投；
+ * 5) 之后任何新的 user 直投都记 anomaly（validity 用，不打扰）。
+ */
+async function handleSleepBoundary({ stats, nowMs, sleeping }) {
+  if (!sleeping) {
+    state.sleepEnteredAt = null
+    state.sleepFlushedAt = null
+    state.sleepDirectSeen = 0
+    return
+  }
+  if (!state.sleepEnteredAt) {
+    state.sleepEnteredAt = nowIso()
+    state.sleepDirectSeen = 0
+    state.lastStepAt = nowIso()
+    recordStrategy('sleep-boundary', '进入睡眠：停 playbook 定时器；60s grace 后处理在飞 turn/队列')
+  }
+  if (state.sleepFlushedAt) {
+    const directs = readEvents().filter((event) => event.type === 'user/message'
+      && String(event.data?.source?.kind ?? 'user') === 'user'
+      && Number(event.time) > Date.parse(state.sleepFlushedAt))
+    if (directs.length > state.sleepDirectSeen) {
+      state.sleepDirectSeen = directs.length
+      appendAnomaly('sleep-delivery-leak', 0, { count: directs.length, seqs: directs.map((event) => event.seq).slice(-5) })
+    }
+    return
+  }
+  const sleepAgeMs = nowMs - Date.parse(state.sleepEnteredAt)
+  if (stats.inTurn && sleepAgeMs < 60_000) return
+  if (stats.inTurn) {
+    try {
+      const api = apiFor(cfg.port)
+      await api.callUnary('session/cancel', { sessionId: labMeta()?.sessionId }, undefined, 'long')
+      recordStrategy('sleep-boundary-cancel', `入睡 grace 结束仍有在飞 turn（${Math.round(sleepAgeMs / 1000)}s），cancel 一次`, { sleepAgeSec: Math.round(sleepAgeMs / 1000) })
+    } catch (error) { log(`sleep boundary cancel 失败：${String(error?.message ?? error)}`) }
+  }
+  await sleep(1500)
+  const removed = await flushPendingPrompts('sleep-entry')
+  state.sleepFlushedAt = nowIso()
+  recordStrategy('sleep-boundary', `睡眠边界处理完成：inTurn=${stats.inTurn}，队列清理 ${removed} 条；之后直投会被 sendPrompt 硬短路`, { inTurn: stats.inTurn, removed })
 }
 
 function plannedSleepAt() {
@@ -1071,6 +1139,8 @@ async function main() {
 
     // turn 超时 / 卡住（睡眠期不 cancel：让她睡，安全由 body 自身兜底）
     const nowMs = Date.now()
+    // 睡眠边界：停 playbook、60s grace 后 cancel 在飞 turn、清队列直投、之后泄漏只记 anomaly
+    await handleSleepBoundary({ stats, nowMs, sleeping })
     const turnAgeSec = stats.inTurn && stats.turnStartAt ? Math.round((nowMs - stats.turnStartAt) / 1000) : 0
     const lastEventAgeSec = stats.lastEventAt ? Math.round((nowMs - stats.lastEventAt) / 1000) : null
     // 活跃的长回合不 cancel（本地模型一个回合可跑 10+ 分钟仍在推进）；只在"停住/无事件"或超绝对上限时打断。
