@@ -14,7 +14,7 @@ async function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-goal-'))
   const host = createHost({ log: () => {} })
   host.registerPlugin(worldManifest, world, {})
-  host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(root, 'time.json'), tickMs: 3600_000 } })
+  host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(root, 'time.json'), tickMs: 3600_000, goalResumeMinGapSec: 0 } })
   await host.enable('world-state')
   await host.enable('time')
   return { host, api: host.shared.get('time') }
@@ -80,7 +80,7 @@ test('goal+single 用轮次上限，用完发"目标结束"', async () => {
   drainText(host)
   api.addGoal({ theme: '一次任务', turnLimit: 1 })
   api.resumeGoals()
-  assert.match(drainText(host), /你在目标内：一次任务（还剩 0 轮）/)
+  assert.match(drainText(host), /第 1 次续推，还剩 0 轮/)
   api.resumeGoals()
   assert.match(drainText(host), /目标结束：一次任务/)
   assert.equal(api.goals().length, 0)

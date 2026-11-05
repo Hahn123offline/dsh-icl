@@ -44,7 +44,7 @@ host.registerPlugin(recallManifest, recall, { config: { sessionId: 'host-loop' }
 host.registerPlugin(noteManifest, note)
 host.registerPlugin(lexiconManifest, lexicon)
 host.registerPlugin(focusManifest, focus)
-host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(outRoot, 'time.json'), tickMs: 3600_000, awakeTick: { enabled: false } } })
+host.registerPlugin(timeManifest, time, { config: { stateFile: path.join(outRoot, 'time.json'), tickMs: 3600_000, awakeTick: { enabled: false }, goalResumeMinGapSec: 0 } })
 host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'host-loop', persona: '测试人格' } })
 for (const id of ['memory', 'world-state', 'recall', 'note', 'lexicon', 'focus', 'time', 'dream']) await host.enable(id)
 
