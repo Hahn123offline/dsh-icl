@@ -790,3 +790,15 @@ node tools/lab.mjs down --run <runId>
 - 结果：**9/9 全过**。QQ 私聊（`720385456`，"👋你好，这是测试消息"）以 `source.kind='plugin:qq'` 的 user/message 进入 DSH 会话；**零出站帧**（插件自报 framesSent=0，SnowLuma 日志同期无 `send_private_msg/send_group_msg`）；影子记录只有白名单私聊、无群文本；transcript 可见。
 - 证据：`.state/lab/qq-shadow-20261105-2257/{report.md, events.jsonl, qq-shadow/inbound.jsonl, transcript.md}`；影子已自动停止，57108 无监听。
 - 遗留：启动文件夹 `dsh-icl.lnk` 仍会在下次登录拉起旧 focus-core 应用（建议用户确认后改名/移走）；出站（私聊回）仍默认关闭，等用户单独批准后再实现 phase 1（10 项清单见 §11.1）。
+
+## 0.3 Phase 1（只回私聊）真实出站验证结果（2026-11-05 23:18）
+
+在用户手动启动 SnowLuma、旧消费者已停的前提下，按 §11.1 的 10 项实现完成后做了一次真实回执验证：
+
+- 命令：`node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved --send --peer 3429502459 --owner 3429502459 --port 57108 --run qq-send-20261105-2310`
+- 入站：用户私聊"你好在吗"以 `plugin:qq` 进入会话（seq=9）。
+- **她真的回了**：`qq_send` → `outcome=ok`、`framesSent=1`、`messageId=294938146`、`ms=269`。
+- 服务端核对：SnowLuma 日志 `send_private_msg` **恰 1 次**（"在。这么晚还没睡？"，user_id=3429502459）、`send_group_msg` **0 次**。
+- 审计：`send-audit.jsonl` 1 行，只有 `textHash/chars/outcome/messageId`，**不存正文**。
+- 结果报告：`.state/lab/qq-send-20261105-2310/report.md`（13/13 全过）；影子已自动停止，57108 无监听。
+- 产品默认仍关闭：只有 lab patch 打开三钥匙；phase 1 只允许 owner 私聊、每轮最多 1 条、失败不自动重试。
