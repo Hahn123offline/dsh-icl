@@ -29,7 +29,7 @@ export function describeExit(code, signal) {
   if (signal) return `被信号 ${signal} 结束`
   const value = Number(code)
   if (!Number.isFinite(value)) return '退出码未知'
-  if (value > 2147483647) return `退出码 ${value - 4294967296}（被强制结束：外部 kill 或崩溃）`
+  if (value > 2147483647) return `退出码 ${value - 4294967296}，被强制结束（外部 kill 或崩溃）`
   if (value === 0) return '正常退出（code 0）'
   return `退出码 ${value}`
 }
@@ -104,13 +104,15 @@ export function createBodySupervisor({
     if (detail.spawnError) lines.push(`进程启动失败：${detail.spawnError}`)
     if (detail.exitCode != null || detail.exitSignal) lines.push(`进程${describeExit(detail.exitCode, detail.exitSignal)}`)
     const stderr = detail.stderrTail ?? []
-    // node 打的多行错误对象会混进 "syscall: 'connect'," 这种碎片；body 的 JSON 日志也很长。
+    // node 打的多行错误对象会混进 "syscall: 'connect'," 这种碎片；body 的 JSON 日志也很长；
+    // 崩溃报告里 "最后一行是 spawn_safe/path_stuck" 这种状态事件没有诊断价值，先剔掉。
+    const NOISE = /spawn_safe|path_stuck|path_recovered|tunnel_clear|heartbeat|task_progress|^\[out\]\s*(join|leave)\b/i
     const meaningful = stderr
       .filter((line) => line && !/^\s*[{}\[\],]+\s*$/.test(line))
       .filter((line) => !/^\s*[a-z_]+:\s/.test(line))
-      .filter((line) => !/^\[out\]\s*$/.test(line))
+      .filter((line) => !NOISE.test(line))
       .map((line) => (line.length > 240 ? `${line.slice(0, 237)}…` : line))
-    const preferred = meaningful.filter((line) => /ECONNREFUSED|EADDRINUSE|ERR_MODULE_NOT_FOUND|Cannot find module|connect failed|kicked|exhausted|timeout/i.test(line))
+    const preferred = meaningful.filter((line) => /ECONNREFUSED|EADDRINUSE|ERR_MODULE_NOT_FOUND|Cannot find module|connect failed|kicked|exhausted|timeout|unavailable|denied/i.test(line))
     const picked = preferred.length ? preferred.slice(-2) : meaningful.slice(-1)
     if (picked.length) lines.push(`body 日志：${picked.join(' / ')}`)
     else if (stderr.length) lines.push(`body 日志最后一行：${stderr.slice(-1)[0]}`)
