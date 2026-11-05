@@ -1604,6 +1604,74 @@ export function createMineflayerAdapter({
       emit('macro_done', { kind: task.kind, action, result })
       return { action, ...result }
     }
+    if (task.kind === 'farm') {
+      const crop = String(params.crop ?? 'wheat')
+      const seedName = ({ wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato', beetroots: 'beetroot_seeds' })[crop] ?? `${crop}_seeds`
+      const count = Math.max(1, Math.min(64, Number(params.count) || 4))
+      const hoe = (bot.inventory?.items?.() ?? []).find((item) => /_hoe$/.test(item.name))
+      if (!hoe) {
+        throw taskFailure('farm: needs-tool', {
+          needsTool: '锄',
+          suggestion: '先 craft wooden_hoe（2 木板+2 木棍）→ mcb_do equip {"item":"wooden_hoe"}；没有木板先 mine oak_log → craft oak_planks',
+        })
+      }
+      const seedItem = (bot.inventory?.items?.() ?? []).find((item) => item.name === seedName)
+      const seedCount = seedItem?.count ?? 0
+      if (!seedCount) {
+        throw taskFailure('farm: needs-material', {
+          material: seedName, have: 0,
+          suggestion: `没有 ${seedName}：割草/打草拿种子（或先 collect {item:"grass_block"} 附近找草），有了再来`,
+        })
+      }
+      await bot.equip(hoe, 'hand')
+      const waterIds = [bot.registry.blocksByName.water?.id, bot.registry.blocksByName.flowing_water?.id].filter((id) => id != null)
+      const waterBlocks = bot.findBlocks({ matching: (block) => waterIds.includes(block.type), maxDistance: 16, count: 32 })
+      const waterPositions = waterBlocks.map((p) => ({ x: p.x, y: p.y, z: p.z }))
+      if (!waterPositions.length) {
+        throw taskFailure('farm: no-water', { suggestion: '附近 16 格没有水：先找河边/挖水渠引水（水距耕地 4 格内才能种）' })
+      }
+      const pos = currentPosition()
+      if (!pos) throw taskFailure('farm: no-position', {})
+      const soilIds = [bot.registry.blocksByName.dirt?.id, bot.registry.blocksByName.grass_block?.id].filter((id) => id != null)
+      const soils = bot.findBlocks({ matching: (block) => soilIds.includes(block.type), maxDistance: 8, count: 128 })
+      const nearWater = soils
+        .map((p) => ({ x: p.x, y: p.y, z: p.z }))
+        .filter((target) => waterPositions.some((w) => Math.abs(w.y - target.y) <= 1 && Math.hypot(w.x - target.x, w.z - target.z) <= 4))
+        .filter((target) => { const above = bot.blockAt(new Vec3(target.x, target.y + 1, target.z)); return !above || /(^air$|cave_air|void_air)/.test(above.name) })
+        .sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z))
+      if (!nearWater.length) {
+        throw taskFailure('farm: no-site', { water: waterPositions.length, suggestion: '水边 8 格内没有可开垦的土/草方块（需要土上方是空气、离水 4 格内）' })
+      }
+      let tilled = 0
+      let planted = 0
+      const every = progressEvery(count)
+      for (const target of nearWater) {
+        checkAbort(signal)
+        if (planted >= count) break
+        if (planted >= seedCount) break
+        try {
+          await bot.equip(hoe, 'hand')
+          await faceBlock(new Vec3(target.x, target.y, target.z))
+          await bot.activateBlock(bot.blockAt(new Vec3(target.x, target.y, target.z)))
+          await sleep(120)
+          const after = bot.blockAt(new Vec3(target.x, target.y, target.z))
+          if (!after || after.name !== 'farmland') continue
+          tilled += 1
+          await bot.equip(seedItem, 'hand')
+          await bot.activateBlock(after)
+          await sleep(80)
+          const plantedBlock = bot.blockAt(new Vec3(target.x, target.y + 1, target.z))
+          if (plantedBlock && plantedBlock.name !== 'air') planted += 1
+          if (planted % every === 0) progress?.({ done: planted, total: count, tilled, crop })
+        } catch (error) {
+          if (signal?.aborted) throw error
+        }
+      }
+      progress?.({ done: planted, total: count, tilled, crop })
+      if (planted === 0) throw taskFailure('farm: partial', { tilled, planted, total: count, suggestion: '开垦/播种都没成：确认锄头在手、地上是土/草、水在 4 格内、种子够' })
+      emit('macro_done', { kind: 'farm', crop, planted, tilled, total: count })
+      return { crop, planted, tilled, total: count, seeds: seedCount, water: waterPositions.length }
+    }
     throw new Error(`unsupported task: ${task.kind}`)
   }
 
