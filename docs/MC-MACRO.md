@@ -154,3 +154,8 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 
 - `tunnel {stairs:true}` 支持**向下阶梯**（每步先挖头/脚，再挖前下方地板，前进时降 1 格）；`stairsMode:"up"` 暂不支持（failed tunnel: unsupported，契约保留）；阶梯下流体/基岩 → blocked。
 - result/progress 带 `stairs` 标记；未做真服阶梯用例（flat 平地可验基础，normal 地形明早）。
+
+### 补充：tunnel stairs 真服 smoke（05:0x，54839，`.state/lab/mc-body-soak/stairs-smoke/`）
+
+- `tunnel {direction:"east",length:4,height:2,stairs:true}` → done `{done:4,total:4,stairs:true}`，位置 y 从 -60 降到 -62（2 层，平地/底层受限）血 20；随后 `tunnel {direction:"north",length:3}` 基础路径 done，位置回到 y -61 血 20 —— **基础 tunnel 未被 stairs 改动破坏**。
+- 结果/progress 已带 `stairs` 标记（166d1be 后的补 commit）；flat 平地受限只验证下降路径，normal 地形完整阶梯明早验。
