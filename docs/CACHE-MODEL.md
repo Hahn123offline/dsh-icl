@@ -324,6 +324,26 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | 事实快照追加量 | 0（在 system 里 replace） | **7 条 append / 12 步累计 3213 字符**（首条 465，稳态 458；≈130–150 tok/次） | 线性累积，见 §7.7 |
 | 单轮 turnMs | 6.6–11.6s | **1.6–1.9s**（不含首轮 6.9s） | ≈4× |
 
+
+#### 节流开关本地 A/B（2026-11-05 19:16–19:30，同 commit / 同 scenario / 同工具面）
+
+| 项 | 默认（节流开） | `ICL_FACTS_EVERY_STEP=1`（节流关） |
+|---|---|---|
+| run | `cache-throttle-on` | `cache-throttle-off` |
+| commit / tools | `8ea32d6` / 34 `7047e6c4f3e8` | 同 |
+| facts 快照条数 / 字符 | **6 / 2705** | **7 / 3163** |
+| system append / replace | 1 / 0 | 1 / 0 |
+| engine 请求 / 全量失效 | 12 / 1（首轮冷启动） | 12 / 1（首轮冷启动） |
+| prompt tokens | 106021 | 106796 |
+| prefill tokens | **9312** | **9445（-133，-1.4%）** |
+| cache hit tokens / hit% | 96709 / **91.2%** | 97351 / **91.2%** |
+| TTFT 均值 / 最大 | 0.89s / 5.55s | 0.86s / 5.31s |
+
+**结论**：节流**不降低 hit%（两者都 91.2%）**，prefill 略降（-1.4%），首轮冷启动后的请求全部 `private_endpoint` 命中。
+本 scenario 每轮 facts 只变一次，所以节流只省 1 条快照（2705 vs 3163 字符）；**真正的收益在 step-heavy 场景**
+（mc-lab 本地 MC run `L1`：27 个 step / 10 轮，facts 快照**共 5 条**、system 4999 字节常数 0 replace → 节流有效且不破前缀）。
+复跑：`node tools/cache-probe.mjs compare --a cache-throttle-on --b cache-throttle-off`。
+
 > 真实会话的绝对数字更大（prompt 7k–24k tokens、TTFT 10–24s），因为会话历史更长；
 > 修复后的稳态成本与历史长度无关（只 prefill 新增消息），所以**会话越长，收益越大**。
 
@@ -476,6 +496,11 @@ node tools/cache-probe.mjs diff --run cache-bf2
      换来 MC 回合不再每步追加一条快照。bridge 代码里已写明。
    - **DSH 侧有没有更干净的方式**：本版本 `RuntimeContextProjection.project()` 只产出 append 消息，没有 replace API
      （只有系统提示词投影有 replace 分支），所以只能在 ICL 侧节流；将来 DSH 支持快照 replace 可以去掉节流。
+   - **本地 A/B（同一 commit/scenario，2026-11-05 19:16–19:30）**：`cache-throttle-on`（默认）vs `cache-throttle-off`（`ICL_FACTS_EVERY_STEP=1`）：
+     facts 快照 **6 vs 7 条**（2705 vs 3163 字符）、prefill **9312 vs 9445 tok（-1.4%）**、**hit% 都是 91.2%**、全量失效都只有首轮冷启动 1 次 →
+     **节流不破坏前缀，方向非回归**（本 scenario facts 每轮只变一次，收益小；step-heavy 的收益见 mc-lab `L1`：27 步 5 条快照）。
+     复算：`node tools/cache-probe.mjs compare --a cache-throttle-on --b cache-throttle-off`。
+
    - **测量口径（misc §0.5.5 提醒）**：bridge 单测断言的是 **provider 层 `stats.factsRefreshes`**（facts 文本重算次数），
      **不是 DSH 实际 append 的快照条数**；`stale ≤ 1` 的完整证据 = fake ctx（provider 层）+ lab 冒烟（DSH 层 append/turn）。
      单测清单：同一 turn 5 次求值 = 1 次刷新；focus enter/leave 各 +1 且内容含新焦点；`time_arrange` 工具结果 →
