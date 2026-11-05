@@ -106,9 +106,28 @@ export function apply(ctx) {
           kind: { type: 'string', enum: Object.keys(CATEGORIES), description: 'Category (default event).' },
           key: { type: 'string', description: 'Optional stable key to update instead of adding.' },
           qq: { type: 'string', description: 'For kind=person: whose note this is (QQ number).' },
-          origin: { type: 'object', description: 'Where this came from: {conv, sender, messageId, platform}.' },
+          // 对象参数必须显式声明字段：DSH 侧会把 «没有 properties 的对象» 规整成
+          // {additionalProperties:false} 的空壳，模型照描述传字段就会被校验挡下来。
+          origin: {
+            type: 'object',
+            description: 'Where this came from.',
+            properties: {
+              conv: { type: 'string', description: 'Conversation id, e.g. qq:group:123.' },
+              sender: { type: 'string', description: 'Who said it.' },
+              messageId: { type: 'string', description: 'Message id in that conversation.' },
+              platform: { type: 'string', description: 'Where the conversation lives, e.g. qq / bili / web.' },
+            },
+          },
           subjectKind: { type: 'string', description: 'For kind=person: what kind of identity qq is, e.g. qq / mc / discord. Defaults to qq.' },
-          about: { type: 'object', description: 'For kind=resolve: what this corrects, e.g. {"namespace":"person","key":"person:42"}.' },
+          about: {
+            type: 'object',
+            description: 'For kind=resolve: what this corrects.',
+            properties: {
+              namespace: { type: 'string', description: 'Namespace of the memory being corrected, e.g. person.' },
+              key: { type: 'string', description: 'Exact key of the memory being corrected, e.g. person:42.' },
+            },
+            required: ['namespace', 'key'],
+          },
         },
       },
       async execute({ text, kind = 'event', key = null, qq = null, subjectKind = null, about = null, origin = null } = {}) {
@@ -146,7 +165,6 @@ export function apply(ctx) {
           query: { type: 'string', description: 'What you are trying to remember.' },
           limit: { type: 'number', description: 'How many items (default 6).' },
           cursor: { type: 'string', description: 'Opaque cursor from the previous recall.' },
-          about: { type: 'object', description: 'For kind=resolve: what this corrects, e.g. {"namespace":"person","key":"person:42"}' },
           conv: { type: 'string', description: 'Only memories that came from this conversation (origin.conv).' },
           tag: { type: 'string', description: 'Only blocks carrying this tag (e.g. \'看海\'). Tags narrow the search; they do not replace it.' },
           days: { type: 'number', description: 'With overview: how many days back. Default 2.' },
