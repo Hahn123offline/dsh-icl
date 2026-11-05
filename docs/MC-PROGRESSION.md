@@ -166,3 +166,10 @@
 4. 复盘：把本 §7 与 mc-lab 数字表合成早报；MC-LEAVE/sleep-safe 作为验收流程一部分。
 
 - `环境卡死/运维` · **睡眠期 body 被意外复活并连死 3 次**（2026-11-06 02:34）：02:11 mc-lab sleep-safe shutdown 后，02:34 body 又被拉起、无人操作被怪连杀（death #11–13：23,67,-44 / 31,74,-36 / 16,64,-40）→ body 触发 **quarantine（3 死/120s）自行断开**（安全逻辑正确）。02:42 复核 54902 已释放、sleep 期无新 death；已请 mc-lab 查"谁重启 body"并在睡眠模式禁止自动复活。教训：sleep-safe 必须校验"body 进程已死 + 睡眠期禁止 auto-restart"，否则睡眠期会丢掉落/被杀。
+
+### 实现状态更新（03:40 后）
+
+- [x] `collect` / `tunnel` / `bridge` / `build` / `shelter` / `sort` / `deposit` 均已实现（adapter + 真服 smoke 覆盖 collect/tunnel/bridge/build/shelter；sort 在无箱子场景验证可读失败）。
+- [ ] `farm`（需锄/水/种子，明早）
+- [ ] `build` 旋转/替代材质、`tunnel` stairs、bridge 真实沟壑用例（明早/现场）
+- 语义补充：`build`/`shelter` 完成度 <80% → `failed(partial)`（不再误报 done）。
