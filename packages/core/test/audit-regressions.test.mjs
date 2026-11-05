@@ -10,10 +10,21 @@ import * as memory from '../../plugins/memory/src/index.mjs'
 import * as recall from '../../plugins/recall/src/index.mjs'
 import * as world from '../../plugins/world-state/src/index.mjs'
 import * as rhythm from '../../plugins/rhythm/src/index.mjs'
+import * as focus from '../../plugins/focus/src/index.mjs'
+import * as persona from '../../plugins/persona/src/index.mjs'
+import * as dream from '../../plugins/dream/src/index.mjs'
+import * as compaction from '../../plugins/compaction/src/index.mjs'
+import * as editor from '../../plugins/editor/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import worldManifest from '../../plugins/world-state/manifest.json' with { type: 'json' }
 import rhythmManifest from '../../plugins/rhythm/manifest.json' with { type: 'json' }
+import focusManifest from '../../plugins/focus/manifest.json' with { type: 'json' }
+import personaManifest from '../../plugins/persona/manifest.json' with { type: 'json' }
+import dreamManifest from '../../plugins/dream/manifest.json' with { type: 'json' }
+import compactionManifest from '../../plugins/compaction/manifest.json' with { type: 'json' }
+import editorManifest from '../../plugins/editor/manifest.json' with { type: 'json' }
+import { toDshToolDefinition } from '../src/dsh-contract.mjs'
 
 function fakeDsh() {
   const tools = new Map()
@@ -116,4 +127,96 @@ test('记忆库可以整份导出为 JSON 与 Markdown', async () => {
   const mdPath = path.join(root, 'dump.md')
   await tool.execute({ path: mdPath, format: 'md' })
   assert.match(fs.readFileSync(mdPath, 'utf8'), /导出测试/)
+})
+
+/* ── W5 审计回归（2026-11-05）：事实状态段 ≤1–2 行、顺序在人格之后；静默失败要留证据 ── */
+
+test('focus 段排在人格之后，且分钟按 5 分钟取整（不再每分钟抖一次前缀）', async () => {
+  let clock = Date.parse('2026-11-05T20:00:00+08:00')
+  const host = createHost({ log: () => {}, now: () => clock })
+  host.services.clock.set(() => clock)
+  host.registerPlugin(personaManifest, persona, { config: { card: '人格正文' } })
+  host.registerPlugin(focusManifest, focus, {})
+  await host.enable('persona')
+  await host.enable('focus')
+  await host.services.tools.list().find((t) => t.name === 'focus_enter').execute({ title: '下矿', reason: '挖铁' })
+  const t0 = host.services.prompt.assemble({})
+  assert.ok(t0.indexOf('人格正文') < t0.indexOf('你现在在'), `人格应在前，实际：${t0}`)
+  assert.doesNotMatch(t0, /已 \d+ 分钟/, '不足一档不说"已 0 分钟"')
+  clock += 4 * 60_000
+  assert.equal(host.services.prompt.assemble({}), t0, '4 分钟内段文本必须完全一致')
+  clock += 2 * 60_000 // 累计 6 分钟
+  assert.match(host.services.prompt.assemble({}), /已 5 分钟/)
+})
+
+test('world 段有长度上限：来源变多也不会无限长', async () => {
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(worldManifest, world, { config: { maxChars: 80 } })
+  await host.enable('world-state')
+  const w = host.shared.get('world')
+  for (let i = 0; i < 8; i++) {
+    w.registerSource({ id: `s${i}`, owner: `o${i}`, title: `源${i}`, cap: 3, items: () => [{ key: 'a', brief: '很长的一条世界状态描述'.repeat(3) }] })
+  }
+  const text = host.services.prompt.assemble({})
+  assert.ok(text.length <= 80, `应截断到 80 字以内，实际 ${text.length}：${text}`)
+  assert.match(text, /…$/)
+})
+
+test('remember 的 origin / about 是可用对象参数，不是 additionalProperties:false 的空壳', async () => {
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(memoryManifest, memory, { config: { root: tempRoot('schema') } })
+  host.registerPlugin(recallManifest, recall, { config: { sessionId: 's' } })
+  await host.enable('memory')
+  await host.enable('recall')
+  const defs = new Map(host.services.tools.list().map((d) => [d.name, d]))
+  const remember = toDshToolDefinition(defs.get('remember')).parameters
+  assert.deepEqual(Object.keys(remember.properties.origin.properties).sort(), ['conv', 'messageId', 'platform', 'sender'])
+  assert.deepEqual(Object.keys(remember.properties.about.properties).sort(), ['key', 'namespace'])
+  const recallParams = toDshToolDefinition(defs.get('recall')).parameters
+  assert.equal(recallParams.properties.about, undefined, 'recall 不处理 about（resolve 不可回忆），不该留死参数')
+})
+
+test('dream 由信号触发时把结果写进日志：模型插槽没绑也不静默', async () => {
+  const logs = []
+  const host = createHost({ log: (entry) => logs.push(entry) })
+  host.registerPlugin(memoryManifest, memory, { config: { root: tempRoot('dream') } })
+  host.registerPlugin(recallManifest, recall, { config: { sessionId: 'live' } })
+  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 'live', persona: '人格', dreamAt: '23:00' } })
+  for (const id of ['memory', 'recall', 'dream']) await host.enable(id)
+  host.shared.get('memory').put({ namespace: 'event', kind: 'note', key: 'n1', text: '今天在河边看到白鹭。' })
+  host.services.signals.emit({ id: 'e1', from: { plugin: 'time' }, kind: 'event', text: 'dream', tags: ['dream'] })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const run = logs.filter((entry) => entry.msg === 'dream.run')
+  assert.equal(run.length, 1, `应记录一次 dream.run，实际日志：${logs.map((x) => x.msg).join(',')}`)
+  assert.equal(run[0].ok, false, '插槽没绑时 ok 必须是 false')
+  assert.match(run[0].jobs, /fail/, `要写清哪个 job 失败：${run[0].jobs}`)
+})
+
+test('压缩失败要留日志（empty-summary 不是唯一信息）', async () => {
+  const logs = []
+  const host = createHost({ log: (entry) => logs.push(entry) })
+  host.registerPlugin(memoryManifest, memory, { config: { root: tempRoot('compact-log') } })
+  host.registerPlugin(compactionManifest, compaction, { config: { keepRecent: 2, triggerChars: 2000 } })
+  await host.enable('memory')
+  await host.enable('compaction')
+  const out = await host.services.context.compact({ history: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }, { role: 'user', text: 'c' }] })
+  assert.equal(out.ok, false)
+  assert.equal(out.error, 'empty-summary')
+  const failed = logs.filter((entry) => entry.msg === 'compaction.summarize-fail')
+  assert.equal(failed.length, 1, `应记录失败原因，实际日志：${logs.map((x) => x.msg).join(',')}`)
+  assert.match(String(failed[0].error), /compact-chat|绑定|SLOT/i)
+})
+
+test('editor：读失败带原因，长文件截断有标记', async () => {
+  const host = createHost({ log: () => {} })
+  const root = tempRoot('editor')
+  host.registerPlugin(editorManifest, editor, { config: { root } })
+  await host.enable('editor')
+  const tools = new Map(host.services.tools.list().map((d) => [d.name, d]))
+  const missing = await tools.get('read_file').execute({ path: 'nope.txt' })
+  assert.match(missing.text, /读不到这个文件：ENOENT/)
+  fs.writeFileSync(path.join(root, 'big.txt'), 'x'.repeat(25000), 'utf8')
+  const big = await tools.get('read_file').execute({ path: 'big.txt' })
+  assert.match(big.text, /已截断/)
+  assert.ok(big.text.length < 25000)
 })

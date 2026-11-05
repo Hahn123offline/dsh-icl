@@ -11,6 +11,11 @@ export const name = 'focus'
 
 const DEFAULT_PIERCE = Object.freeze({})
 
+/** 事实状态的粒度：分钟一抖会把前缀缓存整段打掉，所以按 5 分钟取整。 */
+const MINUTES_BUCKET = 5
+/** 提示词段上限：契约要求每段 1–2 行、实现里必须截断。 */
+const SECTION_MAX_CHARS = 200
+
 function minutesSince(lease, now) {
   if (!lease?.since) return 0
   return Math.max(0, Math.round((now - Number(lease.since)) / 60_000))
@@ -57,9 +62,11 @@ export function apply(ctx) {
     const backlog = api().backlog()
     const lines = []
     if (lease) {
-      const mins = minutesSince(lease, now())
+      const mins = Math.floor(minutesSince(lease, now()) / MINUTES_BUCKET) * MINUTES_BUCKET
       const sacred = lease.interruptible === false ? '（勿扰：只有管理员和闹钟能打断）' : ''
-      lines.push(`你现在在：${lease.title}${sacred}${lease.reason ? ` —— ${lease.reason}` : ''}，已 ${mins} 分钟。`)
+      // 不足一档就不说"已 0 分钟"：既没信息，又让每段文本无谓地变长。
+      const elapsed = mins >= MINUTES_BUCKET ? `，已 ${mins} 分钟` : ''
+      lines.push(`你现在在：${lease.title}${sacred}${lease.reason ? ` —— ${lease.reason}` : ''}${elapsed}。`)
     } else {
       lines.push('你不在任何专注空间里（自己的时间）。')
     }
@@ -126,10 +133,15 @@ export function apply(ctx) {
   ]
   for (const tool of tools) ctx.tools.register(tool)
 
+  // 事实状态段：order 875 让它排在人格/仿真（20/25）之后、world（890）之前。
+  // 它随焦点变化，放到前缀前面会把整段人格一起打掉（实测 firstDiff 从第 1 字符开始）。
   ctx.prompt.section({
     name: 'focus',
-    order: 15,
-    text: () => (current() || api().backlog().length ? statusText() : ''),
+    order: 875,
+    text: () => {
+      const text = current() || api().backlog().length ? statusText() : ''
+      return text.length > SECTION_MAX_CHARS ? `${text.slice(0, SECTION_MAX_CHARS - 1)}…` : text
+    },
   })
 
   ctx.log({ msg: 'focus.ready' })
