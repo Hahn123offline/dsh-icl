@@ -16,6 +16,7 @@ import { createHost } from '../../core/src/index.mjs'
 import { normalizeConfig } from './config.mjs'
 import { bootstrapHost } from './bootstrap.mjs'
 import { createDshBridge } from './bridge.mjs'
+import { registerPurifyShadows } from './purify.mjs'
 
 const MAX_BUFFERED_EVENTS = 500
 
@@ -45,6 +46,8 @@ export function createIclPlugin({ ctx, config = {} }) {
     enabled: [],
     buffered: [],
     disposed: false,
+    purifyOffs: [],
+    purifyPending: [],
   }
 
   function isOurSession(session) {
@@ -88,6 +91,14 @@ export function createIclPlugin({ ctx, config = {} }) {
     // 测试控制面：ICL 内部 shared 能力，供 loop-probe 的 reset 调用。
     try { host.shared.set('icl', { resetRaw: () => bridge.resetRaw() }) } catch { /* ignore */ }
     bridge.start()
+    // 第一屏净化（红队 P0-1）：注册同名空段 shadow 掉全局工程脚手架段（见 purify.mjs）。
+    // 默认 cfg.purifySections 为空 → 产品 preset 行为不变；只有显式配置的 preset（目前 lab）会开。
+    if (cfg.purifySections?.length) {
+      const shadow = registerPurifyShadows(ctx, cfg.purifySections)
+      state.purifyOffs.push(...shadow.offs)
+      state.purifyPending = shadow.failed.map((row) => row.name)
+      log({ msg: 'icl.purify', scope: 'preset', applied: shadow.applied, failed: shadow.failed })
+    }
     if (state.session) bridge.bindSession(state.session)
     if (state.agent) bridge.bindAgent(state.agent)
     const result = await bootstrapHost(host, cfg, { log })
@@ -139,6 +150,14 @@ export function createIclPlugin({ ctx, config = {} }) {
     // 这里 await：DSH 会等 agent/created 完成再发布 agent，工具/提示词一定在第一轮之前就位
     await ensureBoot()
     state.bridge?.bindAgent(agent)
+    // preset ctx 若不是 scoped（DSH 拒绝同名覆盖、报 already registered），退到 agent.ctx 再注册一次：
+    // agent scope 一定能 shadow 全局。失败会记录在 icl.purify 日志里，不静默。
+    if (state.purifyPending.length && agent?.ctx) {
+      const retry = registerPurifyShadows(agent.ctx, state.purifyPending)
+      state.purifyOffs.push(...retry.offs)
+      state.purifyPending = retry.failed.map((row) => row.name)
+      log({ msg: 'icl.purify', scope: 'agent', applied: retry.applied, failed: retry.failed })
+    }
   }
 
   const onAgentDisposed = (payload) => {
@@ -207,6 +226,7 @@ export function createIclPlugin({ ctx, config = {} }) {
       if (state.disposed) return
       state.disposed = true
       if (state.controlTimer) { clearInterval(state.controlTimer); state.controlTimer = null }
+      for (const off of state.purifyOffs.splice(0)) { try { off() } catch { /* 已卸载 */ } }
       try { state.bridge?.dispose() } catch (error) { logWarn({ msg: 'icl.dispose-bridge', error: String(error?.message ?? error) }) }
       state.bridge = null
       try { state.host?.shared?.delete('icl') } catch { /* ignore */ }
