@@ -21,9 +21,9 @@
 | **phase 1 出站（qq_send，只回 owner 私聊）** | ✅ 实现 + fake 11 条；真实窗口待 lead 指令 | `src/send-tool.mjs`、`packages/core/test/qq-send.test.mjs` |
 | QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
-| shadow preflight（谁可能抢连接，一条命令出结论） | ✅ 10 条判定单测 + 真机 BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
+| shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 378 pass | `node --test packages/core/test packages/mc-body/test` |
+| 全量测试 | ✅ 381 pass | `node --test packages/core/test packages/mc-body/test` |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
 | 真实 SnowLuma 影子 | ⏸ 用户 2026-11-05 选 B 暂缓（不在电脑前）；**phase 1 真实窗口待 lead 指令**（旧消费者已停、SnowLuma 已在跑） | §0.1 / §10 / §13.5 |
@@ -33,7 +33,7 @@
 - **phase 0 只读影子**：✅ 实现 + fake/lab 验证完成；真实 SnowLuma 影子因用户不在电脑前选 B 暂缓（当时唯一阻断 pid 12232）。
 - **phase 1 私聊回**：用户回来后**批准**；lead 已把旧启动项 `dsh-icl.lnk` 移到 `.state/backup-startup/`（可回滚），旧 focus-core 应用已停/退役不再恢复，SnowLuma 目前由用户手动开着。代码 + fake 测试已完成（`qq_send`、三把钥匙、限速/去重/内容边界/三态回执/审计/kill switch）；**真实 QQ 验证等 lead 给窗口**（只发 owner 私聊、每轮≤1 条）。
 - **保持不变**：产品默认仍 `enabled:false` 且三把钥匙全关；真实发送只在 lab/受控窗口打开；群发送代码不存在。
-- 已经验证过的替代证据：假上游进程内演练 14/14、真实 lab（57108，假 OneBot）10/10、QQ×MC 并发 T1–T3、preflight 单测 10 条、phase 1 出站 fake 11 条。
+- 已经验证过的替代证据：假上游进程内演练 14/14、真实 lab（57108，假 OneBot）10/10、QQ×MC 并发 T1–T3、preflight 单测 13 条、phase 1 出站 fake 11 条。
 
 三条入站不变量（任何后续改动都不能破坏）：
 
@@ -545,6 +545,7 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 
 ```powershell
 cd C:\DSH\icl-wt\qq
+node packages/plugins/qq/tools/preflight.mjs --snowluma-up   # phase 1 就绪检查：SnowLuma 在跑/无旧消费者/3001 无其它连接
 node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved --send `
   --peer 3429502459 --owner 3429502459 --port 57108 --wait-ms 900000
 ```
@@ -630,11 +631,11 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 378 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 381 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 11 pass（phase 1 出站）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
-node --test packages/core/test/qq-preflight.test.mjs   # 10 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明）
+node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
 
 `packages/core/test/qq.test.mjs` 覆盖：
@@ -667,8 +668,9 @@ node --test packages/core/test/qq-preflight.test.mjs   # 10 pass（判定 + 陈�
   群/非白名单/非 QQ 号拒绝；空/超长/敏感拒绝；5s 限速；60s 同文去重；kill switch（运行中关 allowSend 立即拒绝）；审计四种结果。
 - `qq-mc-concurrent.test.mjs`（3 条）：T1 双源两个 batch/不混来源/不重；T2 sacred focus 下双源都进 core 积压且不投递；
   T3 time 睡眠下双源都进 time 积压、醒来一条 `plugin:time` notice 同时重放（正文 `[qq/qq:private:10001]`、`[mc/event]`）。
-- `qq-preflight.test.mjs`（10 条）：干净=CLEAR；旧应用/dsh-qq 桥/端口占用/desktop 启用行/已有 shadow=BLOCK；
-  拿不到进程列表=WARN（不报 CLEAR）；被 kill 的 lab 留下的 `connected:true` 状态文件不算"正在跑"；
+- `qq-preflight.test.mjs`（13 条）：shadow 干净=CLEAR；旧应用/dsh-qq 桥/端口占用/desktop 启用行/已有 shadow=BLOCK；
+  用户自己的 QQ.exe 只提示不阻断；**phase 1 模式**（`--snowluma-up`）SnowLuma 在跑+CLEAR、没起来/有旧消费者=BLOCK；
+  拿不到进程列表=WARN（不报 CLEAR）；被 kill 的 lab 留下的 `connected:true` 状态文件/已结束 run 不算"正在跑"；
   `renderUserBrief` 在 BLOCK 时讲清 pid/旧人格/回滚、CLEAR 时给可开始结论。
 
 ### 13.2 进程内演练（含 time 睡眠锁）
@@ -761,6 +763,7 @@ lead 已停旧应用/移走启动项、SnowLuma 由用户手动开着。phase 0 
 ```powershell
 # preflight（shadow 前一条命令：谁可能抢连接 / 端口 / 已有连接 / 配置）
 node packages/plugins/qq/tools/preflight.mjs            # 或 lab-shadow.mjs --preflight
+node packages/plugins/qq/tools/preflight.mjs --snowluma-up   # phase 1 就绪模式：SnowLuma 应在跑、无旧消费者
 # 假 OneBot（手动演示；随机/指定端口均可）
 node packages/plugins/qq/tools/fake-onebot.mjs --port 3301 --token test-token --after 800 --group --duplicate
 # 进程内演练（不碰 DSH、不碰真 QQ）
