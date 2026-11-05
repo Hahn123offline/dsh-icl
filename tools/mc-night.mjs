@@ -101,6 +101,9 @@ const state = {
   lastNudgeAt: null,
   lastHeartbeatAt: null,
   lastTurnEnds: 0,
+  lastDeaths: 0,
+  lastDeathNoticeAt: null,
+  lastErrorInterruptAt: null,
   lastSeenEventAt: null,
   sessionId: null,
   pendingPromptAt: null,
@@ -327,6 +330,21 @@ async function bodyStatus() {
   }
 }
 
+/** 当前 turn 内的工具错误数（判断"同一轮里反复撞墙"）。 */
+function currentTurnErrorCount(events) {
+  let lastStart = -1
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i].type === 'turn/start') { lastStart = i; break }
+  }
+  if (lastStart < 0) return 0
+  let errors = 0
+  for (let i = lastStart; i < events.length; i += 1) {
+    const event = events[i]
+    if (event.type === 'tool/result' && (event.data?.message?.isError ?? event.data?.isError)) errors += 1
+  }
+  return errors
+}
+
 function readBodyEvents() {
   return readJsonl(path.join(runDir, 'state', 'mc-body', 'body.jsonl'), { limit: 5000 })
 }
@@ -393,7 +411,19 @@ async function checkpoint(kind = 'tick') {
   state.lastCheckpointAt = nowIso()
   state.lastMetrics = row
   log(`checkpoint #${state.checkpoints}（${kind}）：turns=${stats.turns} tools=${stats.tools} err=${stats.toolErrors} body=${body.connected ? 'connected' : body.alive ? 'http-only' : 'down'} pos=${body.position ?? '?'} hp=${body.health ?? '?'}`)
-  writeStatus({ lastMetrics: row })
+  // mc-body 消费用：每次 checkpoint 往 night-notes.md 追加一节（transcript.md 会被 rebuild 覆盖，不能直接追加）。
+  try {
+    fs.appendFileSync(path.join(runDir, 'night-notes.md'), [
+      ``,
+      `## Checkpoint ${new Date().toISOString()} (#${state.checkpoints}, ${kind})`,
+      `- 位置 ${body.position ?? '?'} · 血 ${body.health ?? '?'}/饱食 ${body.food ?? '?'} · 任务 ${body.task ?? '空闲'} · 队列 ${body.queue ?? '?'}`,
+      `- 维度/环境：${body.environment ?? '?'} · 玩家 ${(body.players ?? []).join('、') || '无'}`,
+      `- 本轮 uptime ${row.uptimeMin}min · turns ${row.turns} · toolCalls ${row.toolCalls} · toolErrors ${row.toolErrors}`,
+      `- 最近自述：${String(row.lastAssistant ?? '').replace(/\n/g, ' ').slice(-200)}`,
+      ``,
+    ].join('\n'), 'utf8')
+  } catch { /* ignore */ }
+  writeStatus({ lastMetrics: row, phase: state.phase })
   return row
 }
 
@@ -434,12 +464,16 @@ function nightPhase() {
 function initialInstruction() {
   return [
     '今晚这段时间你自己安排，不用等我吩咐。',
-    '目标就一个：像平常一样把这一夜过下来。想采集就采集，想造家/整理背包就做，想出去看看也行。',
-    '开跑后先自己排一下作息（用 time_arrange）：',
+    '像平常一样过这一夜就行：先在出生点附近做低风险的事——采点木头、造工作台、整理背包、看看周围；',
+    '天黑了就回安全的地方，或者先搭个能睡的庇护所。下矿、长途、打架这些等白天或你手上有家伙了再说。',
+    '',
+    '开跑后先排一下作息（用 time_arrange）：',
     '- 90 分钟后入睡、睡 4.5 小时：time_arrange {id:"night:main-sleep", mode:"wake", kind:"span", sleep:true, in:"90m", duration:"4h30m", message:"夜深了，把手里这轮收个尾，去睡吧。"}',
     '- 6 小时 10 分后叫醒：time_arrange {id:"night:dawn", mode:"wake", kind:"single", in:"6h10m", message:"天亮了，该起了。"}',
+    '',
     '然后进 MC 生存服（mcb_servers 里的 survival），进去后自己决定今晚做什么。',
-    '每次做完一段可以 remember 记一笔（具体细节，别写提纲）。我这边只记录，不打断你。',
+    '有个规矩：**同一个动作连续失败 3 次就换做法**（先 mcb_status 看状态、换目标、或先回安全点），别硬撞。',
+    '做完一段可以 remember 记一笔（写具体细节）。我这边只记录，不打断你。',
   ].join('\n')
 }
 
@@ -608,11 +642,10 @@ async function main() {
 
   // 初始指令：让她自己安排这一夜
   const baseline = await sendPrompt(initialInstruction(), { timeoutSec: 600 })
-  const firstTurn = await waitTurnEnd(baseline, 240)
-  if (!firstTurn) recordStrategy('initial-slow', '初始指令 4 分钟内没有 turn/end，继续观察')
-
   state.phase = 'running'
   writeStatus()
+  const firstTurn = await waitTurnEnd(baseline, 60)
+  if (!firstTurn) log('初始指令 60s 内没有 turn/end（本地模型回合可能很长），继续按 tick 监控')
   await checkpoint('start')
 
   let lastCheckpoint = Date.now()
@@ -658,8 +691,8 @@ async function main() {
       state.consecutiveFailures = 0
       try {
         await sleep(4000)
-        await sendPrompt(nudgeText(), { timeoutSec: 300 })
-        log('lab 已重启，已投递"继续安排"提示')
+        await sendPrompt('刚才你的运行进程重启了一次（不是你的问题）；你的作息安排还在。先看一下时间/身体状态，重新连 MC 的 survival，然后继续你这一夜的安排。', { timeoutSec: 300 })
+        log('lab 已重启，已投递"恢复现场"提示')
       } catch (error) { log(`重启后提示失败：${String(error?.message ?? error)}`) }
     } else {
       state.consecutiveFailures = 0
@@ -686,6 +719,39 @@ async function main() {
       await checkpoint('turn-timeout')
     }
 
+    // 死亡探测：body 的 death 事件（不再让她在"我是不是死了"上打转）
+    const bodyEvents = readBodyEvents()
+    const deaths = bodyEvents.filter((row) => row.type === 'death').length
+    if (deaths > state.lastDeaths) {
+      const lastDeath = [...bodyEvents].reverse().find((row) => row.type === 'death')
+      const position = lastDeath?.data?.position ? `${Math.round(lastDeath.data.position.x)},${Math.round(lastDeath.data.position.y)},${Math.round(lastDeath.data.position.z)}` : '?'
+      state.lastDeaths = deaths
+      state.lastDeathNoticeAt = nowIso()
+      recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
+      try {
+        await sendPrompt(`你刚死了一次（死亡位置 ${position}）。先 mcb_status 看现在在哪、能不能回去捡掉落；捡不到就别硬找，换个安全的目标继续。别在同一个危险点反复送死。`, { timeoutSec: 300 })
+      } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
+    }
+
+    // 错误打转：当前 turn 内工具错误 ≥12 且已跑 2 分钟 → 取消这一轮、注入"换策略"提示（不重启）
+    const turnErrors = currentTurnErrorCount(events)
+    const canInterrupt = !state.lastErrorInterruptAt || nowMs - Date.parse(state.lastErrorInterruptAt) > 10 * 60_000
+    if (stats.inTurn && turnErrors >= 12 && turnAgeSec > 120 && canInterrupt) {
+      state.lastErrorInterruptAt = nowIso()
+      const meta = labMeta()
+      recordStrategy('error-loop-interrupt', `当前 turn ${turnErrors} 次工具错误（${turnAgeSec}s），session/cancel + 换策略提示`, { turnErrors, turnAgeSec })
+      try {
+        const api = apiFor(cfg.port)
+        await api.callUnary('session/cancel', { sessionId: meta.sessionId }, undefined, 'long')
+      } catch (error) { log(`error-loop cancel 失败：${String(error?.message ?? error)}`) }
+      await sleep(2500)
+      const hint = turnErrors >= 25
+        ? '先停一下：这一轮你撞了太多次工具错误。先 mcb_status 看自己在哪、背包和血量；如果卡在同一个目标就换一个更简单的（采木/整理/回安全点），别再重复刚才那个失败动作。'
+        : '看起来你在同一个动作上反复失败。换个做法：先 mcb_status / mcb_look 看状态，换目标或先回安全点；同一动作失败 3 次就不要再试了。'
+      try { await sendPrompt(hint, { timeoutSec: 300 }) } catch (error) { log(`换策略提示失败：${String(error?.message ?? error)}`) }
+      await checkpoint('error-interrupt')
+    }
+
     // 定时 checkpoint
     if (nowMs - lastCheckpoint > cfg.checkpointMin * 60_000) {
       const row = await checkpoint('tick')
@@ -704,8 +770,8 @@ async function main() {
       recordStrategy('idle-nudge', `空闲 ${Math.round(idleMs / 60000)}min 没有新事件，投递"继续安排"提示`)
     }
 
-    // 心跳状态
-    if (!state.lastHeartbeatAt || nowMs - Date.parse(state.lastHeartbeatAt) > 5 * 60_000) {
+    // 心跳状态（每 2 分钟；mc-body/lead 靠它判活）
+    if (!state.lastHeartbeatAt || nowMs - Date.parse(state.lastHeartbeatAt) > 2 * 60_000) {
       state.lastHeartbeatAt = nowIso()
       writeStatus({
         phase: state.phase,
@@ -716,11 +782,15 @@ async function main() {
         turns: stats.turns,
         toolCalls: stats.tools,
         toolErrors: stats.toolErrors,
+        turnErrors: currentTurnErrorCount(events),
+        inTurn: stats.inTurn,
         lastEventAgeSec,
+        lastTurnEnds: stats.turns,
+        deaths,
         labStarts: state.labStarts,
         serverStarts: state.serverStarts,
       })
-      log(`心跳：uptime=${Math.round((nowMs - startedAt) / 60000)}min turns=${stats.turns} tools=${stats.tools} err=${stats.toolErrors} lastEvent=${lastEventAgeSec}s`)
+      log(`心跳：uptime=${Math.round((nowMs - startedAt) / 60000)}min turns=${stats.turns} tools=${stats.tools} err=${stats.toolErrors} turnErr=${turnErrors} lastEvent=${lastEventAgeSec}s`)
     }
 
     await sleep(15_000)
