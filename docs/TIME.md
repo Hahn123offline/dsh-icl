@@ -556,6 +556,13 @@ node tools/lab.mjs down --run "$RUN"
 - 外部注入方（supervisor/driver/未来连接器）直投前必须读 `time.json` 的 `phase` **和 `lock`**（静音不改 phase），
   或改走 `signals.offer` 让 gate 拦进积压。night-1 2026-11-06 实测：睡眠期 9 条 supervisor 直投（02:09:56–02:11:27），
   不是 time 拦截失败；修复后 0。
+- **事件形状（supervisor 消费用）**：`sleep-boundary-overrun` 的 `meta = {afterSec, graceSec}`、
+  `sleep-boundary-new-turn` 的 `meta = {at}`；两者都 `from.plugin='time'`, `kind:'event'`,
+  `tags` 见上表。睡眠中 `status().sleepBoundary` 与醒来后 `status().lastSleepBoundary`（多一个 `endedAt`）
+  字段一致：`inFlight / turnAgeAtEntrySec / turnEndedAfterSec / postSleepTurn / overrun`。
+- **grace 口径**：time 默认 `sleepGraceSec=120`；mc-lab supervisor 2026-11-06 已把入睡 grace 也改成
+  120s 默认（`--sleep-grace-sec`/`ICL_SLEEP_GRACE_SEC` 可配），两边同口径；supervisor 消费
+  `sleep-boundary-overrun` 只入 anomalies，不重复 cancel（cancel 由 supervisor 本地 grace 触发一次）。
 
 ### 14.4 测试
 
