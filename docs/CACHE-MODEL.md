@@ -339,6 +339,18 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 | cache hit tokens / hit% | 96709 / **91.2%** | 97351 / **91.2%** |
 | TTFT 均值 / 最大 | 0.89s / 5.55s | 0.86s / 5.31s |
 
+#### 真实长会话（night-1，6h29m 本地长测）
+
+引擎日志按 00:22–06:51 窗口切片（1220 条 tool-bearing 请求、41 工具）：
+
+- **hit 99.50%**（46,968,874 / 47,204,575 tok）、prefill 合计 235,096 tok（avg 193/请求）；
+- TTFT 均值 0.68s / **p50 0.60s / p95 0.94s**（max 8.91s = 冷启动）；
+- **全量失效 8 次，全部是 DSH 会话启动/重启的冷启动**（`msgs=3`、prompt ≈10.7–11.2k）——最后一次启动后 5h15m 零全量失效；
+- 睡眠 4h27m **零请求**；system 段 5004 字符、**1 次 append / 0 次 replace**；facts 快照 48 条/37 轮 = 1.30 条/轮；
+- 上下文从 ~11k 涨到 ~104k tokens，**命中率不随会话变长下降**（每小时 98.94% → 99.21% → 99.77% → 99.87%）。
+
+详见 `docs/CACHE-NIGHT-2026-11-06.md`（含睡眠/清醒分窗、冷启动逐条、复算命令 `tools/cache-longrun.mjs`）。
+
 **结论**：节流**不降低 hit%（两者都 91.2%）**，prefill 略降（-1.4%），首轮冷启动后的请求全部 `private_endpoint` 命中。
 本 scenario 每轮 facts 只变一次，所以节流只省 1 条快照（2705 vs 3163 字符）；**真正的收益在 step-heavy 场景**
 （mc-lab 本地 MC run `L1`：27 个 step / 10 轮，facts 快照**共 5 条**、system **4999 字符 / 8473 字节**常数、0 replace → 节流有效且不破前缀）。
