@@ -267,11 +267,34 @@ S0 工具面/系统提示、S1 外部投递、S2 focus 积压与摘要、S3 time
 ### 真实会话（lab，最终手感确认；不重启 desktop）
 
 ```bash
+# 注意：显式钉住 provider/model，不依赖 profile 默认（2026-11-05 曾有人误改 web profile 默认模型）
 node tools/lab.mjs up --preset icl-lab --port 57107 --run time-1
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s2-time.json
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s4-sleep.json
-node tools/loop.mjs --base http://127.0.0.1:57107 --scenario tools/scenarios/loop-s5-mute.json
+node tools/loop.mjs --base http://127.0.0.1:57107 \
+  --state-dir <runDir>/state/icl-lab --session <sessionId> \
+  --scenario tools/scenarios/loop-s2-time.json --out <runDir>/loop-s2
+# s4 / s5 同理；loop.mjs 的 --session 复用同一条 lab 会话
 node tools/lab.mjs down --run time-1
 ```
 
-S2 = 到点唤醒一次 + 同 id 改期再响 + 暂停/恢复积压；S4 = 睡眠拦截 + 醒来释放；S5 = 静音拦截 + 闹钟穿透 + 解除释放。断言只认 `events.jsonl`/`time.outbox.jsonl`/状态快照，不拿模型自述当证据。
+S2 = 到点唤醒一次且多一轮（minTurns=2）；S4 = 睡眠拦截 + 醒来释放；S5 = 静音拦截 + 闹钟穿透 + 解除释放。断言只认 `events.jsonl`/`time.outbox.jsonl`/状态快照，不拿模型自述当证据。
+
+**2026-11-05 结果（port 57107，deepseek-account/deepseek-flash）：**
+
+| 场景 | 结果 | 断言 |
+|---|---|---|
+| S2 time | PASS | 2/2（userContains 闭环唤醒 + minTurns 2），errors 0 |
+| S4 sleep | PASS | 2/2（醒来结束语 + 积压释放），turns 4，errors 0 |
+| S5 mute | PASS | 3/3（signalBlocked / 闹钟穿透 / 解除释放），turns 3，errors 0 |
+
+产物：`.state/lab/time-3/loop-s2|loop-s4|loop-s5/{report.md,verdict.json,events.jsonl}`（worktree 内，不提交）。
+
+### 前缀稳定性（misc 对表，2026-11-05）
+
+同一 lab 流程 + `tools/scenarios/cache-10.json`（cloud deepseek-flash，显式 provider/model）：
+
+| 跑次 | 代码 | 轮数/跨度 | system 字数 | `system/message` 条数 | 首差异 |
+|---|---|---|---|---|---|
+| misc-1 | 旧（分钟级时间行） | 11 轮 / 130s | 5117 | 2 | **2316** |
+| misc-minute-check | 本契约版，故意跨分钟（gap 32s） | 4 轮 / 102s | 5060 | **1** | 无（只有一份） |
+
+结论：`时间：日期+周几+时段` 后，跨分钟不再产生新的 `system/message`，也不再每轮 append 一整段系统提示词。工具面：34 个工具、`toolsChars` 18910（+inspect 时注意 `time_mute/time_unmute` 是新增变量）。
