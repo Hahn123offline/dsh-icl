@@ -11,7 +11,7 @@
 //     system/message 全量文本 + 每步消息序列 —— 用来算"第一个差异字节在哪、
 //     作废多少后缀"。
 //
-// 子命令：
+// 子命令（`--help` 安全：只打印用法、不会起 lab run）：
 //   node tools/cache-probe.mjs slots
 //   node tools/cache-probe.mjs log [--tail 40] [--offset <bytes>] [--jsonl <out>]
 //   node tools/cache-probe.mjs diff --run <runId>|--events <file>
@@ -516,6 +516,7 @@ async function cmdRun() {
     scenario,
     commit,
     factsInSystem: process.env.ICL_FACTS_IN_SYSTEM === '1',
+    factsEveryStep: process.env.ICL_FACTS_EVERY_STEP === '1',
     startedAt: new Date().toISOString(),
     offsetBefore,
     engineLog: ENGINE_LOG,
@@ -691,12 +692,105 @@ async function cmdRebuild() {
   console.log(`\n重建：${file}`)
 }
 
-const commands = { slots: cmdSlots, log: cmdLog, diff: cmdDiff, run: cmdRun, rebuild: cmdRebuild, report: cmdReport, api: cmdApi }
+/** facts 快照统计（DSH 层）：快照条数/字符，以及 system 更新方式。 */
+function factsSnapshotStats(runId) {
+  const events = [...readEventFile(eventsPath(runId))]
+  let snapshots = 0
+  let snapshotChars = 0
+  let systemAppends = 0
+  let systemReplaces = 0
+  let systemChars = 0
+  for (const event of events) {
+    if (event?.type === 'system/message') {
+      const text = messageText(event.data?.message ?? event.data)
+      systemChars = text.length
+      const op = event.surfaceOp
+      if (op && typeof op === 'object' && op.op === 'replace') systemReplaces += 1
+      else systemAppends += 1
+    }
+    if (event?.type === 'user/message') {
+      const message = event.data?.message ?? event.data
+      if (message?.source?.kind !== 'runtime-context') continue
+      const text = messageText(message)
+      snapshots += 1
+      snapshotChars += text.length
+    }
+  }
+  return { snapshots, snapshotChars, systemAppends, systemReplaces, systemChars }
+}
+
+function engineStats(record) {
+  const rows = (record.engineRows ?? []).filter((row) => Number(row.toolCount ?? 0) > 0)
+  const full = rows.filter((row) => Number(row.prefillTokens) > 0 && Number(row.cacheHitTokens) === 0)
+  const prompt = rows.reduce((sum, row) => sum + Number(row.promptTokens ?? 0), 0)
+  const prefill = rows.reduce((sum, row) => sum + Number(row.prefillTokens ?? 0), 0)
+  const hit = rows.reduce((sum, row) => sum + Number(row.cacheHitTokens ?? 0), 0)
+  const ttfts = rows.map((row) => Number(row.ttftSeconds ?? 0)).filter((x) => x > 0)
+  return {
+    requests: rows.length,
+    fullInvalidations: full.length,
+    promptTokens: prompt,
+    prefilledTokens: prefill,
+    cacheHitTokens: hit,
+    hitShare: prompt ? +(hit / prompt).toFixed(3) : null,
+    avgTtftSeconds: ttfts.length ? +(ttfts.reduce((a, b) => a + b, 0) / ttfts.length).toFixed(2) : null,
+    maxTtftSeconds: ttfts.length ? +Math.max(...ttfts).toFixed(2) : null,
+    prefillSeconds: +rows.reduce((sum, row) => sum + Number(row.prefillSeconds ?? 0), 0).toFixed(2),
+  }
+}
+
+async function cmdCompare() {
+  const ids = [arg('--a', null), arg('--b', null)]
+  if (!ids[0] || !ids[1]) throw new Error('compare 需要 --a <runId> --b <runId>')
+  const runs = ids.map((id) => {
+    const file = path.join(runDirOf(id), 'cache-probe.json')
+    if (!fs.existsSync(file)) throw new Error('没有 ' + file + '；先跑 cache-probe run')
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return { id, record, engine: engineStats(record), snap: factsSnapshotStats(id) }
+  })
+  const [a, b] = runs
+  const row = (label, va, vb) => console.log([label, va, vb].join('\t'))
+  console.log(['指标', a.id, b.id].join('\t'))
+  row('commit', a.record.commit ?? '?', b.record.commit ?? '?')
+  row('factsEveryStep', String(Boolean(a.record.factsEveryStep)), String(Boolean(b.record.factsEveryStep)))
+  row('tools / hash', (a.record.tools?.count ?? '?') + ' / ' + (a.record.tools?.hash ?? '?'), (b.record.tools?.count ?? '?') + ' / ' + (b.record.tools?.hash ?? '?'))
+  row('system append / replace', a.snap.systemAppends + ' / ' + a.snap.systemReplaces, b.snap.systemAppends + ' / ' + b.snap.systemReplaces)
+  row('system chars（最后一份）', a.snap.systemChars, b.snap.systemChars)
+  row('facts 快照条数', a.snap.snapshots, b.snap.snapshots)
+  row('facts 快照字符合计', a.snap.snapshotChars, b.snap.snapshotChars)
+  row('engine 请求数', a.engine.requests, b.engine.requests)
+  row('全量失效请求数', a.engine.fullInvalidations, b.engine.fullInvalidations)
+  row('prompt tokens 合计', a.engine.promptTokens, b.engine.promptTokens)
+  row('prefill tokens 合计', a.engine.prefilledTokens, b.engine.prefilledTokens)
+  row('cache hit tokens 合计', a.engine.cacheHitTokens, b.engine.cacheHitTokens)
+  row('hit%', a.engine.hitShare == null ? '?' : (a.engine.hitShare * 100).toFixed(1) + '%', b.engine.hitShare == null ? '?' : (b.engine.hitShare * 100).toFixed(1) + '%')
+  row('prefill 秒合计', a.engine.prefillSeconds + 's', b.engine.prefillSeconds + 's')
+  row('TTFT 均值/最大', a.engine.avgTtftSeconds + ' / ' + a.engine.maxTtftSeconds, b.engine.avgTtftSeconds + ' / ' + b.engine.maxTtftSeconds)
+  const out = arg('--out', null)
+  if (out) {
+    fs.writeFileSync(path.resolve(out), JSON.stringify({ generatedAt: new Date().toISOString(), runs }, null, 1), 'utf8')
+    console.log('wrote ' + out)
+  }
+}
+
+const commands = { slots: cmdSlots, log: cmdLog, diff: cmdDiff, run: cmdRun, rebuild: cmdRebuild, report: cmdReport, api: cmdApi, compare: cmdCompare }
 
 async function main() {
   const command = process.argv[2]
+  if (command === '--help' || command === '-h' || command === 'help') {
+    console.log('用法：node tools/cache-probe.mjs <slots|log|diff|run|rebuild|report|api|compare> [options]')
+    console.log('  slots   引擎 /slots + 关键 /metrics 指标')
+    console.log('  log     引擎请求日志（--tail / --offset / --jsonl）')
+    console.log('  diff    从 DSH 事件流重建每步 system diff（--run）')
+    console.log('  run     一键跑 lab A/B（--scenario / --model / --gap / --rounds / --run）')
+    console.log('  rebuild 不跑 GPU 重算已有 run 的指标')
+    console.log('  report  打印已有 run 的报告')
+    console.log('  api     裸 API 前缀实验（--from-run 用真实 payload）')
+    console.log('  compare 两个 run 的节流/布局 A/B 对表（--a / --b）')
+    return
+  }
   if (!commands[command]) {
-    console.error('用法：node tools/cache-probe.mjs <slots|log|diff|run|report|api> [options]')
+    console.error('用法：node tools/cache-probe.mjs <slots|log|diff|run|report|api|compare> [options]')
     process.exit(2)
   }
   await commands[command]()

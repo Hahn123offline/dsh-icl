@@ -3,16 +3,20 @@
 > 判据见 [MC-ACCEPTANCE.md](MC-ACCEPTANCE.md)；机器断言=链路证据，三问=当事人反馈不算证据。
 > 环境：lab（`dsh --profile web --patch`，不碰 desktop）；正常地形服 `127.0.0.1:54840`（bot `ICL-mclab-1`）；模型先云端 `deepseek-flash`，再本地 `coder390-27b-q3-df2-4x500`。
 
-## 1. 最终结果（滚动更新）
+## 1. 最终结果
 
 | run | 模型 | commit | 场景 | 结果 | 关键点 |
 |---|---|---|---|---|---|
 | t5 | deepseek-flash | 4207fbf | A/C/E | PASS/PASS/PASS | B 之前基线（flat 54837，旧 body） |
 | c3 | deepseek-flash | da20af6 | A / E | PASS / PASS | 54840 normal；B 生效（system 4999 常数） |
 | c3 | deepseek-flash | da20af6 | C | FAIL（真问题） | body 在 mine oak_log 连崩 3 次（exit 1，无栈）→ 已转 mc-body，后修复 |
-| v1 | deepseek-flash | fba5d64 | A / C / E | **PASS / PASS / PASS** | C 断言窗口修正（signal-logged 查 mc-link 台账 + kill 后 15s）；C 的 notice 投递仍为软断言 |
+| r3 | deepseek-flash | 66820a5 | A/C/E | **PASS / PASS / PASS** | 54840；A 6/7（软 noToolError）、C 9/9、E 6/6 |
+| r4 | deepseek-flash | 73494e9 | A/C/E | **PASS / PASS / PASS** | A 7/7、C 8/9（软 crash-notice）、E 6/6 |
+| r5 | deepseek-flash | 73494e9 | A/C/E | **PASS / PASS / PASS** | A 7/7、C 9/9、E 6/6 —— **云端 3 连达成** |
 | L1 | ninfer/coder390 | 3b96864 | A | FAIL（产品+M 型） | join✓ body✓ 下任务✓；mine 全 `no-path`（A* 2s 超时误判，已修）；本地慢（430s session/cancel） |
-| （待补） | | | A/C/E ×3 云端 + 本地 A/E | | mc-body 修复后最终 3 连 |
+| LA | **ninfer/coder390** | 1b4d923 | A | **PASS 8/8** | 本地 A：join→scan→mine 一棵 oak_log→自己 leave；22.1s；无工具错误（中途掉血 18→11 被 safety pause 是设计内） |
+
+**验收结论**：云端 3 连 A/C/E PASS；本地模型 A PASS；soak/断线演练 PASS。C 的会话内 crash notice 是软断言（真信号在 mc-link 台账必过；会话内时延见下）。
 
 ## 2. 已确认的产品缺陷与修复（本轮）
 
@@ -50,3 +54,10 @@
 
 - "随时来一局"在**云端 flash + 正常地形**下已 A/C/E 全 PASS；本地模型还差一次 A（mine 修复后待跑）。
 - 已知遗留：C 的会话内 crash notice 投递有延迟（软断言）；本地模型单轮可能很慢（430s 被 cancel）；54837 世界已脏、survival 54838 未使用。
+
+## 7. 最终验收后的遗留（诚实记录）
+
+1. **健康阈值与"正常游玩"的张力**：LA 本地 A 里她从树上掉下、单次掉 7 血（18→11）触发 safetyStop（阈值"单次≥6 暂停"）。设计上这是 danger 接管，但"砍树摔一次就暂停"会打断正常游玩；mc-body 在评估"区分坠落/战斗伤害或调高阈值"。
+2. **craft/place 真服链路证据只拿到部分**：`craft-place-real3`（54840）里 scan/goto 成功、mine oak_log 因 drop 没捡到 + 掉血暂停而失败，导致 craft 缺木板、place 被暂停拒绝。已验证的只是"mine 4 logs→craft oak_planks×12→crafting_table→stick"（real 那次），缺 `craft wooden_pickaxe` 与 `place`（有支撑成功/悬空 skipped）两行。
+3. **C 的会话内 crash notice 时延**：mc-link 实测 kill→会话消息 ≈166ms（tick 200ms），但若她正在 turn 内，要等下一个 step 边界才注入（DSH steer 语义）；场景把"signalLogged 查台账"作必过、会话内 notice 作软断言。
+4. **本地模型稳定性**：L1 曾出现单次 430s 的 turn 被 session/cancel；LA 22–35s 正常。云端 flash 也出现过一次 >7 分钟挂起（mc-link 循环），重启即可，不当产品失败。

@@ -3,7 +3,8 @@
 // 本轮定位（docs/QQ.md §7 的落地顺序第 1 步）：
 //   · **只收私聊、只进 signals、不发任何 QQ 消息**；群消息整类忽略（连只读都不接）。
 //   · 默认 `enabled:false`：不显式打开就完全不建连接。
-//   · 出站是另一个文件（outbound.mjs），三把钥匙 + 默认关闭，本插件不 import 它。
+//   · 出站是另一个文件（outbound.mjs），三把钥匙 + 默认关闭；本插件**没有发送调用**：
+//     只 import `sendEnabled`/`SEND_APPROVAL_TOKEN` 两个纯判定用于状态展示，不 import `createOutbound`、不调 `sendPrivate`。
 //
 // 与 ICL 现有接缝的关系：
 //   OneBot WS ──connector──► gate(白名单/去重/限流/过期) ──► ctx.signals.offer

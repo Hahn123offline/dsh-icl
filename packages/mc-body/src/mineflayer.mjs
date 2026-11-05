@@ -972,7 +972,26 @@ export function createMineflayerAdapter({
       const startedAt = Date.now()
       let mined = 0
       let missed = 0
+      let attempts = 0
       const skipped = new Set()
+      // 成功判据是“背包净增 >= count”（block 掉落物可能不是同名，如 stone→cobblestone）。
+      const dropItemName = (() => {
+        try {
+          const drops = def.drops
+          if (Array.isArray(drops) && drops.length) {
+            const entry = drops[0]
+            const id = typeof entry === 'number' ? entry : (entry?.drop?.id ?? entry?.id ?? entry?.drop)
+            if (id != null && bot.registry.items?.[id]?.name) return bot.registry.items[id].name
+          }
+        } catch { /* 用 blockName 兜底 */ }
+        return blockName
+      })()
+      const countItem = () => (bot.inventory?.items?.() ?? [])
+        .filter((item) => item.name === dropItemName)
+        .reduce((sum, item) => sum + (Number(item.count) || 0), 0)
+      const baseline = countItem()
+      const net = () => countItem() - baseline
+      const completed = () => net() >= count
 
       // 任务开始的可达性预检（只做诊断，不因一次判定直接 failed —— 决策交给后面的实际行走）：
       // 找不到目标 → no-target；A* 明确无路也先降级尝试（可能只是算不完/树挡住落点）。
@@ -994,8 +1013,27 @@ export function createMineflayerAdapter({
         })
       }
 
-      while (mined < count) {
+      // 循环条件是“背包净增 < count”而不是“已挖 < count”：
+      // 掉落物没进包时继续挖/再收，直到净增达标（有 attempts 上限防止无限追）。
+      while (!completed()) {
         checkAbort(signal)
+        if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
+        // 已经挖够 count 个但掉落还没进包：等最多 3s 并再收一次（树叶/树上/坡地掉落会飘）。
+        if (mined >= count) {
+          for (let i = 0; i < 6 && !completed(); i += 1) {
+            await sleep(500)
+            if (i === 2) { try { await pickupNearby(signal, progress) } catch (error) { if (signal?.aborted) throw error } }
+          }
+          if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
+        }
+        if (attempts >= count * 4 + 4) {
+          throw taskFailure('mine: drops-missing', {
+            mined, net: net(), requested: count, item: dropItemName,
+            detail: `已挖 ${mined} 个但背包净增只有 ${net()}（掉落物可能没捡到）`,
+            suggestion: '先 mcb_inventory 看实际数量；掉落物在别处时靠近再收',
+          })
+        }
+        attempts += 1
         if (mined === 0 && Date.now() - startedAt > maxPathMs) {
           throw taskFailure('mine: no-path', { mined, detail: `首个目标 ${Math.round(maxPathMs / 1000)}s 内没走到`, suggestion: '走近一点再下任务，或调 radius' })
         }
@@ -1022,7 +1060,8 @@ export function createMineflayerAdapter({
                 await pickupNearby(signal, progress)
                 mined += 1
                 missed = 0
-                progress?.({ done: mined, total: count, block: blockName, fallback: true })
+                progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, fallback: true, net: net() })
+                if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
                 await sleep(120)
                 continue
               }
@@ -1068,10 +1107,19 @@ export function createMineflayerAdapter({
         await pickupNearby(signal, progress)
         mined += 1
         missed = 0
-        progress?.({ done: mined, total: count, block: blockName, tool })
+        progress?.({ done: Math.min(count, Math.max(mined, net())), total: count, block: blockName, tool, net: net() })
+        if (completed()) return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
         await sleep(150)
       }
-      return { mined }
+      // 循环内每个成功点都已提前 return；走到这里说明 mined 计数到了但背包净增没到（掉落没捡到）。
+      if (!completed()) {
+        throw taskFailure('mine: drops-missing', {
+          mined, net: net(), requested: count, item: dropItemName,
+          detail: `已挖 ${mined} 个但背包净增只有 ${net()}（期望 ${count}）`,
+          suggestion: '先 mcb_inventory 看实际数量；掉落物可能散在别处，靠近再收',
+        })
+      }
+      return { mined: net(), net: net(), requested: count, item: dropItemName, reason: 'net-target' }
     }
     if (task.kind === 'goto') return movementTask(params, signal, progress)
     if (task.kind === 'patrol') {
@@ -1338,13 +1386,17 @@ export function createMineflayerAdapter({
       if (!recipes.length) throw new Error(`没有可用配方：${name}（可能缺工作台/材料；需要工作台时先放一张或靠近它）`)
       const before = countOf(name)
       const recipe = recipes[0]
+      // 语义对齐：count = “想要多少个成品”（不是 craft 次数）。
+      // 木板/木棍等一次产 4 个：老代码把 count 直接当次数，要 5 个木板会真合成 5 次（吞 5 根木头）。
+      const perCraft = Math.max(1, Number(recipe.result?.count) || 1)
+      const craftTimes = Math.max(1, Math.ceil(count / perCraft))
       // 材料快照：合成窗口异常时，材料可能已经进窗口/被消耗，产物却没到背包（当事人反馈“吞材料”）。
       const inputs = [recipe.requires?.[0], recipe.requires?.[1], recipe.requires?.[2]].filter(Boolean)
         .map((entry) => ({ name: entry.name ?? null, count: Number(entry.count) || 1 }))
       const inputsBefore = inputs.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null }))
       let craftError = null
       try {
-        await bot.craft(recipe, count, table)
+        await bot.craft(recipe, craftTimes, table)
       } catch (error) {
         craftError = error
       }
@@ -1353,7 +1405,10 @@ export function createMineflayerAdapter({
       const produced = after - before
       if (produced < count) {
         const detail = {
-          expected: count,
+          requested: count,
+          craftTimes,
+          perCraft,
+          expectedAtLeast: count,
           produced,
           before,
           after,
@@ -1361,13 +1416,13 @@ export function createMineflayerAdapter({
           inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null })),
           craftError: craftError ? String(craftError?.message ?? craftError) : null,
         }
-        const error = new Error(`craft: 产物没进背包（期望 +${count}，实际 +${produced}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
+        const error = new Error(`craft: 产物没进背包（想要 +${count}，实际 +${produced}，合成 ${craftTimes} 次×${perCraft}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
         error.name = 'TaskFailedError'
         error.result = detail
         emit('craft_no_product', detail)
         throw error
       }
-      return { crafted: name, count, inInventory: after, produced }
+      return { crafted: name, requested: count, craftTimes, perCraft, produced, inInventory: after }
     }
     if (op === 'furnace') {
       const block = blockAtTarget(params.target ?? { block: 'furnace', radius: 4 }) || bot.findBlock({ matching: bot.registry.blocksByName.furnace?.id, maxDistance: 4 })

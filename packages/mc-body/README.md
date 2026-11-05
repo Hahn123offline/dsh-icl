@@ -16,11 +16,12 @@ node --test packages/mc-body/test
 
 `done | failed | cancelled | interrupted | unknown | paused`
 
-- `done`：真正达成（mine 背包净增达标；routine `reason=duration|target`）。
-- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect`、`routine: stuck|no-target|...`、`goto: no-path...`），`task.result` 带进度与建议。
+- `done`：真正达成（mine **背包净增达标即 done**，不会 count=1 还继续追下一个目标；routine `reason=duration|target`）。
+- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect|drops-missing`、`routine: stuck|no-target|...`、`goto: no-path...`），`task.result` 带进度与建议。
 - `unknown`：deadline 超时等**结果未知**（可能已生效），不能当失败也不能当成功；`outcomeUnknown=true`。
 - `paused`：断线时正在跑的任务被挂起（`pausedReason='disconnect'`）。重连**不自动续跑**：先 `POST /v1/safety/resume`，再 `POST /v1/tasks/:id/resume`。`status.pausedTasks[]` 可查。
 - 身体暂停（`paused=true`）时 **createTask 会 409**（出生不安全/低血/断线后不接任务）。
+- **暂停 ≠ 冻结世界**：暂停只是停止接任务并中断当前任务；物理仍存在（会掉落/受伤/被推），所以暂停时**允许** `look/inventory/scan/map/events/tasks/resume/cancel/say/wait`（`cancel` 是安全动作，不需要先 resume），暂停超时会 `idle_disconnect`。`status.safety.note` 会明确这句话。
 
 ## HTTP（仅 127.0.0.1）
 
@@ -70,4 +71,4 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 - 看门狗：低血（≤10）/掉血 >1/水下低氧/危险方块/连接假死（>45s 无包）/movement stall（25s 不靠近目标）/心跳；`danger` 与 `idle` 配额分开，`suppressed/suppressedBy/healthDropSuppressed` 有统计；暂停后不再刷 `health_drop`。
 - 寻路：progress watcher 按“是否更靠近目标”判卡 → repath→jump→backoff→carve（1×2 通道挖头/挖脚）→ giveup；`path_approximate` 表示目标点被占但已在 range+1 内；任务级走不过去=任务 `failed(no-path)`，**不**暂停身体（物理卡住由 25s movement stall 暂停）。
 - `mine` 开始做可达性预检：只有 A* 明确 `noPath` 才快速失败；`unknown` 继续尝试；走不到但已在 4.5 格内 → **原地挖**（`dig_fallback`）；`no-path` 带 distance/detail/suggestion。
-- `craft` 后校验产物是否进背包（防“吞材料”假成功）；`kicked` reason 归一为可读文本；`place` 支持多坐标从下往上、返回 placed/skipped 明细与原因、`autoSupport` 先垫一层。
+- `craft`：**`count` = 想要多少个成品**（不是合成次数）——一次产 4 的木板/木棍会按 `ceil(count/4)` 合成；合成后校验产物是否真的进背包（防“吞材料”假成功，失败带材料前后快照）。`kicked` reason 归一为可读文本；`place` 支持多坐标从下往上、返回 placed/skipped 明细与原因、`autoSupport` 先垫一层。

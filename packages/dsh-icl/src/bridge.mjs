@@ -442,7 +442,12 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 事件 ─────────────────────────────────────────────── */
 
-  /** 会改 facts 文本的工具名白名单（工具结果出现即标 dirty，下一步刷新快照）。 */
+  /**
+   * 会改 facts 文本的工具名白名单（工具结果出现即标 dirty，下一步刷新快照）。
+   * 前缀式：`time_status`/`time_list`/`memos` 这类只读工具也会命中，代价只是多一次文本重算
+   * （DSH 侧文本没变就不会 append 快照），不是 bug。
+   * `mcb_*` 故意不在白名单：MC 环境事实按 §7.7 豁免（join/leave 等事件仍由 delivery dirty 兜底）。
+   */
   function isFactsTool(rawName) {
     const name = String(rawName ?? '')
     return name.startsWith('time_') || name.startsWith('memo') || name.startsWith('lexicon_learn')

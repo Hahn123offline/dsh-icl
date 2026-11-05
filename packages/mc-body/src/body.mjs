@@ -14,8 +14,9 @@ import { createHeartbeat, createProgressTracker, createRateLimiter } from './rec
 const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
 const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
-// 暂停时仍然允许的非动作 op（感知/查询/恢复）；写动作一律拒绝。
-const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'wait'])
+// 暂停时仍然允许的 op：感知/查询/恢复，以及**取消任务**（取消是纯安全动作，不应被拒）。
+// 写动作（move/dig/place/task…）一律拒绝。
+const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'say', 'wait'])
 
 function abortError(message = 'aborted') {
   const error = new Error(message)
@@ -521,12 +522,17 @@ export function createBody({
       alertWatchdog('danger', 'low-health', { health: value, food: food ?? null }, () => safetyStop('low-health'))
       return
     }
-    if (previous != null && value < previous - 1) {
-      // 只在“还在正常活动”时把掉血当成独立事件；已暂停/安全停止后不再刷 health_drop，
-      // 只计数（suppressed 统计），避免真实局里几百条重复事件。
-      if (!paused) push('health_drop', { from: previous, to: value })
+    if (previous != null && value < previous) {
+      const drop = previous - value
+      // 掉血分级：1–5 点（摔一下/挖树/走路蹭伤）是正常玩法，只记录不暂停；
+      // 单次 >=6 或已到低血线才接管。避免“挖树落地掉 4 血 → 身体暂停 → 整条合成链 409”。
+      if (!paused) push('health_drop', { from: previous, to: value, drop })
       else watchdogStats.healthDropSuppressed = (watchdogStats.healthDropSuppressed ?? 0) + 1
-      alertWatchdog('danger', 'health-drop', { from: previous, to: value }, () => safetyStop('health-drop'))
+      if (drop >= 6) {
+        alertWatchdog('danger', 'health-drop', { from: previous, to: value, drop }, () => safetyStop('health-drop'))
+      } else {
+        alertWatchdog('idle', 'health-drop-minor', { from: previous, to: value, drop })
+      }
     }
   }
 
@@ -805,7 +811,17 @@ export function createBody({
       online: connected,
       paused,
       pausedReason,
-      safety: { paused, reason: pausedReason, offline: connected === false, offlineReason, everOnline },
+      safety: {
+        paused,
+        reason: pausedReason,
+        offline: connected === false,
+        offlineReason,
+        everOnline,
+        // 说清语义：paused 不是“冻结世界”，只是不接任务/中断当前任务。
+        note: paused
+          ? 'paused = 停止接任务并中断当前任务；物理世界仍在（会掉落/受伤/被推），可 cancel/tasks/look 等安全 op，恢复用 /v1/safety/resume；暂停超时会 idle_disconnect'
+          : null,
+      },
       task: taskView(current),
       queue: queue.map(taskView),
       pausedTasks: [...tasks.values()].filter((task) => task.state === 'paused').map(taskView),

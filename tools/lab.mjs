@@ -24,7 +24,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   DEFAULT_MC_PORT, DEFAULT_PORT, PRESETS, REPO_ROOT, STATE_ROOT, apiFor,
-  clearCurrent, countTurnEnds, createLabSession, discoverDshBin, ensureDir, gitCommit,
+  clearCurrent, cleanupStrayBodies, countTurnEnds, createLabSession, discoverDshBin, ensureDir, gitCommit,
   isPidAlive, killPidTree, lastTurnWindow, loadCurrent, materializePatch, nowIso,
   orderedEvents, portBusy, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, saveCurrent, selectModel, sleep, spawnDsh,
@@ -138,10 +138,23 @@ function llamaLockPath() {
 function acquireLocalModelLock(runId) {
   const file = llamaLockPath()
   const existing = readJson(file, null)
-  if (existing && existing.owner && existing.owner !== 'mc-lab' && isPidAlive(existing.pid)) {
-    fail(`本地模型锁被占用（owner=${existing.owner} pid=${existing.pid} ${existing.purpose ?? ''}）；等它释放或找 lead 协调`)
+  // 绝不覆盖外来锁：owner 不是 mc-lab 就无条件拒绝（即使对方没写 pid，例如 cache 的锁 pid=0）。
+  // 2026-11-05 18:37 的教训：这里曾用 isPidAlive(pid) 判断，pid=0 被当成"没活主"，把 cache 的锁覆盖了。
+  if (existing && existing.owner && existing.owner !== 'mc-lab') {
+    fail(`本地模型锁被占用（owner=${existing.owner}${existing.purpose ? `，${existing.purpose}` : ''}${existing.eta ? `，ETA ${existing.eta}` : ''}）；等它释放或找 lead 协调，不要抢`)
   }
-  writeJson(file, { owner: 'mc-lab', runId, purpose: 'lab --model local', pid: process.pid, at: nowIso() })
+  if (existing && existing.owner === 'mc-lab' && existing.runId && existing.runId !== runId && isPidAlive(existing.pid)) {
+    fail(`本地模型锁被 mc-lab 自己的 run ${existing.runId} 占用（pid=${existing.pid}）；先 down 那个 run`)
+  }
+  const etaMinutes = Number(process.env.ICL_LOCK_ETA_MIN ?? 25)
+  writeJson(file, {
+    owner: 'mc-lab',
+    runId,
+    purpose: 'lab --model local (MC A/C/E acceptance)',
+    pid: process.pid,
+    at: nowIso(),
+    eta: new Date(Date.now() + etaMinutes * 60_000).toISOString(),
+  })
 }
 
 function releaseLocalModelLock(runId) {
@@ -176,6 +189,9 @@ async function up() {
 
   const dshBin = discoverDshBin()
   if (!dshBin) fail('找不到 dsh 的 bin.js；用 DSH_BIN=<...>/lib/bin.js 指定')
+  // 清掉上一轮 lab 留下的 body（含被 kill 后 mc-link 自动重启的孤儿），避免同服同名互踢。
+  const strays = await cleanupStrayBodies({ username: 'ICL-mclab-1' })
+  if (strays.length) info(`清理上一轮残留 body：${strays.join(',')}`)
   if (modelKey === 'local') acquireLocalModelLock(runId)
 
   const runDir = ensureDir(runDirOf(runId))
@@ -280,6 +296,8 @@ async function down({ quiet = false, runId: forcedRunId = null } = {}) {
   if (pids.dsh) await killPidTree(pids.dsh)
   const deadline = Date.now() + 8000
   while (Date.now() < deadline && (isPidAlive(pids.dsh) || isPidAlive(pids.observer))) await sleep(200)
+  const strays = await cleanupStrayBodies({ username: 'ICL-mclab-1' })
+  if (strays.length) info(`清理残留 body：${strays.join(',')}`)
 
   meta.status = 'down'
   meta.endedAt = nowIso()
@@ -486,9 +504,14 @@ function appendJsonl(file, row) {
 async function scene() {
   const run = requireRun()
   const file = String(arg('--file', positionals()[0] ?? ''))
-  if (!file) fail('用法：node tools/lab.mjs scene tools/scenarios/mc-A.json [--no-interview]')
+  if (!file) fail('用法：node tools/lab.mjs scene tools/scenarios/mc-A.json [--server survival] [--username ICL-mclab-1] [--block oak_log] [--no-interview]')
   const { runScene } = await import('./lab-scene.mjs')
-  const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview') })
+  const vars = {}
+  for (const key of ['server', 'username', 'block']) {
+    const value = arg(`--${key}`, null)
+    if (value != null) vars[key] = String(value)
+  }
+  const result = await runScene({ run, sceneFile: path.resolve(file), interview: !flag('--no-interview'), vars })
   console.log(JSON.stringify({ ok: result.ok, verdict: result.verdictFile, checks: result.checks.length, failed: result.checks.filter((row) => !row.ok).length }, null, 2))
   if (!result.ok) process.exitCode = 1
 }

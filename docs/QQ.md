@@ -16,15 +16,23 @@
 | 三份参考研究 | ✅ | 本文 §1 |
 | 连接器/消息模型/focus 张力设计 | ✅ | §3–§7 |
 | 只读入站实现（OneBot WS → signals） | ✅ | `packages/plugins/qq/src/` |
-| 单测（规范化/去重/gate/限流/不发送） | ✅ 18 条 | `node --test packages/core/test/qq.test.mjs` |
+| 单测（规范化/去重/gate/限流/不发送/静态安全） | ✅ 19 条 | `node --test packages/core/test/qq.test.mjs` |
 | QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接，一条命令出结论） | ✅ 10 条判定单测 + 真机 BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 366 pass | `node --test packages/core/test packages/mc-body/test` |
+| 全量测试 | ✅ 367 pass | `node --test packages/core/test packages/mc-body/test` |
 | 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
-| 真实 SnowLuma 影子 | ⏸ 未跑，等用户时间窗 | §10 runbook |
+| 真实 SnowLuma 影子 | ⏸ **挂起：用户 2026-11-05 选择 B**（不在电脑前，无法启动 SnowLuma）；preflight 已定位唯一阻断 pid 12232；下一轮用户方便时按 §10 runbook 执行 | §0.1 / §10 / §13.5 |
+
+### 0.1 本轮收尾状态（2026-11-05）
+
+- **真实 SnowLuma 影子：用户选择 B——本轮不做。** 原因：用户当前不在电脑前，无法手动启动 SnowLuma（我们不程序化启停它，EULA §5.4；且启动会叫醒旧消费者）。
+- `preflight` 已把阻断项定位到唯一一个：**pid 12232（focus-core 旧应用，会连、会发、旧人格）**；另有启动文件夹 `dsh-icl.lnk` 的 warn。其余端口/连接/desktop 配置/端点发现均 ok。
+- **已交付并验证的替代路径**：假上游的进程内演练 14/14、真实 lab（57108，假 OneBot）10/10、QQ×MC 并发 T1–T3、preflight 单测 10 条、全量 366 pass。
+- **下一轮用户方便时的执行口径**（不需要任何代码改动）：`docs/QQ-SHADOW-USER-BRIEF.md` 给用户看 → `node packages/plugins/qq/tools/preflight.mjs`（应只剩 pid 12232 + 启动项两项非 ok，等用户确认处理 12232）→ `node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved --port 57108 --wait-ms 900000`（只收不发，结束自动清理）。
+- **保持不变**：插件默认 `enabled:false`；outbound 三钥匙（enabled/allowSend/sendApproval）全关、没有发送工具、没有任何发送调用；不启动 SnowLuma、不 kill 12232、不发任何 QQ 消息。
 
 三条不变量（任何后续改动都不能破坏）：
 
@@ -154,7 +162,7 @@ packages/plugins/qq/
   src/normalize.mjs       纯函数：OneBot 事件 → 私聊消息 → signal 形状
   src/gate.mjs            本地准入：私聊/白名单/自发/过期/去重/限流（含持久去重表）
   src/connector.mjs       只读 OneBot WS：发现端点、握手超时、心跳、退避；**无 ws.send**
-  src/outbound.mjs        出站最小实现：三把钥匙全开才可能工作；index.mjs 不 import
+  src/outbound.mjs        出站最小实现：三把钥匙全开才可能工作；**没有调用方**（createOutbound/sendPrivate 不被 index 调用）
   src/index.mjs           插件装配：gate → signals.offer；重试队列；qq_status；影子记录/状态文件
   tools/fake-onebot.mjs   假 SnowLuma（RFC6455 服务端，只推事件），给测试与 lab 用
   tools/preflight.mjs     shadow 前一条命令取证：谁可能抢连接 / 端口 / 已有连接 / desktop 配置
@@ -312,7 +320,8 @@ SnowLuma OneBot WS 127.0.0.1:3001
 - `src/outbound.mjs`：只有 `sendPrivate(peerId, text)`；三把钥匙 **同时**满足才可能工作：
   `enabled === true && allowSend === true && sendApproval === 'lead-approved'`（字面量，防止误填 true）。
   即便三把都开，还要求目标在 `allowPrivate` 白名单里。**群发送代码不存在。**
-- `index.mjs` **不 import** `outbound.mjs`，也没有任何发送工具；单测验证默认拒绝。
+- `index.mjs` **没有任何发送调用**：只从 `outbound.mjs` import 纯判定 `sendEnabled`/`SEND_APPROVAL_TOKEN` 用于 `qq_status` 状态展示；
+  **不 import `createOutbound`、不调用 `sendPrivate`、不出现 `send_private_msg`/`send_group_msg`**（有静态安全测试守这条），也没有任何发送工具；单测验证默认拒绝。
 - 为什么不现在就写完整发送：出站会改变"她能不能真的回话"这个产品事实，必须和用户确认话术、限速、
   "回过没"水位、敏感信息拦截一起设计；先写一个双钥匙的空壳，是为了固定接缝、避免以后把连接和发送再次搅在一起。
 
@@ -487,7 +496,7 @@ node packages/plugins/qq/tools/lab-shadow.mjs --real --approval lead-approved `
 | 私聊进来了 | `status.json` 的 `stats.delivered` / `gate.byCode`；`inbound.jsonl` 的 `kind:"accepted"` | 1 条（owner 那条） |
 | 最近一条/有没有被拦 | `qq_status` 工具文案（或 `host.shared.get('qq').status().stats.recent`）：`最近一条私聊：HH:MM:SS 名称（QQ） #id：…`、`最近被 time 锁拦下…`、`最近被本地闸门丢弃…` | 与记录文件一致；被拦时能看到 reason |
 | 进了会话 | `<runDir>/events.jsonl` 搜 `plugin:qq`；`transcript.md` 的"插件消息 来源=插件(qq)" | 有 user/message，summary 以"外部消息"开头 |
-| 她能不能回 | 事实：没有发送工具；`outbound.mjs` 未被 index.mjs import | 她只能看到，不能回 |
+| 她能不能回 | 事实：没有发送工具；`index.mjs` 无任何发送调用（只 import `sendEnabled` 纯判定做状态展示） | 她只能看到，不能回 |
 
 ### 第 6 步：停止与留证
 
@@ -560,8 +569,8 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 366 pass / 0 fail
-node --test packages/core/test/qq.test.mjs             # 18 pass
+node --test packages/core/test packages/mc-body/test   # 367 pass / 0 fail
+node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 10 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明）
 ```
@@ -587,6 +596,7 @@ node --test packages/core/test/qq-preflight.test.mjs   # 10 pass（判定 + 陈�
 | 16 | `qq_status` 文案（只读、不能发） | 工具面 |
 | 17 | 状态文件（连接态 + 零出站） | runbook 观测 |
 | 18 | 真 WebSocket 回环 + 假 OneBot（`clientDataChunks()===0`） | 真连接、零出站 |
+| 19 | 静态安全：index.mjs 无 `send_*` 动作、不 `createOutbound`/`sendPrivate`；connector 无 `ws.send`；发送代码只在 outbound.mjs | "无发送路径"有代码级不变量 |
 
 另两个测试文件：
 
@@ -656,8 +666,10 @@ seq=8  user/message         source.kind='plugin:qq'（同一份内容）
 
 ### 13.5 真实 SnowLuma 影子
 
-⏸ 未跑（lead 决策：暂不启动 SnowLuma，避免叫醒旧消费者）。runbook 见 §10；`lab-shadow.mjs --real` 已备好，
-`--real` 必须带 `--approval lead-approved`（不带直接 exit 2，单测/手工验证过）。
+⏸ **挂起：用户 2026-11-05 选择 B（本轮不做）**——用户当前不在电脑前，无法手动启动 SnowLuma；我们不程序化启停它（EULA §5.4），
+且启动会叫醒旧消费者。`preflight` 已定位唯一阻断 = pid 12232（focus-core 旧应用，会连会发旧人格）+ 启动项 warn。
+下一轮用户方便时按 §10 runbook 执行；`lab-shadow.mjs --real` 已备好，`--real` 必须带 `--approval lead-approved`（不带直接 exit 2）。
+本轮的"能收到私聊并进入 signals"由假上游的进程内演练（14/14）与真实 lab（10/10）覆盖，不依赖真实 QQ。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

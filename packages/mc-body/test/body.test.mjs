@@ -284,13 +284,22 @@ test('body：idle 与 danger 配额分开，suppressed 有统计且不静默', a
   await body.stop()
 })
 
-test('body：暂停时写动作被拒，感知/恢复仍可用', async () => {
+test('body：暂停时写动作被拒，感知/取消/恢复仍可用', async () => {
   const { body } = await startedBody()
-  body.ingest('health', { health: 5 })
+  // 造一个“断线挂起”的任务：身体 paused、任务 paused，此时取消必须是安全动作。
+  const pausedTask = body.createTask({ kind: 'mine', params: { hang: true } })
+  await waitFor(() => body.getTask(pausedTask.id)?.state === 'running', 2000, 'running')
+  body.ingest('disconnected', { reason: 'socket' })
+  await waitFor(() => body.getTask(pausedTask.id)?.state === 'paused', 2000, 'paused')
   assert.equal(body.status().paused, true)
   assert.throws(() => body.createTask({ kind: 'mine', params: { count: 1 } }), /暂停/)
   await assert.doesNotReject(() => body.doPlan([{ op: 'look' }]))
+  await assert.doesNotReject(() => body.doPlan([{ op: 'tasks' }]))
+  // 取消是安全动作：暂停态也必须允许（当事人预期“取消任务像撤回消息”）。
+  await assert.doesNotReject(() => body.doPlan([{ op: 'cancel', taskId: pausedTask.id }]))
+  assert.equal(body.getTask(pausedTask.id)?.state, 'cancelled')
   await assert.rejects(() => body.doPlan([{ op: 'move', x: 1, y: 64, z: 1 }]), /暂停/)
+  body.ingest('reconnected', {})
   assert.equal(body.resume().paused, false)
   assert.doesNotThrow(() => body.createTask({ kind: 'mine', params: { count: 1 } }))
   await body.stop()
@@ -431,6 +440,19 @@ test('body：/v1/shutdown 请求交给宿主退出钩子（reason 归因）', as
   assert.equal(result.ok, true)
   assert.equal(requested, 'lab-done')
   assert.ok(body.eventsSince(0).events.some((e) => e.type === 'shutdown_requested' && e.data.reason === 'lab-done'))
+  await body.stop()
+})
+
+test('body：小掉血只记录不暂停，单次掉>3 才接管', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 10 })
+  await waitFor(() => body.status().watchdog.ticks >= 1, 2000, 'watchdog baseline')
+  adapter.state.health = 18 // 20 → 18：摔一下/挖树蹭伤，正常玩法
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'health_drop' && e.data.drop === 2), 2500, 'small drop event')
+  assert.equal(body.status().paused, false, '小掉血不应暂停')
+  adapter.state.health = 12 // 18 → 12：单次掉 6，接管
+  await waitFor(() => body.status().paused, 2500, 'big drop pause')
+  assert.equal(body.status().pausedReason, 'health-drop')
   await body.stop()
 })
 
