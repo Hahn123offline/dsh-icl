@@ -21,6 +21,12 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     # 闭环测试专用：独立 stateDir，不碰用户 ICL 的记忆/时间/focus。
     - id: preset-icl-loop
       name: '@deepseek-ai/dsh-agent-preset'
@@ -59,6 +65,12 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     - id: preset-icl-mc
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -96,3 +108,9 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'

@@ -13,6 +13,19 @@ export function apply(ctx) {
     return full === root || full.startsWith(root + path.sep) ? full : null
   }
 
+  /**
+   * 工作区就是 ICL 的 stateDir，里面混着她自己的运行时状态。
+   * 读没问题（她本来就该能看见"我有多少记忆"），但写会直接毁掉记忆库/日程/focus/原文层，
+   * 所以 write_file 对这几个文件明确拒绝，并告诉她这是什么——不是报 EACCES 让她猜。
+   */
+  const PROTECTED = [
+    'memory.db', 'state/memory.db',
+    'time.json', 'focus.json', 'rhythm.json',
+    'session-events.jsonl', 'mc-link.jsonl',
+    'time.inbox.jsonl', 'time.outbox.jsonl',
+  ].map((rel) => path.resolve(root, rel))
+  const protectedHit = (full) => (PROTECTED.includes(full) ? path.basename(full) : null)
+
   ctx.tools.register({
     name: 'read_file',
     summary: 'Read a text file inside your workspace.',
@@ -45,6 +58,8 @@ export function apply(ctx) {
     async execute({ path: p, text, append = false } = {}) {
       const full = inside(p)
       if (!full) return { text: '不在工作区里。' }
+      const guarded = protectedHit(full)
+      if (guarded) return { text: `${guarded} 是 ICL 自己的状态文件，不能写（写坏了她就失忆/失约）。要记事请写到别的文件名。` }
       try {
         fs.mkdirSync(path.dirname(full), { recursive: true })
         if (append) fs.appendFileSync(full, String(text ?? ''), 'utf8')
