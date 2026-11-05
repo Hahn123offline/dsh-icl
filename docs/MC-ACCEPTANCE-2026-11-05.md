@@ -71,3 +71,9 @@
 → 记为下轮 P0（craft 后置校验加等待/重读；需要工作台时先放置；place 材料预检），本轮不再追。已有可复现证据路径。
 
 **19:46 更新（mc-body 结论 + 修复）**：craft `+0` 是 **inventory 更新延迟导致的校验时序 bug**（最终背包 `oak_planks×13/stick×4` 可自证），已修（`a5c09f7`：craft 后轮询最多 2.5s）；`wooden_pickaxe` 缺配方是因为工作台从未放置（前序被误判打断；body 不自动放工作台），报错已改成可操作建议（`b0b2150`）。`mine` 的 `task_done.result` 已带 `{mined,net,requested,item,reason}`，mc-link 下轮可直接显示"净增 N/M"。木镐/place 两行真服证据仍待补（需要 3 分钟 normal 服窗口），原因已闭合。
+
+## 9. craft/place 真服证据（已补齐，2026-11-05 23:0x）
+
+- **`craft wooden_pickaxe` ✓**：`craft-place-proof-2026-11-05/report.md` → `{"crafted":"wooden_pickaxe","requested":1,"craftTimes":1,"perCraft":1,"produced":1,"inInventory":1}`，结束 inventory 有 `wooden_pickaxe×1`。
+- **`place` ✓**：`place-proof-2026-11-05`（有支撑 `placedCount:2`，skipped 7 条各带原因）＋ `place-proof3-2026-11-05`（悬空 skipped reason="目标下方没有支撑（下方是 air）；先放一块垫底、传 autoSupport:true，或换位置" / "没有可附着的面（悬空/目标格被自己挡住）"，同 run placedCount:1）。
+- 两次 run body 全程未崩、退出 `reason=api-shutdown`；这也真服验证了本轮 mine 净增继续挖、craft 产物轮询 2.5s、可操作报错三项修复。第 8 节的"待补"结论作废（保留为问题发现记录）。
