@@ -36,7 +36,7 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 
 | body 事件 | 信号 | 说明 |
 |---|---|---|
-| `task_done` | notice | 真正达成；带 mined/arrived/result |
+| `task_done` | notice | 真正达成：契约上 `result.reason` 只会是 `net-target\|duration\|target`（白名单=成功）；mine 说"挖了 N 个"、其它说"净增 N" |
 | `task_failed` | notice | `error` 原因码（`mine: no-target/no-path/dig-failed/no-effect`、`routine: stuck`…）翻成下一步；带进度 |
 | `task_unknown` | notice | 超时/结果未知：**不当失败**，让她先 mcb_status/mcb_inventory 复核 |
 | `task_paused` | notice | 断线挂起（state=paused）：重连后要显式 `{"op":"resume"}` + `{"op":"resume","taskId"}` |
@@ -49,6 +49,8 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 | `reconnect_exhausted` | alarm | 自动重连放弃，状态栏必须显示未连接 |
 | `kicked` | alarm | reason 是对象时给真实文本；同名/重复登录提示换 username |
 | `task_queued`/`started`/`progress`/`health`/`heartbeat`/`watchdog*` | 不投递 | 状态以 `/v1/status` 为准 |
+| `path_stuck` | **单次不投递**；连续 ≥2 次才 notice | 单次只是重算路线，常随后成功；计数在任务开始/终态时重置 |
+| `dig_fallback` / `path_approximate` / `path_recovered` / `tunnel_clear` | dig_fallback notice；其余不投递 | 寻路中间过程不叫她 |
 
 ## body 进程退出（lifecycle）
 

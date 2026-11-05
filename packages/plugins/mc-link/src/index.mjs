@@ -770,11 +770,13 @@ export function apply(ctx) {
         const a = status.adapter ?? {}
         const connected = isConnected(status)
         const offlineReason = status.safety?.offlineReason ?? null
+        // 陆地上 body 的 oxygen 是 null（不是 0）——别显示"氧气 0"让她以为在憋气。
+        const oxygen = a.oxygen == null || !Number.isFinite(Number(a.oxygen)) ? '?' : Math.round(Number(a.oxygen))
         const lines = [
           `MC 身体：${connected ? '已连接' : '未连接'} ${a.host ?? ''}:${a.port ?? ''}${!connected && offlineReason ? `（离线原因：${String(offlineReason).slice(0, 120)}）` : ''}`,
           `玩家：${(a.players ?? []).join('、') || '无'}`,
           `位置：${a.position ? `${Math.round(a.position.x)}, ${Math.round(a.position.y)}, ${Math.round(a.position.z)}` : '未知'} · 维度 ${a.dimension ?? '?'}`,
-          `生命/饥饿/氧气：${Math.round(Number(a.health ?? 0))}/20，${Math.round(Number(a.food ?? 0))}/20，${Number.isFinite(Number(a.oxygen)) ? Math.round(Number(a.oxygen)) : '?'}`,
+          `生命/饥饿/氧气：${Math.round(Number(a.health ?? 0))}/20，${Math.round(Number(a.food ?? 0))}/20，${oxygen}`,
           `背包：${Number.isFinite(Number(a.inventoryCount)) ? `${Number(a.inventoryCount)} 件` : '未知'}`,
           `任务：${status.task ? `${status.task.kind} ${status.task.state}${status.task.outcomeUnknown ? '（结果未知）' : ''}${status.task.state === 'paused' ? '（断线挂起，可 resume taskId 继续）' : ''}` : '空闲'}；队列 ${status.queue?.length ?? 0}`,
         ]
@@ -866,7 +868,7 @@ export function apply(ctx) {
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。attack/use 不会替你走过去：先 goto 到 3-4 格内再打/用。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
+      description: `steps 按顺序执行，任一 op 失败即停。长任务：{"op":"task","kind":"mine|goto|patrol|explore|follow|routine|chat"} + params（立即返回 taskId；**提交后不要用 wait 轮询**，完成/失败/暂停会作为事件回来，单个 wait 最多 30s，想趁等待做事就 mcb_inventory/mcb_scan 规划）；单步动作：{"op":"dig|place|use|equip|toss|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine"} + params（阻塞到完成，最长约 120s，超时会提示先查状态；sleep 只在夜里/雷暴且附近有床时可用）。坐标可写 {"x":12,"y":-60,"z":14} 或 [12,-60,14]：{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}、{"op":"dig","params":{"name":"dirt","radius":4}}、{"op":"place","params":{"pos":{"x":12,"y":-60,"z":14},"item":"dirt"}}。attack/use 不会替你走过去：先 goto 到 3-4 格内再打/用。wait 用 {ms}，routine 用 {durationMs}。查询/控制：{"op":"tasks"}、{"op":"events"}（默认只列上次之后的新事件）、{"op":"cancel","taskId":"t-1"}、{"op":"resume"}、{"op":"resume","taskId":"t-1"}（断线挂起的任务显式继续）、{"op":"say","text":"..."}（≤200 字，不能以 / 开头）。`,
       when: ['要动身体：挖、走、放、用、打、吃、合成、交易', '查任务台账/事件、取消任务、解除暂停', '游戏里说一句话'],
       avoid: ['只想知道状态：用 mcb_status/mcb_look/mcb_inventory 更便宜', 'op 不确定时先 mcb_help play 看操作手册，别猜参数'],
       safety: ['同一件事不要连发多个 task：先 tasks 看有没有在跑的', '暂停（paused）时只有 resume/look/inventory/scan/map/tasks/events/say/wait 等安全 op 可用'],
