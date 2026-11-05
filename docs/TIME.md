@@ -573,9 +573,10 @@ node tools/lab.mjs down --run "$RUN"
   {"at":1793…,"iso":"…","type":"sleep-start","sleepingId":"…","sleepUntil":1793…}
   {"at":1793…,"iso":"…","type":"sleep-end","sleepingId":"…","released":3,"boundary":{...}}
   ```
-  配置 `config.eventsFile` 可改路径；文件只追加（事件稀疏，不做轮转）。supervisor 读它做 anomalies 双证据即可。
+  配置 `config.eventsFile` 可改路径；文件只追加（事件稀疏，不做轮转）。supervisor 读它做 anomalies 双证据即可——night-1 supervisor 已实现增量消费（commit `4ea7a2b`：offset 落 `time-events.offset`、已消费行另存 `time-events-consumed.jsonl`，映射进 anomalies/strategy）。
 
 ### 14.4 测试
 
 `time-lock.test.mjs`：入睡时在飞回合被记录（`inFlight/turnAgeAtEntrySec`）、grace 内结束归档为合法收尾、
 超过 grace 只发一次 `sleep-boundary-overrun`、入睡后新 turn 标 `postSleepTurn` 并发事件、醒后 `lastSleepBoundary` 可查。
+
