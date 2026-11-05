@@ -138,6 +138,16 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       delivery: {
         push: (input) => delivery.push({ ...input, source: { plugin: pluginId, ...(input?.source ?? {}) } }),
         clear: () => delivery.clear(),
+        /**
+         * 安装 push-time gate（时间模块的睡眠/静音拦截）。
+         * 卸载时恢复上一个 gate，而不是一律置空——多个插件装过时不能互相踩。
+         */
+        setGate(fn) {
+          const previous = delivery.setGate(fn)
+          record.dispose.push(() => delivery.setGate(previous))
+          return previous
+        },
+        blockedCount: () => delivery.blockedCount(),
       },
       slots: {
         declare(slot) {

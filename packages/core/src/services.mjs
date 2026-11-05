@@ -553,6 +553,9 @@ export function createFocusService({ now = () => Date.now() } = {}) {
  *   · exactlyOnce 的条目按 (plugin, activity, seq) 去重，重复 push 返回 deduped
  *   · 只有 ack 之后才算送达并推进水位；nack 留在队列里退避重试
  *   · 同一个 batchKey 的条目在 drain 时合并成一批
+ *   · push-time gate：安装后每条 push 先过 gate（时间模块的睡眠/静音拦截）。
+ *     被拦下的 push 不进队列，返回 `{accepted:false, blocked:true, reason}`，由调用方决定
+ *     保留/重试；gate 自己抛错时 fail-open 并计数（坏 gate 不能把所有投递静默掉）。
  */
 export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 } = {}) {
   const watermark = new Map()      // `${plugin}|${activity}` -> seq
@@ -560,6 +563,9 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
   const inflight = new Map()       // batchId -> 条目
   let seq = 0
   let droppedCount = 0
+  let gate = null
+  let blockedCount = 0
+  let gateErrorCount = 0
 
   const keyOf = (source) => `${source?.plugin ?? ''}|${source?.activity ?? ''}`
   // 第一次失败立即重试（往往是会话正忙），之后才退避。
@@ -567,6 +573,24 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
 
   return {
     push({ to = 'session', channel = 'conversation', source = {}, content = {}, batchKey = null, exactlyOnce = true } = {}) {
+      if (typeof gate === 'function') {
+        const entry = {
+          to: String(to),
+          channel: String(channel),
+          source: { plugin: String(source.plugin ?? ''), activity: String(source.activity ?? ''), seq: Number.isFinite(Number(source.seq)) ? Number(source.seq) : null },
+          content: { text: String(content.text ?? '') },
+          batchKey: batchKey == null ? null : String(batchKey),
+        }
+        let decision = { accept: true }
+        try { decision = gate(entry) ?? { accept: true } } catch {
+          gateErrorCount += 1
+          decision = { accept: true, gateError: true } // fail-open
+        }
+        if (!decision?.accept) {
+          blockedCount += 1
+          return { accepted: false, blocked: true, reason: decision?.reason ?? 'gate' }
+        }
+      }
       const seqNo = Number(source.seq)
       if (exactlyOnce && Number.isFinite(seqNo) && seqNo > 0) {
         const k = keyOf(source)
@@ -590,6 +614,13 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
       queue.push(item)
       return { accepted: true, id: item.id }
     },
+
+    /** 安装 push-time gate；返回上一个 gate（供卸载时恢复）。 */
+    setGate(fn) { const previous = gate; gate = typeof fn === 'function' ? fn : null; return previous },
+    /** 被 gate 拦下的 push 数（可观测出口）。 */
+    blockedCount() { return blockedCount },
+    /** gate 自己抛错、被 fail-open 放行的次数。 */
+    gateErrorCount() { return gateErrorCount },
 
     /** 取出可以投递的批次（不改状态，ack/nack 才改）。 */
     drain(to = null) {
