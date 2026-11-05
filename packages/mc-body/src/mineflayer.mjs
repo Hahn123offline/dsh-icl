@@ -1478,15 +1478,60 @@ export function createMineflayerAdapter({
       }
       const recipes = bot.recipesFor(def.id, null, count, table)
       if (!recipes.length) {
-        // 可操作报错：区分“背包有工作台但没放下”/“没有工作台”/“纯缺材料”。
-        // 注意：不自动放工作台（用户明确要求“不要自动放工作台”），只告诉下一步怎么做。
+        // 可操作报错：不只说“缺材料”，要给出**下一步那一个动作**（本地弱模型最容易卡在这里）。
+        // 例：有 8 原木、0 木板却直接 craft crafting_table → 必须提示“先 craft oak_planks”。
         const hasTableItem = (bot.inventory?.items?.() ?? []).some((item) => item.name === 'crafting_table')
         const planks = countOf('oak_planks') + countOf('spruce_planks') + countOf('birch_planks') + countOf('jungle_planks') + countOf('acacia_planks') + countOf('dark_oak_planks')
-        let hint = '缺材料或该配方需要其他工作站'
-        if (hasTableItem) hint = '背包里有工作台：先用 place 放到身边（4 格内）再 craft'
-        else if (planks >= 4) hint = '没有工作台：先 craft crafting_table（需要 4 木板）并 place 到身边，再 craft 本物品'
-        else if (planks > 0) hint = `木板不足（当前 ${planks}）：先多砍原木 → craft 木板/工作台`
-        throw new Error(`没有可用配方：${name}（${hint}；当前 nearestTable=${table ? '有但可能够不到' : '无'}）`)
+        const hint = []
+        let plan = null
+        try {
+          const candidates = bot.recipesAll(def.id, null, table)
+          const noTable = bot.recipesAll(def.id, null, null)
+          const pick = candidates[0] ?? noTable[0] ?? null
+          if (pick) {
+            const craftCount = Math.max(1, Math.ceil(count / Math.max(1, Number(pick.result?.count) || 1)))
+            const missing = []
+            for (const entry of Array.isArray(pick.delta) ? pick.delta : []) {
+              if (Number(entry?.count) >= 0) continue
+              const itemName = bot.registry.items?.[entry.id]?.name
+              if (!itemName) continue
+              const need = Math.abs(Number(entry.count)) * craftCount
+              const have = countOf(itemName)
+              if (have < need) missing.push({ name: itemName, need, have, short: need - have })
+            }
+            plan = { requiresTable: Boolean(pick.requiresTable), missing }
+          }
+        } catch { /* 拿不到配方明细就退回通用提示 */ }
+        if (plan?.requiresTable && !table) hint.push('这个配方需要工作台：先 craft crafting_table（4 木板）并 place 到身边（4 格内）')
+        if (table && plan?.requiresTable) hint.push('工作台在附近但可能够不到：先 goto 到工作台 4 格内')
+        if (!table && plan?.requiresTable === false) hint.push('不需要工作台，但材料不够')
+        for (const miss of plan?.missing ?? []) {
+          if (/_planks$/.test(miss.name)) {
+            const logName = miss.name.replace(/_planks$/, '_log')
+            const logs = countOf(logName)
+            hint.push(logs > 0
+              ? `你现在有 ${logName}×${logs}：先 {"op":"craft","item":"${miss.name}","count":${miss.need}}（1 原木=4 木板），再做本物品`
+              : `缺 ${miss.name}×${miss.short}：先砍树拿原木 → craft ${miss.name}`)
+          } else if (miss.name === 'stick') {
+            hint.push(`缺 stick×${miss.short}：先用 2 木板 craft stick（1 次出 4），再做本物品`)
+          } else if (miss.name === 'cobblestone') {
+            hint.push(`缺 cobblestone×${miss.short}：先用 mine block:"stone" 挖石头（掉落是 cobblestone）`)
+          } else {
+            hint.push(`缺 ${miss.name}×${miss.short}（现有 ${miss.have}）`)
+          }
+        }
+        if (!hint.length) {
+          if (hasTableItem) hint.push('背包里有工作台：先用 place 放到身边（4 格内）再 craft')
+          else if (planks >= 4) hint.push('先 craft crafting_table（4 木板）并 place 到身边，再 craft 本物品')
+          else if (planks > 0) hint.push(`木板不足（当前 ${planks}）：先多砍原木 → craft 木板/工作台`)
+          else hint.push('缺材料：先 mcb_inventory 看现有材料，按“原木→木板→工作台→本物品”的顺序补')
+        }
+        // 当前相关库存一并给出，避免模型“看不见自己有什么”。
+        const stock = ['oak_log', 'oak_planks', 'stick', 'crafting_table', 'cobblestone', name]
+          .filter((item, index, arr) => arr.indexOf(item) === index)
+          .map((item) => `${item}×${countOf(item)}`)
+          .join(' / ')
+        throw new Error(`没有可用配方：${name}。下一步：${hint.slice(0, 2).join('；')}。当前库存：${stock}`)
       }
       const before = countOf(name)
       const recipe = recipes[0]
