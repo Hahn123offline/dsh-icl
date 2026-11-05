@@ -412,9 +412,9 @@ test('body：已暂停后不再刷 health_drop，只计 suppressed', async () =>
   body.ingest('stuck', {}) // 先暂停，且原因不是 low-health
   assert.equal(body.status().paused, true)
   await waitFor(() => body.status().watchdog.ticks >= 2, 2000, 'watchdog tick 2')
-  adapter.state.health = 19
-  await waitFor(() => (body.status().watchdog.healthDropSuppressed ?? 0) >= 1, 2500, 'health drop suppressed 1')
   adapter.state.health = 18
+  await waitFor(() => (body.status().watchdog.healthDropSuppressed ?? 0) >= 1, 2500, 'health drop suppressed 1')
+  adapter.state.health = 16
   await waitFor(() => (body.status().watchdog.healthDropSuppressed ?? 0) >= 2, 2500, 'health drop suppressed 2')
   assert.equal(body.eventsSince(0).events.filter((e) => e.type === 'health_drop').length, 0)
   await body.stop()
