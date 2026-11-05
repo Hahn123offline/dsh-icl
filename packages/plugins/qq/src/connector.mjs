@@ -65,7 +65,25 @@ export function discoverOneBotEndpoint(homeDir, { accountUin = null } = {}) {
     if (!ws) return { ok: false, error: `${path.basename(first.file)} 没有 networks.wsServers[0]` }
     const host = !ws.host || ws.host === '0.0.0.0' || ws.host === '::' ? '127.0.0.1' : String(ws.host)
     const port = Number(ws.port) || 3001
-    return { ok: true, uin: first.uin, wsUrl: `ws://${host}:${port}${DEFAULT_PATH}`, token: String(ws.accessToken ?? ''), file: first.file }
+    // HTTP 动作端（补课/已读）与 WS 可能不同 host/port/token；发现不到就留空，补课会显式报 unsupported。
+    const http = cfg?.networks?.httpServers?.[0] ?? cfg?.networks?.httpServer ?? null
+    let httpUrl = ''
+    let httpToken = ''
+    if (http) {
+      const httpHost = !http.host || http.host === '0.0.0.0' || http.host === '::' ? '127.0.0.1' : String(http.host)
+      const httpPort = Number(http.port) || 3000
+      httpUrl = `http://${httpHost}:${httpPort}`
+      httpToken = String(http.accessToken ?? http.token ?? '')
+    }
+    return {
+      ok: true,
+      uin: first.uin,
+      wsUrl: `ws://${host}:${port}${DEFAULT_PATH}`,
+      token: String(ws.accessToken ?? ''),
+      httpUrl,
+      httpToken,
+      file: first.file,
+    }
   } catch (error) {
     return { ok: false, error: `解析 ${path.basename(first.file)} 失败：${error?.message ?? error}` }
   }
@@ -91,6 +109,7 @@ export function createInboundConnector({
   now = () => Date.now(),
   log = () => {},
   onEvent = () => {},
+  onOpen = () => {},
   reconnectMinMs = 1000,
   reconnectMaxMs = 30_000,
   handshakeTimeoutMs = 10_000,
@@ -111,6 +130,10 @@ export function createInboundConnector({
     /** 只读不变量：这个连接器从创建到销毁，客户端发出的帧数恒为 0。 */
     framesSent: 0,
     seenSelfId: null,
+    everOpened: false,
+    disconnectedAt: null,
+    openCount: 0,
+    lastDowntimeMs: null,
   }
   let ws = null
   let started = false
@@ -133,6 +156,8 @@ export function createInboundConnector({
     clearTimeout(handshakeTimer)
     if (error) state.lastError = String(error?.message ?? error)
     if (state.state === 'stopped') return
+    // 只有真正从 open 掉下来才算断开起点（connecting 阶段失败不算"漏消息"）
+    if (state.state === 'open' && state.disconnectedAt == null) state.disconnectedAt = now()
     state.state = 'closed'
     state.connectedAt = null
     log({ msg: 'qq.ws.closed', code: code ?? null, error: state.lastError, url: safeUrl })
@@ -181,12 +206,21 @@ export function createInboundConnector({
     bind(socket, 'open', () => {
       if (ws !== socket) return
       clearTimeout(handshakeTimer)
+      const first = !state.everOpened
+      const downtimeMs = state.disconnectedAt == null ? null : Math.max(0, now() - state.disconnectedAt)
       state.state = 'open'
       state.connectedAt = now()
       state.lastPacketAt = now()
       state.lastError = null
       state.attempts = 0
-      log({ msg: 'qq.ws.open', url: safeUrl })
+      state.everOpened = true
+      state.disconnectedAt = null
+      state.openCount += 1
+      state.lastDowntimeMs = downtimeMs
+      log({ msg: 'qq.ws.open', url: safeUrl, first, openCount: state.openCount, downtimeMs })
+      try { onOpen({ first, downtimeMs, reconnects: state.reconnects, openCount: state.openCount, at: state.connectedAt }) } catch (error) {
+        log({ level: 'warn', msg: 'qq.ws.open-handler-fail', error: String(error?.message ?? error) })
+      }
     })
     bind(socket, 'message', (frame) => {
       if (ws !== socket) return
@@ -258,6 +292,9 @@ export function createInboundConnector({
         receivedFrames: state.receivedFrames,
         framesSent: state.framesSent,
         seenSelfId: state.seenSelfId,
+        openCount: state.openCount,
+        lastDowntimeMs: state.lastDowntimeMs,
+        disconnectedAt: state.disconnectedAt,
       }
     },
     /** 只读不变量：客户端帧数。 */

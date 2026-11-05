@@ -22,6 +22,9 @@ import path from 'node:path'
 import { createInboundConnector, discoverOneBotEndpoint, sanitizeUrl } from './connector.mjs'
 import { createDedupeStore, createInboundGate } from './gate.mjs'
 import { SEND_APPROVAL_TOKEN, sendEnabled } from './outbound.mjs'
+import { createLedger } from './ledger.mjs'
+import { createOneBotHttp } from './onebot-http.mjs'
+import { createBackfill } from './backfill.mjs'
 
 export const name = 'qq'
 
@@ -72,6 +75,14 @@ const DEFAULTS = Object.freeze({
   maxSendsPerTurn: 1,
   maxSendChars: 2000,
   sensitivePatterns: null,
+  // P0-1 账本 / 断线补课（默认开：补课失败只是 gap 可见，不影响实时入站）
+  ledgerFile: '',
+  httpUrl: '',
+  httpToken: '',
+  backfillEnabled: true,
+  backfillCount: 50,
+  maxBackfillAgeMs: 6 * 3600_000,
+  backfillMaxPeers: 5,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -108,8 +119,9 @@ export function normalizeQqConfig(input = {}) {
   cfg.allowSend = cfg.allowSend === true
   cfg.burstEnabled = cfg.burstEnabled !== false
   cfg.markdownToPlain = cfg.markdownToPlain !== false
+  cfg.backfillEnabled = cfg.backfillEnabled !== false
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -123,6 +135,9 @@ export function normalizeQqConfig(input = {}) {
   cfg.selfId = cfg.selfId == null ? null : String(cfg.selfId)
   cfg.ownerQQ = cfg.ownerQQ == null || String(cfg.ownerQQ).trim() === '' ? null : String(cfg.ownerQQ).trim()
   cfg.auditFile = String(cfg.auditFile ?? '')
+  cfg.ledgerFile = String(cfg.ledgerFile ?? '')
+  cfg.httpUrl = String(cfg.httpUrl ?? '')
+  cfg.httpToken = String(cfg.httpToken ?? '')
   cfg.sensitivePatterns = Array.isArray(input.sensitivePatterns) ? input.sensitivePatterns.map(String) : null
   cfg.dedupeFile = String(cfg.dedupeFile ?? '')
   cfg.recordFile = String(cfg.recordFile ?? '')
@@ -141,12 +156,15 @@ export function resolveEndpoint(cfg, log = () => {}) {
   if (cfg.snowlumaHomeDir) {
     const found = discoverOneBotEndpoint(cfg.snowlumaHomeDir, { accountUin: cfg.accountUin })
     if (found.ok) {
-      log({ msg: 'qq.endpoint.discovered', uin: found.uin, url: sanitizeUrl(found.wsUrl), file: path.basename(found.file) })
-      return { ok: true, url: found.wsUrl, token: found.token, uin: found.uin, source: 'snowluma' }
+      log({ msg: 'qq.endpoint.discovered', uin: found.uin, url: sanitizeUrl(found.wsUrl), file: path.basename(found.file), http: found.httpUrl ? sanitizeUrl(found.httpUrl) : null })
+      return {
+        ok: true, url: found.wsUrl, token: found.token, uin: found.uin, source: 'snowluma',
+        httpUrl: found.httpUrl ?? '', httpToken: found.httpToken ?? '',
+      }
     }
     log({ level: 'warn', msg: 'qq.endpoint.discover-fail', error: found.error })
   }
-  if (cfg.url) return { ok: true, url: cfg.url, token: cfg.token, uin: cfg.accountUin, source: 'config' }
+  if (cfg.url) return { ok: true, url: cfg.url, token: cfg.token, uin: cfg.accountUin, source: 'config', httpUrl: '', httpToken: '' }
   return { ok: false, error: '没有可用的上游：配置 url 或 snowlumaHomeDir' }
 }
 
@@ -198,8 +216,79 @@ export async function apply(ctx) {
   let endpoint = null
   let retryTimer = null
   let disposed = false
+  // P0-1：账本 + 补课（http 只做 get_friend_msg_history，不参与发送）
+  let ledger = null
+  let http = null
+  let backfill = null
+  const gap = {
+    reconnects: 0,
+    lastDowntimeMs: null,
+    backfillRuns: 0,
+    filled: 0,
+    dropped: 0,
+    failed: 0,
+    unsupported: 0,
+    lastBackfillAt: null,
+    lastError: null,
+  }
   // phase 1 出站：只有三把钥匙打开时才动态装配（index 不静态 import 发送实现）
   let sendHandle = null
+
+  function peerList() {
+    const list = new Set(cfg.allowPrivate.map(String))
+    if (ledger) {
+      for (const row of ledger.activities()) {
+        const match = /^qq:private:(\d+)$/.exec(String(row.activity ?? ''))
+        if (match) list.add(match[1])
+      }
+    }
+    return [...list].slice(0, Math.max(1, cfg.backfillMaxPeers))
+  }
+
+  /** 补课只认"已进投递队列"：signals 接受（或幂等去重）后推进账本水位；被 time/focus 拦下的不推进。 */
+  function markLedgerDelivered(signal) {
+    const info = signal?.meta?.qq?.ledger
+    if (!info || !ledger) return
+    try { ledger.markDelivered(info.activity, info.seq) } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.ledger.mark-delivered', error: String(error?.message ?? error) })
+    }
+  }
+
+  function gapFromBackfill() {
+    const s = backfill?.status()
+    if (!s) return
+    gap.backfillRuns = s.runs
+    gap.filled = s.filled
+    gap.dropped = s.dropped
+    gap.failed = s.failed
+    gap.unsupported = s.unsupported
+    gap.lastBackfillAt = s.lastRunAt
+    gap.lastError = s.lastError
+  }
+
+  function runBackfill(reason) {
+    if (!cfg.backfillEnabled || !backfill) return
+    if (!backfill.busy) {
+      ctx.log({ msg: 'qq.backfill.start', reason, peers: peerList().length, http: Boolean(http?.ok) })
+    }
+    void backfill.run({ reason }).then((result) => {
+      gapFromBackfill()
+      if (result?.filled || result?.failed || result?.dropped) {
+        ctx.log({ msg: 'qq.backfill.summary', reason, filled: result.filled ?? 0, dropped: result.dropped ?? 0, failed: result.failed ?? 0 })
+      }
+      writeStatusFile()
+    }).catch((error) => {
+      gap.lastError = String(error?.message ?? error)
+      ctx.log({ level: 'warn', msg: 'qq.backfill.run-fail', error: gap.lastError })
+    })
+  }
+
+  function onConnectorOpen(info = {}) {
+    gap.reconnects = Math.max(0, Number(info.openCount ?? 1) - 1)
+    if (info.first !== true && info.downtimeMs != null) gap.lastDowntimeMs = Number(info.downtimeMs) || 0
+    // 每次都尝试补课：首次启动补"进程不在时"的消息；重连补断线窗口。没有 peer 就跳过。
+    if (peerList().length) runBackfill(info.first === true ? 'start' : 'reconnect')
+  }
 
   /** 三把钥匙是否打开；每次都重读 live config（kill switch 立即生效）。 */
   function sendKeysNow() {
@@ -283,8 +372,8 @@ export async function apply(ctx) {
       ctx.log({ level: 'error', msg: 'qq.signals.offer-fail', error: String(error?.message ?? error) })
       out = { accepted: false, error: String(error?.message ?? error) }
     }
-    if (out?.accepted) { stats.delivered += 1; return 'delivered' }
-    if (out?.deduped) { stats.dedupedAtSignals += 1; return 'deduped' }
+    if (out?.accepted) { stats.delivered += 1; markLedgerDelivered(signal); return 'delivered' }
+    if (out?.deduped) { stats.dedupedAtSignals += 1; markLedgerDelivered(signal); return 'deduped' }
     // gate 拦下（time 睡眠/暂停/静音锁）：**不重试**。time 的 gate 已把内容抄进它自己
     // 持久化的 backlog（time/src/index.mjs enqueue），醒来/恢复时统一重放；我们重试会双投。
     if (out?.blocked) {
@@ -303,22 +392,22 @@ export async function apply(ctx) {
     return 'retry'
   }
 
-  function handleEvent(raw) {
-    if (disposed) return
+  function handleEvent(raw, { backfilled = false } = {}) {
+    if (disposed) return { accept: false, code: 'disposed' }
     stats.frames += 1
     if (raw?.post_type === 'meta_event') {
       stats.meta += 1
       connector?.onMeta?.() // 保留扩展点：当前只更新连接器内部 lastPacketAt
-      return
+      return { accept: false, code: 'meta' }
     }
-    const decision = gate.admit(raw, { receivedAt: now() })
+    const decision = gate.admit(raw, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
     if (!decision.accept) {
-      stats.recent.lastDropped = { at: decision.receivedAt, code: decision.code }
+      stats.recent.lastDropped = { at: now(), code: decision.code }
       // 群消息不落记录（整类忽略，避免把群内容写进影子证据文件）
       if (!['group', 'meta', 'not-message', 'invalid'].includes(decision.code)) {
-        record({ kind: 'dropped', code: decision.code, at: decision.receivedAt })
+        record({ kind: 'dropped', code: decision.code, at: now() })
       }
-      return
+      return decision
     }
     const signal = decision.signal
     stats.accepted += 1
@@ -329,8 +418,30 @@ export async function apply(ctx) {
       senderName: decision.senderName,
       messageId: decision.messageId,
       text: String(signal.text ?? '').slice(0, 80),
+      backfilled: decision.backfilled === true,
     }
     signal.expiresAt = decision.receivedAt + cfg.signalTtlMs
+    // 先入账（拿到活动内单调 seq），再投递；水位在 offer 被接受后推进（见 markLedgerDelivered）。
+    if (ledger) {
+      try {
+        const appended = ledger.append({
+          activity: signal.from.activity,
+          qqId: decision.messageId,
+          signalId: signal.id,
+          at: decision.messageAt,
+          sentAt: decision.messageAt,
+          receivedAt: decision.receivedAt,
+          sender: decision.senderName,
+          text: decision.text ?? '',
+          mention: true,
+          media: null,
+        })
+        signal.meta.qq.ledger = { activity: signal.from.activity, seq: appended.seq }
+        if (appended.duplicate) stats.ledgerDuplicates = (stats.ledgerDuplicates ?? 0) + 1
+      } catch (error) {
+        ctx.log({ level: 'warn', msg: 'qq.ledger.append', error: String(error?.message ?? error) })
+      }
+    }
     record({
       kind: 'accepted',
       id: signal.id,
@@ -339,9 +450,11 @@ export async function apply(ctx) {
       receivedAt: decision.receivedAt,
       peerId: decision.peerId,
       messageId: decision.messageId,
+      backfilled: decision.backfilled === true,
       segments: signal.meta.qq.segments,
     })
     offer(signal)
+    return decision
   }
 
   function retryTick() {
@@ -361,8 +474,8 @@ export async function apply(ctx) {
         ctx.log({ level: 'error', msg: 'qq.retry.offer-fail', error: String(error?.message ?? error) })
         out = { accepted: false, error: String(error?.message ?? error) }
       }
-      if (out?.accepted) { retry.splice(i, 1); stats.delivered += 1; continue }
-      if (out?.deduped) { retry.splice(i, 1); stats.dedupedAtSignals += 1; continue }
+      if (out?.accepted) { retry.splice(i, 1); stats.delivered += 1; markLedgerDelivered(item.signal); continue }
+      if (out?.deduped) { retry.splice(i, 1); stats.dedupedAtSignals += 1; markLedgerDelivered(item.signal); continue }
       if (out?.blocked) {
         // 重试时才发现时间锁：交给 time 的 backlog，不继续重试
         retry.splice(i, 1)
@@ -393,6 +506,40 @@ export async function apply(ctx) {
       ctx.log({ level: 'error', msg: 'qq.no-upstream', error: endpoint.error })
       return
     }
+    // P0-1：账本（默认内存；给了 ledgerFile 或任一 state 文件时落 SQLite）+ 补课 HTTP 客户端。
+    let ledgerFile = cfg.ledgerFile ? resolvePath(cfg.ledgerFile) : ''
+    if (!ledgerFile) {
+      const anchor = cfg.dedupeFile || cfg.recordFile || cfg.statusFile
+      if (anchor) ledgerFile = path.join(path.dirname(resolvePath(anchor)), 'qq-ledger.db')
+    }
+    ledger = createLedger({ file: ledgerFile || null, log: (entry) => ctx.log({ plugin: 'qq', ...entry }) })
+    http = createOneBotHttp({
+      endpointUrl: cfg.httpUrl || endpoint.httpUrl || '',
+      token: cfg.httpToken || endpoint.httpToken || '',
+      fetchImpl: cfg.fetchImpl ?? globalThis.fetch,
+      timeoutMs: 15_000,
+    })
+    backfill = createBackfill({
+      http,
+      ledger,
+      now,
+      selfId: cfg.selfId,
+      count: cfg.backfillCount,
+      maxAgeMs: cfg.maxBackfillAgeMs,
+      maxPeers: cfg.backfillMaxPeers,
+      peers: peerList,
+      ingest: (event, opts) => handleEvent(event, opts),
+      log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
+    })
+    ctx.log({
+      msg: 'qq.ledger.ready',
+      mode: ledger.stats().mode,
+      file: ledger.stats().file,
+      messages: ledger.stats().messages,
+      backfill: cfg.backfillEnabled,
+      http: Boolean(http.ok),
+      httpUrl: http.ok ? sanitizeUrl(http.endpointUrl) : null,
+    })
     connector = createInboundConnector({
       url: endpoint.url,
       token: endpoint.token,
@@ -400,6 +547,7 @@ export async function apply(ctx) {
       now,
       log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
       onEvent: handleEvent,
+      onOpen: onConnectorOpen,
       reconnectMinMs: cfg.reconnectMinMs,
       reconnectMaxMs: cfg.reconnectMaxMs,
       heartbeatStaleMs: cfg.heartbeatStaleMs,
@@ -432,6 +580,9 @@ export async function apply(ctx) {
       allowAllPrivate: cfg.allowAllPrivate,
       groupPolicy: 'ignore',
       gate: gate.counters(),
+      gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
+      ledger: ledger?.stats() ?? { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0 },
+      http: { ok: Boolean(http?.ok), url: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
       stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
       recordFile: recordFile || null,
       statusFile: statusFile || null,
@@ -448,6 +599,12 @@ export async function apply(ctx) {
     else if (c.connected) lines.push(`QQ 只读影子：已连接 ${s.url}${c.stale ? '（心跳过期，可能已掉线）' : ''}。`)
     else lines.push(`QQ 只读影子：未连接（state=${c.state}${c.lastError ? `，最近错误：${c.lastError}` : ''}）。`)
     lines.push(`机器人账号：${s.selfId ?? '未知'}；可收私聊：${s.allowAllPrivate ? '全部（显式打开）' : (s.allowPrivate.length ? s.allowPrivate.join('、') : '无（白名单为空）')}；群消息：整类忽略`)
+    if (s.enabled) {
+      const gp = s.gap ?? {}
+      const bk = gp.backfill ?? {}
+      lines.push(`账本：${s.ledger?.mode ?? 'off'}（${s.ledger?.messages ?? 0} 条消息，已交付 ${s.ledger?.delivered ?? 0}）${s.ledger?.file ? `；文件：${s.ledger.file}` : '；内存模式（重启不保留）'}`)
+      lines.push(`断线补课：重连 ${gp.reconnects ?? 0} 次${gp.lastDowntimeMs != null ? `（最近断开 ${Math.round(gp.lastDowntimeMs / 1000)}s）` : ''}；补课 ${gp.backfillRuns ?? 0} 次，补回 ${gp.filled ?? 0} 条，过期跳过 ${gp.dropped ?? 0}，失败 ${gp.failed ?? 0}${gp.unsupported ? `，无 HTTP 端点 ${gp.unsupported} 次` : ''}${s.http?.ok ? '' : '（补课不可用）'}${gp.lastError ? `；最近错误：${gp.lastError}` : ''}`)
+    }
     const g = s.gate
     lines.push(`准入：收到 ${g.received} 条，放行 ${g.accepted} 条；去重 ${g.byCode.duplicate ?? 0}，限流 ${g.byCode.rate ?? 0}，白名单外 ${g.byCode['not-allowlisted'] ?? 0}，过旧 ${g.byCode.stale ?? 0}，群 ${g.byCode.group ?? 0}，自发 ${g.byCode.self ?? 0}，空 ${g.byCode.empty ?? 0}`)
     const blocked = Object.entries(s.stats.blockedReasons).map(([k, v]) => `${k}×${v}`).join('、')
@@ -532,6 +689,10 @@ export async function apply(ctx) {
       ctx.log({ level: 'warn', msg: 'qq.connector.stop', error: String(error?.message ?? error) })
     }
     connector = null
+    try { ledger?.close() } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.ledger.close', error: String(error?.message ?? error) })
+    }
+    ledger = null
     writeStatusFile()
     const flushed = gate.flush()
     if (flushed?.error) ctx.log({ level: 'warn', msg: 'qq.dedupe.save', error: flushed.error })

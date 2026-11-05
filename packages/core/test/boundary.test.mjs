@@ -5,7 +5,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.join(import.meta.dirname, '..', '..', 'plugins')
-const ALLOWED_FETCH = new Set(['model-manager', 'mc-link']) // 接线器允许直接发 HTTP
+// qq 是 OneBot 连接器插件：HTTP 动作端（补课/已读）属于它的传输层，不是模型 API。
+const ALLOWED_FETCH = new Set(['model-manager', 'mc-link', 'qq'])
 
 function pluginSources() {
   const out = []

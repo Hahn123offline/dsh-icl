@@ -169,11 +169,18 @@
   - fake OneBot 执行多气泡：恰 N 帧、每帧 ≤500 字、间隔落在配置区间、markdown 已被清理、过频被拒且**不发帧**。
   - 真实窗口（需 lead 批准）：一次 `qq_send(messages=[3 条])` → SnowLuma 日志 3 次 `send_private_msg`、无群、用户收到 3 条；中途 kill switch → 剩余气泡不发且工具返回"已发 k/N"。
 
-**P0-1 断线补课 + 账本/水位（预计 3–4 人日）**
-- 账本：插件本地 SQLite（`node:sqlite` 已有先例：memory 插件）或 JSONL+索引；表字段对齐旧项目：`activity,seq,qq_id,at,sent_at,received_at,sender,text(≤1000),media meta,mention,delivered_at,seen_at,replied_at`；每活动单调 `seq`；`attended` 水位。
-- 游标：群用 `message_seq`（WS 到达即推进）；私聊**契约先按 fake 定**：用 `get_friend_msg_history` 拉最近双向记录，以 `message_id`/时间过滤 `> 水位`；真机验证锚点语义后再定（若 API 不支持任意锚点 → 降级为"断线 gap 计数 + 可解释丢失"）。
-- 断线可见性：`status.json` 增加 `gap: {reconnects, lastDisconnectAt, lastReconnectAt, possibleLost, backfillFilled, backfillFailed}`；reconnect 后立即补课一次。
-- 验收：
+**P0-1 断线补课 + 账本/水位（预计 3–4 人日；✅ 2026-11-06 已落地，fake 契约已验证）**
+- ✅ 实现：`src/ledger.mjs`（SQLite：消息表 + 每活动 seq + attended 水位；内存降级）、`src/backfill.mjs`
+  （`get_friend_msg_history` 契约、水位+id 双判、自己消息/超龄跳过、复用 signal.id、失败只记 gap）、
+  `src/onebot-http.mjs`（独立 OneBot HTTP 动作端，入站 WS 仍 framesSent=0）；connector 增加 open 回调
+  （first/reconnect + downtime）；gate 增加 `backfilled` 通道（`[补课]`/tag/meta + `stale-backfill` 判旧）；
+  index 接线 + `gap/ledger/http` 状态 + `qq_status` 文本。
+- ✅ 测试：`qq-backfill.test.mjs` 6 条（账本/契约/集成断线补回/不双投/超龄/HTTP 失败）；全量 480 pass。
+- 边界（必须说清）：水位 = `signals.offer` 被接受（进入 delivery 队列、未被 time/focus 拦下）；
+  bridge ack 在 dsh-icl，插件拿不到，不能宣称"用户已看到"。
+- 未做（有意）：`mark_msg_as_read`/`mark_private_msg_as_read` 不在 P0 调用（会把已读同步到用户 QQ，属产品决定）；
+  群补课归 phase 2；私聊历史锚点语义待真机验证（若上游不支持任意锚点，保留 gap 可见性，不假装连续）。
+- 原验收计划：
   - fake：WS 断开 3 条消息→重连→补课后**不丢不重**（按 id/seq），水位只推进到投递成功处；重复补课不双投；消费方可用 `qq_unread(afterSeq)`。
   - 单测：seq 单调、qq_id 去重、水位只进不退、断层不跳号、重启恢复（SQLite）。
   - 真实窗口（需 lead 批准）：连接中 kill SnowLuma WS（或断网模拟不可行时 kill lab 的 WS 连接）→ 恢复后 gap 指标合理、无重复回复；私聊补课能力按真机结论记录（做不到就明确报 gap，不静默）。
@@ -246,6 +253,8 @@
 ## 6. 开放问题（需要真机验证 / lead 拍板）
 
 1. `get_friend_msg_history` 的参数/锚点/返回字段/是否含自己消息（FEATURE_MATRIX 说"无锚点取最新双向记录"）→ 决定 P0-1 私聊补课的上限。
+   **2026-11-06 进展**：fake 契约已定为 `{user_id,count}` → 消息数组（含自己消息、双向）；实现用本地水位 + qq_id 双判，
+   自己消息跳过；真机仍需确认锚点语义（若不支持任意锚点，按 §3 P0-1 的"gap 可见、不假装连续"降级）。
 2. `mark_private_msg_as_read`/`mark_group_msg_as_read` 是否影响用户其他客户端已读（是否要同步水位）→ 产品决定。
 3. DSH attachment 从插件创建 `ImageBlock` 的官方 API（`dsh-attachment` 暴露面）→ P0-2 spike。
 4. deepseek-flash 是否声明 image 输入（`inputModalities` 含 image；dsh-acp 有校验）→ 决定图片是否 inline 还是工具取图。
@@ -281,11 +290,12 @@
 
 ### 7.3 我们（本仓库）
 
-- `packages/plugins/qq/src/{connector,normalize,gate,outbound,send-tool,index}.mjs`（216/166/223/275/198/523 行）。
+- `packages/plugins/qq/src/{connector,normalize,gate,outbound,send-tool,index}.mjs`（216/166/223/275/198/523 行）；
+  P0-3 新增 `humanize.mjs`；P0-1 新增 `ledger.mjs`（SQLite 账本/水位）、`backfill.mjs`（补课契约）、`onebot-http.mjs`（独立 HTTP 动作端）。
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 11、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 480 pass。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证
