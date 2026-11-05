@@ -532,16 +532,29 @@ function readBodyEvents() {
 }
 
 /**
- * 当前 lab 代（generation）的 body 事件：从最后一个 ledger_loaded 之后算起。
- * body.jsonl 跨 lab 重启保留，直接全量统计会把上一代的死亡/事件当成本代（replay）。
+ * 当前 lab 代（generation）的 body 事件：从 `night-boundary.json` 记录的 offset 之后算起
+ * （supervisor 接管/重启时记录当前 body.jsonl 长度，上一代死亡/事件不再算进来）。
+ * body.jsonl 跨 lab 重启保留，直接全量统计会把上一代事件当成本代（replay）。
  */
 function currentGenerationBodyEvents() {
   const rows = readBodyEvents()
-  let start = 0
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    if (rows[i].type === 'ledger_loaded') { start = i; break }
-  }
-  return rows.slice(start)
+  let offset = 0
+  try {
+    const boundary = readJson(path.join(runDir, 'night-boundary.json'), null)
+    offset = Number(boundary?.bodyOffset ?? 0)
+  } catch { /* ignore */ }
+  return rows.slice(Math.max(0, Math.min(offset, rows.length)))
+}
+
+/** supervisor 接管 lab 时记一代边界（只记一次；跨 supervisor 重启保留）。 */
+function ensureBodyBoundary() {
+  const file = path.join(runDir, 'night-boundary.json')
+  const existing = readJson(file, null)
+  if (existing && Number.isFinite(Number(existing.bodyOffset))) return existing
+  const boundary = { bodyOffset: readBodyEvents().length, at: nowIso(), sessionId: labMeta()?.sessionId ?? null }
+  writeJson(file, boundary)
+  log(`记录当前 lab 代 body 边界：bodyOffset=${boundary.bodyOffset}`)
+  return boundary
 }
 
 function gameSummary(events) {
@@ -852,7 +865,9 @@ async function main() {
     state.labStarts = Math.max(1, state.labStarts)
     state.sessionId = meta?.sessionId ?? null
     log(`接管已有 lab（session=${state.sessionId}），不重开新会话`)
-    recordStrategy('adopt-lab', `发现存活的 lab（session ${state.sessionId}），supervisor 接管而不重启会话`)
+    ensureBodyBoundary()
+    state.lastDeaths = currentGenerationBodyEvents().filter((row) => row.type === 'death').length
+    recordStrategy('adopt-lab', `发现存活的 lab（session ${state.sessionId}），supervisor 接管而不重启会话（本代死亡 ${state.lastDeaths}）`)
     state.phase = 'running'
     writeStatus()
     await checkpoint('adopt')
