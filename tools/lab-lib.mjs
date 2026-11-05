@@ -179,6 +179,71 @@ export function gitCommit(short = true) {
   }
 }
 
+/* ── 残留 body 清理 ───────────────────────────────────── */
+
+/** 一整张 Windows 进程表（Get-CimInstance）；失败返回 []，不抛。 */
+export function listProcesses() {
+  if (process.platform !== 'win32') {
+    return new Promise((resolve) => {
+      const child = spawn('ps', ['-eo', 'pid=,ppid=,args='], { windowsHide: true })
+      let out = ''
+      child.stdout.on('data', (chunk) => { out += chunk })
+      child.on('close', () => {
+        const rows = []
+        for (const line of out.split('\n')) {
+          const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
+          if (match) rows.push({ ProcessId: Number(match[1]), ParentProcessId: Number(match[2]), CommandLine: match[3] })
+        }
+        resolve(rows)
+      })
+      child.on('error', () => resolve([]))
+    })
+  }
+  return new Promise((resolve) => {
+    const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress'
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.on('close', () => {
+      try {
+        const parsed = JSON.parse(out.trim() || '[]')
+        resolve(Array.isArray(parsed) ? parsed : [parsed])
+      } catch { resolve([]) }
+    })
+    child.on('error', () => resolve([]))
+  })
+}
+
+/**
+ * 找本 lab 用户名对应的 mc-body 进程（含被 kill 后 mc-link 自动重启的孤儿）。
+ * 只匹配命令行里同时有 mc-body 路径和用户名 token 的进程，不碰 mc-link/mc-body 的 bot。
+ */
+export async function findLabBodyPids(username) {
+  const rows = await listProcesses()
+  const needle = String(username ?? '')
+  return rows
+    .filter((row) => /mc-?body|cli\.mjs/i.test(String(row.CommandLine ?? '')))
+    .filter((row) => needle && String(row.CommandLine ?? '').includes(needle))
+    .map((row) => Number(row.ProcessId))
+    .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid)
+}
+
+/** 清掉本 lab 上一轮留下的 body（up 前 / down 后各清一次，避免同服同名互踢）。 */
+export async function cleanupStrayBodies({ username = 'ICL-mclab-1', timeoutMs = 3000 } = {}) {
+  const killed = []
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pids = await findLabBodyPids(username)
+    if (!pids.length) break
+    for (const pid of pids) {
+      await killPidTree(pid)
+      killed.push(pid)
+    }
+    await sleep(400)
+  }
+  return killed
+}
+
 /* ── dsh 进程 ─────────────────────────────────────────── */
 
 /** 找 dsh 的 bin.js（用 node 直接跑，避免 Windows 上 spawn .cmd 的 shell 问题）。 */

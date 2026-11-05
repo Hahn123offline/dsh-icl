@@ -24,7 +24,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   DEFAULT_MC_PORT, DEFAULT_PORT, PRESETS, REPO_ROOT, STATE_ROOT, apiFor,
-  clearCurrent, countTurnEnds, createLabSession, discoverDshBin, ensureDir, gitCommit,
+  clearCurrent, cleanupStrayBodies, countTurnEnds, createLabSession, discoverDshBin, ensureDir, gitCommit,
   isPidAlive, killPidTree, lastTurnWindow, loadCurrent, materializePatch, nowIso,
   orderedEvents, portBusy, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, saveCurrent, selectModel, sleep, spawnDsh,
@@ -181,6 +181,9 @@ async function up() {
 
   const dshBin = discoverDshBin()
   if (!dshBin) fail('找不到 dsh 的 bin.js；用 DSH_BIN=<...>/lib/bin.js 指定')
+  // 清掉上一轮 lab 留下的 body（含被 kill 后 mc-link 自动重启的孤儿），避免同服同名互踢。
+  const strays = await cleanupStrayBodies({ username: 'ICL-mclab-1' })
+  if (strays.length) info(`清理上一轮残留 body：${strays.join(',')}`)
   if (modelKey === 'local') acquireLocalModelLock(runId)
 
   const runDir = ensureDir(runDirOf(runId))
@@ -285,6 +288,8 @@ async function down({ quiet = false, runId: forcedRunId = null } = {}) {
   if (pids.dsh) await killPidTree(pids.dsh)
   const deadline = Date.now() + 8000
   while (Date.now() < deadline && (isPidAlive(pids.dsh) || isPidAlive(pids.observer))) await sleep(200)
+  const strays = await cleanupStrayBodies({ username: 'ICL-mclab-1' })
+  if (strays.length) info(`清理残留 body：${strays.join(',')}`)
 
   meta.status = 'down'
   meta.endedAt = nowIso()

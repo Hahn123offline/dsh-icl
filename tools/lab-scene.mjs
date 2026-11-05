@@ -311,18 +311,20 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
   }
 
   // 场景前置：清掉上一场/探测留下的 body，保证 A/C/E 每次从"未连接"开始，可连跑 3 次。
+  // 杀一遍不够：mc-link 会把"意外退出"自动重启，所以最多清 3 轮直到没有活 body。
   const preCleanup = { killedPids: [] }
-  await refreshBody()
-  if (bodyState.bodyCount) {
+  for (let round = 0; round < 3; round += 1) {
+    await refreshBody()
+    if (!bodyState.bodyCount) break
     for (const pid of bodyState.bodyPids) {
       await killPidTree(pid)
       preCleanup.killedPids.push(pid)
     }
-    await sleep(1500)
-    await refreshBody()
     preCleanup.forced = true
-    console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
+    await sleep(1500)
   }
+  await refreshBody()
+  if (preCleanup.forced) console.log(`[scene] 前置清理：杀掉残留 body ${preCleanup.killedPids.join(',')}，剩余 ${bodyState.bodyCount}`)
 
   const say = async (text, timeoutSec = 300) => promptAndWait(api, meta, subst(text), timeoutSec)
 
