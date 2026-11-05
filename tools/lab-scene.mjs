@@ -306,6 +306,7 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
   // 若每个 assert 都推进边界，第二个 assert 就什么都看不到了；c2/c3 的 A 就是这样误判的）。
   // 动作边界之后的自主 turn（crash signal 叫醒的那种）也会算进断言窗口（mc-link C 的诉求）。
   let assertBoundarySeq = startSeq
+  let killBoundarySeq = null
   const lastSeqNow = () => Number(orderedEvents(eventsFile).at(-1)?.seq) || 0
 
   async function refreshBody() {
@@ -346,14 +347,16 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         assertBoundarySeq = lastSeqNow()
         steps.push({ id, op: 'wait', ok: true, ms: Date.now() - began })
       } else if (step.op === 'kill-body') {
+        // 先定格边界再杀：kill 之后 mc-link 的 crash notice / 自主 turn 都发生在几秒内，
+        // 边界若放在 sleep 之后就会把 notice 挤出断言窗口（c3 的 crash-notice 误判）。
+        assertBoundarySeq = lastSeqNow()
+        killBoundarySeq = assertBoundarySeq
         await refreshBody()
         const target = bodyState.bodyPids[0]
         if (!target) throw new Error('没有找到 mc-body 子进程（body 没起来或不是 lab 派生的）')
         await killPidTree(target)
         await sleep(1200)
         await refreshBody()
-        // kill 之后是新的动作边界：后面的断言专门看"掉线之后"的 notice/自主 turn/状态复核。
-        assertBoundarySeq = lastSeqNow()
         steps.push({ id, op: 'kill-body', ok: true, ms: Date.now() - began, killedPid: target, bodyAfter: bodyState })
         console.log(`[scene] ${id} → 已 kill body pid=${target}，剩余 body=${bodyState.bodyCount}`)
       } else if (step.op === 'snapshot') {
@@ -370,12 +373,14 @@ export async function runScene({ run, sceneFile, interview = true, vars: inputVa
         steps.push({ id, op: 'snapshot', ok: true, ms: Date.now() - began, file })
       } else if (step.op === 'assert') {
         await refreshBody()
-        const windowForStep = eventWindow(eventsFile, assertBoundarySeq)
+        // windowFrom:'kill' 用于"kill 之后发生的一切"（notice + 自主 turn + 后续 prompt 回合都算）。
+        const windowStart = step.windowFrom === 'kill' && killBoundarySeq != null ? killBoundarySeq : assertBoundarySeq
+        const windowForStep = eventWindow(eventsFile, windowStart)
         const results = evaluateAssertion(step, windowForStep, bodyState)
         const required = step.required !== false
         const ok = results.every((row) => row.ok)
         for (const row of results) checks.push({ id, required, ok: row.ok, kind: row.kind, detail: row.detail })
-        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, windowStartSeq: assertBoundarySeq, windowEndSeq: lastSeqNow(), checks: results })
+        steps.push({ id, op: 'assert', ok: ok || !required, ms: Date.now() - began, required, windowStartSeq: windowStart, windowEndSeq: lastSeqNow(), checks: results })
         console.log(`[scene] ${id} ${ok ? '✓' : required ? '✗' : '⚠'} ${results.map((row) => `${row.kind}:${row.ok ? 'ok' : 'fail'}`).join(' ')}`)
       } else {
         throw new Error(`未知 op：${step.op}`)
