@@ -515,6 +515,27 @@ export function createMineflayerAdapter({
     }
   }
 
+  // 真实 dig 可能永远等不到 blockUpdate（断线/假死）：用 abort/timeout 抢跑，保证任务能退出。
+  async function digBlock(block, signal, timeoutMs = 8000) {
+    checkAbort(signal)
+    let timer = null
+    let onAbort = null
+    try {
+      await Promise.race([
+        bot.dig(block, true),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('dig timeout')), Math.max(1000, Number(timeoutMs) || 8000))
+          if (typeof timer.unref === 'function') timer.unref()
+          onAbort = () => reject(abortReason(signal))
+          signal?.addEventListener?.('abort', onAbort, { once: true })
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (onAbort) signal?.removeEventListener?.('abort', onAbort)
+    }
+  }
+
   // ---- 挖方块安全 --------------------------------------------------------------
   async function digSafely(block, signal) {
     checkAbort(signal)
@@ -545,14 +566,7 @@ export function createMineflayerAdapter({
     try {
       await equipBestTool(block, signal)
       await faceBlock(block)
-      await Promise.race([
-        bot.dig(block, true),
-        new Promise((_, reject) => {
-          const timer = setTimeout(() => reject(new Error('dig timeout')), 8000)
-          if (typeof timer.unref === 'function') timer.unref()
-          signal?.addEventListener?.('abort', () => { clearTimeout(timer); reject(abortReason(signal)) }, { once: true })
-        }),
-      ])
+      await digBlock(block, signal)
       await sleep(120)
       return true
     } catch (error) {
@@ -700,7 +714,7 @@ export function createMineflayerAdapter({
         try {
           await equipBestTool(block, signal)
           await faceBlock(block)
-          await bot.dig(block, true)
+          await digBlock(block, signal)
           await sleep(150)
           const after = bot.blockAt(block.position)
           if (before && after && after.name === before.name) {
@@ -853,7 +867,7 @@ export function createMineflayerAdapter({
         const tool = await equipBestTool(block, signal)
         await faceBlock(block)
         try {
-          await bot.dig(block, true)
+          await digBlock(block, signal)
         } catch (error) {
           if (signal?.aborted) throw error
           skipped.add(blockKey(block.position))
@@ -992,7 +1006,7 @@ export function createMineflayerAdapter({
       const before = bot.blockAt(block.position)
       const tool = await equipBestTool(block, new AbortController().signal)
       await faceBlock(block)
-      await bot.dig(block, true)
+      await digBlock(block, new AbortController().signal)
       await sleep(200)
       const after = bot.blockAt(block.position)
       if (before && after && after.name === before.name) throw new Error('dig: 方块没有变化（可能太远/工具不对）')

@@ -32,6 +32,10 @@ async function get(pathname) {
   const response = await fetch(`${base}${pathname}`, { signal: AbortSignal.timeout(3000) })
   return response.json()
 }
+async function getTask(id) {
+  const data = await get(`/v1/tasks/${encodeURIComponent(String(id))}`).catch(() => null)
+  return data?.task ?? null
+}
 async function post(pathname, body) {
   const response = await fetch(`${base}${pathname}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(5000),
@@ -129,12 +133,15 @@ try {
   }, 15_000, 'offline')
   checks.offlineDetected = true
   checks.statusNotFakeOnline = offline.connected === false
-  const pausedStatus = await waitFor(async () => {
-    const status = await get('/v1/status')
-    return status.task?.state === 'paused' ? status : null
+  // status.task 是“当前正在跑的任务”，断线后 current 会被摘掉；paused 状态在任务台账里查。
+  const pausedTask = await waitFor(async () => {
+    const row = await getTask(taskId)
+    return row?.state === 'paused' ? row : null
   }, 10_000, 'task paused after disconnect')
-  checks.runningTaskPaused = pausedStatus.task?.state === 'paused'
-  checks.pausedReasonDisconnect = pausedStatus.pausedReason === 'disconnect'
+  checks.runningTaskPaused = pausedTask.state === 'paused'
+  checks.pausedReasonDisconnect = pausedTask.pausedReason === 'disconnect'
+  const statusPaused = await get('/v1/status')
+  checks.statusPausedTasksShowsIt = (statusPaused.pausedTasks ?? []).some((row) => row.id === taskId)
 
   // 3. 代理恢复（还在监听，新连接可进）：必须 reconnected，但身体仍暂停、任务不自动续跑
   const reconnected = await waitFor(async () => {
@@ -145,7 +152,7 @@ try {
   await sleep(2500)
   const afterReconnect = await get('/v1/status')
   checks.stillPausedAfterReconnect = afterReconnect.paused === true
-  checks.taskNotAutoResumed = afterReconnect.task?.state === 'paused'
+  checks.taskNotAutoResumed = (await getTask(taskId))?.state === 'paused'
   await collectEvents()
   checks.sawOfflineEvent = events.some((event) => event.type === 'offline')
   checks.sawReconnectedEvent = events.some((event) => event.type === 'reconnected')

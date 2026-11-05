@@ -153,6 +153,8 @@ test('body：断线暂停 running 任务，重连不自动续跑，必须显式 
   assert.equal(body.getTask(running.id).pausedReason, 'disconnect')
   assert.equal(body.status().paused, true)
   assert.equal(body.status().pausedReason, 'disconnect')
+  assert.equal(body.status().pausedTasks.length, 1, '断线挂起的任务在 status.pausedTasks 里可查')
+  assert.equal(body.status().pausedTasks[0].id, running.id)
   assert.equal(body.status().connected, false)
   // 断线时排队任务保持 queued（没跑过，不该被算成失败/中断）
   assert.equal(body.getTask(queued.id).state, 'queued')
