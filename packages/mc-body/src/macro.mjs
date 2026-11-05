@@ -84,3 +84,90 @@ export function progressEvery(total) {
 export function shouldReportProgress(done, lastReportAt, now = Date.now(), intervalMs = 10_000) {
   return now - (lastReportAt ?? 0) >= intervalMs
 }
+
+/** 桥面每步要铺的格子（相对起点的 dx/dz 偏移，宽度沿方向垂直展开）。 */
+export function bridgePlan(params = {}) {
+  const dir = directionVector(params)
+  const opts = clampMacroNumbers(params)
+  const perp = { x: -dir.z, z: dir.x } // 方向的垂直方向（宽度展开）
+  const cells = []
+  for (let step = 1; step <= opts.length; step += 1) {
+    for (let w = 0; w < opts.width; w += 1) {
+      const offset = w - Math.floor((opts.width - 1) / 2)
+      cells.push({
+        step,
+        offset,
+        x: dir.x * step + perp.x * offset,
+        z: dir.z * step + perp.z * offset,
+        // 支撑方块放在“前进格脚下”（y-1），由调用方按世界坐标 y 换算
+        yOffset: -1,
+      })
+    }
+  }
+  return { direction: dir.name, length: opts.length, width: opts.width, cells }
+}
+
+/**
+ * 蓝图解析/校验（build 用）。layers[y][z][x]，palette char→方块名或 null。
+ * 返回 { size, materials, placements }；placements 带相对坐标（origin 由调用方加）。
+ */
+export function parseBlueprint(blueprint) {
+  if (!blueprint || typeof blueprint !== 'object') throw new Error('build 需要 blueprint 对象')
+  const size = blueprint.size ?? {}
+  const sx = Math.max(1, Number(size.x) || 0)
+  const sy = Math.max(1, Number(size.y) || 0)
+  const sz = Math.max(1, Number(size.z) || 0)
+  if (!sx || !sy || !sz) throw new Error('blueprint.size 需要 x/y/z 正整数')
+  if (!Array.isArray(blueprint.layers)) throw new Error('blueprint.layers 需要数组')
+  if (blueprint.layers.length !== sy) throw new Error(`blueprint.layers 层数 ${blueprint.layers.length} 与 size.y ${sy} 不一致`)
+  const palette = blueprint.palette ?? {}
+  const materials = {}
+  const placements = []
+  for (let y = 0; y < sy; y += 1) {
+    const layer = blueprint.layers[y]
+    if (!Array.isArray(layer) || layer.length !== sz) throw new Error(`layers[${y}] 需要 ${sz} 行（z）`)
+    for (let z = 0; z < sz; z += 1) {
+      const row = String(layer[z] ?? '')
+      if (row.length !== sx) throw new Error(`layers[${y}][${z}] 需要 ${sx} 列（x），实际 ${row.length}`)
+      for (let x = 0; x < sx; x += 1) {
+        const char = row[x]
+        const block = palette[char]
+        if (block == null || block === '' || block === ' ') continue
+        materials[block] = (materials[block] ?? 0) + 1
+        placements.push({ name: block, pos: { x, y, z } })
+      }
+    }
+  }
+  return { size: { x: sx, y: sy, z: sz }, materials, placements }
+}
+
+/** 检查蓝图材料是否够（counts: {block:count}）。返回 {ok, missing:[{name,need,have}]}。 */
+export function checkBlueprintMaterials(blueprint, counts = {}) {
+  const { materials } = parseBlueprint(blueprint)
+  const missing = Object.entries(materials)
+    .map(([name, need]) => ({ name, need, have: Number(counts[name]) || 0 }))
+    .filter((entry) => entry.have < entry.need)
+  return { ok: missing.length === 0, missing, materials }
+}
+
+/**
+ * shelter 参数：size 边长最小 3，门开在朝向 origin 的一侧；返回 {size, height, cells}。
+ * 仅给出“要放哪些格子”的占位契约，实际放置由明早实现处理。
+ */
+export function shelterPlan(params = {}) {
+  const size = Math.max(3, Math.min(9, Number(params.size) || 3))
+  const height = Math.max(2, Math.min(4, Number(params.height) || 3))
+  const cells = []
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      for (let z = 0; z < size; z += 1) {
+        const wall = x === 0 || x === size - 1 || z === 0 || z === size - 1
+        const roof = y === height - 1
+        const door = x === Math.floor(size / 2) && z === 0 && y < 2
+        if ((wall || roof) && !door) cells.push({ x, y, z })
+      }
+    }
+  }
+  return { size, height, door: { x: Math.floor(size / 2), z: 0, y: [0, 1] }, cells }
+}
+

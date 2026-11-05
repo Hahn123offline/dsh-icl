@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHeartbeat, createProgressTracker, createRateLimiter } from './recovery.mjs'
 
-const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'shelter', 'farm'])
+const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
 const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
 // 暂停时仍然允许的 op：感知/查询/恢复，以及**取消任务**（取消是纯安全动作，不应被拒）。
