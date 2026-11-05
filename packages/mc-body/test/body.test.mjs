@@ -284,13 +284,22 @@ test('body：idle 与 danger 配额分开，suppressed 有统计且不静默', a
   await body.stop()
 })
 
-test('body：暂停时写动作被拒，感知/恢复仍可用', async () => {
+test('body：暂停时写动作被拒，感知/取消/恢复仍可用', async () => {
   const { body } = await startedBody()
-  body.ingest('health', { health: 5 })
+  // 造一个“断线挂起”的任务：身体 paused、任务 paused，此时取消必须是安全动作。
+  const pausedTask = body.createTask({ kind: 'mine', params: { hang: true } })
+  await waitFor(() => body.getTask(pausedTask.id)?.state === 'running', 2000, 'running')
+  body.ingest('disconnected', { reason: 'socket' })
+  await waitFor(() => body.getTask(pausedTask.id)?.state === 'paused', 2000, 'paused')
   assert.equal(body.status().paused, true)
   assert.throws(() => body.createTask({ kind: 'mine', params: { count: 1 } }), /暂停/)
   await assert.doesNotReject(() => body.doPlan([{ op: 'look' }]))
+  await assert.doesNotReject(() => body.doPlan([{ op: 'tasks' }]))
+  // 取消是安全动作：暂停态也必须允许（当事人预期“取消任务像撤回消息”）。
+  await assert.doesNotReject(() => body.doPlan([{ op: 'cancel', taskId: pausedTask.id }]))
+  assert.equal(body.getTask(pausedTask.id)?.state, 'cancelled')
   await assert.rejects(() => body.doPlan([{ op: 'move', x: 1, y: 64, z: 1 }]), /暂停/)
+  body.ingest('reconnected', {})
   assert.equal(body.resume().paused, false)
   assert.doesNotThrow(() => body.createTask({ kind: 'mine', params: { count: 1 } }))
   await body.stop()

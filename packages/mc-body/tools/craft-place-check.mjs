@@ -101,30 +101,60 @@ try {
     })
   }
 
-  // 2. 砍 4 个原木（木镐链需要：12 木板 = 4+2+3 才够工作台/木棍/木镐）
+  // 找一个“本格是空气、下方是实心”的落点（用 map 读脚下方块层）；找不到返回 null。
+  async function findSupportedSpot(offset = 2) {
+    const status = await get('/v1/status')
+    const position = status.adapter?.position
+    if (!position) return null
+    const floor = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) }
+    const map = await post('/v1/inspect', { kind: 'map', params: { radius: Math.max(2, offset) } })
+    const rows = map?.result?.data?.rows ?? []
+    const radius = Math.max(2, offset)
+    let best = null
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      const row = rows[dz + radius]
+      if (!row) continue
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (dx === 0 && dz === 0) continue
+        if (row[dx + radius] !== '#') continue
+        const distance = Math.hypot(dx, dz)
+        if (distance > radius) continue
+        if (!best || distance < best.distance) best = { x: floor.x + dx, y: floor.y, z: floor.z + dz, distance }
+      }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z } : null
+  }
+
+  // 2. 砍 4 个原木（木镐链要 12 木板 = 工作台 4 + 木棍 2 + 木镐 3 才够；不够时按实际材料自适应）
   await step('mine oak_log x4', async () => {
     const data = await post('/v1/do', { steps: [{ op: 'mine', params: { block: 'oak_log', count: 4, radius: 28 } }] }, 180_000)
     if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const mined = Number(data?.results?.[0]?.result?.mined ?? data?.results?.[0]?.result?.result?.mined ?? 0)
     const logs = await inventoryCount('oak_log')
-    if (logs < 4) throw new Error(`背包 oak_log 只有 ${logs}（期望 ≥4）；mined=${mined}`)
-    return { mined, logs }
+    if (logs < 1) throw new Error(`背包 oak_log 只有 ${logs}（至少 1 根才能继续）；mined=${mined}`)
+    return { mined, logs, note: logs < 4 ? '原木不足 4，后续按实际材料自适应' : null }
   })
 
-  // 3. 木板（一次产 4；要 12 个 = 合成 3 次）
-  await step('craft oak_planks x12', async () => {
-    const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'oak_planks', count: 12 } }] })
+  // 3. 木板（一次产 4；按实际原木数合成，最多 12）
+  await step('craft oak_planks (adaptive)', async () => {
+    const logs = await inventoryCount('oak_log')
+    const desired = Math.min(12, logs * 4)
+    if (desired < 4) throw new Error(`原木 ${logs} 根不够合成木板`)
+    const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'oak_planks', count: desired } }] })
     if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('oak_planks')
-    if (have < 12) throw new Error(`oak_planks 只有 ${have}（期望 ≥12）`)
+    if (have < desired) throw new Error(`oak_planks 只有 ${have}（期望 ≥${desired}）`)
     return { ...data.results[0].result, inventory: have }
   })
 
   // 4. 工作台（4 木板）
   await step('craft crafting_table', async () => {
+    const planks = await inventoryCount('oak_planks')
+    if (planks < 4) throw new Error(`木板只有 ${planks}，不够工作台（需要 4）`)
     const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'crafting_table', count: 1 } }] })
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('crafting_table')
     if (have < 1) throw new Error('背包没有 crafting_table')
@@ -133,33 +163,55 @@ try {
 
   // 5. 木棍（1 次产 4）
   await step('craft stick x4', async () => {
+    if (await inventoryCount('oak_planks') < 2) throw new Error('木板不够木棍（需要 2）')
     const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'stick', count: 4 } }] })
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('stick')
     if (have < 4) throw new Error(`stick 只有 ${have}（期望 ≥4）`)
     return { ...data.results[0].result, inventory: have }
   })
 
-  // 6. 木镐（3 木板 + 2 木棍）—— 需要靠近/放工作台
+  // 6. 木镐（3 木板 + 2 木棍）：先在“有支撑的空格”放下工作台，再合成
   await step('craft wooden_pickaxe', async () => {
-    const status = await get('/v1/status')
-    const position = status.adapter?.position
-    // 先把工作台放在脚边（有支撑），再合成
-    if (position) {
-      const at = { x: Math.round(position.x) + 2, y: Math.round(position.y), z: Math.round(position.z) }
-      const placed = await post('/v1/do', { steps: [{ op: 'place', item: 'crafting_table', positions: [at], autoSupport: true }] }, 60_000)
-      metrics.tablePlacement = placed?.results?.[0]?.result ?? { error: placed?.error }
+    let planks = await inventoryCount('oak_planks')
+    let sticks = await inventoryCount('stick')
+    if (planks < 3 || sticks < 2) {
+      // 材料不够：再补砍 2 根原木，补 8 木板（尽量不因世界而失败）
+      const extra = await post('/v1/do', { steps: [{ op: 'mine', params: { block: 'oak_log', count: 2, radius: 28 } }] }, 150_000)
+      if (!extra?.results?.[0]?.result?.error) {
+        const logsNow = await inventoryCount('oak_log')
+        if (logsNow > 0) {
+          const more = Math.min(8, logsNow * 4)
+          await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'oak_planks', count: more } }] }).catch(() => null)
+          planks = await inventoryCount('oak_planks')
+        }
+      }
+      if (sticks < 2 && planks >= 2) {
+        await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'stick', count: 4 } }] }).catch(() => null)
+        sticks = await inventoryCount('stick')
+      }
+    }
+    if (planks < 3 || sticks < 2) throw new Error(`材料不足：planks=${planks} sticks=${sticks}（世界资源不够，不是 craft 实现问题）`)
+    const spot = await findSupportedSpot(3)
+    if (spot) {
+      const placed = await post('/v1/do', { steps: [{ op: 'place', item: 'crafting_table', positions: [spot] }] }, 60_000)
+      metrics.tablePlacement = { spot, result: placed?.results?.[0]?.result ?? { error: placed?.error } }
+    } else {
+      metrics.tablePlacement = { spot: null, note: '附近没有有支撑的空格，直接尝试合成（可能因为够不到工作台失败）' }
     }
     const data = await post('/v1/do', { steps: [{ op: 'craft', params: { item: 'wooden_pickaxe', count: 1 } }] })
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('wooden_pickaxe')
     if (have < 1) throw new Error('背包没有 wooden_pickaxe')
-    return { ...data.results[0].result, inventory: have }
+    return { ...data.results[0].result, inventory: have, planks, sticks }
   })
 
   // 7. 挖 2 个土用于 place
   await step('mine dirt x2', async () => {
     const data = await post('/v1/do', { steps: [{ op: 'mine', params: { block: 'dirt', count: 2, radius: 8 } }] }, 120_000)
+    if (data?.error) throw new Error(data.error)
     if (data?.results?.[0]?.result?.error) throw new Error(data.results[0].result.error)
     const have = await inventoryCount('dirt')
     if (have < 2) throw new Error(`dirt 只有 ${have}（期望 ≥2）`)
@@ -168,18 +220,16 @@ try {
 
   // 8. place：一格有支撑（应成功）+ 一格悬空（应 skipped 且给原因）
   await step('place dirt (supported + floating)', async () => {
-    const status = await get('/v1/status')
-    const position = status.adapter.position
-    const supported = { x: Math.floor(position.x) + 2, y: Math.floor(position.y), z: Math.floor(position.z) }
-    const floating = { x: supported.x, y: supported.y + 3, z: supported.z }
-    const data = await post('/v1/do', { steps: [{ op: 'place', item: 'dirt', positions: [floating, supported] }] }, 60_000)
+    const spot = await findSupportedSpot(3)
+    if (!spot) throw new Error('附近找不到“本格空气、下方实心”的落点（地形太悬空）')
+    const floating = { x: spot.x, y: spot.y + 3, z: spot.z }
+    const data = await post('/v1/do', { steps: [{ op: 'place', item: 'dirt', positions: [floating, spot] }] }, 60_000)
     if (data?.error) throw new Error(data.error)
     const result = data.results?.[0]?.result ?? {}
     if (!result.placedCount) throw new Error(`一个都没放下：${JSON.stringify(result.skipped ?? [])}`)
     if (!result.skippedCount) throw new Error('悬空目标没有被跳过（place 的错误语义没生效）')
-    const skippedReason = String(result.skipped?.[0]?.reason ?? '')
-    if (!skippedReason) throw new Error('skipped 没有 reason')
-    return { placedCount: result.placedCount, skipped: result.skipped }
+    if (!String(result.skipped?.[0]?.reason ?? '')) throw new Error('skipped 没有 reason')
+    return { spot, placedCount: result.placedCount, skipped: result.skipped }
   })
 
   metrics.checks = {

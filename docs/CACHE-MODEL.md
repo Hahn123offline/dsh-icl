@@ -512,8 +512,9 @@ node tools/cache-probe.mjs diff --run cache-bf2
      下一步快照含新安排；只读工具不重置节流；delivery 通知 → +1 次刷新；`factsEveryStep` 关闭节流时每步刷新。
      lab 冒烟：`cache-throttle-smoke` 3 轮 **每轮 1 条快照**、system 零 replace（DSH 层 append/turn ≤ 1）。
    - **hit% 口径**：节流冒烟两组都是云端 `deepseek-account`（没有引擎 `cache-probe-engine.jsonl`），**云端不可测 hit%**；
-     本地 hit% 由 `cache-bf2`/`cache-af2` 的本地 A/B 证明，节流只减少 append（方向非回归）。严格复核需本地同场景
-     `ICL_FACTS_EVERY_STEP=1` vs 默认的对照（lead 已安排 mc-lab 在本地验收 run 上 `cache-probe rebuild` 补证据）。
+     本地 hit% 由 `cache-bf2`/`cache-af2` 的本地 A/B 证明，节流只减少 append（方向非回归）。**同场景本地 A/B 已复核**
+     （`cache-throttle-on` vs `cache-throttle-off`，同 commit `8ea32d6`）：hit **91.2% vs 91.2%**、prefill **9312 vs 9445（-1.4%）**、
+     全量失效各 1（首轮冷启动）；详见 §5.4 与 AUDIT §0.5.5/§0.5.6。
    - **开关**：默认节流；`factsEveryStep: true`（config）或 `ICL_FACTS_EVERY_STEP=1`（env，**仅测量**）可退回每步求值。
 
 ---
