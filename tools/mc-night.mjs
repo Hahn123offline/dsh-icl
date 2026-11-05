@@ -42,6 +42,8 @@ const cfg = {
   smokeMin: num('--smoke-min', 0),
   smokeRestart: flag('--smoke-restart'),
   turnTimeoutMin: num('--turn-timeout-min', 10),
+  /** 入睡 grace：与 time 侧 sleepGraceSec 默认 120s 对齐（可用 ICL_SLEEP_GRACE_SEC 覆盖）。 */
+  sleepGraceSec: num('--sleep-grace-sec', Number(process.env.ICL_SLEEP_GRACE_SEC ?? 120)),
   stallSec: num('--stall-sec', 180),
   checkpointMin: num('--checkpoint-min', 12),
   nudgeMin: num('--nudge-min', 45),
@@ -554,7 +556,7 @@ async function handleSleepBoundary({ stats, nowMs, sleeping }) {
     return
   }
   const sleepAgeMs = nowMs - Date.parse(state.sleepEnteredAt)
-  if (stats.inTurn && sleepAgeMs < 60_000) return
+  if (stats.inTurn && sleepAgeMs < cfg.sleepGraceSec * 1000) return
   if (stats.inTurn) {
     try {
       const api = apiFor(cfg.port)
@@ -566,6 +568,51 @@ async function handleSleepBoundary({ stats, nowMs, sleeping }) {
   const removed = await flushPendingPrompts('sleep-entry')
   state.sleepFlushedAt = nowIso()
   recordStrategy('sleep-boundary', `睡眠边界处理完成：inTurn=${stats.inTurn}，队列清理 ${removed} 条；之后直投会被 sendPrompt 硬短路`, { inTurn: stats.inTurn, removed })
+}
+
+/**
+ * 消费 time 侧的睡眠边界事件文件（`<stateDir>/time-events.jsonl`，time commit c36c769）：
+ * - `sleep-boundary-overrun` / `sleep-boundary-new-turn` → 只写 anomalies.jsonl（**不重复 cancel**）；
+ * - `sleep-boundary-entry/turn-end` → 记 strategy 备查；
+ * - 本地检测（sleep-delivery-leak / sleep-boundary-cancel）保留作双证据。
+ * 用 offset 文件做增量读；文件不存在时静默。
+ */
+function consumeTimeEvents() {
+  const stateDir = path.join(runDir, 'state', cfg.preset)
+  const eventsFile = path.join(stateDir, 'time-events.jsonl')
+  const offsetFile = path.join(runDir, 'time-events.offset')
+  if (!fs.existsSync(eventsFile)) return 0
+  let offset = 0
+  try { offset = Number(fs.readFileSync(offsetFile, 'utf8')) || 0 } catch { /* 第一次 */ }
+  let text = ''
+  try { text = fs.readFileSync(eventsFile, 'utf8') } catch { return 0 }
+  if (text.length <= offset) return 0
+  const chunk = text.slice(offset)
+  const completeLines = chunk.split('\n')
+  const tail = completeLines.pop() ?? ''
+  const consumed = offset + (chunk.length - tail.length)
+  let recorded = 0
+  for (const line of completeLines) {
+    if (!line.trim()) continue
+    let row = null
+    try { row = JSON.parse(line) } catch { continue }
+    const type = String(row?.type ?? '')
+    if (type === 'sleep-boundary-overrun') {
+      appendAnomaly('time-sleep-boundary-overrun', Number(row?.graceSec ?? cfg.sleepGraceSec), { afterSec: row?.afterSec ?? null, sleepingId: row?.sleepingId ?? null, source: 'time-events.jsonl' })
+      recorded += 1
+    } else if (type === 'sleep-boundary-new-turn') {
+      appendAnomaly('time-sleep-boundary-new-turn', 0, { at: row?.at ?? null, sleepingId: row?.sleepingId ?? null, source: 'time-events.jsonl' })
+      recorded += 1
+    } else if (type === 'sleep-boundary-entry' || type === 'sleep-boundary-turn-end' || type === 'sleep-end') {
+      appendRow(path.join(runDir, 'time-events-consumed.jsonl'), row)
+      recordStrategy(`time-event:${type}`, `time 侧睡眠边界事件：${JSON.stringify(row).slice(0, 200)}`, { source: 'time-events.jsonl' })
+      recorded += 1
+    } else {
+      appendRow(path.join(runDir, 'time-events-consumed.jsonl'), row)
+    }
+  }
+  try { fs.writeFileSync(offsetFile, String(consumed), 'utf8') } catch { /* ignore */ }
+  return recorded
 }
 
 function plannedSleepAt() {
@@ -892,11 +939,15 @@ function renderReport() {  const metrics = readJsonl(metricsFile)
   try {
     const sleepInjections = readJson(path.join(runDir, 'sleep-direct-injections.json'), null)
     const skippedCount = readJsonl(path.join(runDir, 'skipped-injections.jsonl')).length
+    const anomalies = readJsonl(path.join(runDir, 'anomalies.jsonl'))
+    const leakCount = anomalies.filter((row) => row.type === 'sleep-delivery-leak').length
+    const mcLinkRows = readJsonl(path.join(runDir, 'state', cfg.preset, 'mc-link.jsonl'))
+    const sleepGuardCount = mcLinkRows.filter((row) => JSON.stringify(row).includes('sleep-guard')).length
     if (sleepInjections) {
-      push(`- 睡眠期外部直投：**${sleepInjections.count} 次**（${sleepInjections.sleepStart} → 最后 turn/end ${sleepInjections.lastTurnEndAt}，修复前；来源 ${JSON.stringify(sleepInjections.bySource ?? {})}）；之后静默；guard 修复后 skipped=${skippedCount}`)
+      push(`- 睡眠期外部直投：**${sleepInjections.count} 次**（${sleepInjections.sleepStart} → 最后 turn/end ${sleepInjections.lastTurnEndAt}，修复前；来源 ${JSON.stringify(sleepInjections.bySource ?? {})}）；guard 修复后 skipped=${skippedCount} · sleep-delivery-leak=${leakCount}（02:32 边界处理之后）· mc-link sleep-guard 命中=${sleepGuardCount} · 入睡 grace=${cfg.sleepGraceSec}s（与 time sleepGraceSec 对齐）`)
       push(`  - 证据：\`${path.join(runDir, 'sleep-direct-injections.json')}\`（seq 全量在文件内；另有 strategy.jsonl type=sleep-direct-injection-corrected）`)
     } else {
-      push(`- 睡眠期外部直投：未清点（文件缺失）；guard 后 skipped=${skippedCount}`)
+      push(`- 睡眠期外部直投：未清点（文件缺失）；guard 后 skipped=${skippedCount} · sleep-delivery-leak=${leakCount} · sleep-guard=${sleepGuardCount}`)
     }
   } catch (error) { push(`- 睡眠期外部直投：读取失败（${String(error?.message ?? error)}）`) }
   push(`- 死亡：${state.lastDeaths} 次（**当前 lab 代**；body.jsonl 跨代保留，报告只统计最后一个 ledger_loaded 之后，避免把上一代 replay 当成本代）· 熔断/降级信号：${state.degradeSignals} · 最终模式：${state.mode}`)
@@ -1150,8 +1201,10 @@ async function main() {
 
     // turn 超时 / 卡住（睡眠期不 cancel：让她睡，安全由 body 自身兜底）
     const nowMs = Date.now()
-    // 睡眠边界：停 playbook、60s grace 后 cancel 在飞 turn、清队列直投、之后泄漏只记 anomaly
+    // 睡眠边界：停 playbook、120s grace 后 cancel 在飞 turn、清队列直投、之后泄漏只记 anomaly
     await handleSleepBoundary({ stats, nowMs, sleeping })
+    // 消费 time 侧 sleep-boundary 事件文件（只记录；不重复 cancel）
+    try { consumeTimeEvents() } catch (error) { log(`time-events 消费失败：${String(error?.message ?? error)}`) }
     const turnAgeSec = stats.inTurn && stats.turnStartAt ? Math.round((nowMs - stats.turnStartAt) / 1000) : 0
     const lastEventAgeSec = stats.lastEventAt ? Math.round((nowMs - stats.lastEventAt) / 1000) : null
     // 活跃的长回合不 cancel（本地模型一个回合可跑 10+ 分钟仍在推进）；只在"停住/无事件"或超绝对上限时打断。
