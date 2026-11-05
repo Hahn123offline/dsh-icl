@@ -169,6 +169,21 @@ test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与
   for (const kind of ['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat']) assert.ok(TASK_KINDS.includes(kind), kind)
 })
 
+test('事件闸门：dig_fallback 可读且合并；path_approximate/心跳类不叫醒', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const out = gate.take([
+    { seq: 1, type: 'dig_fallback', data: { block: 'oak_log', reason: 'no-path' } },
+    { seq: 2, type: 'path_approximate', data: { target: { x: 1, y: 2, z: 3 } } },
+    { seq: 3, type: 'heartbeat', data: {} },
+  ], { status: null })
+  assert.equal(out.signals.length, 1)
+  assert.match(out.signals[0].text, /就地挖附近的 oak_log/)
+  assert.match(out.signals[0].text, /no-path/)
+  const second = gate.take([{ seq: 4, type: 'dig_fallback', data: { block: 'dirt' } }], { status: null })
+  assert.equal(second.signals.length, 0, 'dig_fallback 在窗口内应合并')
+})
+
 test('事件闸门：kicked 的 reason 是对象时显示真实原因，同名/重复登录要指出来', () => {
   const plain = collect([{ seq: 1, type: 'kicked', data: { reason: { text: 'You are already logged in' } } }])
   assert.doesNotMatch(plain.signals[0].text, /\[object Object\]/)

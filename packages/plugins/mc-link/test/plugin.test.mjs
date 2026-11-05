@@ -606,6 +606,23 @@ test('mcb_status：展示新 body 的 environment/pathfinder/pausedTasks（旧 b
   }
 })
 
+test('mcb_join：成功时带 body preflight 环境摘要（新版 body 的"服务器小卡片"）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.extra = { environment: { summary: '寻路可用；附近原木 6 / 矿石 2 / 石 40 / 土 120' } }
+    const out = await link.tools.mcb_join.execute({ server: 'flat' })
+    assert.match(out.text, /已连接 127\.0\.0\.1:54837/)
+    assert.match(out.text, /环境：寻路可用；附近原木 6/)
+    body.state.extra = {}
+    const out2 = await link.tools.mcb_join.execute({ host: '127.0.0.1', port: 54837 })
+    assert.doesNotMatch(out2.text, /环境：/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })

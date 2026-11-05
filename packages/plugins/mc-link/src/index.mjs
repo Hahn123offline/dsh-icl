@@ -720,7 +720,9 @@ export function apply(ctx) {
         const a = out.status?.adapter ?? {}
         const pos = a.position ? `${Math.round(a.position.x)},${Math.round(a.position.y)},${Math.round(a.position.z)}` : '未知'
         const how = out.reused ? '复用了一个已经连着的 body' : 'body 已启动并连上'
-        return { text: `已连接 ${out.joined.host}:${out.joined.port}（${how}），位置 ${pos}。下一步：mcb_status/mcb_look 看周围；要做事用 mcb_do 下任务。` }
+        // 新版 body 的 preflight：这张图有什么资源（她问过"能不能给张服务器小卡片"）。
+        const env = a.environment?.summary ? `；环境：${String(a.environment.summary).slice(0, 160)}` : ''
+        return { text: `已连接 ${out.joined.host}:${out.joined.port}（${how}），位置 ${pos}${env}。下一步：mcb_status/mcb_look 看周围；要做事用 mcb_do 下任务。` }
       },
     },
     {
