@@ -79,7 +79,50 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
   let mode = actionMode
   let messageSeq = 7000
   const actions = []
-  const server = http.createServer((req, res) => { res.statusCode = 404; res.end('{}') })
+  const history = []
+  const jsonResponse = (res, obj) => {
+    try {
+      const body = JSON.stringify(obj)
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+      res.end(body)
+    } catch { try { res.destroy() } catch { /* 已断 */ } }
+  }
+  const server = http.createServer((req, res) => {
+    // OneBot v11 HTTP 动作端（fake）：给补课/已读契约用；不查 token（测试用）。
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        let payload = {}
+        try { payload = JSON.parse(body || '{}') } catch { payload = {} }
+        // 兼容两种写法：动作名在 URL 路径（OneBot HTTP 惯例）或 body.action（本 fake 的 WS 写法）。
+        let pathAction = ''
+        try { pathAction = new URL(req.url ?? '/', 'http://fake').pathname.replace(/^\/+/, '') } catch { pathAction = '' }
+        const action = String(payload.action ?? pathAction)
+        const params = payload.params ?? payload ?? {}
+        actions.push({ action, params, echo: payload.echo ?? null, at: Date.now(), via: 'http' })
+        if (mode === 'drop') { try { req.destroy() } catch { /* 已断 */ } return }
+        if (mode === 'reject') {
+          jsonResponse(res, { status: 'failed', retcode: 100, wording: 'fake backend rejected', data: null })
+          return
+        }
+        let data = {}
+        if (action === 'get_friend_msg_history') {
+          const uid = String(params.user_id ?? '')
+          const limit = Math.max(1, Math.min(100, Number(params.count) || 20))
+          const matched = history.filter((item) => String(item.user_id ?? item.sender?.user_id ?? '') === uid || String(item.peer_id ?? '') === uid)
+          data = { messages: matched.slice(-limit) }
+        } else if (/mark_.*as_read/.test(action)) {
+          data = {}
+        }
+        jsonResponse(res, { status: 'ok', retcode: 0, data })
+      })
+      return
+    }
+    res.statusCode = 404
+    res.end('{}')
+  })
+  server.on('clientError', (error, socket) => { try { socket.destroy() } catch { /* 已断 */ } })
 
   server.on('upgrade', (req, socket) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
@@ -203,6 +246,42 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
     })
   }
 
+  /** 模拟"断线但服务还在"：只踢掉当前 WS 客户端，重连后可继续。 */
+  function dropConnections() {
+    const count = sockets.size
+    for (const socket of [...sockets]) { try { socket.destroy() } catch { /* 已断 */ } }
+    sockets.clear()
+    return count
+  }
+
+  /** 往历史里塞一条"断线期间别人发的消息"（不走 WS 推送，等客户端补课来取）。 */
+  function pushHistory({ from = 10001, name = '测试', text = '断线期间的消息', messageId = null, time = Math.floor(Date.now() / 1000) } = {}) {
+    const id = messageId ?? ((Date.now() % 1e9) + history.length + 1)
+    const item = {
+      post_type: 'message',
+      message_type: 'private',
+      sub_type: 'friend',
+      time,
+      self_id: 2593621742,
+      user_id: Number(from),
+      message_id: Number(id),
+      message: [{ type: 'text', data: { text: String(text) } }],
+      raw_message: String(text),
+      sender: { user_id: Number(from), nickname: String(name) },
+    }
+    history.push(item)
+    return item
+  }
+
+  /** 往历史里塞一条"自己发出去的消息"（补课时应被忽略）。 */
+  function pushSelfHistory({ to = 10001, text = '（我自己发的）', messageId = null, time = Math.floor(Date.now() / 1000) } = {}) {
+    const item = pushHistory({ from: to, name: '我', text, messageId, time })
+    item.user_id = 2593621742
+    item.sender = { user_id: 2593621742, nickname: '我' }
+    item.peer_id = Number(to)
+    return item
+  }
+
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, host, () => {
@@ -216,6 +295,11 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
         clientDataChunks: () => clientChunks,
         actions: () => actions.map((row) => ({ ...row })),
         sendActions: () => actions.filter((row) => /^send_/.test(row.action)).map((row) => ({ ...row })),
+        history: () => history.map((row) => ({ ...row })),
+        pushHistory,
+        pushSelfHistory,
+        dropConnections,
+        httpUrl: `http://${host}:${actual}`,
         setActionMode(next) { mode = String(next) },
         actionMode: () => mode,
         sendJson,
