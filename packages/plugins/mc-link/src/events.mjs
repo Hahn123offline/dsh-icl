@@ -23,7 +23,7 @@ export const QUIET_EVENTS = Object.freeze([
   'stuck',
   // 观测/记账类：body 自己的 watchdog 统计与心跳、寻路/隧道的中间过程，不叫她。
   'heartbeat', 'watchdog', 'watchdog_suppressed', 'task_idempotent_hit', 'ledger_loaded',
-  'path_recovered', 'tunnel_clear', 'path_approximate',
+  'path_recovered', 'tunnel_clear', 'path_approximate', 'auto_eat',
   // 宏的信息事件（MC-MACRO §5）：macro_step/macro_blocked 等在 body 台账里可查，不逐条叫醒；
   // 宏真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
   'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
