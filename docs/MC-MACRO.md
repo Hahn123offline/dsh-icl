@@ -115,3 +115,8 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 - `tunnel {direction:"east",length:5,height:2}` → `t-2 done`（4.4s）：`result {done:5,total:5,direction:"east",height:2,torches:0}`，位置从 x≈-6.5 前进到 x=-1.5（5 格），血 20、body 未暂停。
 - 未拿到证据：`blocked`（前方水/岩浆）与 torch 放置（flat 无流体/无火把）——明早在 normal 地形补；`bridge/build/sort/shelter/farm` 未实现。
 
+
+补充（mc-lab 退化统计 2026-11-06 01:20–01:37Z，night-1，154 calls；证据 `.state/lab/night-1/degradation-*.json`）：
+- 工具调用分布：`mcb_status 101 / mcb_do 39 / mcb_inventory 8`；`mine/dig 22 次全部 stone`；**assistant 目的表述 0 条**。
+- task 事件 87 条：`task_progress 79 / done 1 / cancelled 1` —— 同一任务逐块 progress 循环，不是资源不足。
+- 结论：模型把时间花在"反复查状态+逐块挖同一资源"上，没有任何结构/目标推进；这正是宏操作要消灭的退化模式（一条宏 + 限频 progress 代替 79 条 progress/s 数十次原语）。
