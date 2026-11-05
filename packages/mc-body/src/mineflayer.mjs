@@ -253,6 +253,14 @@ export function createMineflayerAdapter({
       spawned = false
       const b = mineflayer.createBot({ host, port, username, auth: 'offline', version: false })
       bot = b
+      // pathfinder 必须显式挂上；挂了才有 goto/脱困。失败要留痕，不能变成“身体走不了路但没人知道”。
+      try {
+        b.loadPlugin(pathfinder)
+      } catch (error) {
+        lastError = `pathfinder unavailable: ${error?.message ?? error}`
+        log(lastError)
+        emit('body_error', { message: lastError })
+      }
       let settled = false
       const timer = setTimeout(() => {
         lastError = 'connect timeout'
@@ -474,8 +482,10 @@ export function createMineflayerAdapter({
         timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
       })
       if (outcome.arrived) {
-        if (index > 0) pathStats.recoveries += 1
-        emit('path_recovered', { target, attempts, pathResets: pathStats.resets, distance: round1(outcome.distance) })
+        if (index > 0) {
+          pathStats.recoveries += 1
+          emit('path_recovered', { target, attempts, pathResets: pathStats.resets, distance: round1(outcome.distance) })
+        }
         return { arrived: true, distance: round1(outcome.distance), attempts, pathResets: pathStats.resets }
       }
       lastDistance = round1(outcome.distance) ?? lastDistance
