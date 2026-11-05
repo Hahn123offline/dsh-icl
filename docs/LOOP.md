@@ -219,3 +219,44 @@ driver.mjs ── session/prompt / cancel / selectModel ──▶ DSH desktop
 `--long` 用虚拟时钟跑 30 分钟：**11/11** 通过（9 条外部消息、focus backlog、睡眠积压醒来释放）。
 
 **结论**：不是“bug 太多只能穷举”，而是内层回路选错了。Host loop 才是自动迭代的地方，desktop 只用于最终验收。
+
+---
+
+## 11. lab：常驻受试会话（2026-11-05 起，W0）
+
+内层（host）与 desktop 之间，补一条**独立进程的第二个 Web 实例**：真实 DSH 会话、真实工具面与投递，
+但归 mc-lab 所有，随时起停，**绝不重启 desktop**。
+
+```bash
+# 起一条 icl-lab 会话（端口/state 全部隔离在 .state/lab/<runId>/）
+node tools/lab.mjs up --preset icl-lab --port 57101 --run t1
+# 发一句话并等这一轮结束
+node tools/lab.mjs say "只回复两个字：ok" --wait
+node tools/lab.mjs status          # 人或 --json
+node tools/lab.mjs tail            # transcript 尾部；--events 看原始事件
+node tools/lab.mjs export          # 从 events.jsonl 全量重建 transcript.md
+node tools/lab.mjs script --file tools/scenarios/cache-10.json   # 固定 10 轮（cache 用）
+node tools/lab.mjs down            # 停进程、落最终 transcript
+```
+
+它做的事（`tools/lab.mjs` + `tools/lab-lib.mjs` + `tools/lab-observer.mjs`）：
+
+1. 把 `packages/dsh-icl/presets/lab.patch.yml` 的 `__LAB_*__` 占位符物化成 `.state/lab/<runId>/lab.patch.yml`
+   （preset 的 `config.plugins` 不做相对路径锚定，所以 dsh-icl 模块写成 `file://` 绝对 URL；stateDir 每 run 独立）；
+2. `dsh --profile web --patch <物化 patch> --port <port> --no-open` 后台启动，记录 pid；等 API 就绪后
+   `workspace/create` + `session/create {agentPreset}` 建一条会话（`dsh-icl` 在 preset 作用域内接管工具面/人格/投递）；
+3. 起 `lab-observer.mjs` 常驻 `session/follow`：`session/snapshot` + `session/event` 去重落 `events.jsonl`，
+   增量重建 `transcript.md`，并写 `observer.status.json`；
+4. `say` / `script` 走 `session/prompt`，用 `turn/end` 判停；`export`/`down` 用同一套纯函数从 `events.jsonl` 重建 transcript。
+
+**transcript 每轮给出**：`system/message` 字符数 + 快照文件、`request/header` 的 provider/model/maxTokens、
+工具数 + `toolsHash`（工具定义 JSON 的 sha1 前 12 位） + `toolsChars`、真实用户输入、ICL `<icl-context>` 注入
+与 DSH 运行时上下文的字符数、每次工具调用的参数/结果/耗时/错误标记、assistant 文本与 reasoning 长度、`turn/end` 原因与耗时；
+末尾附 ICL 原文 `session-events.jsonl`、`time.json`、`focus.json`、`mc-link.jsonl` 作为状态侧证。
+
+**纪律**（与 TEAM-PLAN §3 一致）：一条 lab 进程只绑一条会话（`dsh-icl` 单会话锁）；换场景 `down` 再 `up`，
+不并行建会话；不 kill 用户 MC 客户端/llama-swap；`--model local` 会先拿 `.state/locks/llama.lock`（全局串行，找 lead 协调）。
+
+首轮实测（2026-11-05，session `session-84f2ac28…`）：`tools=32`（31 个 ICL 工具 + `todo_write`）、
+系统提示词 5115 字符（persona + sim 两段都在）、`turn 1` 1.3s 完成、回复 `ok`、transcript 可读。
+
