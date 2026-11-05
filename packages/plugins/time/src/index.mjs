@@ -1309,7 +1309,9 @@ export function apply(ctx) {
     let dream = '记忆整理：未触发'
     if (state.lastDreamResult) {
       const result = state.lastDreamResult
-      dream = `记忆整理：${result.ok ? '完成' : '失败'}${result.text ? `（${String(result.text).slice(0, 60)}）` : ''}`
+      const detail = String(result.text ?? '').slice(0, 60) || (Number(result.ranJobs) ? `${result.ranJobs} 个任务` : '')
+      const shard = Number(result.degraded) ? `；分片降级${Number(result.failedShards) ? `（${result.failedShards} 片失败）` : ''}` : ''
+      dream = `记忆整理：${result.ok ? '完成' : '失败'}${detail ? `（${detail}）` : ''}${shard}`
     } else if (brief.dreamTriggered !== false) {
       dream = '记忆整理：入睡时已触发（dream 回执未回传）'
     }
@@ -2075,17 +2077,35 @@ export function apply(ctx) {
     try { onTurnEnd(signal) } catch (error) { log('warn', 'time.turn-end', { error: String(error?.message ?? error) }) }
   })
 
-  // dream 完成/失败回执（接口提案：dream 插件 emit tags:['dream-result'], meta.ok, text）。
-  // time 只记录并放进醒来简报/状态；不在睡眠中额外投递，醒着时给一条 notice。
+  // dream 完成/失败回执（已实现：dream emit `60d8abe`；契约 TIME.md §15.3）：
+  //   {tags:['dream-result'], meta:{ok,jobs,degraded,failedShards,at}, text}，一次 run 一条。
+  // time 只记录并放进醒来简报/状态；睡眠中不额外投递，醒着时给一条 notice。
   ctx.signals.on({ tags: ['dream-result'] }, (signal) => {
     try {
+      const meta = signal?.meta ?? {}
       const text = String(signal?.text ?? '').slice(0, 200)
-      const ok = signal?.meta?.ok != null ? Boolean(signal.meta.ok) : !/失败|错误|fail/i.test(text)
-      state.lastDreamResult = { at: nowTime(), ok, text }
+      const ok = meta.ok != null ? Boolean(meta.ok) : !/失败|错误|fail/i.test(text)
+      const jobs = Array.isArray(meta.jobs) ? meta.jobs : []
+      const ranJobs = jobs.filter((row) => !row?.skipped)
+      const degraded = Number(meta.degraded ?? 0) || 0
+      const failedShards = Number(meta.failedShards ?? 0) || 0
+      state.lastDreamResult = {
+        at: nowTime(),
+        ok,
+        text,
+        jobs: jobs.length,
+        ranJobs: ranJobs.length,
+        degraded,
+        failedShards,
+        dreamAt: Number(meta.at) > 0 ? Number(meta.at) : null,
+      }
       dirty = true
-      recordEvent('dream-result', { ok, text })
-      if (state.phase === 'awake') send({ kind: 'notice', text: `记忆整理回执：${ok ? '完成' : '失败'}${text ? `（${text.slice(0, 80)}）` : ''}。`, tags: ['dream', 'dream-result'] })
-      else persist()
+      recordEvent('dream-result', { ok, text, jobs: jobs.length, ranJobs: ranJobs.length, degraded, failedShards })
+      if (state.phase === 'awake') {
+        const detail = text || (ranJobs.length ? `${ranJobs.length} 个任务` : '')
+        const shard = degraded ? `；分片降级${failedShards ? `（${failedShards} 片失败）` : ''}` : ''
+        send({ kind: 'notice', text: `记忆整理回执：${ok ? '完成' : '失败'}${detail ? `（${detail.slice(0, 80)}）` : ''}${shard}。`, tags: ['dream', 'dream-result'] })
+      } else persist()
     } catch (error) { log('warn', 'time.dream-result', { error: String(error?.message ?? error) }) }
   })
 

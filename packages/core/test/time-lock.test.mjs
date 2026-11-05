@@ -711,7 +711,7 @@ test('醒来简报：睡眠时长/积压来源/dream/异常合并进醒来消息
   assert.deepEqual(brief.anomalies, [])
 })
 
-test('醒来简报：dream 回执与边界超时进入简报', async () => {
+test('醒来简报：dream 回执（含 degraded/失败分片）与边界超时进入简报', async () => {
   let virtualNow = MON_0900
   const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, sleepGraceSec: 60 } })
   emitTurnStart(host, 1) // 入睡时的在飞回合
@@ -719,15 +719,32 @@ test('醒来简报：dream 回执与边界超时进入简报', async () => {
   drainText(host)
   virtualNow += 61_000
   api.tick() // 超过 grace → overrun
-  // dream 插件（接口提案）在睡眠中 emit 一条结果
-  host.services.signals.emit({ from: { plugin: 'dream' }, kind: 'event', text: '整理完成：3 个记忆块', tags: ['dream-result'], meta: { ok: true } })
+  // dream 插件（已实现：60d8abe）在睡眠中 emit 一条结果
+  host.services.signals.emit({
+    from: { plugin: 'dream' }, kind: 'event', tags: ['dream-result'],
+    text: 'wash 1119 行 / events 3 块 / 分片降级（1 片失败）',
+    meta: { ok: true, jobs: [{ job: 'wash', ok: true }, { job: 'events', ok: true }], degraded: 1, failedShards: 1, at: virtualNow },
+  })
   virtualNow += 29 * 60_000
   api.tick() // 醒来
   const text = drainText(host)
   assert.match(text, /记忆整理：完成/)
+  assert.match(text, /wash 1119 行/)
+  assert.match(text, /分片降级（1 片失败）/)
   assert.match(text, /异常：边界回合超过 grace/)
-  assert.ok(api.status().lastDreamResult?.ok)
+  const result = api.status().lastDreamResult
+  assert.equal(result?.ok, true)
+  assert.equal(result?.failedShards, 1)
   assert.ok(api.status().lastSleepBrief?.anomalies.some((item) => item.includes('grace')))
+})
+
+test('醒着收到 dream 失败回执：发一条可读 notice，status 记录 ok=false', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  host.services.signals.emit({ from: { plugin: 'dream' }, kind: 'event', tags: ['dream-result'], text: 'wash 失败：raw 文件缺失', meta: { ok: false, jobs: [], degraded: 0, failedShards: 0 } })
+  const text = drainText(host)
+  assert.match(text, /记忆整理回执：失败/)
+  assert.match(text, /raw 文件缺失/)
+  assert.equal(api.status().lastDreamResult?.ok, false)
 })
 
 test('turn-start 记录模型活动开始时间，heartbeat.lastModelCallAt 用它', async () => {
