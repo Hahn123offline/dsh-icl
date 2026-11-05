@@ -7,7 +7,7 @@
 >
 > 代码：`packages/plugins/qq/`（默认 `enabled:false`）；测试：`packages/core/test/qq.test.mjs`（18 条）；
 > 演练：`packages/plugins/qq/tools/{fake-onebot,qq-shadow-host,lab-shadow}.mjs`。
-> 事实核对时间：2026-11-05；基线 `7bebecd` + master `fa890ab`（lab 工具）。
+> 事实核对时间：2026-11-05；基线 `7bebecd`；已合并 master（含 lab 工具 `fa890ab`、time `05c4d19`）。
 
 ## 0. 状态与不变量
 
@@ -18,10 +18,10 @@
 | 只读入站实现（OneBot WS → signals） | ✅ | `packages/plugins/qq/src/` |
 | 单测（规范化/去重/gate/限流/不发送） | ✅ 18 条 | `node --test packages/core/test/qq.test.mjs` |
 | QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
-| 与 time 静音锁接口对齐（三条建议全采纳） | ✅ time `05c4d19`（待 lead 合并） | §6.3 / drill |
+| 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接，一条命令出结论） | ✅ 8 条判定单测 + 真机 BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
-| 全量测试 | ✅ 340 pass | `node --test packages/core/test packages/mc-body/test` |
-| 进程内演练（含 time 睡眠锁） | ✅ 12/12 | `.state/qq-shadow/fake-2026-11-05T10-14-11-098Z/report.md` |
+| 全量测试 | ✅ 364 pass | `node --test packages/core/test packages/mc-body/test` |
+| 进程内演练（含 time 睡眠锁 + signalId 归因） | ✅ 14/14 | `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md` |
 | 真实 lab 验证（假上游，端口 57108） | ✅ 10/10；模型显式 `selectModel(deepseek-account/deepseek-flash)`，不继承 profile 默认 | `.state/lab/qq-6/report.md` |
 | 真实 SnowLuma 影子 | ⏸ 未跑，等用户时间窗 | §10 runbook |
 
@@ -275,14 +275,14 @@ SnowLuma WS(3001) ─► connector.onEvent ─► gate.admit
   + 影子记录 `blocked` 行；time 醒来后投递的正文里有 `[qq/qq:private:<qq>]` 前缀，能和 QQ 侧计数对上。
   time 的积压条目带 `signalId`（`qq:private:<qq>:<message_id>`），必要时可用 `time_list` 的 `sig=` 与 QQ 影子的 `id` 精确对账。
 
-### 6.3 给 time owner 的三条建议（已全部采纳：time `05c4d19`，待 lead 合并）
+### 6.3 给 time owner 的三条建议（已全部采纳并合并：time `05c4d19`）
 
 > 按 lead 决策已直接发给 time。time 实现了全部三条：`signalId` 入队且按 signal id 去重；重放前缀保持 `[plugin/activity]`；
 > 溢出改为"优先丢最旧 ambient"，保护 tags 默认 `['mention','at','private','direct','admin']`（QQ 私聊有 `private`+`mention`，受保护），
 > `time_status` 暴露 `丢弃/溢出`，`time_list` 显示 `sig=`。来源侧不需要兜底暂存——gate 返回 blocked 前已 `enqueue()+persist()`。
 
 1. **`signalId` 已落地**：`time.json` 的积压条目现在存 `{signalId, createdAt, from:{plugin,activity}, …}`；同一 `signal.id` 重复 offer
-   不重复入队。QQ 的 signal id 稳定为 `qq:private:<qq>:<message_id>`，drill 里已加断言（time 版本支持后转严格）。
+   不重复入队。QQ 的 signal id 稳定为 `qq:private:<qq>:<message_id>`，drill 已严格断言 `queue()[0].signalId === 'qq:private:10001:1003'`。
 2. **重放前缀已保持 `[plugin/activity]`**：`buildBacklogText` 输出 `· [qq/qq:private:10001] 正文`，不会改；一次性合并成一条
    `plugin:time` notice 是有意的，QQ 不反对。
 3. **溢出策略已采纳**：满 `maxQueue` 时优先丢最旧 **ambient**（无 `mention/at/private/direct/admin` 标签的），全都受保护时才丢最旧；
@@ -517,7 +517,7 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 3. **去重窗口**：本地 24h；超过窗口后同 id 会再投（现实不会发生，但写在这里）。
 4. **媒体不落地**：图片/语音/文件只有占位与引用；要看图需要另设计受控下载（不要让模型自己 fetch 任意 URL）。
 5. **群/@/poke/notice/request 未接**：本轮的"@ 穿透"只存在于设计里（§6.2）。
-6. **time 重放归因/去重**：time `05c4d19` 起积压带 `signalId`、同 id 不重复入队、溢出保护私聊；等 lead 合并后 drill 会从"版本提示"转为严格断言 `queue()[0].signalId`。旧版 time 仍只能归因到 `[plugin/activity]`。
+6. **time 重放归因/去重（已解决）**：time `05c4d19`（已合并 master）起积压带 `signalId`、同 id 不重复入队、溢出保护私聊；drill 已严格断言通过。更旧版本的 time 只能归因到 `[plugin/activity]`。
 7. **影子会起一轮**：lab 实测私聊在空闲时会 `turn/start`（她看到了、会思考怎么回，但没有回复工具）。`promptLine` 默认关闭，下一轮建议打开一句"QQ 只读影子不能回复"，避免她误以为自己已经回了。
 8. **并发只验证到 T1–T3（fake）**：T4–T6（双限流独立、会话切换/重试、交错顺序）还没做；真实 mc-body + 真实 QQ 未同跑。
 9. **旧消费者风险**：见 §2.3 / §10 第 2 步；不处理就没有干净影子。
@@ -527,7 +527,7 @@ node tools/lab.mjs down --run <runId>       # 停 lab（脚本正常结束会自
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 340 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 364 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 18 pass
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 8 pass（判定 + 陈旧 shadow 文件不误报）
@@ -564,12 +564,12 @@ node --test packages/core/test/qq-preflight.test.mjs   # 8 pass（判定 + 陈�
 
 ### 13.2 进程内演练（含 time 睡眠锁）
 
-`node packages/plugins/qq/tools/qq-shadow-host.mjs` → `.state/qq-shadow/fake-2026-11-05T10-29-32-017Z/report.md`：
+`node packages/plugins/qq/tools/qq-shadow-host.mjs` → `.state/qq-shadow/fake-2026-11-05T10-30-35-913Z/report.md`：
 
 ```text
 ✓ 连接假 OneBot      ✓ 私聊进了 delivery      ✓ 重复被去重
 ✓ 群消息整类忽略      ✓ 白名单外被拒          ✓ 睡眠锁拦下私聊 {"sleeping":1}
-✓ 被拦下时不进 delivery  ✓ time 侧记了积压    ✓ time 积压保留 signalId 归因（time>=05c4d19；当前版本仅提示，合并后转严格）
+✓ 被拦下时不进 delivery  ✓ time 侧记了积压    ✓ time 积压保留 signalId（signalId=qq:private:10001:1003）
 ✓ 醒来重放（正文含 [qq/qq:private:10001] 主人：睡着时来的）  ✓ 重放文本带来源前缀
 ✓ qq 客户端零出站帧   ✓ 假服务器没收到客户端字节 chunks=0   ✓ 影子记录不含群文本
 ```
@@ -584,7 +584,7 @@ node --test packages/core/test/qq-preflight.test.mjs   # 8 pass（判定 + 陈�
 ✓ qq 插件完成装配并上报状态（qq-shadow/status.json）
 ✓ qq 上游连接已打开（state=open）
 ✓ 零出站帧（插件自报）framesSent=0；出站=关闭
-✓ QQ 消息以 plugin:qq user/message 进入 DSH 会话（seq=8）
+✓ QQ 消息以 plugin:qq user/message 进入 DSH 会话（seq=9）
 ✓ notice 的 summary 可追溯来源（外部消息：主人：lab 里的第一条 QQ 私聊）
 ✓ 影子记录：accepted 只有 1 条（重复被去重）
 ✓ 影子记录不含群文本
@@ -651,3 +651,4 @@ Get-Content .state/lab/<runId>/qq-shadow/inbound.jsonl
 # 停 lab
 node tools/lab.mjs down --run <runId>
 ```
+
