@@ -44,6 +44,29 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const session = String(ctx.config.sessionId ?? 'default')
   const budgetTokens = Math.max(500, Number(ctx.config.budgetTokens) || DEFAULT_BUDGET_TOKENS)
+  // 相关性下限（红队 D1）：memory.search 只过滤 sim<=0；这里再按"与 query 的相关度"挡掉
+  // "字面碰巧共享一两个二字组"的凑数结果。有嵌入时用混合相似度，没嵌入时用二元组覆盖率。
+  // cursor/继续翻 时放宽到 0.05（她要"再想想"，不能因为淡了就再也翻不出来）。
+  const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.35))
+  const minSimNoEmbed = Math.max(0.01, Number(ctx.config.minSimNoEmbed ?? 0.2))
+  const relevanceFloor = ({ deeper }) => {
+    let embedded = false
+    try { embedded = Boolean(memory.stats?.()?.embedded) } catch { embedded = false }
+    const base = embedded ? minSim : minSimNoEmbed
+    return deeper ? Math.min(base, 0.05) : base
+  }
+  /** 与 query 的二元组覆盖率（0..1）；用于挡"没问它也端上来"的未整理笔记。 */
+  const lexicalRelevance = (text, q) => {
+    const needle = String(q ?? '').toLowerCase().replace(/\s+/g, '')
+    const body = String(text ?? '').toLowerCase().replace(/\s+/g, '')
+    if (!needle || !body) return 0
+    const grams = new Set()
+    for (let i = 0; i < needle.length - 1; i += 1) grams.add(needle.slice(i, i + 2))
+    if (!grams.size) return body.includes(needle) ? 1 : 0
+    let hit = 0
+    for (const g of grams) if (body.includes(g)) hit += 1
+    return hit / grams.size
+  }
 
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
@@ -96,7 +119,7 @@ export function apply(ctx) {
       summary: 'Write down something you want to keep - a fact, a person, a bit of slang, something that happened.',
       when: ['something is worth keeping for later', 'the user tells you to remember it'],
       avoid: ['long transcripts', 'things you would only need this turn'],
-      description: 'It is private and trusted: at night it is given high weight when memories are consolidated. kind: event (default), person, slang. Keep it to one or two sentences.',
+      description: 'It is private and trusted: at night it is given high weight when memories are consolidated. kind: event (default), person, slang, resolve (a correction of an existing memory - pass about.namespace/about.key). Keep it to one or two sentences. Returns a key/id you can later hand to forget (delete) or use as kind=resolve (correct).',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -132,6 +155,8 @@ export function apply(ctx) {
       },
       async execute({ text, kind = 'event', key = null, qq = null, subjectKind = null, about = null, origin = null } = {}) {
         const ns = CATEGORIES[kind] ? kind : 'event'
+        // 显式 key 可能是"新建一条固定 key"也可能是"改写已有"：按落库前是否已存在决定确认语。
+        const existed = key != null ? (memory.query({ namespace: ns, key: String(key), limit: 1 })[0] ?? null) : null
         const safeKey = key ?? `note:${ctx.now()}:${Math.random().toString(36).slice(2, 7)}`
         const identity = qq ? { kind: String(subjectKind ?? 'qq'), value: String(qq) } : null
         const data = {
@@ -147,7 +172,11 @@ export function apply(ctx) {
         // 碎片也要向量化：它可能就是主会话主动塞进来的真实信息，
         // 不能因为"没成块"就只能靠字面搜到。
         if (typeof memory.index === 'function') void memory.index(created.id, String(text))
-        return { text: '记下了。' }
+        // 红队 D2：确认语要能区分"新增/改写"，并且给出可用的 key（以前只说"记下了"，forget 却要 key）。
+        const target = `key=${created.key ?? safeKey}${created.id != null ? `，id=${created.id}` : ''}`
+        if (ns === 'resolve') return { text: `已记下这次纠正（${target}），整理时按它改。` }
+        if (existed) return { text: `改掉了（${target}）。` }
+        return { text: `记下了（${target}）。以后要删用 forget {key}，要纠正用 kind=resolve。` }
       },
     },
 
@@ -156,7 +185,7 @@ export function apply(ctx) {
       summary: 'Bring back what you remember about events and things that happened - not for looking up people.',
       when: ['someone asks about the past', 'you need context that is no longer in the window'],
       avoid: ['looking up who a person is - use whois for identity, accounts and closeness'],
-      description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
+      description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. If nothing relevant is found it says so explicitly - with the scope searched and a next step - and never pads with unrelated notes. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -224,9 +253,12 @@ export function apply(ctx) {
           : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
         const seen = new Set()
         const candidates = []
+        const deeper = Boolean(cursor)
+        const floor = relevanceFloor({ deeper })
+        const question = String(query ?? '').trim()
+        let rawHitCount = 0
         for (const ns of namespaces) {
           // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
-          const deeper = Boolean(cursor)
           const hits = await memory.search({
             namespace: ns, query, limit: deeper ? 200 : 50, now,
             tags: tag ? [tag] : null, conv, includeArchive: deeper,
@@ -235,6 +267,9 @@ export function apply(ctx) {
           // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
           for (const hit of hits) {
             if (hit.item.kind === 'note' && hit.item.data?.consolidated === true) continue
+            rawHitCount += 1
+            // 有 query 时按相关度挡凑数；没有 query（纯"最近"视图）不筛。
+            if (question && Number(hit.sim ?? 0) < floor) continue
             candidates.push({ ...hit, namespace: ns })
           }
         }
@@ -244,11 +279,15 @@ export function apply(ctx) {
         // 已经被梦境消化的 note 不再以"今天"的身份出现：
         // 它们已经变成块了，否则既重复又会把块挤出去。
         // 未消化的 note（任何日期）优先展示，标签用"未整理"
-        // 不可回忆的类别（如 resolve 纠正队列）不能以待整理笔记的身份出现在回忆里
+        // 不可回忆的类别（如 resolve 纠正队列）不能以待整理笔记的身份出现在回忆里。
+        // 红队 D1/D3：未整理笔记也不能"不管问什么都先塞一半配额"——有 query 时同样要过相关度。
         const pendingNamespaces = namespaces.filter((ns) => CATEGORIES[ns]?.recallable !== false)
-        const pendingNotes = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
+        const pendingRaw = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: 1.15, namespace: ns })))
+        const pendingNotes = question
+          ? pendingRaw.filter((entry) => lexicalRelevance(entry.item.text, question) >= floor)
+          : pendingRaw
 
         const stored = cursor && typeof cursor === 'string' ? safeParseCursor(cursor) : loadCursor()
         const inWindow = new Set((stored.items ?? []).map((it) => it.id))
@@ -305,11 +344,29 @@ export function apply(ctx) {
           .slice(0, 2)
           .map((r) => `原文（${shortDate(r.time ?? r.createdAt ?? ctx.now())}）：${String(r.text).slice(0, 160)}`)
 
+        // 红队 D1：空结果必须说实话，并且分清三种"没有"：
+        //   ① 范围里有候选、但都不够相关（不要端凑数、不要 boost）；
+        //   ② 范围过滤后没有、但全局有记忆（不能说"也没记过"——全局假否定）；
+        //   ③ 全局真的空（这才是"没记过"）。
         const anyKnown = pendingNotes.length + candidates.length > 0
+        const globalItems = (() => { try { return Number(memory.stats?.()?.items ?? 0) } catch { return 0 } })()
+        const scopeText = [kind ? `类型=${kind}` : null, tag ? `标签=${tag}` : null, conv ? `会话=${conv}` : null].filter(Boolean).join('、') || '全部类别'
+        const searchedCount = rawHitCount + pendingRaw.length
+        const emptyText = (() => {
+          if (!question) return '最近没有能想起来的（范围内的记忆是空的）。'
+          if (anyKnown) return '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。'
+          if (searchedCount > 0) {
+            return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}，关键词「${question.slice(0, 40)}」），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？`
+          }
+          if (globalItems > 0) {
+            return `这个范围里没有相关记忆（全局还有 ${globalItems} 条，可能是 ${scopeText} 过滤太窄；去掉限制再试一次？）`
+          }
+          return '记得的东西还是空的：一条记忆都没有过。要我现在记点什么吗？'
+        })()
         return {
           text: pieces.length
             ? [...pieces, ...extra].join('\n')
-            : (extra.length ? extra.join('\n') : (anyKnown ? '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。' : '没有想起什么。（也没记过。）')),
+            : (extra.length ? extra.join('\n') : emptyText),
           cursor: encodeCursor(nextCursor),
           more: candidates.length > picked.length,
         }
@@ -318,22 +375,29 @@ export function apply(ctx) {
 
     forget: {
       name: 'forget',
-      summary: 'Drop one of your notes by key.',
-      when: ['you wrote something wrong and want it gone'],
+      summary: 'Drop one of your notes by key or id.',
+      when: ['you wrote something wrong and want it gone', 'a memory should be corrected: delete it, then remember the right version (or use kind=resolve)'],
       avoid: ['hiding a memory you simply do not like'],
       parameters: {
         type: 'object',
         additionalProperties: false,
-        required: ['key'],
         properties: {
-          key: { type: 'string' },
+          key: { type: 'string', description: 'Key returned by remember (e.g. note:...).' },
+          id: { type: 'number', description: 'Or the numeric id returned by remember/recall.' },
           kind: { type: 'string', enum: Object.keys(CATEGORIES), description: 'Category (default event).' },
         },
       },
-      async execute({ key, kind = 'event' } = {}) {
+      async execute({ key = null, id = null, kind = 'event' } = {}) {
         const ns = CATEGORIES[kind] ? kind : 'event'
-        const out = memory.remove({ namespace: ns, key })
-        return { text: out.removed ? '删掉了。' : '没有这条笔记。' }
+        if (key == null && id == null) {
+          return { text: '要删哪条？给我 key 或 id（remember 的返回里有）。先用 recall 找到它，别凭印象删。' }
+        }
+        const out = memory.remove({ namespace: ns, key, id })
+        const what = key != null ? `key=${key}` : `id=${id}`
+        if (out.removed) return { text: `删掉了（${what}，${ns}）。` }
+        return {
+          text: `没找到要删的：${ns} 里没有 ${what}。先用 recall 找到它再删，别乱猜；如果只是想纠正而不是删，用 remember {kind:'resolve', about:{namespace:'${ns}', key:'...'}}。`,
+        }
       },
     },
   }
