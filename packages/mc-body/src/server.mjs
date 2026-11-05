@@ -1,4 +1,5 @@
 // mc-body/v1 本地 HTTP 契约。只监听回环。
+// 事件台账带 seq；任务支持幂等创建、取消、显式 resume（身体/单任务两级）。
 import http from 'node:http'
 import { URL } from 'node:url'
 
@@ -36,7 +37,13 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
       }
       if (req.method === 'POST' && url.pathname.endsWith('/cancel') && url.pathname.startsWith('/v1/tasks/')) {
         const id = url.pathname.slice('/v1/tasks/'.length, -'/cancel'.length)
-        return json(res, 200, { ok: true, task: body.cancelTask(id) })
+        const input = await readJson(req).catch(() => ({}))
+        return json(res, 200, { ok: true, task: body.cancelTask(id, input.reason ?? 'cancelled') })
+      }
+      // 显式 resume 一个 paused 任务（断线/超时后复核完再继续）；不自动续跑。
+      if (req.method === 'POST' && url.pathname.endsWith('/resume') && url.pathname.startsWith('/v1/tasks/')) {
+        const id = url.pathname.slice('/v1/tasks/'.length, -'/resume'.length)
+        return json(res, 200, { ok: true, task: body.resumeTask(id) })
       }
       if (req.method === 'POST' && url.pathname === '/v1/do') {
         const input = await readJson(req)
@@ -55,7 +62,10 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
         const input = await readJson(req).catch(() => ({}))
         return json(res, 200, { ok: true, ...body.safetyStop(input.reason ?? 'manual') })
       }
-      if (req.method === 'POST' && url.pathname === '/v1/safety/resume') return json(res, 200, { ok: true, ...body.resume() })
+      if (req.method === 'POST' && url.pathname === '/v1/safety/resume') {
+        const input = await readJson(req).catch(() => ({}))
+        return json(res, 200, { ok: true, ...body.resume({ force: Boolean(input.force) }) })
+      }
       return json(res, 404, { ok: false, error: 'not found' })
     } catch (error) {
       return json(res, Number(error?.statusCode) || 500, { ok: false, error: String(error?.message ?? error) })
