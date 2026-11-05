@@ -57,7 +57,9 @@ test('静音锁：外部消息进积压、time 自己的闹钟照常响、status
   assert.equal(blocked.reason, 'muted')
   assert.equal(api.status().backlog, 1)
   assert.ok(api.status().lock.muted)
-  assert.match(api.statusText(), /静音：到/)
+  assert.match(api.statusText(), /静音到/)
+  assert.match(api.statusText(), /状态：醒着；静音到/)
+  assert.match(api.statusText(), /积压 1 条（qq 1）/)
   virtualNow += 61_000
   api.tick()
   const text = drainText(host)
@@ -129,9 +131,23 @@ test('time 工具面：静音可查、可恢复', async () => {
   const muted = await tools.time_mute.execute({ minutes: 5, reason: '看一下' })
   assert.match(muted.text, /静音了：到/)
   const status = await tools.time_status.execute()
-  assert.match(status.text, /静音：到/)
+  assert.match(status.text, /静音到/)
   const unmuted = await tools.time_unmute.execute()
   assert.match(unmuted.text, /解除静音/)
+})
+
+test('time_status 四态一行可读：醒着/睡着/计时暂停/静音/积压', async () => {
+  const { host, api } = await boot()
+  assert.match(api.statusText(), /状态：醒着。/)
+  api.sleep({ message: '睡', durationMin: 30 })
+  assert.match(api.statusText(), /状态：睡着；睡到 /)
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '睡眠里的一条' })
+  assert.match(api.statusText(), /积压 1 条（qq 1）/)
+  api.mute({ minutes: 10 })
+  assert.match(api.statusText(), /静音到/)
+  api.unmute('manual')
+  api.pause()
+  assert.match(api.statusText(), /状态：计时暂停；暂停自 /)
 })
 
 /* ───────────────────────── 防穿透 ───────────────────────── */
@@ -355,6 +371,33 @@ test('daily 漏响进 missed 计数且不重复', async () => {
   assert.doesNotMatch(drainText(host), /十点/)
   api.tick()
   assert.equal(api.status().missed, 1, '漏响只记一次')
+})
+
+test('测试时钟：平移后仍随真实时间走、倒计时照常触发、跨时段提示词变化', async () => {
+  let virtualNow = new Date(2026, 10, 2, 11, 30).getTime()
+  const { host, api } = await boot({ now: () => virtualNow, config: { testClock: true } })
+  assert.match(host.services.prompt.assemble(), /上午/)
+  api.add({ id: 'clock-wake', in: '1m', message: '时钟平移后的闹钟' })
+  const first = api.advanceClock({ advanceMinutes: 5 })
+  assert.ok(first.now >= new Date(2026, 10, 2, 11, 35).getTime())
+  virtualNow += 60_000
+  assert.equal(api.now(), virtualNow + 5 * 60_000, '平移后仍要跟着真实时间走（不是冻结）')
+  api.tick()
+  assert.match(drainText(host), /时钟平移后的闹钟/, '平移 5 分钟仍在补发窗口内')
+  api.advanceClock({ advanceMinutes: 60 }) // 12:36 → 下午
+  assert.match(host.services.prompt.assemble(), /下午/, '跨时段后事实要变化')
+  const viaCommand = api.runCommand({ cmd: 'clock', args: { advanceMs: 1_000 } })
+  assert.equal(viaCommand.ok, true)
+  const reset = api.runCommand({ cmd: 'clock', args: { reset: true } })
+  assert.equal(reset.ok, true)
+  assert.ok(api.now() >= virtualNow, 'reset 后回到真实时钟')
+})
+
+test('clock 命令默认不可用（产品配置不开放）', async () => {
+  const { api } = await boot()
+  const out = api.runCommand({ cmd: 'clock', args: { advanceMinutes: 5 } })
+  assert.equal(out.ok, false)
+  assert.match(out.error, /testClock/)
 })
 
 /* ───────────────────────── 长日程 / 目标 ───────────────────────── */
