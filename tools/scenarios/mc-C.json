@@ -2,7 +2,7 @@
   "id": "C",
   "name": "故障恢复（kill body）",
   "preset": "icl-mc-lab",
-  "description": "任务运行中 kill 掉 body：期望会话收到断线/失败通知（可能是 signal 自己叫醒的自主 turn）后明确说身体掉线，不出现我还在挖的假状态；重连后需要显式重新下任务，不自动续跑旧任务。",
+  "description": "任务运行中 kill 掉 body：期望 mc-link 侧产生 crash/safety 信号（signal-logged 必过），会话收到断线/失败通知（可能是 signal 自己叫醒的自主 turn）后明确说身体掉线，不出现我还在挖的假状态；重连后需要显式重新下任务，不自动续跑旧任务。",
   "steps": [
     {
       "op": "prompt",
@@ -10,123 +10,27 @@
       "text": "进 {{server}} 服（server:{{server}}，username:{{username}}），然后用 mcb_do 挖/砍 8 个 {{block}}。确认任务在跑就告诉我，不用一直等结果。",
       "timeoutSec": 420
     },
-    {
-      "op": "assert",
-      "id": "joined",
-      "toolAll": [
-        "mcb_join"
-      ],
-      "required": true
-    },
-    {
-      "op": "assert",
-      "id": "task-issued",
-      "toolAny": [
-        "mcb_do"
-      ],
-      "required": true
-    },
-    {
-      "op": "snapshot",
-      "id": "before-kill"
-    },
-    {
-      "op": "wait",
-      "seconds": 4
-    },
-    {
-      "op": "kill-body",
-      "id": "kill-body"
-    },
-    {
-      "op": "wait",
-      "seconds": 6
-    },
-    {
-      "op": "assert",
-      "id": "crash-notice",
-      "noticeContains": [
-        "退出",
-        "掉线",
-        "断",
-        "disconnect",
-        "body"
-      ],
-      "required": true
-    },
-    {
-      "op": "assert",
-      "id": "responded-to-crash",
-      "toolAny": [
-        "mcb_status",
-        "mcb_look",
-        "mcb_join",
-        "mcb_inventory"
-      ],
-      "required": true
-    },
-    {
-      "op": "assert",
-      "id": "autonomous-wake",
-      "autonomousTurn": true,
-      "required": false
-    },
-    {
-      "op": "snapshot",
-      "id": "after-crash"
-    },
+    { "op": "assert", "id": "joined", "toolAll": ["mcb_join"], "required": true },
+    { "op": "assert", "id": "task-issued", "toolAny": ["mcb_do"], "required": true },
+    { "op": "snapshot", "id": "before-kill" },
+    { "op": "wait", "seconds": 4 },
+    { "op": "kill-body", "id": "kill-body" },
+    { "op": "wait", "seconds": 15 },
+    { "op": "assert", "id": "signal-produced", "signalLogged": ["身体进程退出", "safety", "退出码"], "required": true },
+    { "op": "assert", "id": "crash-notice", "windowFrom": "kill", "noticeContains": ["退出", "掉线", "断", "disconnect", "body"], "required": false },
+    { "op": "assert", "id": "responded-to-crash", "windowFrom": "kill", "toolAny": ["mcb_status", "mcb_look", "mcb_join", "mcb_inventory"], "required": true },
+    { "op": "assert", "id": "autonomous-wake", "windowFrom": "kill", "autonomousTurn": true, "required": false },
+    { "op": "snapshot", "id": "after-crash" },
     {
       "op": "prompt",
       "id": "notice-disconnect",
       "text": "刚才身体好像出问题了。看看现在什么状态；如果确实掉线了，按你的判断处理——需要的话重新连上，但不要自动续跑旧任务。",
       "timeoutSec": 300
     },
-    {
-      "op": "assert",
-      "id": "checked-after-crash",
-      "toolAny": [
-        "mcb_status",
-        "mcb_look",
-        "mcb_join"
-      ],
-      "required": true,
-      "windowFrom": "kill"
-    },
-    {
-      "op": "assert",
-      "id": "admitted-disconnect",
-      "assistantContains": [
-        "掉线",
-        "断",
-        "未连接",
-        "重连",
-        "失败",
-        "停"
-      ],
-      "required": false
-    },
-    {
-      "op": "assert",
-      "id": "status-sees-disconnected",
-      "toolResultContains": {
-        "names": [
-          "mcb_status",
-          "mcb_look"
-        ],
-        "any": [
-          "未连接",
-          "掉线",
-          "断开",
-          "disconnect",
-          "body"
-        ]
-      },
-      "required": false
-    },
-    {
-      "op": "snapshot",
-      "id": "after-recovery"
-    }
+    { "op": "assert", "id": "checked-after-crash", "windowFrom": "kill", "toolAny": ["mcb_status", "mcb_look", "mcb_join"], "required": true },
+    { "op": "assert", "id": "admitted-disconnect", "assistantContains": ["掉线", "断", "未连接", "重连", "失败", "停"], "required": false },
+    { "op": "assert", "id": "status-sees-disconnected", "toolResultContains": { "names": ["mcb_status", "mcb_look"], "any": ["未连接", "掉线", "断开", "disconnect", "body"] }, "required": false },
+    { "op": "snapshot", "id": "after-recovery" }
   ],
   "interview": [
     "刚才 body 掉线的时候，你是怎么知道的？",
