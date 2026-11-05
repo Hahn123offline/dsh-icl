@@ -11,7 +11,7 @@
 //     system/message 全量文本 + 每步消息序列 —— 用来算"第一个差异字节在哪、
 //     作废多少后缀"。
 //
-// 子命令：
+// 子命令（`--help` 安全：只打印用法、不会起 lab run）：
 //   node tools/cache-probe.mjs slots
 //   node tools/cache-probe.mjs log [--tail 40] [--offset <bytes>] [--jsonl <out>]
 //   node tools/cache-probe.mjs diff --run <runId>|--events <file>
