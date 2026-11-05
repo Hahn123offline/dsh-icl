@@ -938,10 +938,11 @@ export function createMineflayerAdapter({
       await sleep(180)
     }
     if (collected >= targetCount) reason = 'target'
-    const result = { collected, trips, eaten, reason, durationMs }
+    const base = { collected, trips, eaten, durationMs }
     // routine 正常结束只有两种：时间到 / 达到目标数；stuck/no-target 等是失败（带进度）。
-    if (reason !== 'duration' && reason !== 'target') throw taskFailure(`routine: ${reason}`, result)
-    return result
+    // 成功时不要把 "reason" 放进 result：旧链路把 task_done.result.reason 当“没达成”的兼容标记。
+    if (reason !== 'duration' && reason !== 'target') throw taskFailure(`routine: ${reason}`, { ...base, reason })
+    return { ...base, reason }
   }
 
   // ---- 反射：有界保命（≤2s/动作，不追击、不生成目标） --------------------------
@@ -1493,18 +1494,35 @@ export function createMineflayerAdapter({
       // 木板/木棍等一次产 4 个：老代码把 count 直接当次数，要 5 个木板会真合成 5 次（吞 5 根木头）。
       const perCraft = Math.max(1, Number(recipe.result?.count) || 1)
       const craftTimes = Math.max(1, Math.ceil(count / perCraft))
-      // 材料快照：合成窗口异常时，材料可能已经进窗口/被消耗，产物却没到背包（当事人反馈“吞材料”）。
-      const inputs = [recipe.requires?.[0], recipe.requires?.[1], recipe.requires?.[2]].filter(Boolean)
-        .map((entry) => ({ name: entry.name ?? null, count: Number(entry.count) || 1 }))
-      const inputsBefore = inputs.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null }))
+      // 材料快照从 recipe.delta 取（负数是消耗）；crafting 配方没有 recipe.requires，别再报空数组误导。
+      const inputs = (Array.isArray(recipe.delta) ? recipe.delta : [])
+        .filter((entry) => Number(entry?.count) < 0)
+        .map((entry) => ({ name: bot.registry.items?.[entry.id]?.name ?? null, count: Math.abs(Number(entry.count)) }))
+        .filter((entry) => entry.name)
+      const inputsBefore = inputs.map((entry) => ({ ...entry, have: countOf(entry.name) }))
+      const batches = []
       let craftError = null
-      try {
-        await bot.craft(recipe, craftTimes, table)
-      } catch (error) {
-        craftError = error
+      // 逐批合成并逐批验证：一批失败/产物没到不会把前面成功的批次算丢（旧实现只等一次）。
+      for (let index = 0; index < craftTimes; index += 1) {
+        const batchBefore = countOf(name)
+        let batchError = null
+        try {
+          await bot.craft(recipe, 1, table)
+        } catch (error) {
+          batchError = String(error?.message ?? error)
+          craftError = error
+        }
+        // 产物进背包有网络延迟：每批轮询最多 2s。
+        const batchDeadline = Date.now() + 2000
+        let batchProduced = countOf(name) - batchBefore
+        while (batchProduced < perCraft && Date.now() < batchDeadline) {
+          await sleep(100)
+          batchProduced = countOf(name) - batchBefore
+        }
+        batches.push({ index: index + 1, produced: batchProduced, error: batchError })
+        if (batchError) break
       }
-      await sleep(120)
-      // 产物进背包有网络延迟：轮询最多 ~2.5s 再判定，避免“物品其实到了”被误报成吞材料。
+      // 逐批之后再做一次总轮询（防止最后一批入包慢）。
       let after = countOf(name)
       let produced = after - before
       const verifyDeadline = Date.now() + 2500
@@ -1520,19 +1538,23 @@ export function createMineflayerAdapter({
           perCraft,
           expectedAtLeast: count,
           produced,
+          batches,
           before,
           after,
           inputsBefore,
-          inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: entry.name ? countOf(entry.name) : null })),
+          inputsAfter: inputsBefore.map((entry) => ({ ...entry, have: countOf(entry.name) })),
           craftError: craftError ? String(craftError?.message ?? craftError) : null,
         }
-        const error = new Error(`craft: 产物没进背包（想要 +${count}，实际 +${produced}，合成 ${craftTimes} 次×${perCraft}）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`)
+        const reason = produced > 0
+          ? `craft: 只做出 ${produced}/${count}（合成 ${batches.length}/${craftTimes} 批成功${detail.craftError ? `，失败：${String(detail.craftError).slice(0, 120)}` : ''}）；已消耗材料，先 mcb_inventory 复核，补料后再做剩下的 ${count - produced} 个`
+          : `craft: 产物没进背包（想要 +${count}，实际 +0）；材料可能已消耗，先 mcb_inventory 复核，别直接重做`
+        const error = new Error(reason)
         error.name = 'TaskFailedError'
         error.result = detail
         emit('craft_no_product', detail)
         throw error
       }
-      return { crafted: name, requested: count, craftTimes, perCraft, produced, inInventory: after }
+      return { crafted: name, requested: count, craftTimes, perCraft, produced, batches, inInventory: after }
     }
     if (op === 'sleep') {
       if (bot.isSleeping) return { sleeping: true, already: true }
@@ -1721,3 +1743,5 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
+

@@ -16,8 +16,8 @@ node --test packages/mc-body/test
 
 `done | failed | cancelled | interrupted | unknown | paused`
 
-- `done`：真正达成（mine **背包净增达标即 done**，不会 count=1 还继续追下一个目标；routine `reason=duration|target`）。
-- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect|drops-missing`、`routine: stuck|no-target|...`、`goto: no-path...`），`task.result` 带进度与建议。
+- `done`：真正达成。**成功原因固定写在 `task.result.reason`：`net-target`（mine 背包净增达标）/ `duration` / `target`（routine 时间到/数量到）**；`task_done` 里不会出现 failed 类原因。
+- `failed`：动作失败/未达成，`task.error` 是短原因码（`mine: no-target|no-path|dig-failed|no-effect|drops-missing|inventory-full`、`routine: stuck|no-target|...`、`goto: no-path...`、`craft: ...`），`task.result` 带进度/材料快照与建议；失败原因只出现在 `task_failed`。
 - `unknown`：deadline 超时等**结果未知**（可能已生效），不能当失败也不能当成功；`outcomeUnknown=true`。
 - `paused`：断线时正在跑的任务被挂起（`pausedReason='disconnect'`）。重连**不自动续跑**：先 `POST /v1/safety/resume`，再 `POST /v1/tasks/:id/resume`。`status.pausedTasks[]` 可查。
 - 身体暂停（`paused=true`）时 **createTask 会 409**（出生不安全/低血/断线后不接任务）。

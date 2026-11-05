@@ -202,7 +202,7 @@ try {
 
 const task = metrics.terminalTask ?? metrics.lastTask ?? metrics.final?.task ?? null
 const terminalState = task?.state ?? null
-const doneReason = task?.state === 'done' ? (task?.result?.reason ?? null) : null
+const doneReason = task?.state === 'done' ? (task?.result?.endedBecause ?? task?.result?.reason ?? null) : null
 metrics.checks.noDeath = metrics.deaths === 0
 metrics.checks.noSafetyStop = metrics.safetyStops === 0 && !metrics.pausedTimeout
 metrics.checks.taskTerminal = ['done', 'failed', 'cancelled', 'interrupted', 'unknown'].includes(terminalState)
@@ -234,3 +234,4 @@ fs.writeFileSync(reportFile, `${summary}\n`, 'utf8')
 fs.writeFileSync(metricsFile, JSON.stringify(metrics, null, 2), 'utf8')
 console.log(summary)
 process.exit(pass ? 0 : 1)
+
