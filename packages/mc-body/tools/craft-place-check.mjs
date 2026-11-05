@@ -117,16 +117,16 @@ try {
     })
   }
 
-  // 找一个“本格是空气、下方是实心”的落点（用 map 读脚下方块层）；找不到返回 null。
-  async function findSupportedSpot(offset = 2) {
+  // 找“本格下方是实心”的候选落点（map 读脚下方块层），按距离排序返回最多 limit 个。
+  async function findSupportedSpots(offset = 2, limit = 4) {
     const status = await get('/v1/status')
     const position = status.adapter?.position
-    if (!position) return null
+    if (!position) return []
     const floor = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) }
-    const map = await post('/v1/inspect', { kind: 'map', params: { radius: Math.max(2, offset) } })
-    const rows = map?.result?.data?.rows ?? []
     const radius = Math.max(2, offset)
-    let best = null
+    const map = await post('/v1/inspect', { kind: 'map', params: { radius } })
+    const rows = map?.result?.data?.rows ?? []
+    const spots = []
     for (let dz = -radius; dz <= radius; dz += 1) {
       const row = rows[dz + radius]
       if (!row) continue
@@ -135,10 +135,11 @@ try {
         if (row[dx + radius] !== '#') continue
         const distance = Math.hypot(dx, dz)
         if (distance > radius) continue
-        if (!best || distance < best.distance) best = { x: floor.x + dx, y: floor.y, z: floor.z + dz, distance }
+        spots.push({ x: floor.x + dx, y: floor.y, z: floor.z + dz, distance })
       }
     }
-    return best ? { x: best.x, y: best.y, z: best.z } : null
+    spots.sort((a, b) => a.distance - b.distance)
+    return spots.slice(0, limit).map(({ x, y, z }) => ({ x, y, z }))
   }
 
   // 2. 砍 4 个原木（木镐链要 12 木板 = 工作台 4 + 木棍 2 + 木镐 3 才够；不够时按实际材料自适应）
@@ -209,10 +210,10 @@ try {
       }
     }
     if (planks < 3 || sticks < 2) throw new Error(`材料不足：planks=${planks} sticks=${sticks}（世界资源不够，不是 craft 实现问题）`)
-    const spot = await findSupportedSpot(3)
-    if (spot) {
-      const placed = await post('/v1/do', { steps: [{ op: 'place', item: 'crafting_table', positions: [spot] }] }, 60_000)
-      metrics.tablePlacement = { spot, result: placed?.results?.[0]?.result ?? { error: placed?.error } }
+    const spots = await findSupportedSpots(3, 4)
+    if (spots.length) {
+      const placed = await post('/v1/do', { steps: [{ op: 'place', item: 'crafting_table', positions: spots, autoSupport: true }] }, 60_000)
+      metrics.tablePlacement = { spots, result: placed?.results?.[0]?.result ?? { error: placed?.error } }
     } else {
       metrics.tablePlacement = { spot: null, note: '附近没有有支撑的空格，直接尝试合成（可能因为够不到工作台失败）' }
     }
@@ -236,16 +237,17 @@ try {
 
   // 8. place：一格有支撑（应成功）+ 一格悬空（应 skipped 且给原因）
   await step('place dirt (supported + floating)', async () => {
-    const spot = await findSupportedSpot(3)
-    if (!spot) throw new Error('附近找不到“本格空气、下方实心”的落点（地形太悬空）')
-    const floating = { x: spot.x, y: spot.y + 3, z: spot.z }
-    const data = await post('/v1/do', { steps: [{ op: 'place', item: 'dirt', positions: [floating, spot] }] }, 60_000)
+    const spots = await findSupportedSpots(3, 3)
+    if (!spots.length) throw new Error('附近找不到“本格下方实心”的落点（地形太悬空）')
+    const supported = spots[0]
+    const floating = { x: supported.x, y: supported.y + 3, z: supported.z }
+    const data = await post('/v1/do', { steps: [{ op: 'place', item: 'dirt', positions: [floating, ...spots] }] }, 60_000)
     if (data?.error) throw new Error(data.error)
     const result = data.results?.[0]?.result ?? {}
     if (!result.placedCount) throw new Error(`一个都没放下：${JSON.stringify(result.skipped ?? [])}`)
     if (!result.skippedCount) throw new Error('悬空目标没有被跳过（place 的错误语义没生效）')
     if (!String(result.skipped?.[0]?.reason ?? '')) throw new Error('skipped 没有 reason')
-    return { spot, placedCount: result.placedCount, skipped: result.skipped }
+    return { supported, placedCount: result.placedCount, skipped: result.skipped }
   })
 
   metrics.checks = {
