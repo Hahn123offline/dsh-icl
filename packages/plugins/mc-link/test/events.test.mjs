@@ -174,9 +174,9 @@ test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与
 })
 
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把）', () => {
-  const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 8, item: 'oak_log', requested: 8 } } })
+  const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
   assert.match(collected, /宏完成/)
-  assert.match(collected, /收集到 8 个 oak_log/)
+  assert.match(collected, /收集到 8 个 oak_log/, '优先用 net（背包净增）')
   assert.match(collected, /目标 8/)
   const tunnel = taskEventText('task_done', { task: { id: 't-2', kind: 'tunnel', params: { direction: 'east', length: 8 }, result: { done: 8, total: 8, direction: 'east', height: 2, torches: 1 } } })
   assert.match(tunnel, /宏完成/)
@@ -237,19 +237,17 @@ test('事件闸门：task_done 的成功 reason 白名单（net-target/duration/
   assert.match(legacy, /没达成/)
 })
 
-test('事件闸门：dig_fallback 可读且合并；path_approximate/心跳类不叫醒', () => {
+test('事件闸门：dig_fallback/path_approximate/心跳/auto_eat/craft_no_product 不叫醒（观测事件）', () => {
   const gate = createEventGate({ now: () => clock.t })
   const clock = { t: 0 }
   const out = gate.take([
     { seq: 1, type: 'dig_fallback', data: { block: 'oak_log', reason: 'no-path' } },
     { seq: 2, type: 'path_approximate', data: { target: { x: 1, y: 2, z: 3 } } },
     { seq: 3, type: 'heartbeat', data: {} },
+    { seq: 4, type: 'auto_eat', data: { food: 18 } },
+    { seq: 5, type: 'craft_no_product', data: { item: 'stick' } },
   ], { status: null })
-  assert.equal(out.signals.length, 1)
-  assert.match(out.signals[0].text, /就地挖附近的 oak_log/)
-  assert.match(out.signals[0].text, /no-path/)
-  const second = gate.take([{ seq: 4, type: 'dig_fallback', data: { block: 'dirt' } }], { status: null })
-  assert.equal(second.signals.length, 0, 'dig_fallback 在窗口内应合并')
+  assert.equal(out.signals.length, 0)
 })
 
 test('事件闸门：kicked 的 reason 是对象时显示真实原因，同名/重复登录要指出来', () => {

@@ -11,7 +11,7 @@
 
 ```json
 {"op":"task","kind":"tunnel","params":{"direction":"east","length":8,"height":2}}
-{"op":"task","kind":"tunnel","params":{"dx":0,"dz":1,"length":16,"height":2,"stairs":true,"torchEvery":6}}
+{"op":"task","kind":"tunnel","params":{"dx":0,"dz":1,"length":16,"height":2,"torchEvery":6}}
 ```
 
 | 参数 | 说明 |
@@ -19,10 +19,11 @@
 | `direction` | `north/south/east/west`（二选一；也可以给 `dx`/`dz` 一个非零） |
 | `length` | 挖多少格（1–128，默认 8） |
 | `height` | 通道高度（1–4，默认 2） |
-| `stairs` | 下坡隧道（默认 false） |
+| `stairs` | **契约预留、尚未实现**（现在只做水平通道，别依赖它） |
 | `torchEvery` | 每几格放一支火把（0–32，默认 6；背包里有火把才放） |
 
 - 立即返回 `taskId`；progress 限频（每约 10% 或 10s），`{"op":"tasks"}` 查、`{"op":"cancel","taskId":"t-1"}` 停（≤1s）。
+- 成功判据：水平前进 `length` 格、每格高 `height` 的通道打通；`blocked`/`unsafe`/`needs-tool` 是失败。
 - 完成结果：“宏完成：tunnel 往east挖了 N 格（高 2），放火把 K”。
 
 ## 失败怎么办（reason 码）

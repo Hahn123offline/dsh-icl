@@ -871,7 +871,7 @@ export function apply(ctx) {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
-宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（每 5–10% 或 10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；提交后不要用 wait 轮询。重复劳动优先用宏（别逐方块 mine/goto）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,stairs,torchEvery}（直线通道）；bridge/build/sort/shelter/farm 同族（build 用 blueprint，明早）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（每 5–10% 或 10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；提交后不要用 wait 轮询。重复劳动优先用宏（别逐方块 mine/goto）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery}（直线通道；stairs 契约预留暂未实现）；bridge/build/sort/shelter/farm 同族（build 用 blueprint，明早）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
 单步：dig|place|use|equip|toss|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
 失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码换目标/补工具/清背包/换方向）。参数示例用 mcb_help collect/tunnel。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],

@@ -23,7 +23,7 @@ export const QUIET_EVENTS = Object.freeze([
   'stuck',
   // 观测/记账类：body 自己的 watchdog 统计与心跳、寻路/隧道的中间过程，不叫她。
   'heartbeat', 'watchdog', 'watchdog_suppressed', 'task_idempotent_hit', 'ledger_loaded',
-  'path_recovered', 'tunnel_clear', 'path_approximate', 'auto_eat',
+  'path_recovered', 'tunnel_clear', 'path_approximate', 'auto_eat', 'dig_fallback', 'craft_no_product',
   // 宏的信息事件（MC-MACRO §5）：macro_step/macro_blocked 等在 body 台账里可查，不逐条叫醒；
   // 宏真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
   'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
@@ -40,7 +40,7 @@ const DEFAULTS = Object.freeze({
     chat: 0, join: 30_000, leave: 30_000, health_drop: 120_000, disconnected: 10_000,
     'connection-lost': 30_000, reconnecting: 60_000, reconnected: 60_000, body_error: 30_000,
     idle_disconnect: 60_000, resume_required: 120_000, quarantine: 300_000,
-    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, dig_fallback: 60_000,
+    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000,
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
@@ -182,7 +182,7 @@ function macroDoneText(task, result) {
   const label = taskLabel(task)
   if (task.kind === 'collect') {
     const item = result?.item ?? result?.block ?? '资源'
-    const got = result?.collected ?? result?.net ?? result?.mined
+    const got = result?.net ?? result?.collected ?? result?.mined
     const want = result?.requested
     return `[MC] 宏完成：collect ${label} 收集到 ${got ?? '?'} 个 ${item}${want != null ? `（目标 ${want}）` : ''}`
   }
@@ -303,11 +303,6 @@ function describe(event, status, ctx) {
       return {
         kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', alarm: true,
         text: `[MC] 出生点危险（脚下/头顶/下方是岩浆或火）${pos ? ` @ ${pos}` : ''}；身体已暂停，先 resume 前先换位置（mcb_do goto）。`,
-      }
-    case 'dig_fallback':
-      return {
-        kind: 'event', tags: ['mc', 'movement'], priority: 'notice', merge: 'dig_fallback',
-        text: `[MC] 原目标走不过去，改成就地挖附近的 ${valueText(d.block ?? d.name ?? d.target, '同类方块', 40)}（${valueText(d.reason ?? d.detail, '预检没通过', 60)}）；任务会继续，别再原样重下同一个目标。`,
       }
     case 'path_stuck':
       return {

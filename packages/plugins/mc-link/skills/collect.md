@@ -25,7 +25,7 @@
 
 - 立即返回 `taskId`；**提交后不要用 wait 轮询**。progress 限频（每 5–10% 或 10s 一条），完成/失败会作为事件回来。
 - 想查进度：`{"op":"tasks"}` 或 `{"op":"events"}`；想停：`{"op":"cancel","taskId":"t-1"}`（≤1s 内停）。
-- 结果：`task_done` → “宏完成：collect 收集到 N 个 item（目标 M）”，`result` 里有 collected/requested/returned/deposited。
+- 结果：`task_done` → “宏完成：collect 收集到 N 个 item（目标 M）”，`result` 里有 `net`（背包净增，优先看它）/collected/requested/returned/deposited。
 
 ## 失败怎么办（reason 码）
 
