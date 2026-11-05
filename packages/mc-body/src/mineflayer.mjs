@@ -385,10 +385,12 @@ export function createMineflayerAdapter({
   }
 
   // 单次尝试：盯“是否更靠近目标”，只有不再刷新最好距离超过 stallMs 才判卡（不是“有没有动”）。
-  function walkOnce(goal, target, { signal, progress, stallMs, timeoutMs }) {
+  // arriveRange 显式传入（GoalNear 只有 rangeSq，没有 range，不能从 goal 上读）。
+  function walkOnce(goal, target, { signal, progress, stallMs, timeoutMs, arriveRange = 1.5 }) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(abortReason(signal))
       if (!bot?.pathfinder) return reject(new Error('pathfinder-unavailable'))
+      const arrivedWithin = Math.max(1.2, Number(arriveRange) || 1.5)
       const tracker = createProgressTracker({ stallMs: Math.max(500, Number(stallMs) || pathStallMs) })
       let settled = false
       let ticker = null
@@ -415,7 +417,7 @@ export function createMineflayerAdapter({
         if (!pos) return finish(reject, new Error('no-position'))
         const distance = distanceTo(pos, target)
         progress?.({ distance: round1(distance), target })
-        if (distance <= Math.max(1.2, Number(goal.range) || 1.5)) return finish(resolve, { arrived: true, distance })
+        if (distance <= arrivedWithin) return finish(resolve, { arrived: true, distance })
         const result = tracker.update(distance)
         if (result.stalled) return finish(resolve, { arrived: false, stalled: true, distance, best: result.best, sinceBestMs: result.sinceBestMs })
       }, tickMs)
@@ -442,7 +444,7 @@ export function createMineflayerAdapter({
     const away = { x: pos.x - (target.x - pos.x), y: pos.y, z: pos.z - (target.z - pos.z) }
     try {
       const outcome = await walkOnce(makeGoal({ x: away.x, y: away.y, z: away.z }, 2), away, {
-        signal, progress: null, stallMs: Math.max(1200, pathStallMs), timeoutMs: 4000,
+        signal, progress: null, stallMs: Math.max(1200, pathStallMs), timeoutMs: 4000, arriveRange: 2,
       })
       return Boolean(outcome.arrived)
     } catch (error) {
@@ -528,10 +530,19 @@ export function createMineflayerAdapter({
       }
       checkAbort(signal)
       attempts += 1
-      const outcome = await walkOnce(makeGoal(target, range), target, {
-        signal, progress, stallMs,
-        timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
-      })
+      let outcome
+      try {
+        outcome = await walkOnce(makeGoal(target, range), target, {
+          signal, progress, stallMs,
+          timeoutMs: Math.min(remaining, Math.max(2500, stallMs * 2)),
+          arriveRange: range,
+        })
+      } catch (error) {
+        // 单次 walk 超时/异常不是任务失败：继续阶梯（repath→jump→backoff→carve），最后统一判 stuck。
+        if (signal?.aborted) throw abortReason(signal)
+        lastDistance = round1(distanceTo(currentPosition(), target)) ?? lastDistance
+        continue
+      }
       if (outcome.arrived) {
         if (index > 0) {
           pathStats.recoveries += 1
@@ -904,7 +915,7 @@ export function createMineflayerAdapter({
       if (!def) throw new Error(`未知方块：${blockName}`)
       const count = Math.max(1, Math.min(128, Number(params.count) || 1))
       const radius = Math.max(2, Math.min(48, Number(params.radius) || 8))
-      const reach = Math.max(1, Math.min(4, Number(params.reach) || 2))
+      const reach = Math.max(1.5, Math.min(4, Number(params.reach) || 3))
       const maxPathMs = Math.max(10_000, Math.min(90_000, Number(params.maxPathMs) || 30_000))
       const startedAt = Date.now()
       let mined = 0
