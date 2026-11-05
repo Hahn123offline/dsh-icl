@@ -131,6 +131,23 @@
 - interview 断言：问"暂停时你在哪、身体安全吗、你做了什么" —— 她的复述必须与事件台账一致；不能出现"暂停了但位置在动且系统没解释"。
 - 回归：MC-CONTRACT 不变量测试、`npm test` 全绿、cache 的 system/tools 布局不受影响（本方案不改提示词/工具 schema 的静态面；只改状态行文本与新增一个工具 → toolsHash 变化需 cache 复核）。
 
+### 5.1 cache 侧预置验收口径（cache 提前给，落地时直接按此留证据）
+
+**预计变化**：状态行文本改 + 新增 `mcb_stop` → **toolsHash 必变、工具数 +1**（这是预期变化，不判回归）。
+
+**① 静态/体积（云端 run 即可给）**
+- `cache-layout-audit` 对比 pick 前后两个 run：`tools.count` +1；`tools.chars` / `toolsHash` 记录新值；
+- `system` append/replace 仍 **1/0**、相邻 turn `firstDiff = -1`；
+- `systemHasDynamicFacts = false`；facts 快照 sections 仍含 `icl:facts`、**≤1 条/轮**；
+- **新增内容不得进 system**：`mcb_stop` 的说明只能在工具 description / `mcb_help`；状态行文本若属事实，必须留在 `icl:facts`（runtime-context）。
+
+**② 本地引擎（GPU 根锁，lead 排）**
+- 同 scenario 5 轮：冷启动 prompt 预计 **+schema 新增字节**（`mcb_stop` 的 description+parameters JSON，34→35 工具，量不大）；
+- 稳态 hit 应仍 **≥98%（短跑口径）/ ≈99%（长跑口径）**，prefill 持平；
+- 若状态行文本每轮变，属 facts 变化 → 只看快照条数是否仍 ≤1/轮，不影响 system 前缀。
+
+**判"回归"的红线**：①system 里出现状态行/时间/位置等动态事实；②toolsHash 在**同一 commit 内**抖动（插件重注册）；③稳态 hit 明显掉（**>2pp**）。其余（工具数 +1、体积 +几百字节、冷启动 prompt 略增）都是预期变化，记录不判负。
+
 ## 6. 需要用户拍板的 3 个问题
 
 1. **暂停时要不要"身体自动做安全动作"**（吃食物/躲怪/防摔）？允许 → 走 B；不允许 → 只有词义修正 + `mcb_stop`（更保守，但危险时仍会掉血）。

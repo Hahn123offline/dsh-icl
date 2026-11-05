@@ -332,7 +332,7 @@ export function apply(ctx) {
         const decay = Math.exp(-ageDays / Math.max(1, hl))
         const score = sim * item.weight * decay
         if (minScore != null && score < Number(minScore)) continue
-        scored.push({ item, score })
+        scored.push({ item, score, sim })
       }
       return scored.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt).slice(0, Math.max(1, Number(limit) || 8))
     },
