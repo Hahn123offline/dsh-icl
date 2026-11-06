@@ -211,7 +211,8 @@ async function up() {
   const goalGapSec = arg('--goal-gap-sec') ? Number(arg('--goal-gap-sec')) : 30
   const awakeMode = arg('--awake-mode') ? String(arg('--awake-mode')) : 'interval'
   const awakeMinIdleSec = arg('--awake-min-idle-sec') ? Number(arg('--awake-min-idle-sec')) : 30
-  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort, awakeIdleSec, goalGapSec, awakeMode, awakeMinIdleSec })
+  const compactWake = flag('--compact-wake')
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort, awakeIdleSec, goalGapSec, awakeMode, awakeMinIdleSec, compactWake })
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,
