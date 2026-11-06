@@ -735,7 +735,7 @@ test('mcb_do：批处理一步失败也带回已执行步骤的结果（失败�
     body.state.doFailOnOp = 'dig'
     await assert.rejects(
       () => link.tools.mcb_do.execute({ steps: [{ op: 'look' }, { op: 'dig', params: { pos: { x: 1, y: 2, z: 3 } } }, { op: 'say', text: '不该执行' }] }),
-      /第 2 步（dig）失败[\s\S]*已完成的前序步骤[\s\S]*did:look/,
+      /第 2 步（dig）失败[\s\S]*原因：[\s\S]*下一步：[\s\S]*已完成：[\s\S]*did:look/,
     )
   } finally {
     await link.cleanup()
@@ -775,13 +775,22 @@ test('mcb_do：任务提交回执明确"不要循环查"；暂停报错给可操
   }
 })
 
-test('mcb_do：body 报"已暂停"时补上恢复路径', async () => {
+test('mcb_do：body 报"已暂停"时补上恢复路径（含"下一步"）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
     body.state.doError = '身体已暂停（death）；先 resume，或只用 look/inventory'
-    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }), /复活|再次暂停|resume/)
+    await assert.rejects(
+      () => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }),
+      /第 1 步（dig）失败[\s\S]*原因：[\s\S]*下一步：[\s\S]*复活|再次暂停|resume[\s\S]*已完成：无/,
+    )
+    // 未知错误码也要有下一步（表驱动兜底）
+    body.state.doError = '奇怪的错误：something-happened'
+    await assert.rejects(
+      () => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }),
+      /下一步：先 mcb_status 看身体\/任务状态/,
+    )
   } finally {
     await link.cleanup()
     await body.close()

@@ -86,37 +86,56 @@ function seriousReason(reason) {
   return SERIOUS_REASONS.includes(String(reason ?? ''))
 }
 
-/** 任务结束但没达成时，body 在 error/result.reason 里给的原因，翻成下一步。 */
+/**
+ * 任务失败的原因 → 一句"下一步动作"（表驱动，错误回执 100% 带"下一步"）。
+ * text = 现象（给她看懂发生了什么）；next = 下一步具体做什么。
+ */
 const TASK_REASON_TEXT = Object.freeze({
-  'no-target': '附近没有目标方块/资源（换 block/item 名或调大 radius）',
-  'collect: no-resources': '附近资源枯竭（扫过范围已没有目标）：先 explore 换个区域/换 item，别原地重试',
-  'no-path': '走不过去（mcb_map 看地形，换目标点或先 goto 到开阔处）',
-  'dig-failed': '挖不动（可能要更好的工具，或方块被挡住）',
-  'no-effect': '挖了但方块没变化（太远或工具不对，换位置/工具）',
-  stuck: '卡住了（先 mcb_map/mcb_look 看地形再脱困）',
-  timeout: '超时（结果未知，先看背包/位置再决定）',
-  'needs-tool': '工具不对/不够好（body 已停：先 mcb_inventory 看材料，做/换对应工具再下宏）',
-  'inventory-full': '背包满了（先存箱子/丢点东西，再继续收集）',
-  'needs-material': '材料不够（先补材料：砍树/挖石/合成，再下这个宏）',
-  blocked: '前方是水/岩浆/基岩（换方向或绕开，别硬挖）',
-  unsafe: '安全护栏拒绝（会造成危险：换位置/换做法）',
-  partial: '只完成了一部分（有进展没达标：看 progress/背包再决定续做还是换目标）',
-  'unsupported task': '这个宏还在 beta/未开放（先看 mcb_help play 或 mcb_help collect/tunnel；bridge/build/shelter/sort/deposit/farm 是 beta）',
-  'farm: no-water': '附近没有水：找水边/引水（水离耕地 4 格内才能种）',
-  'farm: no-site': '水边没有可开垦的土/草方块（要离水 4 格内、上方是空气）',
-  'shelter: no-site': '这里放不下小屋（地形/空间不够）：先清平/换位置，或先挖平再重跑',
-  'shelter: needs-material': '盖房材料不够：按回执缺数先补方块（缺多少见 message），别硬跑',
-  'shelter: incomplete': '结构不完整：按 verify.summary 补缺的墙/屋顶/门洞，别直接重跑整间',
-  'shelter: entry-blocked': '结构 OK 但进不去：先清零格门洞/垫平门外通路，或换 doorSide 重试',
-  unsupported: 'body 不支持这个参数组合（例如 tunnel 的向上 stairs）：换方向/换做法',
-  'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
-  'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
-  'not connected': '身体当时不在线（先 mcb_status，需要就 mcb_join）',
-  'combat: low-health': '战斗低血中断（已自动躲避）：先吃/躲/垫高，或改用 mcb_combat {mode:"flee"}；血回上去再打',
-  'combat: creeper-near': '苦力怕近身（已自动躲避）：先跑/垫高，别贴脸打',
-  'combat: too-many': '敌人太多（已自动躲避）：改用 flee 或 guard，别硬刚',
-  'combat: no-threat': '附近没有威胁了：不用再打',
+  'no-target': { text: '附近没有目标方块/资源', next: '换 block/item 名或调大 radius；还不行就 mcb_scan/explore 换个区域' },
+  'collect: no-resources': { text: '附近资源枯竭（扫过范围已没有目标）', next: '先 explore 换个区域或换 item；别原地重试' },
+  'no-path': { text: '走不过去', next: 'mcb_map 看地形，换目标点，或先 goto 到开阔处' },
+  'dig-failed': { text: '挖不动', next: '换更好的工具（mcb_inventory 看有什么），或换位置/绕开被挡的方块' },
+  'no-effect': { text: '挖了但方块没变化（太远或工具不对）', next: '先靠近到 3-4 格内再挖；还不行就换工具' },
+  stuck: { text: '卡住了', next: '先 mcb_map/mcb_look 看地形，再 goto 脱困或挖开' },
+  timeout: { text: '超时（结果未知，不能当失败也不能当成功）', next: '先 mcb_status/mcb_inventory 复核，再决定要不要重试' },
+  'needs-tool': { text: '工具不对/不够好', next: 'mcb_inventory 看材料，craft/equip 对应工具后再下这个宏' },
+  'inventory-full': { text: '背包满了', next: '先 chest 存箱或 toss 丢掉没用的，腾出格子再继续' },
+  'needs-material': { text: '材料不够', next: '按回执缺数补料（dig/collect/craft），有替代材料就换 material；别硬跑' },
+  blocked: { text: '前方是水/岩浆/基岩', next: '换方向或绕开，别硬挖；必要时先 explore 找新路线' },
+  unsafe: { text: '安全护栏拒绝（会造成危险）', next: '换位置/换做法；先 mcb_status 看血量和附近敌对' },
+  partial: { text: '只完成了一部分（有进展没达标）', next: '看 progress/背包：续做剩下的，或换目标/换做法' },
+  'unsupported task': { text: '这个宏还在 beta/未开放', next: '先 mcb_help macro 看支持的宏；用 play/collect/tunnel 的替代做法' },
+  'farm: no-water': { text: '附近没有水', next: '找水边/引水（水离耕地 4 格内才能种），再重下 farm' },
+  'farm: no-site': { text: '水边没有可开垦的土/草方块', next: '走到水边、清掉上方方块（要离水 4 格内、上方是空气）' },
+  'shelter: no-site': { text: '这里放不下小屋（地形/空间不够）', next: '先清平/换位置，或先挖平再重跑 mcb_shelter' },
+  'shelter: needs-material': { text: '盖房材料不够', next: '看回执 alternatives：有够数替代材料就改 material 重试；否则按 deficit dig/collect 补' },
+  'shelter: incomplete': { text: '结构不完整', next: '按 verify.summary/walls.missingFaces 补缺的墙/屋顶/门洞，别直接重跑整间' },
+  'shelter: entry-blocked': { text: '结构 OK 但进不去', next: '先清零格门洞/垫平门外通路，或换 doorSide 重试' },
+  unsupported: { text: 'body 不支持这个参数组合（例如 tunnel 的向上 stairs）', next: '换方向/换做法（stairs 只支持向下）' },
+  'player not found': { text: '找不到玩家', next: '先 mcb_status 看在线玩家名单，确认名字/是否还在服务器' },
+  'pathfinder-unavailable': { text: '寻路不可用', next: '改用单点 goto/dig，别走复杂地形；或先挖直线通道' },
+  'not connected': { text: '身体当时不在线', next: '先 mcb_status，需要就 mcb_join；重连后要显式 resume' },
+  'combat: low-health': { text: '战斗低血中断（已自动躲避）', next: '先吃/躲/垫高，或改用 mcb_combat {mode:"flee"}；血回上去再打' },
+  'combat: creeper-near': { text: '苦力怕近身（已自动躲避）', next: '先跑/垫高，别贴脸打；或直接 mcb_combat {mode:"flee"}' },
+  'combat: too-many': { text: '敌人太多（已自动躲避）', next: '改用 flee 或 guard，别硬刚' },
+  'combat: no-threat': { text: '附近没有威胁了', next: '不用再打；继续原来的采集/建造目标' },
 })
+
+/** 错误码没在表里时的兜底下一步（保证错误回执 100% 有"下一步"）。 */
+function genericNextStep(error) {
+  const text = String(error ?? '').toLowerCase()
+  if (/暂停|paused/.test(text)) return '先按 mcb_status 的暂停建议处理原因（eat/撤/换位置），再 {"op":"resume"}'
+  if (/未允许|403/.test(text)) return 'body 启动参数没开这个能力（--allow-task/--allow-say）：重起 body 并加对应参数'
+  if (/队列已满|429/.test(text)) return '队列满：先 {"op":"tasks"} 看队列，等前一个跑完或 cancel；长动作一律用 {"op":"task"} 提交'
+  if (/单飞锁|上一个 do 动作还在执行|409/.test(text)) return '上一个长动作还在跑：先 {"op":"tasks"} 看进度，等它结束或 cancel；长动作一律用 {"op":"task"} 提交，别并发单步 op'
+  if (/已结束.*不能 resume/.test(text)) return '这个任务已结束：需要就重新下任务，别对同一 taskId 反复 resume'
+  if (/offline|未连接|断线/.test(text)) return '先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
+  if (/timeout|超时/.test(text)) return '结果未知：先 mcb_status/mcb_inventory 复核，再决定是否重试'
+  if (/no-target|找不到|没有目标/.test(text)) return '换 block/item 名或调大 radius；还不行就 mcb_scan/explore 换区域'
+  if (/no-path|走不过去/.test(text)) return 'mcb_map 看地形，换目标点或先 goto 到开阔处'
+  if (/full|满/.test(text)) return '先存箱/丢东西腾格子，再继续'
+  return '先 mcb_status 看身体/任务状态，再决定重试或换做法；别原样连发'
+}
 
 /** 从 error 字符串（如 "mine: no-target"）里认出原因与下一步；多个 key 命中时选最长的（更具体）。 */
 function reasonHint(raw) {
@@ -124,8 +143,12 @@ function reasonHint(raw) {
   const key = Object.keys(TASK_REASON_TEXT)
     .filter((name) => text.includes(name))
     .sort((a, b) => b.length - a.length)[0]
-  if (!key) return null
-  return { key, hint: TASK_REASON_TEXT[key] }
+  if (!key) {
+    const next = genericNextStep(raw)
+    return { key: null, text: '失败（错误码未在已知表里）', next, hint: `失败；下一步：${next}` }
+  }
+  const entry = TASK_REASON_TEXT[key]
+  return { key, text: entry.text, next: entry.next, hint: `${entry.text}；下一步：${entry.next}` }
 }
 
 
@@ -221,7 +244,7 @@ function shelterMaterialDetail(result) {
   if (result.deficit != null) bits.push(`缺 ${result.deficit}`)
   const alts = Array.isArray(result.alternatives) ? result.alternatives.filter((row) => row?.enough).slice(0, 3) : []
   if (alts.length) bits.push(`可用替代：${alts.map((row) => `${row.material}×${row.have}`).join('、')}`)
-  if (result.suggestion) bits.push(String(result.suggestion).slice(0, 220))
+  // suggestion 已作为失败文案的"下一步"展示，这里不重复。
   return bits.join('；')
 }
 
@@ -323,10 +346,12 @@ export function taskEventText(type, data = {}, status = null) {
   }
   if (type === 'task_failed') {
     const error = valueText(task.error, '原因未知', 60)
-    const why = reasonHint(error)?.hint
+    const reason = reasonHint(error)
+    // body 自己的 suggestion 比通用表更具体：优先当"下一步"。
+    const next = task.result?.suggestion ? cut(String(task.result.suggestion), 200) : reason.next
     // shelter 失败时把 body 的结构验收摘要/缺哪面直接给她（failures[] 是建造调试明细，不展示）。
     const verifyText = task.kind === 'shelter' || task.result?.verify ? shelterVerifyDetail(task.result?.verify) : ''
-    // needs-material：带上 needed/have/deficit/可用替代 + body suggestion（有替代材料就让改 material）。
+    // needs-material：带上 needed/have/deficit/可用替代（suggestion 已作为"下一步"，不重复）。
     const materialText = /needs-material/.test(error) || (task.kind === 'shelter' && task.result?.deficit != null)
       ? shelterMaterialDetail(task.result)
       : ''
@@ -337,11 +362,7 @@ export function taskEventText(type, data = {}, status = null) {
         Array.isArray(task.result?.triedBlocks) && task.result.triedBlocks.length ? `试过 ${task.result.triedBlocks.slice(0, 4).join('/')}` : '',
       ].filter(Boolean).join('，')
       : ''
-    // 其它失败：body 的 suggestion 是直接写给模型的下一步（材料诊断里已含 suggestion 时不重复）。
-    const suggestionText = !materialText && task.result?.suggestion
-      ? `；建议：${cut(String(task.result.suggestion), 180)}`
-      : ''
-    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${dryText ? `；诊断：${dryText}` : ''}${materialText ? `；材料诊断：${materialText}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${suggestionText}${progress}${suffix}`
+    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}；原因：${reason.text}；下一步：${next}${dryText ? `；诊断：${dryText}` : ''}${materialText ? `；材料诊断：${materialText}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${progress}${suffix}`
   }
   if (type === 'task_unknown') {
     return `[MC] 任务超时，结果未知：${label}${progress} — 动作可能已经生效，不能当成失败。先 mcb_status / mcb_inventory 复核，再决定要不要重下同一个任务。${suffix}`
@@ -762,7 +783,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
   }
 }
 
-export { OPS, TASK_KINDS, MACRO_KINDS, REASON_TEXT, TASK_REASON_TEXT }
+export { OPS, TASK_KINDS, MACRO_KINDS, REASON_TEXT, TASK_REASON_TEXT, reasonHint }
 
 /** 简短描述一条 body 事件，用于 mcb_do 的 events 查询（台账视角，不省略 quiet 事件）。 */
 export function eventLine(event, status = null) {
