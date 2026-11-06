@@ -851,7 +851,13 @@ export function apply(ctx) {
     const plugin = String(signal.from?.plugin ?? '')
     if (emergencyFrom && !emergencyFrom.includes(plugin)) return false
     const tags = Array.isArray(signal.tags) ? signal.tags.map(String) : []
-    return tags.some((tag) => emergencyTags.includes(tag))
+    if (tags.some((tag) => emergencyTags.includes(tag))) return true
+    // mc-body 的事件 payload 带 priority:'alarm' + pierce:true；来源没打 tags 时也按危险处理（契约 §16.4）。
+    const meta = signal.meta
+    if (meta && typeof meta === 'object') {
+      if (meta.pierce === true || String(meta.priority ?? '').toLowerCase() === 'alarm') return true
+    }
+    return false
   }
 
   /** 暂停（用户语义：任务停止、世界继续）：time 的 phase=paused 或外部 pause mode 都算。 */

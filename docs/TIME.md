@@ -663,6 +663,9 @@ node tools/lab.mjs down --run "$RUN"
 - `status().lastBlockedAlarm`：最近一次危险被拦（`reason: sleeping|muted`）。
 - `time-events.jsonl` 新类型：`pause-on` / `paused-mode-on|off` / `pause-pierce` / `alarm-blocked` / `sleep-alarm-buffered` / `wake-brief`（含 alarms 计数）。
 - `time_status` 暂停行、`lastSleepBrief.alarms = {count, sources, samples}` 可查。
+- **识别口径（与 mc-body 对齐）**：危险 = tags 命中 `emergencyTags` **或** `meta.pierce === true` **或** `meta.priority === 'alarm'`。mc-body 的事件 payload 带 `priority:'alarm'`/`pierce:true`，即使来源没打 alarm tags，暂停也会穿透、睡眠也会进最高优先级积压。
+- **与 mc-body 对账字段**：body `status.safety.alarms = {delivered,suppressed,redelivered,pending}` ↔ time `lastPierce`/`lastBlockedAlarm`。body 对危险事件有 15s 去重：被拦会在 `alarm_suppressed` 计数并在窗口后补投（`redelivered:true`）——所以 body `suppressed > 0` 不等于 time 漏收，以补投后的 `delivered` 为准。
+- body 暂停时 `pausedReason:'user-stop'` ↔ time `pausedMode.source/reason`；body 的 `status.safety.reflex`、`status.playable`、`status.spawnLog` 是只读对齐字段，time 不复制它们，避免两套口径。
 
 ### 16.5 测试
 
