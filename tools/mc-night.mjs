@@ -16,7 +16,7 @@ import net from 'node:net'
 import { spawn } from 'node:child_process'
 import {
   DEFAULT_PORT, REPO_ROOT, STATE_ROOT, apiFor, cleanupStrayBodies, countTurnEnds,
-  findLabBodyPids, isPidAlive, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
+  findLabBodyPids, isPidAlive, loadCurrent, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, sleep, textOfMessage, tsSlug, writeJson,
 } from './lab-lib.mjs'
 
@@ -293,6 +293,14 @@ function archiveLabGeneration() {
 }
 
 async function startLab({ fresh = false } = {}) {
+  // 单一 lab 纪律：同一时间只允许一条 lab（lab.mjs 的 current 是全局的）。
+  // 并发两个 supervisor 时，谁带 --force 就会把对方的 lab down 掉，形成互杀循环（2026-11-06 事故）。
+  const other = loadCurrent()
+  if (other?.alive && other.runId && other.runId !== cfg.runId) {
+    state.lastError = `另一个 lab run ${other.runId}（port ${other.port}）还活着；单 lab 纪律：先停它再起本 run`
+    log(state.lastError)
+    return false
+  }
   if (fresh && state.labStarts > 0) archiveLabGeneration()
   log(`启动 lab（preset=${cfg.preset} port=${cfg.port} model=${cfg.model} mc-port=${cfg.mcPort} user=${cfg.mcUser}）`)
   const result = await runLabCli('up', [
@@ -306,7 +314,7 @@ async function startLab({ fresh = false } = {}) {
     '--goal-gap-sec', String(cfg.goalGapSec),
     '--model', cfg.model,
     '--timeout', '300',
-    ...(fresh ? ['--force'] : []),
+    // 不再带 --force：它会 down 掉"当前 lab"（可能是并发的另一条 run）。同 run 重启前 stopLab 已清 current。
   ], 420_000)
   if (result.code !== 0) {
     state.lastError = `lab up failed: ${result.err.trim().slice(-500)}`
