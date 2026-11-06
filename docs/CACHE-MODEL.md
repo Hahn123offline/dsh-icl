@@ -529,6 +529,17 @@ node tools/cache-probe.mjs diff --run cache-bf2
      全量失效各 1（首轮冷启动）；详见 §5.4 与 AUDIT §0.5.5/§0.5.6。
    - **开关**：默认节流；`factsEveryStep: true`（config）或 `ICL_FACTS_EVERY_STEP=1`（env，**仅测量**）可退回每步求值。
 
+8. **QQ 图片通道（2026-11-06，dsh-icl bridge；本节不改上面任何数字，待 cache 复测）**
+   - 改动面：只改**投递消息 content**。QQ 图片字节随 delivery `batch.images` 到 bridge，bridge 用
+     `ctx.attachments.saveImages` 换 `ImageAttachmentRef`，消息 content 变成 `[{type:'text'}, {type:'image', attachment}]`；
+     正文仍只有文字，不写 URL/base64。
+   - **未新增/修改 `prompt.section` 或 facts 快照**；静态 system / facts runtime-context / ≤1 快照/轮的布局语义不变。
+   - 时序：只有在 batch 带图片时 `tick` 才 async（`await saveImages`）；纯文字批次仍走原同步路径。
+   - 失败降级：attachment 服务缺失/`saveImages` 抛错时，只在该条投递正文追加一行提示（含本地媒体路径），
+     消息照常 steer/ack；不改 gate/focus/time 行为，也不碰 system/facts。
+   - 自检：`npm test` 全绿（含 dsh-bridge 32 条）；layout 审计脚本未跑（本轮无 lab）；若 cache 复测需要，
+     可用 `tools/cache-layout-audit.mjs` 对比改前/改后 run，预期 system append/replace、tools hash、facts sections 均不变。
+
 ---
 
 ## 8. 事实层字节基线（与 misc/lead 对表）

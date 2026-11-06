@@ -6,6 +6,8 @@
 //   · 必须有 Content-Length 或流式累计上限（默认 8MB），超限立刻中止；
 //   · 类型必须由字节头嗅探为 png/jpeg/gif/webp，不信任 Content-Type；
 //   · QQ 网关的 file 引用只接受安全文件名（单层、无路径、无 ..），防任意路径/内网注入。
+import fs from 'node:fs'
+import path from 'node:path'
 import { RICH_LIMITS, formatBytes, sanitizeFileName } from './rich.mjs'
 
 export const MEDIA_DEFAULTS = Object.freeze({
@@ -13,9 +15,16 @@ export const MEDIA_DEFAULTS = Object.freeze({
   maxImages: RICH_LIMITS.maxImages,
   timeoutMs: 15_000,
   maxFileBytes: 50 * 1024 * 1024,
+  maxVideoBytes: 50 * 1024 * 1024,
+  maxVideos: 1,
+  maxFiles: 2,
+  // 保留策略默认值（等用户确认；目前不自动删，只在文档里列出）
+  retentionDays: 7,
+  maxInboxBytes: 500 * 1024 * 1024,
 })
 
 const IMAGE_TYPES = Object.freeze({ 'image/png': true, 'image/jpeg': true, 'image/gif': true, 'image/webp': true })
+const VIDEO_TYPES = Object.freeze({ 'video/mp4': true, 'video/webm': true })
 
 export function sniffImageMime(buffer) {
   const b = buffer instanceof Uint8Array ? buffer : null
@@ -151,6 +160,89 @@ export function describeFile(fileInfo) {
   const name = sanitizeFileName(fileInfo?.name ?? '')
   const size = formatBytes(fileInfo?.size)
   return `[文件${name ? `：${name}` : ''}${size ? `（${size}）` : ''}]`
+}
+
+/** 视频魔数嗅探（不信任 Content-Type）；只接受 mp4/webm。 */
+export function sniffVideoMime(buffer) {
+  const b = buffer instanceof Uint8Array ? buffer : null
+  if (!b || b.length < 12) return null
+  // ISO BMFF(MP4/MOV)：第 4-7 字节是 'ftyp'
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return 'video/mp4'
+  // EBML（WebM/MKV）
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'video/webm'
+  return null
+}
+
+export function acceptVideoBuffer(buffer, { maxBytes = MEDIA_DEFAULTS.maxVideoBytes, label = '视频' } = {}) {
+  const b = buffer instanceof Uint8Array ? buffer : null
+  if (!b || !b.length) throw new Error(`${label}为空`)
+  if (b.length > maxBytes) throw new Error(`${label}超限：${formatBytes(b.length)} > ${formatBytes(maxBytes)}`)
+  const mimeType = sniffVideoMime(b)
+  if (!mimeType || !VIDEO_TYPES[mimeType]) throw new Error(`${label}不是支持的视频类型`)
+  return { buffer: b, mimeType, bytes: b.length }
+}
+
+export function extensionForMime(mimeType) {
+  const map = {
+    'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+    'video/mp4': 'mp4', 'video/webm': 'webm',
+  }
+  return map[String(mimeType ?? '')] || 'bin'
+}
+
+/** 生成本地媒体文件名：日期目录 + messageId/发送者/时间/序号；不信任对方文件名。 */
+export function inboxMediaPath({ dir, at = Date.now(), messageId = null, sender = '', index = 1, mimeType = '', originalName = '' }) {
+  const d = new Date(Number(at) || Date.now())
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const safeSender = sanitizeFileName(String(sender || 'unknown')).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 32) || 'unknown'
+  const safeId = String(messageId == null ? 'noid' : messageId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48)
+  const stamp = d.toISOString().replace(/[:.]/g, '-')
+  const ext = extensionForMime(mimeType)
+  const originalExt = path.extname(sanitizeFileName(originalName || '')).replace(/^\./, '').toLowerCase()
+  const finalExt = ext !== 'bin' ? ext : (/^[a-z0-9]{1,8}$/.test(originalExt) ? originalExt : 'bin')
+  const file = path.join(String(dir), day, `${safeId}-${safeSender}-${stamp}-${index}.${finalExt}`)
+  return { file, day }
+}
+
+/**
+ * 保存入站媒体到统一目录，并往 `<dir>/index.jsonl` 追加一条记录。
+ * 返回 { path:绝对路径, bytes, mime, kind, day }。
+ */
+export function saveInboxMedia({
+  dir,
+  kind,
+  buffer,
+  mimeType,
+  at = Date.now(),
+  messageId = null,
+  peerId = null,
+  sender = '',
+  index = 1,
+  originalName = '',
+} = {}) {
+  if (!dir) throw new Error('saveInboxMedia 需要 dir')
+  const b = buffer instanceof Uint8Array ? buffer : null
+  if (!b || !b.length) throw new Error('saveInboxMedia 需要非空字节')
+  const { file, day } = inboxMediaPath({ dir, at, messageId, sender, index, mimeType, originalName })
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, Buffer.from(b))
+  const record = {
+    at: Number(at) || Date.now(),
+    kind: String(kind ?? 'file'),
+    path: path.resolve(file),
+    bytes: b.length,
+    mime: String(mimeType ?? ''),
+    messageId: messageId == null ? null : String(messageId),
+    peerId: peerId == null ? null : String(peerId),
+    sender: String(sender ?? ''),
+    originalName: sanitizeFileName(originalName || '') || null,
+  }
+  try {
+    fs.appendFileSync(path.join(String(dir), 'index.jsonl'), `${JSON.stringify(record)}\n`, 'utf8')
+  } catch {
+    // 索引写失败不能丢媒体文件；调用方会把错误写日志（这里不抛，避免把已保存文件回滚）
+  }
+  return { ...record, day }
 }
 
 export { formatBytes }

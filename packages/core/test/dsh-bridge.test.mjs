@@ -22,7 +22,7 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import noteManifest from '../../plugins/note/manifest.json' with { type: 'json' }
 
-function fakeCtx({ withContext = true } = {}) {
+function fakeCtx({ withContext = true, attachments = null } = {}) {
   const tools = new Map()
   const sections = new Map()
   const contexts = new Map()
@@ -72,6 +72,7 @@ function fakeCtx({ withContext = true } = {}) {
     },
     tools_: tools, sections_: sections, contexts_: contexts, handlers_: handlers, logs,
   }
+  if (attachments) ctx.attachments = attachments
   // 真 DSH 的 SystemPrompt 有 context()（运行时上下文快照通道）；旧宿主没有。
   // 两种都要覆盖：有 → 静/动拆开；没有 → 退回单 section 全量。
   if (withContext) {
@@ -328,7 +329,7 @@ test('桥：delivery 通知（time sleep/wake 等）置 dirty，下一步重算 
 
   factsState.phase = '睡着'
   host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '该睡了' } })
-  assert.deepEqual(bridge.tick(), { sent: 1 })
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
   assert.equal(facts.text({}), '阶段：睡着', 'delivery 通知后 facts 重算')
   assert.equal(bridge.status().stats.factsRefreshes, before + 1)
   bridge.dispose()
@@ -359,6 +360,99 @@ test('桥：没有动态事实时 facts context 返回空（DSH 会跳过空段�
   assert.equal(ctx.sections_.get('icl:core').text({}), '你是小千。')
   assert.equal(ctx.contexts_.get('icl:facts').text({}), '')
   bridge.dispose()
+})
+
+test('桥：QQ 图片 → DSH attachment image block；正文无 URL/base64', async () => {
+  const root = tempRoot('image-attach')
+  const host = await hostWithMemory(root)
+  const saves = []
+  const attachments = {
+    async saveImages(images) {
+      saves.push(...images)
+      return images.map((img, i) => ({
+        attachmentId: `att-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1, ...(img.name ? { name: img.name } : {}),
+      }))
+    },
+  }
+  const ctx = fakeCtx({ attachments })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    const data = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '[QQ私聊·主人] 主人：看图', images: [{ data, mediaType: 'image/png', name: 'a.png', path: 'C:/media/inbox/a.png' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    assert.equal(saves.length, 1)
+    assert.equal(saves[0].mediaType, 'image/png')
+    assert.equal(saves[0].data.byteLength, data.byteLength)
+    const message = agent.steers[0]
+    assert.equal(message.content[0].type, 'text')
+    assert.equal(message.content[0].text, '[QQ私聊·主人] 主人：看图')
+    assert.equal(message.content[1].type, 'image')
+    assert.equal(message.content[1].attachment.attachmentId, 'att-0')
+    // 正文不能泄漏 URL/base64/字节
+    assert.doesNotMatch(message.content[0].text, /https?:|base64|data:image|\/9j\//)
+    assert.equal(message.source.kind, 'plugin:qq')
+  } finally { bridge.dispose() }
+})
+
+test('桥：attachment 保存失败 → 文字降级，消息不丢', async () => {
+  const root = tempRoot('image-fallback')
+  const host = await hostWithMemory(root)
+  const attachments = { async saveImages() { throw new Error('too many pixels') } }
+  const ctx = fakeCtx({ attachments })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '看图', images: [{ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png', name: 'a.png', path: 'C:/media/inbox/a.png' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    const message = agent.steers[0]
+    assert.equal(message.content.length, 1, '失败时没有 image block')
+    assert.match(message.content[0].text, /图片未能显示/)
+    assert.match(message.content[0].text, /C:\/media\/inbox\/a\.png/)
+    assert.doesNotMatch(message.content[0].text, /https?:|base64/)
+  } finally { bridge.dispose() }
+})
+
+test('桥：没有 attachment 服务 → 文字降级，消息不丢', async () => {
+  const root = tempRoot('image-no-service')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '看图', images: [{ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png', name: 'a.png' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    const message = agent.steers[0]
+    assert.equal(message.content.length, 1)
+    assert.match(message.content[0].text, /没有 attachment 服务/)
+  } finally { bridge.dispose() }
 })
 
 test('桥：宿主没有 systemPrompt.context 时退回单 section 全量（含动态事实）', async () => {
@@ -412,7 +506,7 @@ test('桥：插件投递用 steer(plugin notice)，不是 user followup', async 
   bridge.bindSession(session)
   bridge.bindAgent(agent)
   host.services.delivery.push({ source: { plugin: 'time', activity: 'schedule' }, content: { text: '该起床了' } })
-  assert.deepEqual(bridge.tick(), { sent: 1 })
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
   assert.equal(agent.followups.length, 0)
   assert.equal(agent.steers.length, 1)
   assert.equal(agent.steers[0].source.kind, 'plugin:time')
@@ -434,7 +528,7 @@ test('桥：delivery → agent.followup，并 ack', async () => {
 
   host.services.delivery.push({ source: { plugin: 'time', activity: 'schedule' }, content: { text: '该起床了' } })
   assert.equal(host.services.delivery.pendingCount(), 1)
-  assert.deepEqual(bridge.tick(), { sent: 1 })
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
   assert.equal(agent.followups.length, 1)
   assert.equal(agent.followups[0].content[0].text, '该起床了')
   assert.equal(host.services.delivery.pendingCount(), 0)
@@ -570,7 +664,7 @@ test('桥：没有 agent 时不抽干队列', async () => {
   const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
   bridge.start()
   host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '别丢' } })
-  assert.deepEqual(bridge.tick(), { sent: 0, skipped: 'no-agent' })
+  assert.deepEqual(await bridge.tick(), { sent: 0, skipped: 'no-agent' })
   assert.equal(host.services.delivery.pendingCount(), 1)
   bridge.dispose()
 })

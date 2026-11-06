@@ -23,10 +23,12 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 540 pass | `npm test` |
+| 全量测试 | ✅ 571 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
-| **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条）；图片真正进模型待 DSH attachment（单独申请） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
+| **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
+| **图片通道：QQ 图片字节 → DSH attachment/ImageBlock** | ✅ 已实现（bridge 换 ref；失败降级文字；fake bridge 3 条） | §7.6、`bridge.mjs`、`qq-media.test.mjs`、`dsh-bridge.test.mjs` |
+| **视频/文件落本地媒体目录 + 视频浏览器接口** | ✅ 已实现（`.state/media/inbox/qq/<date>/` + `index.jsonl`；path 约定） | §7.6、`media.mjs`、`qq-media.test.mjs` |
 | **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
 | **F1/F3 QQ 策略进 sim（按需，不进静态 system）** | ✅ `qq_help` 工具 + `skills/reply.md`；qq_status/qq_send 描述承载边界 | §7.5、`src/index.mjs`、`skills/reply.md` |
 | **A2/B1/B2 说话人信封（QQ 部分）** | ✅ 正文前缀 + `meta.qq.envelope`；bridge 侧剩余项见 §7.5 | `src/index.mjs`、`qq-envelope.test.mjs` |
@@ -222,7 +224,7 @@ packages/plugins/qq/
 | 时间 | `createdAt = ev.time*1000`（消息自己的时间）；`meta.qq.receivedAt` 是我们收到的时间 | 实时超过 `maxStaleMs`（默认 10 分钟）默认丢弃；补课消息按 `maxBackfillAgeMs`（默认 6h）单独判 |
 | 优先级 | 私聊 = **ambient**（`tags:['qq','private']`）；显式 @ 到自己才加 `at`（pierce）；群 = 不接 | 管理员/告警只能由其它来源显式打 `admin`/`alarm`；QQ 不自动授予（红队修复 2026-11-06） |
 | 是否需要回复 | **没有** reply-required 字段；影子不能回（没有发送工具） | 下一阶段再加"回过没"水位；当前不要让模型以为已回 |
-| 富媒体 | 文本用可读占位：`[图片]`、`[语音]`、`[视频]`、`[文件：name（size）]`、`[合并转发 id=…]`、`[表情]`；引用解析后 `[引用 某人：原文]` | 媒体字节不下载进模型（P0-2 只做定位 meta）；图片真正进模型等 DSH attachment 通道 |
+| 富媒体 | 图片：字节进 DSH attachment（正文只有 `[图片]`）；视频/文件：落 `.state/media/inbox/qq/<date>/`，正文追加本地绝对路径；语音仍占位 | 图片 URL/base64 **不进正文**；附件失败降级文字提示（不丢消息）；详见 §7.6 |
 | 文本 | `maxTextChars` 默认 2000；`${senderName}：${text}` | bridge summary 会再截 100 字 |
 | 通知类 | heartbeat/lifecycle 只计入 `meta` 计数，不生成 signal | `notice/request/poke` 本轮全部不接（未来另行设计） |
 
@@ -403,7 +405,7 @@ WS 断线（connector 记下 disconnectedAt/downtime）
 - **群**：本轮仍不补（phase 2）；群游标用 `message_seq` 的接口在旧项目已成熟，届时复用。
 - 配置：`ledgerFile`、`httpUrl`/`httpToken`（不填则用 SnowLuma 发现的 `httpServers[0]`）、`backfillEnabled`、`backfillCount`、`maxBackfillAgeMs`、`backfillMaxPeers`。
 
-### 7.4 入站富内容（P0-2 纯函数层，已实现；图片真正进模型待 DSH attachment）
+### 7.4 入站富内容（P0-2 纯函数层，已实现）
 
 ```text
 OneBot 段 ──► rich.mjs（纯格式化）
@@ -414,17 +416,50 @@ OneBot 段 ──► rich.mjs（纯格式化）
         ├─ reply-cache.mjs：get_msg 慢取（后台 120s、收消息最多等 replyIngestWaitMs）
         │     归属校验：私聊必须有 sender∈{peer,self} 且无 group_id；等不到放占位
         ├─ forward.mjs：get_forward_msg 展开（≤2 层、≤12 条、≤1200 字；嵌套 id 递归）
-        └─ media.mjs：仅提供安全抓取/类型/大小校验（本轮**不投给模型**，也不落地）
+        └─ media.mjs：安全抓取/类型/大小校验；图片字节 → signal.images → bridge attachment；
+             视频/文件 → 本地媒体目录（§7.6）
 ```
 
-**能力边界（写清，避免被当成"她能看图了"）**：
-- 现在模型看到的是**文本占位 + 结构 meta**，不是图片字节；图片/文件"真正进上下文"要等 DSH `ImageBlock`/attachment 通道（单独申请，按 CACHE-MODEL §7 约束）。
-- `media.mjs` 已具备：只允许 http(s)、拒绝 localhost/私网/带凭据 URL、8MB 上限、魔数嗅探 png/jpeg/gif/webp、`get_image` base64 兜底；后续接图片通道时直接复用。
 - 引用解析失败/慢：消息本身不丢，正文里是 `[引用消息 id=…（原消息加载较慢…）]`。
 - 转发展开失败：保留 `[合并转发 id=…]` 占位，不影响正文。
 - 富内容也在账本/补课路径里生效：补课消息同样走 `enrichInbound`（`backfilled:true`）。
 
-配置：`richEnabled`、`replyResolveEnabled`/`replyIngestWaitMs`/`replyResolveTtlMs`、`forwardExpandEnabled`/`forwardExpandMax`/`forwardExpandMaxChars`。
+配置：`richEnabled`、`replyResolveEnabled`/`replyIngestWaitMs`/`replyResolveTtlMs`、`forwardExpandEnabled`/`forwardExpandMax`/`forwardExpandMaxChars`；媒体见 §7.6/§8。
+
+### 7.6 入站媒体：图片 attachment / 视频文件落盘（2026-11-06）
+
+```text
+QQ 图片 ──安全抓取(media.mjs)──► signal.images[{data,mediaType,name,path}]
+                                      │ delivery.content.images（core；不入 text）
+                                      ▼
+                          dsh-icl bridge（tick）
+                              ├─ ctx.attachments.saveImages(...) → ImageAttachmentRef
+                              ├─ content: [{text}, {type:'image', attachment}]
+                              └─ 失败/没有 attachment 服务 → 正文追加一行降级提示（不丢消息）
+QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-<sender>-<ts>-<n>.<ext>
+                              ├─ index.jsonl：{at,kind,path,bytes,mime,messageId,peerId,sender,originalName}
+                              └─ 正文追加 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`
+```
+
+**图片通道的边界（按 lead 约束）：**
+- 图片字节只走 DSH attachment；正文只有 `[图片]`，**不写 URL/base64/字节**。
+- `ctx.attachments.saveImages` 不可用或失败时：消息照常投递，正文多一行 `（… 图片未能显示：原因；本地文件：<path>）`，
+  可用 DSH 全局 `read_image` 读本地路径；**事件不丢**。
+- 图片也会在本地媒体目录留一份（给降级/后续工具），但正文成功路径不暴露路径。
+- 时间/焦点积压重放只保留 `text`（time backlog 形状冻结）：睡眠中被拦的图片不会在重放时变成 attachment，
+  只留 `[图片]` 文本；这是已知降级（见 §7.5 跨模块项）。
+
+**视频/文件落盘约定（给 bili 的通用视频浏览器工具）：**
+- 根目录：`mediaInboxDir`（默认 `state 同级/media/inbox/qq`，推荐 `.state/media/inbox/qq`）；
+  文件：`<root>/<YYYY-MM-DD>/<messageId>-<sender>-<ISO时间戳>-<index>.<ext>`；同名冲突不覆盖（时间戳+序号）。
+- 索引：`<root>/index.jsonl`，一行一个 JSON（字段如上）；视频浏览器按 **本地绝对路径** 接收输入
+  （与 DSH `video_probe`/`video_storyboard` 的 `input` 约定一致）。
+- 正文里的 `[视频已保存：<path>]` 是模型能看到的路径；索引供工具/维护者检索，不要求模型读。
+- **默认限制（待用户确认）**：图片 ≤3 张/条、≤8MB/张；视频 ≤1 个/条、≤50MB；文件 ≤2 个/条、≤50MB；
+  保留 7 天（当前**不自动删除**，只记录 `mediaRetentionDays`；目录总上限建议 500MB，后续加清理任务）。
+- 安全：只 http(s)、拒 localhost/私网/带凭据 URL、大小上限、魔数嗅探（png/jpeg/gif/webp、mp4/webm）；
+  下载失败或类型不符 → 降级文字，不落盘。
+- 语音（PTT）本轮仍只占位，留 P2。
 
 ### 7.5 说话人信封与策略入口（F1/F3、A2/B1/B2 的 QQ 部分）
 
@@ -497,6 +532,12 @@ OneBot 段 ──► rich.mjs（纯格式化）
 | `replyResolveEnabled` / `replyIngestWaitMs` / `replyResolveTtlMs` | `true` / `2000` / `1800000` | 引用解析开关/收消息等待/缓存 TTL | 等不到放占位，不阻塞；归属不符返回 null |
 | `forwardExpandEnabled` / `forwardExpandMax` / `forwardExpandMaxChars` | `true` / `2` / `1200` | 合并转发展开 | 深度/条数/字数都有上限；失败保留 id 占位 |
 | `senderEnvelope` | `true` | 说话人信封（正文前缀 + `meta.qq.envelope`） | 关掉后正文回到裸 `${senderName}：${text}`；结构化字段也随之不写 |
+| `mediaEnabled` | `true` | 入站媒体总开关 | 关：图片/视频/文件只留占位，不下载不落盘 |
+| `mediaInboxDir` | `''` | 视频/文件/图片本地目录 | 空：state 同级 `media/inbox/qq`；推荐 `.state/media/inbox/qq` |
+| `maxImages` / `maxImageBytes` | `3` / `8388608` | 单条图片数量/单张大小 | 超限的图片被跳过并计数；图片走 attachment，不进正文 |
+| `maxVideoBytes` / `maxFileBytes` | `52428800` / `52428800` | 单视频/单文件上限 | 超限降级文字、不落盘 |
+| `mediaRetentionDays` | `7` | 保留天数（当前未自动删） | 只记录口径；清理任务后续加，待用户确认 |
+| `mediaFetchImpl` | `null` | 测试注入 fetch | 生产不填 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -756,13 +797,14 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 540 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 571 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
 node --test packages/core/test/qq-backfill.test.mjs    # 6 pass（账本/补课契约/断线补回/gap）
 node --test packages/core/test/qq-rich.test.mjs        # 11 pass（富段/引用/转发/媒体安全/focus 语义）
 node --test packages/core/test/qq-envelope.test.mjs    # 5 pass（说话人信封/qq_help/工具描述边界）
+node --test packages/core/test/qq-media.test.mjs       # 5 pass（图片字节/视频文件落盘/降级/安全）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -916,6 +958,18 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 - `qq_help`：列表/全文/未知条目；`skills()` 暴露 reply；默认 `prompt.names()` 没有 `qq*`（策略不占静态 system 段）。
 - 工具描述边界：qq_status 的 avoid 明确“群、不要每轮查、发消息用 qq_send”；qq_help 指向 qq_status/qq_send。
 - 补课信封在 `qq-backfill` 集成里断言：`[QQ私聊·主人] [补课] …`。
+
+### 13.10 入站媒体/图片通道（2026-11-06）
+
+`node --test packages/core/test/qq-media.test.mjs` → **5 pass**：
+- 纯函数：视频魔数（mp4/webm）、坏类型拒绝、文件名/日期目录、`index.jsonl` 记录、保留默认值。
+- 图片：`signal.images`（data/mediaType）进 delivery；正文无 URL/base64；本地留一份 + index。
+- 视频/文件：落 `<mediaInboxDir>/<date>/`，正文是 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`；
+  index 2 行、文件存在、正文无 URL。
+- 图片下载失败/视频类型不对：降级文字、不伪造 attachment、不落盘、消息不丢。
+
+`dsh-bridge.test.mjs` 新增 3 条（共 32）：attachment 成功 → `content` 含 text + image block（ref）；
+`saveImages` 失败 / 没有 attachment 服务 → 只剩文字降级（带本地路径），仍 ack/steer，不丢消息。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

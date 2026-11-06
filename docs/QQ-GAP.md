@@ -67,8 +67,9 @@
 | 文本段 / @ / face / 名片 | `bridge.js:1338-1403` 完整映射（at→群名片、mface summary、markdown、reply、forward id） | ✅ text；⚠️ 其它只占位（`normalize.mjs:42-83`） | @ 名称需要成员查询（group 阶段） | 0.5 | P1（群时） |
 | 引用回复解析（入站） | `bridge.js:11570-11697`：慢取缓存（120s）、并发去重、归属校验防跨会话、pending 占位、回复引用也当"叫你" | ✅ P0-2 已实现（`reply-cache.mjs`：等待可配/归属校验/pending/缓存） | 慢取时延受上游影响；真机 `get_msg` 语义待验证 | 0.5（已完成） | P0-2 |
 | 合并转发展开（含嵌套） | `qq-forward.js:62-91`（≤2 层、≤12 条、1200 字）；`qq-events.js:53-60` | ✅ P0-2 已实现（`forward.mjs`；假数据 fake 覆盖） | 真机 `get_forward_msg` 慢（旧项目实测 ~76s）→ 收消息不等它，失败保留 id 占位 | 0.5（已完成） | P0-2 |
-| 图片（下载 + 进模型） | `qq.js:150-196` 下载 ≤2 张/≤8MB；`qq-media.js` 落盘；v2 用 `get_image`/CDN 兜底 + `safeFetchBuffer` 安全抓取（`bridge.js:9341-9419`）；模型不能看图时降级文字 | ⚠️ 半完成：`media.mjs` 已有安全抓取/类型/大小；**字节未进模型**（只有文本占位+meta） | **需要 bridge/DSH attachment**（单独申请）；SSRF/大小/类型/超时风险 | 2 | **P0-2（剩余）** |
-| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ✅ 文本带 `[文件：name（size）]` + meta.files；下载未接 | 私聊文件会丢上下文；下载要受控路径（P1/P2） | 1 | P0-2（收）/P2（下载） |
+| 图片（下载 + 进模型） | `qq.js:150-196` 下载 ≤2 张/≤8MB；`qq-media.js` 落盘；v2 用 `get_image`/CDN 兜底 + `safeFetchBuffer` 安全抓取（`bridge.js:9341-9419`）；模型不能看图时降级文字 | ✅ 已实现：`media.mjs` 安全抓取 → `signal.images` → bridge `ctx.attachments.saveImages` → `ImageBlock`；失败降级文字 | SSRF/大小/类型/超时已限；attachment 形状真机待验 | 0（已完成） | 完成 |
+| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ✅ 文本带 `[文件：name（size）]` + 落盘 `.state/media/inbox/qq/<date>/` + index.jsonl + 本地路径进正文 | 目录/保留策略待用户确认；不自动清理 | 0（已完成） | 完成 |
+| 视频段 | focus-core 仅占位；dsh-qq 视频下载未接 | ✅ 落本地 `.../inbox/qq/`，正文 `[视频已保存：<绝对路径>]`；交给 bili 通用视频浏览器（本地绝对路径接口） | 大小/保留默认值待确认 | 0（已完成） | 完成 |
 | 语音（入站转写） | `bridge.js:61-70` 接 ASR；dsh-qq `voice-asr.js`：`fetch_ptt_text` 重试 3 次×3s，空串常见；失败降级 `[语音]`；本地 whisper 端口预留 | ❌ `[语音]` 占位 | QQ 原生转写依赖网关；延迟/失败率未知；P2 | 1.5 | P2 |
 | 表情/收藏表情元数据 | `bridge.js:1421-1463` 保留 emoji_id/package/key/url/sub_type/summary（防字段丢失后无法兜底）；dsh-qq `sticker-lib.js` 297 行知识库 | ❌ 只 `[表情]` | P1 表情体系的前置 | 0.5 | P1 |
 | 群成员/好友/人物库 | `qq-forward.js:34-55`、focus-core people；dsh-qq `social/people.js`(28KB) 入群/退群/改名片/连续性 | ❌ 无 | 群阶段；P2 | 2 | P2 |
@@ -155,6 +156,13 @@
    - 入站正文带来源信封 `[QQ私聊·主人]`/`[QQ私聊]`，结构化字段在 `meta.qq.envelope`；补课叠加 `[补课]`；time 重放保留 text（信封随 text 一起保留）。
    - **跨模块剩余项**（不在 QQ 插件里做）：bridge 需要把 delivery entry 的 `meta.qq.envelope` 渲染成 `[外部消息 · QQ私聊 · owner]` 或独立 summary；
      "被 focus 拦过"的标记需要 bridge/focus 在重放/摘要时补，QQ 侧不伪造。详见 `docs/QQ.md §7.5`。
+8. **媒体接口（图片 attachment / 视频文件落盘，2026-11-06 已实现）**：
+   - 图片：插件只把字节放进 `signal.images`，**正文不写 URL/base64**；bridge 用 `ctx.attachments.saveImages` 换
+     `ImageAttachmentRef`，content 形如 `[{text},{type:'image',attachment}]`；attachment 不可用/失败 → 正文降级提示 + 本地路径，
+     消息仍投递。**不改 prompt.section/facts 布局**（CACHE-MODEL §7 有说明小条、数字未动）。
+   - 视频/文件：落 `mediaInboxDir/<date>/`（默认 `.state/media/inbox/qq`），`index.jsonl` 记录元数据；
+     正文追加 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`——bili 的通用视频浏览器按**本地绝对路径**接收。
+   - 已知降级：time/focus 积压重放只保留 text，睡眠中被拦的图片重放时不会变成 attachment；语音 PTT 仍占位。
 
 ---
 
@@ -190,20 +198,22 @@
   - 单测：seq 单调、qq_id 去重、水位只进不退、断层不跳号、重启恢复（SQLite）。
   - 真实窗口（需 lead 批准）：连接中 kill SnowLuma WS（或断网模拟不可行时 kill lab 的 WS 连接）→ 恢复后 gap 指标合理、无重复回复；私聊补课能力按真机结论记录（做不到就明确报 gap，不静默）。
 
-**P0-2 入站富内容（预计 4–6 人日，含 bridge/cache 协调；✅ 2026-11-06 纯函数层已落地）**
-- ✅ 已实现（`packages/plugins/qq`，未动 bridge/DSH）：`rich.mjs`（segmentsToText/媒体/文件/转发 id/引用 id/@自己）、
+**P0-2 入站富内容（预计 4–6 人日；✅ 2026-11-06 全部落地：纯函数层 + 图片 attachment + 视频/文件落盘）**
+- ✅ 纯函数层（`packages/plugins/qq`）：`rich.mjs`（segmentsToText/媒体/文件/转发 id/引用 id/@自己）、
   `reply-cache.mjs`（`get_msg` 慢取 120s、收消息等待可配、并发去重/负缓存、归属校验、pending 占位）、
-  `forward.mjs`（节点形状兼容、嵌套≤2 层、≤12 条/1200 字）、`media.mjs`（http(s)/禁内网/8MB/魔数/`get_image` 兜底）；
-  index 在闸门前异步 enrich（普通文本仍同步路径），补课也走同一 enrich；`meta.qq` 增加 media/files/forwardIds/replyId/atSelf。
-- ✅ 测试：`qq-rich.test.mjs` 11 条（段/提取/引用/转发/媒体安全/插件集成/focus 语义）；全量 540 pass。
-- 边界：**图片/文件字节还没有进模型**（只有文本占位 + meta）；真正进上下文要 DSH attachment/`ImageBlock` 通道，
-  按 lead 要求单独申请；届时遵守 CACHE-MODEL §7、改 bridge 前 merge master、给 cache 留言。
-- 原验收计划（剩余项）：
-  - 进模型：优先 DSH attachment/`ImageBlock`；不可用降级"文本明确说明 + `qq_get_message_images` 工具按需取图"。
-  - fake：私聊富消息（图片+文件+引用+转发）→ 模型可见：文字 + 图片（或可操作提示）+ 文件 name/size + 引用原文 + 转发展开；获取失败**降级占位并上报**，事件不丢。
-  - 安全：非 http(s)/内网/超大/非图片 → 拒绝且不崩；不把本地路径/凭据交给模型。
-  - cache：`npm test` 全绿 + CACHE-MODEL §7 自检不变 + cache 留言。
-  - 真实窗口（需 lead 批准）：用户发 1 图 → 她能描述/引用；发 1 引用回复 → 她知道在回哪句。
+  `forward.mjs`（节点形状兼容、嵌套≤2 层、≤12 条/1200 字）、`media.mjs`（http(s)/禁内网/8MB/魔数/`get_image` 兜底）。
+- ✅ 图片通道（跨模块，lead 批准）：QQ 抓取图片字节 → `signal.images` → delivery `content.images` →
+  bridge 用 `ctx.attachments.saveImages` 换 `ImageAttachmentRef` → `content:[{text},{type:'image',attachment}]`；
+  正文不写 URL/base64；attachment 不可用/失败 → 正文降级提示（带本地路径，可用 `read_image`），消息不丢。
+- ✅ 视频/文件：落 `<mediaInboxDir>/<date>/<msgId>-<sender>-<ts>-<n>.<ext>` + `index.jsonl`，
+  正文追加 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`；bili 的通用视频浏览器按本地绝对路径接收。
+- ✅ 测试：`qq-rich.test.mjs` 11、`qq-media.test.mjs` 5、`dsh-bridge.test.mjs` 图片通道 3；全量 571 pass。
+- 边界（写清）：time/focus 积压重放只保留 text（time backlog 形状冻结），睡眠中被拦的图片重放时不会变成 attachment，
+  只留 `[图片]` 文本（已知降级）；语音 PTT 仍占位（P2）。
+- cache：bridge 只改投递消息 content（user notice），**未新增/修改 prompt.section 或 facts**；
+  CACHE-MODEL §7 追加了一小节说明（不改数字），已给 cache 留言。
+- 原验收计划（全部满足）：图片/文件 fake 场景、失败降级、安全限制、正文无 URL/base64、cache 自检不变。
+  真实窗口（需 lead 批准）：用户发 1 图 → 她能描述/引用；发 1 视频 → 本地路径可被视频浏览器读取。
 
 ### P1（P0 稳定后）
 
@@ -233,7 +243,7 @@
 | qq-poller 游标/补课 | **适配** | 群逻辑可搬（`message_seq`）；私聊要按 SnowLuma `get_friend_msg_history` 重新定契约（旧项目没做过私聊补课） | 1.5–2 |
 | 引用慢取缓存（quote-forward.js） | **适配** | 纯函数可直接移植（`createSlowFetchCache`/`waitAtMost`/`pendingReplyText`）；fetch 换成我们的 OneBot call | 0.5 |
 | 图片获取（fetchOneBotImage） | **适配 + 自己写安全层** | 旧实现含 CDN 兜底/大小/类型校验，但有本地路径/依赖；我们要加 SSRF allowlist（仅 http(s)、禁内网） | 1.5 |
-| DSH 图片投递（bridge） | **自己写（小改）** | 旧项目不经过 ICL；需按 DSH attachment API + cache 约束实现 | 1–1.5 |
+| DSH 图片投递（bridge） | **自己写（小改）** | 已实现：`toDshUserMessage` 支持 ImageBlock；bridge `ctx.attachments.saveImages` + 降级文字；未改 prompt/facts 布局 | 完成 |
 | 群 pipeline / 群策略 | **适配 focus-core**（不搬 bridge） | `qq-poller/router/policy` 的语义成熟且有测试；重新接到 ICL signals/focus | 3–4 |
 | 唤醒矩阵 / replyCheck / proactive | **适配 dsh-qq 语义 + 自己写调度** | 旧逻辑与"多 DSH 会话"绑定；只取 triggers/budget/batch 语义，生成 signal | 4–6 |
 | 语音（ASR/TTS） | **适配** | `voice-asr/voice-tts` 纯逻辑清楚；网关动作已确认；依赖模型/音色文件 | 3–4 |
@@ -310,7 +320,7 @@
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；全量 540 pass。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-media.test.mjs` 5、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；`dsh-bridge.test.mjs` 32；全量 571 pass。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证
