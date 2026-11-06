@@ -1078,3 +1078,90 @@ test('facts dirty：MC 事件不让快照变化，time 事件才刷新（≤1 �
     bridge.dispose()
   }
 })
+
+/* ── 通用重复动作保护（local3: 87 次同一句 mcb_do say） ─────────────── */
+
+function repeatGuardSetup({ now } = {}) {
+  let clock = now ?? 1_000_000
+  const host = createHost({ log: () => {}, now: () => clock })
+  const ctx = fakeCtx()
+  const root = tempRoot('repeat')
+  const bridge = createDshBridge({
+    ctx,
+    host,
+    config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), tickMs: 3_600_000, now: () => clock },
+  })
+  const session = fakeSession('repeat-session')
+  const agent = fakeAgent(session)
+  bridge.start()
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  const emit = (name, args, seq) => bridge.onEvent(session, { type: 'tool/call', seq, time: clock, data: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } })
+  return { host, ctx, bridge, session, agent, emit, advance: (ms) => { clock += ms }, clock: () => clock }
+}
+
+test('重复动作保护：连续 3 次同签名注入 notice，第 4 次不再重复（60s 节流）', async () => {
+  const { bridge, emit, agent } = repeatGuardSetup()
+  try {
+    emit('mcb_do', { intent: '说同一句', steps: [{ op: 'say', params: { text: '重连回来了，16:35 睡觉，先把家收拾一下' } }] }, 1)
+    emit('mcb_do', { intent: '说同一句', steps: [{ op: 'say', params: { text: '重连回来了，16:35 睡觉，先把家收拾一下' } }] }, 2)
+    assert.equal(agent.followups.length, 0, '两次不应提示')
+    emit('mcb_do', { intent: '说同一句', steps: [{ op: 'say', params: { text: '重连回来了，16:35 睡觉，先把家收拾一下' } }] }, 3)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 1, '第三次应注入一条 notice')
+    const text = JSON.stringify(agent.followups[0])
+    assert.match(text, /连续重复同一动作 3 次/)
+    assert.match(text, /mcb_do/)
+    assert.equal(bridge.status().stats.repeatGuards, 1)
+    emit('mcb_do', { intent: '说同一句', steps: [{ op: 'say', params: { text: '重连回来了，16:35 睡觉，先把家收拾一下' } }] }, 4)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 1, '第 4 次在同一 60s 窗口内不应重复提示')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('重复动作保护：args 不同/交替不触发；60s 后可再次提示', async () => {
+  const { bridge, emit, agent, advance } = repeatGuardSetup()
+  try {
+    // 交替不同 args：每次签名都换，count 永远到不了 3
+    for (let i = 0; i < 6; i += 1) emit('mcb_do', { intent: '说', steps: [{ op: 'say', params: { text: `第 ${i} 句` } }] }, i + 1)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 0, '不同 args 不应触发')
+    // 稳定同签名 3 次 → 触发
+    for (let i = 0; i < 3; i += 1) emit('mcb_status', {}, 100 + i)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 1)
+    // 节流窗口内继续重复：不再提示
+    for (let i = 0; i < 3; i += 1) emit('mcb_status', {}, 200 + i)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 1)
+    // 过 60s 后仍在重复 → 再次提示
+    advance(61_000)
+    for (let i = 0; i < 3; i += 1) emit('mcb_status', {}, 300 + i)
+    await bridge.tick()
+    assert.equal(agent.followups.length, 2, '节流窗口过后应再提示')
+    assert.equal(bridge.status().stats.repeatGuards, 2)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('重复动作保护：config.repeatGuard=false 关闭', async () => {
+  const root = tempRoot('repeat-off')
+  const host = createHost({ log: () => {} })
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), tickMs: 3_600_000, repeatGuard: false } })
+  const session = fakeSession('s-off')
+  const agent = fakeAgent(session)
+  bridge.start()
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    for (let i = 0; i < 5; i += 1) bridge.onEvent(session, { type: 'tool/call', seq: i + 1, data: { name: 'mcb_status', arguments: '{}' } })
+    await bridge.tick()
+    assert.equal(agent.followups.length, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
