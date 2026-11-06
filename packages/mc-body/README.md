@@ -132,3 +132,8 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 - 字段名稳定不改：`pausedReason:"user-stop"` ↔ time `pausedMode.source/reason`；`safety.reflex/lastReflex`、`playable`、`spawnLog` 只读对齐。
 
 - **pausedReason 规范值**：`mcb_stop` 不管调用方传 `reason:"mcb_stop"|"manual"|"api"|"stop"`，body 一律把 `pausedReason` 置为 **`user-stop`**（便于与 time `pausedMode.source/reason` 对账），原始原因保留在 `requestedReason` / `safety.requestedReason`。真服 smoke（54839，`.state/lab/mc-body-soak/pause-smoke/`）已验证：stop 回执任务/身体分开、`safety_stop` 事件顶层+data+meta 三层 alarm/pierce、暂停中 stop 幂等/查询可用/写动作 409、resume 后新任务 done（net 3）。
+
+## 看屏幕（MC-EYES）
+
+MC body 本身无渲染；“能不能真看屏幕”的三方案对比、推荐、PoC 与实测数据见 [`docs/MC-EYES.md`](../../docs/MC-EYES.md)。
+PoC：`node packages/mc-body/tools/eyes-poc.mjs --viewer-root <prismarine-viewer 安装目录> --out <png>`（离线区块 → viewer → Edge headless 截图；不占 GPU 模型锁）。
