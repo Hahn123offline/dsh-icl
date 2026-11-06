@@ -1558,7 +1558,7 @@ export function apply(ctx) {
     {
       name: 'mcb_eyes',
       summary: '按需截图（Edge headless，成本高）：返回 PNG 图片附件 + 落盘路径；可用 mode:"snapshot" 复用结构化快照。',
-      description: 'POST /v1/eyes/screenshot；参数 mode（screenshot 默认/snapshot）、kind、frames(1–8)、width/height、waitMs(3–10s)。成本约 7–8s/张、Edge 峰值 ~1.3GB（CPU 软渲染，不占 GPU 锁）；quota：同时 1 个、间隔 ≥15s。仅里程碑/告警取证/用户明确要看画面时用，日常用 mcb_snapshot。返回 PNG 附件 + JSON meta；429 太频繁、501 未配置 viewer/Edge（改用 snapshot）、500 可重试一次。',
+      description: 'POST /v1/eyes/screenshot；参数 mode（screenshot 默认/snapshot）、kind、frames(1–8)、width/height、waitMs(3–10s)。成本约 7–8s/张、Edge 峰值 ~1.3GB（CPU 软渲染，不占 GPU 锁）；quota：同时 1 个、间隔 ≥15s。仅里程碑/告警取证/用户明确要看画面时用，日常用 mcb_snapshot。返回 PNG 附件 + JSON meta；429 太频繁、501 未配置 viewer/Edge（改用 snapshot）、500 可重试一次。负 Y 世界渲染层整体 +64：仅当前中心 y<0 时截图视觉 y 比真实高 64（y≥0 不偏移；业务坐标/verify 不受影响；meta.viewer.center 为真实坐标）。kind:"shelter" 自动对准家门口仅在 status.home 已写入后生效（否则默认斜上方镜头）。**截图对结构仅作参考，验收仍以 body verify 为准**。',
       when: ['里程碑/告警要留画面证据', '用户明确要求"看一眼/截个图"', '画面相关判断（建筑外观、地形大局）'],
       avoid: ['日常看场景/找方块：mcb_snapshot 更快更便宜', '需要精确坐标/数量：用结构化快照，别靠看图'],
       parameters: {

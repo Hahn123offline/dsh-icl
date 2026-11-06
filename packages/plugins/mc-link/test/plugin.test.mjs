@@ -1489,6 +1489,28 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     const eyes = await link.tools.mcb_help.execute({ skill: 'eye' })
     assert.match(eyes.text, /MC 眼睛/)
     assert.match(eyes.text, /先.*snapshot.*后.*screenshot|日常看场景先用/)
+    // live-world 截图已修：不再说"可能只截到天空"，改成"对结构仅作参考"
+    assert.doesNotMatch(eyes.text, /可能只截到天空/)
+    assert.match(eyes.text, /截图对结构仅作参考/)
+    assert.match(eyes.text, /负 Y 世界.*渲染层整体 \+64|截图里的视觉 y 会比真实坐标高 64/)
+    assert.match(eyes.text, /以 body 的 `verify`|验收.*verify|结构校验/)
+    assert.match(eyes.text, /kind:"shelter".*镜头|对准家的 center/)
+    // 实现细节：home 已写入才自动对准；+64 仅负 Y；meta.viewer.center 是真实坐标
+    assert.match(eyes.text, /只在最近一次 shelter 成功、`status\.home` 已写入后生效/)
+    assert.match(eyes.text, /没有家时回退默认镜头/)
+    assert.match(eyes.text, /仅当当前中心 y<0.*视觉 y 比真实高 64/)
+    assert.match(eyes.text, /y≥0 的普通世界不偏移/)
+    assert.match(eyes.text, /meta\.viewer\.center.*真实坐标/)
+    // 工具描述同样更新（旧警告移除、新措辞在）
+    assert.doesNotMatch(link.tools.mcb_eyes.description, /可能只截到天空/)
+    assert.match(link.tools.mcb_eyes.description, /截图对结构仅作参考/)
+    assert.match(link.tools.mcb_eyes.description, /仅当前中心 y<0 时截图视觉 y 比真实高 64/)
+    assert.match(link.tools.mcb_eyes.description, /status\.home 已写入后生效/)
+    assert.match(link.tools.mcb_eyes.description, /meta\.viewer\.center 为真实坐标/)
+    // shelter 技能也说明"没家时回退默认镜头"
+    const shelter = await link.tools.mcb_help.execute({ skill: 'shelter' })
+    assert.match(shelter.text, /镜头.*只在 home 已写入时生效/)
+    assert.match(shelter.text, /没家就回退默认斜上方镜头/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {
