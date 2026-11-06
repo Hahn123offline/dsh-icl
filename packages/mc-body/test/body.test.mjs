@@ -834,3 +834,25 @@ test('body：暂停中允许 eat/stop（低血能自己爬出来）；写动作�
   assert.equal(typeof recovery.lowHealthPauseCooldownMs, 'number')
   await body.stop()
 })
+
+test('body：shelter 成功写入 home（status/ldger 持久化，且不被 returnToSafe 带走）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-home-'))
+  const stateFile = path.join(root, 'tasks.json')
+  const adapter = fakeAdapter()
+  const home = { origin: { x: 10, y: 64, z: 10 }, center: { x: 11, y: 64, z: 11 }, door: { x: 11, y: 64, z: 12 }, size: 3, height: 3, interiorHeight: 2, material: 'oak_planks' }
+  let returnCalls = 0
+  adapter.runTask = async () => ({ home, entryOk: true, verify: { ok: true } })
+  adapter.returnToSafe = async () => { returnCalls += 1 }
+  const first = await startedBody({ adapter, stateFile, watchdogMs: 60_000 })
+  const task = first.body.createTask({ kind: 'shelter', params: { material: 'oak_planks' } })
+  await waitFor(() => first.body.getTask(task.id)?.state === 'done', 2000, 'shelter done')
+  assert.equal(first.body.status().home.origin.x, 10)
+  assert.ok(first.body.eventsSince(0).events.some((event) => event.type === 'home_set'))
+  assert.equal(returnCalls, 0, '建完小屋不应被 returnToSafe 带走')
+  await first.body.stop()
+
+  // 重启后 home 仍在
+  const second = await startedBody({ adapter: fakeAdapter(), stateFile, watchdogMs: 60_000 })
+  assert.equal(second.body.status().home.origin.x, 10)
+  await second.body.stop()
+})

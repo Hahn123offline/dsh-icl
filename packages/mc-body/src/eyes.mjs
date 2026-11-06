@@ -102,6 +102,7 @@ export function buildStructuredSnapshot({ status = {}, adapterSnapshot = null, i
       lastDefense: status?.safety?.lastDefense ?? null,
     },
     playable: status?.playable ?? null,
+    home: status?.home ?? null,
     recentEvents: (Array.isArray(events) ? events : []).slice(-10).map((event) => ({ seq: event.seq, type: event.type, at: event.at })),
     radius,
   }
@@ -251,4 +252,5 @@ export async function captureScreenshot({
     killTree()
   }
 }
+
 

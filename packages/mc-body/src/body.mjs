@@ -118,6 +118,7 @@ export function createBody({
   let paused = false
   let pausedReason = null
   let activeDo = null
+  let home = null
   let defenseTimes = []
   const defenseStats = { count: 0, lastAt: null, lastReason: null, lastAction: null, lastDurationMs: null, lastTimedOut: false, lastEventSeq: null }
   let defenseActive = false
@@ -162,7 +163,7 @@ export function createBody({
       const rows = [...tasks.values()].map(({ controller, timer, abandonTimer, ...task }) => task)
       fs.mkdirSync(path.dirname(stateFile), { recursive: true })
       const tmp = `${stateFile}.tmp`
-      fs.writeFileSync(tmp, JSON.stringify({ version: 2, savedAt: stamp(), tasks: rows }, null, 2), 'utf8')
+      fs.writeFileSync(tmp, JSON.stringify({ version: 3, savedAt: stamp(), home, tasks: rows }, null, 2), 'utf8')
       fs.renameSync(tmp, stateFile)
     } catch { /* 台账失败不影响身体；事件里有 body_error 兜底 */ }
   }
@@ -172,6 +173,7 @@ export function createBody({
     let loaded = 0
     try {
       const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+      if (data?.home && typeof data.home === 'object') home = data.home
       for (const raw of Array.isArray(data?.tasks) ? data.tasks : []) {
         if (!raw?.id) continue
         const task = { ...raw, controller: null, timer: null }
@@ -332,7 +334,14 @@ export function createBody({
       else if (next.interruptReason) setTask(next, 'interrupted', { error: next.interruptReason })
       else if (next.pausedByDisconnect) setTask(next, 'paused', { pausedReason: 'disconnect' })
       else if (next.timedOut) setTask(next, 'unknown', { error: 'timeout', outcomeUnknown: true })
-      else setTask(next, 'done', { result: result ?? null })
+      else {
+        setTask(next, 'done', { result: result ?? null })
+        if (result?.home && typeof result.home === 'object') {
+          home = { ...result.home, taskId: next.id, kind: next.kind }
+          push('home_set', { home })
+          saveLedger()
+        }
+      }
     } catch (error) {
       if (TERMINAL.has(next.state) || (next.state === 'paused' && next.pausedByDisconnect)) {
         push('task_settle_ignored', { taskId: next.id, message: String(error?.message ?? error) })
@@ -352,7 +361,8 @@ export function createBody({
         pumping = false
       }
       if (movementTaskId === next.id) { movementTaskId = null; movement.reset() }
-      if (!paused && connectionState !== false && queue.length === 0 && !returning && !closed && typeof adapter.returnToSafe === 'function') {
+      // 建完小屋要留在家里（不要自动 returnToSafe 走掉）。
+      if (!paused && connectionState !== false && queue.length === 0 && !returning && !closed && next.kind !== 'shelter' && typeof adapter.returnToSafe === 'function') {
         returning = true
         Promise.resolve(adapter.returnToSafe())
           .catch(() => {})
@@ -1355,6 +1365,7 @@ export function createBody({
       task: taskView(current),
       queue: queue.map(taskView),
       pausedTasks: [...tasks.values()].filter((task) => task.state === 'paused').map(taskView),
+      home,
       spawnLog: spawnLog.slice(-10),
       eventsSeq: seq,
       reconnect: adapterState.reconnect ?? null,
@@ -1382,6 +1393,8 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
 
 
 
