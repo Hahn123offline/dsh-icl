@@ -8,13 +8,13 @@
 
 | 方案 | 工具数 | 字符 | 行为变化 | 需批准 | 回滚 |
 |---|---|---|---|---|---|
-| **A1**：产品 `icl` 去掉 `mc-link`（MC 只走 `icl-mc`） | **51** | **34,101**（cache sanctioned 离线；本地复算 34,049，+52 待 cache diff） | desktop ICL 不再有 `mcb_*`；玩 MC 用 `icl-mc` preset | 用户（MC 入口变化） | 加回 `- mc-link` 一行 → 68/46,541 |
-| **A2（sandbox 产品化同批）**：A1 + 下线 `editor`（换 DSH 原生 fs 工具） | **48** | **32,924**（本地；若 +52 差异适用则 32,976，仍接近上限） | 产品 ICL 无 `read_file/write_file/list_dir`，改用原生 `read/write/edit/glob/grep/pwsh` | 用户（与 sandbox 同批） | 加回 `- editor` → 51/34,049 |
-| **A2+O（推荐达标）**：A2 + 下线 `memory_export`(277) + `time_edit`(447) | **45** | **31,923**（本地；若 +52 差异适用则 31,975，仍达标） | 少一个手动导出、少一个日程编辑工具（其余日程工具保留） | 用户（P2 裁剪） | 加回两行 → 48/32,924 |
+| **A1**：产品 `icl` 去掉 `mc-link`（MC 只走 `icl-mc`） | **51** | **34,101**（cache 数组 JSON 口径）/ **34,049**（Σ 每工具 JSON，product-surface 口径；差 52=数组分隔符） | desktop ICL 不再有 `mcb_*`；玩 MC 用 `icl-mc` preset | 用户（MC 入口变化） | 加回 `- mc-link` 一行 → 68/46,541 |
+| **A2（sandbox 产品化同批）**：A1 + 下线 `editor`（换 DSH 原生 fs 工具） | **48** | **32,924**（Σ 口径；cache 数组口径 32,976，差 52） | 产品 ICL 无 `read_file/write_file/list_dir`，改用原生 `read/write/edit/glob/grep/pwsh` | 用户（与 sandbox 同批） | 加回 `- editor` → 51/34,049 |
+| **A2+O（推荐达标）**：A2 + 下线 `memory_export`(277) + `time_edit`(447) | **45** | **31,923**（Σ 口径；cache 数组口径 31,975，仍达标） | 少一个手动导出、少一个日程编辑工具（其余日程工具保留） | 用户（P2 裁剪） | 加回两行 → 48/32,924 |
 | B（可选更低）**A2+O + bili 移场景** | 38 | 27,145 | 刷 B 站要进 `icl-bili` 场景 | 用户 | 加回 `- bili` |
 | C（保守）**只加显式白名单，不删** | 68 | 46,541 | 无（只是锁面） | 用户（确认预算） | 删白名单行 |
 
-> 目标 45–50 / 28–32k：**A1 略超工具上限**（51）、**A2 字符略超**（48/32,924）、**A2+O 精确达标**（45/31,923）。cache 2026-11-07 sanctioned 离线实测 A1 = **51/34,101**（本地复算 34,049，+52 差异待 diff 定位；不影响 A2+O 达标结论）。代价只有"MC 不再出现在生活会话"（MC 本来就有独立 `icl-mc`）+ 两个低频工具下线，不动生活核心。
+> 目标 45–50 / 28–32k：**A1 略超工具上限**（51）、**A2 字符略超**（48/32,924）、**A2+O 精确达标**（45/31,923）。cache 2026-11-07 sanctioned 离线 A1 = **51/34,101（数组 JSON 口径）** / 本地 Σ 口径 **34,049**（差 52=数组分隔符；不影响 A2+O 达标结论）。代价只有"MC 不再出现在生活会话"（MC 本来就有独立 `icl-mc`）+ 两个低频工具下线，不动生活核心。
 
 ## 1. 当前产品面（实测）
 
@@ -157,7 +157,7 @@ import('./packages/core/src/index.mjs').then(async ({createHost}) => {
 "
 ```
 
-当前输出：`tools 68 chars 46541`（ICL 面；DSH 原生工具另计；album 二阶段 +2）。cache 2026-11-07 离线 A1（去 mc-link）= 51/34,101，本地同命令 = 34,049（+52 差异未定位，已请 cache diff）；icl-lab sanctioned = 56/41,577/`1ac40db7d8d0`、icl-mc-lab = 27/21,459/`c91bce1e703b`（两轮不变）。历史 lab 指纹：icl-lab 54/39,350/`c1df0e849a9f`、icl-mc-lab 27/21,459/`c91bce1e703b`（cache `6d2c518` sanctioned）。
+当前输出：`tools 68 chars 46541`（ICL 面；DSH 原生工具另计；album 二阶段 +2）。cache 2026-11-07 离线 A1（去 mc-link）= 51/34,101（数组 JSON 口径）/ 本地 Σ = 34,049（差 52=数组分隔符）；icl-lab sanctioned = 56/41,577/`1ac40db7d8d0`、icl-mc-lab = 27/21,459/`c91bce1e703b`（两轮不变）。历史 lab 指纹：icl-lab 54/39,350/`c1df0e849a9f`、icl-mc-lab 27/21,459/`c91bce1e703b`（cache `6d2c518` sanctioned）。
 
 ## 7. 不做什么
 
