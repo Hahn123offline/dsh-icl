@@ -3,7 +3,7 @@
 > 状态：**最小实现已落地**（2026-11-06，wt/bili）。工具在 `packages/plugins/video`，桥接层的图片通道在
 > `packages/core/src/dsh-contract.mjs` + `packages/dsh-icl/src/bridge.mjs`。
 > 定位：**本地视频的通用入口**，不依赖 B 站、不依赖 QQ；B 站专用能力仍在 `packages/plugins/bili`。
-> **启用范围**：lab preset 已挂载（`icl-lab`/`icl-mc-lab`）；**产品 preset 待用户批准**（当前只在 lab 可用，desktop 未启用）。
+> **启用范围**：lab preset 已挂载（`icl-lab`/`icl-mc-lab`）；**产品 preset（`icl`）未显式写 `plugins`，按默认装配 `video` 也已生效**（"产品未启用 video"是旧文档）。产品显式启用与工具面预算待用户批准/拍板（见 `docs/PRODUCT-SURFACE.md` / `docs/PRODUCTIZATION-KICKOFF.md`），desktop 尚未重启验证。
 
 ---
 
