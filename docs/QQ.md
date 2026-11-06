@@ -400,7 +400,8 @@ WS 断线（connector 记下 disconnectedAt/downtime）
         │     过滤：账本已有 qq_id / 自己发的 / 早于水位 2s 以上 / 超 maxBackfillAgeMs
         │     命中 → 同一 signal.id 走 gate（backfilled:true）→ signals.offer
         ├─ 水位：delivered 只在 signals.offer 被接受（或幂等去重）后前进；
-        │         被 time/focus 拦下 = 未交付；attended（已读）只由 qq_mark_read 推进且不能跨过未交付
+        │         被 time/focus 拦下 = 未交付；time/focus 重放完 backlog 后调 qq.noteDeliveredSeqs 补 delivered
+        │         attended（已读）只由 qq_mark_read 推进且不能跨过未交付
         └─ gap 可见：reconnects / lastDowntimeMs / backfillRuns / filled / dropped / failed / unsupported
              qq_status 文本 + status.json 的 `gap`、`ledger` 字段
 ```
@@ -528,6 +529,19 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - `qq_mark_read` 不自动发消息/不标记已回。`qq_replied` 的"已回"仍只在**成功发送**后标（quoted reply 至少标到被引用 seq）。
 - 被拦下的行记 `blocked_reason/blocked_at`（来自 time/focus 拒绝原因，若可得）；`qq_status.stats.blockedReasons` 汇总原因。
 - 补课消息与普通消息同一套账本；`qq_history` 里能看到 `[补课]` 标记。
+
+**跨模块重放回执契约（time/focus → QQ；2026-11-07）**：
+- QQ 在共享服务 `ctx.services.provide('qq', …)` 暴露 **`noteDeliveredSeqs({ activity, seqs, via, at })`**
+  （也接受 `peer` 代替 `activity`；`via` 例：`time-backlog` / `focus-backlog`）。
+- **谁调/何时调**：time/focus 把被自己拦下的 QQ backlog **真正重放给模型之后**调用（不是入队时、不是拦截时）。
+  重放内容来自 time backlog 的原 signal；time 侧知道 `from.activity` 与原 `meta.qq.ledger.seq`，逐条/分批回执。
+- **只推 delivered**：按 seq 写 `delivered_at`（幂等；不存在/已交付的 seq 忽略），从而推进**连续** `deliveredSeq`；
+  **不推 attended、不算已读、不发 QQ 消息、不标记已回**。空洞（seq1 未交付、seq2 已交付）不会让 deliveredSeq 跨过去。
+- **失败不影响投递**：服务内部 catch，返回 `{ok:false,error}` 而不 throw；time/focus 可以忽略返回值，绝不能因为回执失败中断重放。
+- **返回**：`{ok, accepted, skipped, deliveredSeq, attendedSeq, lastSeq, via, at}`；`qq_status.ledger.deliveredVia[via]`
+  统计 `{accepted, skipped, calls, lastAt}`（便于核对各来源补推量）。
+- 回执后：`qq_unread` 的行尾 `[未交付]` 标记消失、`deliveredSeq` 前进；用户/模型再 `qq_mark_read` 才能推进 `attendedSeq`。
+  未收到回执的（例如 time 重放了但版本不支持该契约）仍保持未交付——安全侧，不静默丢。
 
 ### 7.8 P1 表情包：本地库列表 + 发送本地图片 + 知识库
 
@@ -1092,6 +1106,9 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
   `qq_mark_read {throughSeq:3}` 只推进到 0（拒绝跨未交付）、正文给"未交付 3 条/不会被标掉"；
   `qq_unread` 三条仍可见（行尾 `[未交付·被拦：…]`）；`qq_status.ledger.watermarks` 三数齐全；
   nudge 仍尝试提醒（提醒 signal 也被 time 拦，但规划器计数增加）。
+  同一用例覆盖跨模块回执：`noteDeliveredSeqs({activity, seqs:[2], via:'time-backlog'})` 不推进连续水位（seq1 空）、
+  `[1,3]` 后 deliveredSeq=3/attendedSeq 仍 0；重复调用幂等；`status.ledger.deliveredVia['time-backlog']` 计数正确；
+  回执后 `qq_unread` 的未交付标记消失、`qq_mark_read` 才能推进到 3；`peer` 别名可用、缺 activity 返回 ok:false 不抛。
 - `qq-ledger-tools.test.mjs` 第 7 条用 SQLite 单测证明 `deliveredSeq` 连续语义与 markRead 夹取。
 - 契约：**delivered ≠ seen ≠ attended**；未交付 = 被 time/focus 拦下、`delivered_at IS NULL`，只能等待真正交付，不能被 mark_read 清掉。
 
