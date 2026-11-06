@@ -242,6 +242,33 @@ export function apply(ctx) {
   function recordRun(day, job, detail, now) {
     memory.put({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: `${day} ${job}`, data: detail, now })
   }
+  /**
+   * 可观测修复（E2 质量门）：失败/跳过也落 dream-run，让"没跑"和"跑失败"可区分。
+   * 仍用 kind:'run'（mc-quality 的现状解析器按 `:(\w+)$` 取 job、按 data.error 计 failures），
+   * 但 key 用 `fail:`/`skip:` 前缀，不占用 alreadyRan 的成功 key（不会阻止第二天重跑）。
+   * 判定口径（写进 docs/MEMORY-BLOCK-QUALITY.md §4）：
+   *   run:<day>:<job>  → 成功（既有）
+   *   fail:<day>:<job> → 失败，data:{ok:false,error,job}
+   *   skip:<day>:<job> → 跳过，data:{ok:true,skipped,job,missing?}
+   */
+  function recordOutcome(day, result, now) {
+    const job = String(result?.job ?? 'run')
+    if (result?.ok === false) {
+      memory.put({
+        namespace: 'dream-run', kind: 'run', key: `fail:${day}:${job}`, text: `${day} ${job} fail`,
+        data: { ok: false, job, error: String(result.error ?? 'unknown'), ...(result.degraded ? { degraded: true } : {}), ...(result.failedShards ? { failedShards: result.failedShards } : {}) },
+        now,
+      })
+      return
+    }
+    if (result?.skipped) {
+      memory.put({
+        namespace: 'dream-run', kind: 'run', key: `skip:${day}:${job}`, text: `${day} ${job} skip`,
+        data: { ok: true, job, skipped: String(result.skipped), ...(result.rawSources ? { rawSources: result.rawSources } : {}), ...(Number(result.missing) ? { missing: Number(result.missing) } : {}) },
+        now,
+      })
+    }
+  }
 
   /** 只保留最近 90 天的做梦账本；否则每天 5–7 行会无界增长。 */
   function pruneRuns(now, keepDays = 90) {
@@ -959,6 +986,11 @@ export function apply(ctx) {
     if (!force && alreadyRan(day, 'index')) return { job: 'index', skipped: 'already-ran' }
     const missing = memory.missingVectors({ limit: 200 })
     if (!missing.length) return { job: 'index', skipped: 'nothing-missing' }
+    // 没有嵌入模型时，memory.index() 一律返回 false——旧实现仍报 ok:true/indexed:0，
+    // 看起来像"跑过了、索引了 0 条"，其实是"根本没能力索引"。明确回报，不假装。
+    let embedded = false
+    try { embedded = memory.stats?.()?.embedded === true } catch { embedded = false }
+    if (!embedded) return { job: 'index', skipped: 'no-embed', missing: missing.length }
     let indexed = 0
     for (const item of missing) {
       try {
@@ -1201,6 +1233,8 @@ export function apply(ctx) {
       try { results.push(await job({ now, force })) } catch (error) { results.push({ job: name, ok: false, error: String(error?.message ?? error) }) }
     }
     const ok = results.every((r) => r.ok !== false)
+    // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
+    for (const result of results) recordOutcome(day, result, now)
     const pruned = pruneRuns(now)
     // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
     const receipt = emitDreamResult({ now, results })
@@ -1229,8 +1263,9 @@ export function apply(ctx) {
       .catch((error) => {
         const reasonText = String(error?.message ?? error)
         ctx.log({ level: 'warn', msg: 'dream.run-fail', reason, error: reasonText })
-        // 整轮异常也要给 time 一个失败回执（否则醒来简报只能写"未回传"）。
+        // 整轮异常也要留账：失败行 + time 的失败回执（否则简报只能写"未回传"）。
         const failed = { job: 'run', ok: false, error: reasonText }
+        try { recordOutcome(dayKey(now, tzOf()), failed, now) } catch { /* 记账失败不拖垮 */ }
         emitDreamResult({ now, results: [failed] })
         return { ok: false, day: null, results: [failed], error: reasonText }
       })

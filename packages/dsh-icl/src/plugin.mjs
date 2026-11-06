@@ -105,12 +105,19 @@ export function createIclPlugin({ ctx, config = {} }) {
     state.enabled = result.enabled
     if (state.disposed) return result
     for (const item of state.buffered.splice(0)) bridge.onEvent(item.session, item.event)
+    // 槽健康自检（E2 质量门）：providers 没配时 dream-chat/embed-text 会静默未绑定，
+    // 表现是"dream 整晚没成块、index 永远 0"。启动时把未绑定槽打出来，不静默。
+    let unmatchedSlots = []
+    try { unmatchedSlots = host.services.slots?.unmatched?.() ?? [] } catch { unmatchedSlots = [] }
+    const slotIds = unmatchedSlots.map((row) => String(row?.id ?? row)).filter(Boolean)
+    if (slotIds.length) logError({ msg: 'icl.slots-unmatched', slots: slotIds })
     log({
       msg: 'icl.ready',
       session: state.session?.id ?? null,
       plugins: result.enabled.length,
       failed: result.failed,
       tools: bridge.status().tools.length,
+      slots: { unmatched: slotIds },
       stateDir: cfg.stateDir,
     })
     return result

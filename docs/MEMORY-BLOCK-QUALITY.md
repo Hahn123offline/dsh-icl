@@ -87,14 +87,25 @@ memory.index(id) → false                              ← 静默 0 的原因
 | **R7** | **recall 0 调用**：模型没有"何时该查记忆"的教学/示例；且 `recall` 与 `remember` 在工具面同时存在，无名场景 | 覆盖率/体验都差 | P1 |
 | **R8** | **eager-recall 0 注入且不可观测**：无嵌入时靠字面阈值 0.2，2 条笔记与消息无重叠 → 0；注入次数只存在日志（未进质量数据） | 无法判断是"没有可注入"还是"坏了" | P2 |
 
-## 3. 修法方案（先方案，不直接改）
+## 3. 修法方案（已实施 3 条可观测修复；行为修改待用户批准）
+
+### 3.0 已实施（低风险、只让问题可见；本轮 commit，见 `git log -- docs/MEMORY-BLOCK-QUALITY.md`）
+
+| # | 修复 | 行为 |
+|---|---|---|
+| 1 | **dream 失败/跳过落 `dream-run`** | 成功仍写 `run:<day>:<job>`（不变）；失败写 `fail:<day>:<job>`（`kind:'run'`，`data:{ok:false,error,job,degraded?,failedShards?}`）；跳过写 `skip:<day>:<job>`（`data:{ok:true,skipped,job,missing?}`）。不占成功 key → 不影响 `alreadyRan`（第二天能重跑）。 |
+| 2 | **`jobIndex` 无嵌入明确 skip** | 无 embed 时返回 `skipped:'no-embed', missing:N`（不再 `ok:true/indexed:0`）；有 embed 才走索引与 `indexed/failed`。 |
+| 3 | **boot 槽健康自检** | `bootstrapHost` 后读 `slots.unmatched()`；非空时 `icl.slots-unmatched`（level=error，带槽 id），并在 `icl.ready` 里带 `slots.unmatched`。 |
+
+对应测试：`packages/core/test/dream-observability.test.mjs`（4 条：失败行/成功不写 fail/replace 型 skip 行/boot 槽日志）。
+**不改**任何记忆/成块/提示词语义；`dream-result` 回执（`60d8abe`）已把失败带进醒来简报。
 
 ### 3.1 P0：让 dream 真的能跑（R1+R2）
 
-1. **lab 侧配置（1 行级）**：`tools/lab.mjs` 生成 `lab.patch.yml` 时，给 `icl-mc-lab`/`icl-lab` 的 core config 加 `providers:`（指向本次 lab 的模型端点；云端或本地），并把 `model-manager` 的 `pluginConfig` 透传。night-1 的主模型是 `ninfer/coder390`，但 ICL 后台模型可独立选（建议默认复用 lab 的模型端点）。
-2. **启动自检（低风险）**：`dsh-icl` boot 后检查 `host.services.slots.unmatched()`；非空时 `ctx.log({level:'error', msg:'icl.slots-unmatched', unmatched})`，并写进 `icl.ready` 日志；质量报告读取它。
-3. **失败落账（低风险，2 处）**：dream 每个 job 的失败也写一条 `dream-run`（`ok:false` + `error`）或单独的 `dream-run-fail` 记录；`jobIndex` 增加 `skipped:'no-embed'`；`dream-result` 回执（已实现）会把失败带进醒来简报。
-4. **验收**：修后一次 lab 睡眠周期，`dream-run` 应有 wash/events/people/lexicon/consume/cleanup/index 全部条目（或 `skipped` 原因），events `blocks > 0`。
+1. **lab 侧配置（1 行级，待 mc-lab 修）**：`tools/lab.mjs` 生成 `lab.patch.yml` 时，给 `icl-mc-lab`/`icl-lab` 的 core config 加 `providers:`（指向本次 lab 的模型端点；云端或本地），并把 `model-manager` 的 `pluginConfig` 透传。night-1 的主模型是 `ninfer/coder390`，但 ICL 后台模型可独立选（建议默认复用 lab 的模型端点）。
+2. **启动自检**：✅ 已实施（见 §3.0 第 3 条）。质量报告读取 `icl.ready.slots.unmatched`（或 `icl.slots-unmatched` 日志）。
+3. **失败落账**：✅ 已实施（§3.0 第 1/2 条）。`dream-result` 回执（已实现）会把失败带进醒来简报。
+4. **验收**：修后一次 lab 睡眠周期，`dream-run` 应有 wash/events/people/lexicon/consume/cleanup/index 的成功/跳过/失败条目（三态齐全），events `blocks > 0`。
 
 ### 3.2 P0：E2 指标口径修正（R3+R6）
 
@@ -123,26 +134,50 @@ memory.index(id) → false                              ← 静默 0 的原因
 - E2 指标：`indexCoverage = vec / recallableItems`，无 embed 时显示"未配置嵌入"而不是 0%；
 - eager-recall：每次评估记 `hits/injected/chars` 计数（进质量数据），便于区分"没命中"与"坏了"。
 
-## 4. E2 可判定判据（建议写进质量门）
+### 3.6 待用户批准（行为修改，**均未实施**）
 
-| 判据 | 阈值 | 数据源 |
-|---|---|---|
-| 事件→记忆覆盖率 | 每个有效会话日 `event blocks ≥ 1`；周覆盖 ≥ 5/7 天 | `memory.db` + `dream-run` |
-| 可回忆块大小 p95 | ≤ 1200 字符（p99 ≤ 4000；超长必须 parts 拆分） | `memory.db`（只 event/person/slang block） |
-| 原料单条大小 | `day` 段 ≤ 40k 字符；总 items ≤ 200k/天 | memory.db |
-| dream job 健康 | 每个 job 有 `ran` 或 `skipped` 记录；`failed` 必须有 error；**不允许"缺行"** | `dream-run` |
-| 槽健康 | `slots.unmatched = []`（dream-chat/embed-text 必须在 lab 里绑定） | ICL 日志/质量快照 |
-| recall 使用率 | 每 20 轮 ≥1 次 recall（有问过去类消息时 ≥50%） | `tool/call` 事件 |
-| recall 空结果率 | ≤ 30%（连续空 ≥3 次要告警） | recall 结果文本 |
-| index 覆盖 | 有 embed 时 `vec/recallableItems = 100%`；无 embed 时明确标注"未配置" | memory.db |
-| eager 注入可观测 | 每次评估有 hits/injected 计数 | eager-recall 日志 |
+1. **day log 分段落盘**：`day:<yyyy-mm-dd>:p1..pN`，每段 ≤40k 字符、保留原话绝对行号；events/lexicon 按段读取（§3.3）。
+2. **event block 上限 + parts**：`summary ≤ 100`、`body ≤ 1200` 字（对齐 E2 块 p95 阈值）；超长事件拆 `data.parts={groupId,part,total}`（§3.3）。
+3. **按经历时间窗切段**：events 先按"事件间隔 > 30min"切经历段，再段内按话题合并（§3.3）。
+4. **recall 触发教学**：`prompts/sim.md` 补 2–3 条具体触发场景 + 一个"查完说依据"示例；`recall` 工具描述补 when（§3.4）。
+5. **eager-recall 计数可观测**：hits/injected/chars 进质量数据（§3.5，纯观测，可与 1–4 分开批）。
 
-## 5. 建议执行顺序（等拍板）
+> 以上任何一条改动前都会先给出可回滚的测试与验收判据；1–3 会影响 dream/recall 的现有行为，需要回归 `dream-jobs`/`recall-honesty`/`e2` 场景。
 
-1. **立即（低风险，可先做）**：dream job 失败落 `dream-run` + `jobIndex` 的 `no-embed` 区分 + `slots.unmatched` 启动日志（约 30 行，不改语义）；
-2. **lab 配置**：lab patch 注入 providers（夜间长测前必须，否则 dream 永远不会成块）；
-3. **E2 指标口径**：原料/块分离 + dream job 三态 + 槽健康（mc-lab 质量工具侧）；
-4. **分块策略**：day log 分段 + block 上限/parts（记忆模块改动，需回归 dream/recall/cleanup）；
-5. **recall 教学**：sim 2–3 条触发场景 + 指标观测（低成本，可与 4 并行）。
+## 4. E2 判据 ↔ mc-quality 快照字段对齐
+
+mc-lab 的 `tools/mc-quality.mjs` 现状快照字段（night-1 即由它产出）：
+`mem.{items,bytes,byNs,dupRows,dupRate,blockChars{p50,p95,p99}}`、
+`dream.{runs,jobs,failures,days,dayLogRows}`、`recall.{calls,empty,emptyRate,avgResultChars,noiseHits,remember,forget,samples}`、
+`eager.{injections,chars}`、`latency.{samples,p50,p95}`、`events.{total,bodyRows,memoryEventBlocks,dupSeq}`、`anomalies[]`；
+默认阈值：`blockChars p95 ≤1200`、`p50 ≥20`、`dupRate ≤0.2`、`recallEmptyRate ≤0.6`（calls≥5）、`latency p95 ≤300000ms`、`growth ≤60/h`。
+
+本修复后，判据全部用现有字段或新增的 `dream-run` 行即可判定（**不需要改 mc-quality 解析器**）：
+
+| 判据 | 判定 | 数据源（字段） | 现状/阈值 |
+|---|---|---|---|
+| 事件→记忆覆盖率 | 每个有效会话日 `≥1` 个 `event` block；周覆盖 ≥5/7 天 | `events.memoryEventBlocks`（现为 event namespace 行数） | night-1 = 2（全是 note，0 block）→ 不达标；修 lab providers 后应 ≥1 block/天 |
+| 可回忆块大小 p95 | `≤1200` 字符 | `mem.blockChars.p95` —— **需按 §3.2 把 `day/*`、`dream-run/*` 排除**（现状把 138k 原料算进来） | night-1 = 138778 → 口径修后看 event/person/slang block |
+| 原料单条上限 | `day` 单条 ≤40k（分段后）；总 items ≤200k/天 | `mem.byNs['day/log']`、`mem.items` | night-1 day/log=138778 → 分段后应 ≤40000 |
+| dream job 三态 | 每个实际进入 run 的 job 必须有 `run:`/`fail:`/`skip:` 之一；失败必须有 `error` | `dream.jobs`（job 计数）+ `dream.days`（最新 data）+ `dream.failures`（`data.error` 行数）；新增行见 §3.0 | night-1 缺 events/people/lexicon/cleanup 行 → 三态修后应齐全 |
+| 槽健康 | `slots.unmatched = []` | `icl.ready.slots.unmatched`（日志）或 quality 额外读 dsh 日志 | night-1 = `["embed-text","dream-chat"]` |
+| recall 使用率 | 每 20 轮 ≥1 次；问过去类消息 ≥50% | `recall.calls` / turn 数 | night-1 = 0/64 轮 → 不达标（走 §3.6-4 教学） |
+| recall 空结果率 | `≤0.6`（calls≥5 才报警）；连续空 ≥3 次人工看 | `recall.emptyRate`（阈值已内置） | night-1 n/a（0 调用） |
+| recall 噪声 | `noiseHits` 不随 calls 线性增长；单次返回 ≤ budget | `recall.noiseHits`、`avgResultChars` | 现状 0 |
+| index 覆盖 | 有 embed：`vec/recallableItems=100%`；无 embed：**明确 no-embed**（job skip 行），不算失败 | `mem.byNs` 中可回忆行数 vs `mem_vec`（quality 需补一个 `mem.vectors`）；dream `skip:*:index` 行的 `data.missing` | night-1 无 embed → 应为 `skip:...:index no-embed`，不再 `ok:true/0` |
+| dream 失败可见 | 任何 `data.error` 行数 = 实际失败数；`dream.failures` 与 `fail:*` 行数一致 | `dream.failures` + `dream-run` 行 | night-1 报告 0 是假象；修后应 ≥3（events/people/lexicon） |
+
+**给 cache 的"长跑健康对照"字段（同一份 quality.jsonl 就能读，不用新落盘）**：
+`dream.jobs`（每 job 次数）、`dream.failures`、`dream.days`（含 `skipped`/`error`）、`dream-run` 里 `fail:`/`skip:` 前缀 key 数；
+槽健康读 `icl.ready.slots.unmatched`；索引覆盖读 `dream.days.index`（`indexed/missing` 或 `skipped:no-embed`）。
+判定：`dream.failures==0` 且 `dream.jobs` 覆盖当日执行集才算"dream 健康"；`failures>0` 或 job 缺行 → 长跑报告标红。
+
+## 5. 执行顺序与当前状态
+
+1. ✅ **已实施（低风险可观测）**：dream job 失败/跳过落 `dream-run`（`fail:`/`skip:` 行）+ `jobIndex` 的 `no-embed` skip + `slots.unmatched` 启动日志——见 §3.0，测试 `dream-observability.test.mjs`。
+2. ⏳ **lab 配置（mc-lab 负责）**：lab patch 注入 providers（夜间长测前必须，否则 dream 永远不会成块）。
+3. ⏳ **E2 指标口径（mc-lab 负责）**：原料/块分离 + dream job 三态 + 槽健康（字段对照见 §4；现有 quality 解析器可直接读 `fail:`/`skip:` 行）。
+4. ⏸ **分块策略（待用户批准）**：day log 分段 + block 上限/parts + 经历窗口（记忆模块改动，需回归 dream/recall/cleanup）。
+5. ⏸ **recall 教学（待用户批准）**：sim 2–3 条触发场景 + 指标观测。
 
 > 蓝队补充：本轮已落地的 `dream-result` 回执（`60d8abe`）会把 dream 失败带进醒来简报——只要 lab 绑定 providers 前，她至少会看到"记忆整理：失败（…）"，不会再以为整理成功。
