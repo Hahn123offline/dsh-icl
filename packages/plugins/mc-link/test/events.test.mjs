@@ -100,6 +100,57 @@ test('事件闸门：任务事件在窗口内不重复投递同一条', () => {
   assert.equal(second.signals.length, 0)
 })
 
+test('事件闸门：掉血用事件时刻的血量（不混实时状态），合并计数仍按事件条数', () => {
+  // 事件说 20→17，但格式化时的实时血量已经是 18（合并/限流后的错位现场）
+  const live = { adapter: { health: 18, food: 20, inventoryCount: 0 } }
+  const first = collect([{ seq: 1, type: 'health_drop', data: { from: 20, to: 17, drop: 3 } }], { status: live })
+  assert.equal(first.signals.length, 1)
+  assert.match(first.signals[0].text, /掉血：20 → 17/)
+  assert.match(first.signals[0].text, /事件时 17\/20/)
+  assert.match(first.signals[0].text, /一次掉 3/)
+  assert.doesNotMatch(first.signals[0].text, /18\/20/, '不能把实时血量 18 混进事件时刻的描述')
+  assert.doesNotMatch(first.signals[0].text, /血18/)
+  // 第二次掉血在合并窗口内：不投递；下一条 alarm 会带"另有 N 条"计数（不是实时状态）
+  const clock = { t: 0 }
+  const gate = createEventGate({ now: () => clock.t })
+  gate.take([{ seq: 1, type: 'health_drop', data: { from: 20, to: 18, drop: 2 } }], { status: live })
+  const merged = gate.take([{ seq: 2, type: 'health_drop', data: { from: 18, to: 15, drop: 3 } }], { status: live })
+  assert.equal(merged.signals.length, 0)
+  const after = gate.take([{ seq: 3, type: 'death', data: { position: { x: 1, y: 64, z: -3 }, lastDeath: { inventoryCount: 2 } } }], { status: live })
+  assert.equal(after.signals.length, 1)
+  assert.match(after.signals[0].text, /另有 1 条/)
+  assert.ok([...after.signals[0].text].length <= 80, `报警行 ≤80 字：${after.signals[0].text}`)
+})
+
+test('事件闸门：死亡用事件时刻的位置/背包件数（不混实时状态）', () => {
+  const live = { adapter: { health: 20, position: { x: 99, y: 99, z: 99 }, inventoryCount: 0 } }
+  const { signals } = collect([{
+    seq: 1,
+    type: 'death',
+    data: { position: { x: 1.2, y: 64, z: -3.6 }, lastDeath: { inventoryCount: 5 } },
+  }], { status: live })
+  assert.equal(signals.length, 1)
+  assert.ok(signals[0].tags.includes('alarm'))
+  assert.match(signals[0].text, /死亡 @ 1,64,-4/)
+  assert.match(signals[0].text, /当时背包 5 件/)
+  assert.doesNotMatch(signals[0].text, /99,99,99/, '不能用实时位置')
+})
+
+test('事件闸门：报警行长度 ≤80 字（含后缀），超长原因被截断', () => {
+  const longReason = '一'.repeat(200)
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const out = gate.take([
+    { seq: 1, type: 'safety_stop', data: { reason: 'low-health', event: longReason } },
+    { seq: 2, type: 'watchdog', data: { kind: 'danger-block', severity: 'danger', note: longReason } },
+  ], { status: { adapter: { health: 5 } } })
+  assert.ok(out.signals.length >= 1)
+  for (const signal of out.signals) {
+    if (!signal.tags.includes('alarm')) continue
+    assert.ok([...signal.text].length <= 80, `报警行超 80 字（${[...signal.text].length}）：${signal.text}`)
+  }
+})
+
 test('事件闸门：安全停止标 alarm 且带恢复路径', () => {
   const { signals } = collect([{ seq: 1, type: 'safety_stop', data: { reason: 'low-health' } }])
   assert.equal(signals.length, 1)
