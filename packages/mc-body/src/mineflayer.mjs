@@ -8,6 +8,7 @@ import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
+import { isAirName, isSolidName, makeShelterSpec, shelterBuildOrder, verifyShelter } from './building.mjs'
 import { chooseWeaponItem, isHostile, parseTargetSpec, shouldAbortCombat } from './combat.mjs'
 
 const require = createRequire(import.meta.url)
@@ -1696,46 +1697,266 @@ export function createMineflayerAdapter({
       return { placed, skipped, already, total, materials: parsed.materials, origin: originPos }
     }
     if (task.kind === 'shelter') {
-      const plan = shelterPlan(params)
       const material = String(params.material ?? 'dirt')
-      const need = plan.cells.length
+      const size = Math.max(3, Math.min(7, Number(params.size) || 3))
+      const height = Math.max(3, Math.min(5, Number(params.height) || 3))
+      const pos0 = currentPosition()
+      if (!pos0) throw taskFailure('shelter: no-position', {})
+      const facingYaw = Number(bot?.entity?.yaw) || 0
+      const autoSide = Math.abs(Math.sin(facingYaw)) > Math.abs(Math.cos(facingYaw))
+        ? (Math.sin(facingYaw) > 0 ? 'south' : 'north')
+        : (Math.cos(facingYaw) > 0 ? 'east' : 'west')
+      const doorSide = String(params.doorSide ?? params.side ?? autoSide)
+      const spec = makeShelterSpec({ size, height, doorSide, material })
+      const need = spec.walls.length + spec.roof.length + spec.interiorHeight * 2
       const have = Number(inventoryCounts()[material]) || 0
       if (have < need) {
         throw taskFailure('shelter: needs-material', {
-          material, need, have,
-          suggestion: `建 ${plan.size}×${plan.size} 避难所约需 ${material}×${need}，现有 ${have}；先 collect 补料或换 material（dirt/cobblestone/oak_planks）`,
+          material, need, have, size: spec.width, height: spec.height,
+          suggestion: `建 ${spec.width}×${spec.width} 小屋（内部 ${spec.interiorHeight} 格高）约需 ${material}×${need}，现有 ${have}；先 collect 补料或换 material（dirt/cobblestone/oak_planks）`,
         })
       }
-      const pos = currentPosition()
-      if (!pos) throw taskFailure('shelter: no-position', {})
-      const center = Math.floor(plan.size / 2)
-      const origin = { x: Math.floor(pos.x) - center, y: Math.floor(pos.y), z: Math.floor(pos.z) - center }
-      const placements = plan.cells
-        .map((cell) => ({ pos: { x: origin.x + cell.x, y: origin.y + cell.y, z: origin.z + cell.z } }))
-        .sort((a, b) => a.pos.y - b.pos.y)
-      const every = progressEvery(placements.length)
-      let placed = 0
-      let skipped = 0
-      let already = 0
-      for (let index = 0; index < placements.length; index += 1) {
-        checkAbort(signal)
-        const target = placements[index].pos
-        const existing = bot.blockAt(new Vec3(target.x, target.y, target.z))
-        if (existing && existing.name === material) { already += 1; continue }
-        if (existing && !/(^air$|cave_air|void_air)/.test(existing.name)) { skipped += 1; continue }
+      const nameAtWorld = (x, y, z) => {
+        try { return bot?.blockAt?.(new Vec3(x, y, z))?.name ?? 'unknown' } catch { return 'unknown' }
+      }
+      const flatAt = (ox, oy, oz) => {
+        for (const column of spec.floor) {
+          if (!isSolidName(nameAtWorld(ox + column.x, oy - 1, oz + column.z))) return false
+        }
+        for (let y = 0; y < spec.height; y += 1) {
+          for (let z = 0; z < spec.width; z += 1) {
+            for (let x = 0; x < spec.width; x += 1) {
+              const name = nameAtWorld(ox + x, oy + y, oz + z)
+              if (!isAirName(name)) return false
+            }
+          }
+        }
+        // 门外 2 格要能站（2 高空气 + 地面实心）
+        const ox0 = spec.outside.x
+        const oz0 = spec.outside.z
+        if (!isSolidName(nameAtWorld(ox + ox0, oy - 1, oz + oz0))) return false
+        return isAirName(nameAtWorld(ox + ox0, oy, oz + oz0)) && isAirName(nameAtWorld(ox + ox0, oy + 1, oz + oz0))
+      }
+      const mid = Math.floor(spec.width / 2)
+      let origin = null
+      for (let radius = 0; radius <= 8 && !origin; radius += 1) {
+        for (let dz = -radius; dz <= radius && !origin; dz += 1) {
+          for (let dx = -radius; dx <= radius && !origin; dx += 1) {
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue
+            const ox = Math.floor(pos0.x) - mid + dx
+            const oz = Math.floor(pos0.z) - mid + dz
+            if (flatAt(ox, Math.floor(pos0.y), oz)) origin = { x: ox, y: Math.floor(pos0.y), z: oz }
+          }
+        }
+      }
+      if (!origin) {
+        throw taskFailure('shelter: no-site', {
+          size: spec.width, height: spec.height,
+          suggestion: '附近 8 格内没有 3×3 平地（地面实心、上方 2~3 格空气、门外能站）：先挖平/垫平一小块地，或换地方再试',
+        })
+      }
+      const toWorld = (cell) => ({ x: origin.x + cell.x, y: origin.y + cell.y, z: origin.z + cell.z })
+      const outsideWorld = toWorld(spec.outside)
+      const insideWorld = toWorld(spec.inside)
+      const doorWorld = toWorld(spec.doorCell)
+      const placeAt = async (cell) => {
+        const world = toWorld(cell)
+        const existing = nameAtWorld(world.x, world.y, world.z)
+        if (existing === material) return 'already'
+        if (!isAirName(existing)) return 'occupied'
+        // 别站在要放的位置上（放在自己脚下/头上会被服务端拒绝，且会挡墙）
+        const current = currentPosition()
+        if (current && Math.floor(current.x) === world.x && Math.floor(current.z) === world.z && Math.abs(Math.floor(current.y) - world.y) <= 1) {
+          try {
+            await gotoWithRecovery({ x: outsideWorld.x + 0.5, y: outsideWorld.y, z: outsideWorld.z + 0.5, range: 1.2, timeoutMs: 7000, stallMs: 2000, precheck: false }, signal, null)
+          } catch { /* 走不开也再试 */ }
+        }
         try {
-          await runOp('place', { pos: target, item: material })
-          placed += 1
-        } catch { skipped += 1 }
-        if (index % every === 0) progress?.({ done: index + 1, total: placements.length, placed, skipped, already, position: currentPosition() })
+          await runOp('place', { pos: world, item: material })
+          return 'placed'
+        } catch (error) {
+          return `failed:${String(error?.message ?? error).slice(0, 80)}`
+        }
       }
-      progress?.({ done: placements.length, total: placements.length, placed, skipped, already, position: currentPosition() })
-      if (placed + already < placements.length * 0.8) {
-        emit('macro_done', { kind: 'shelter', placed, skipped, already, total: placements.length, size: plan.size, partial: true })
-        throw taskFailure('shelter: partial', { placed, skipped, already, total: placements.length, size: plan.size, suggestion: '地形不平/贴墙导致部分放不上：先找平地或先挖平，再重跑 shelter' })
+      // 先站到门洞里（3×3 小屋从门洞到任意墙/屋顶都在 4.5 格内，避免远端够不到）；关门后出去再放屋顶支撑。
+      try {
+        await gotoWithRecovery({ x: doorWorld.x + 0.5, y: doorWorld.y, z: doorWorld.z + 0.5, range: 1.2, timeoutMs: 9000, stallMs: 2500, precheck: false }, signal, null)
+      } catch { /* 站不到门口也继续，放的时候再走近 */ }
+      const order = shelterBuildOrder(spec)
+      const failures = []
+      let placed = 0
+      let already = 0
+      let skipped = 0
+      const total = order.walls.length + spec.roof.length + spec.interiorHeight * 2
+      const progressAt = (stage) => progress?.({ stage, placed, already, skipped, total, material, size: spec.width, height: spec.height, doorSide: spec.doorSide, position: currentPosition() })
+      progressAt('walls')
+      for (const cell of order.walls) {
+        checkAbort(signal)
+        const outcome = await placeAt(cell)
+        if (outcome === 'placed') placed += 1
+        else if (outcome === 'already') already += 1
+        else { skipped += 1; failures.push({ stage: 'walls', x: cell.x, y: cell.y, z: cell.z, reason: outcome }) }
+        progressAt('walls')
       }
-      emit('macro_done', { kind: 'shelter', placed, skipped, already, total: placements.length, size: plan.size })
-      return { placed, skipped, already, total: placements.length, size: plan.size, height: plan.height, material, origin, door: plan.door }
+      // 站到门外再放屋顶支撑（门洞支撑会挡住自己）
+      try {
+        await gotoWithRecovery({ x: outsideWorld.x + 0.5, y: outsideWorld.y, z: outsideWorld.z + 0.5, range: 1.2, timeoutMs: 9000, stallMs: 2500, precheck: false }, signal, null)
+      } catch { /* 站不到门外也继续 */ }
+      // 屋顶临时支撑：凡是“正下方不是实心”的屋顶格（中心内部 + 门洞上方），从地面垒柱到屋顶下。
+      const localName = (lx, ly, lz) => nameAtWorld(origin.x + lx, origin.y + ly, origin.z + lz)
+      const roofSupportCells = []
+      const roofNeedingSupport = spec.roof.filter((cell) => !isSolidName(localName(cell.x, cell.y - 1, cell.z)))
+      for (const roofCell of roofNeedingSupport) {
+        for (let y = 0; y < roofCell.y; y += 1) {
+          if (isAirName(localName(roofCell.x, y, roofCell.z))) roofSupportCells.push({ x: roofCell.x, y, z: roofCell.z })
+        }
+      }
+      const tempCells = [...new Map(roofSupportCells.map((cell) => [`${cell.x},${cell.y},${cell.z}`, cell])).values()].sort((a, b) => a.y - b.y)
+      progressAt('temp-support')
+      for (const cell of tempCells) {
+        checkAbort(signal)
+        const outcome = await placeAt(cell)
+        if (outcome === 'placed') placed += 1
+        else if (outcome === 'already') already += 1
+        else { skipped += 1; failures.push({ stage: 'temp-support', x: cell.x, y: cell.y, z: cell.z, reason: outcome }) }
+      }
+      progressAt('roof')
+      for (const cell of spec.roof) {
+        checkAbort(signal)
+        const outcome = await placeAt(cell)
+        if (outcome === 'placed') placed += 1
+        else if (outcome === 'already') already += 1
+        else { skipped += 1; failures.push({ stage: 'roof', x: cell.x, y: cell.y, z: cell.z, reason: outcome }) }
+        progressAt('roof')
+      }
+      // 补建：首轮从门外放，远端墙/屋顶常因够不到而失败；按缺口走近再放（最多 3 轮）。
+      // 注意：临时支撑此时还留着——屋顶缺格还能“借支撑”补上；补完再拆支撑。
+      const approachFor = async (cell, attempt = 0) => {
+        const world = toWorld(cell)
+        const centerX = origin.x + spec.width / 2
+        const centerZ = origin.z + spec.width / 2
+        const dx = world.x + 0.5 - centerX
+        const dz = world.z + 0.5 - centerZ
+        const len = Math.hypot(dx, dz) || 1
+        const offsets = [
+          { out: 1.2, side: 0 },
+          { out: 1.8, side: 1.6 },
+          { out: 1.2, side: -1.6 },
+          { out: 2.6, side: 0 },
+        ]
+        const perpX = -dz / len
+        const perpZ = dx / len
+        for (const config of offsets) {
+          const stand = {
+            x: world.x + 0.5 + (dx / len) * config.out + perpX * config.side,
+            y: origin.y,
+            z: world.z + 0.5 + (dz / len) * config.out + perpZ * config.side,
+          }
+          const now = currentPosition()
+          const distance = Number.isFinite(distanceTo(now, stand)) ? distanceTo(now, stand) : 99
+          if (distance > 1.0) {
+            try {
+              await gotoWithRecovery({ x: stand.x, y: stand.y, z: stand.z, range: 1.1, timeoutMs: 8000, stallMs: 2000, precheck: false }, signal, null)
+            } catch { /* 换下一个站位 */ }
+          }
+          const reached = currentPosition()
+          if (Number.isFinite(distanceTo(reached, { x: world.x + 0.5, y: world.y + 0.5, z: world.z + 0.5 }))
+            && distanceTo(reached, { x: world.x + 0.5, y: world.y + 0.5, z: world.z + 0.5 }) <= 4.2) return
+        }
+      }
+      progressAt('repair')
+      for (let pass = 0; pass < 3; pass += 1) {
+        checkAbort(signal)
+        const missing = [
+          ...spec.walls.filter((cell) => !isSolidName(localName(cell.x, cell.y, cell.z))).map((cell) => ({ stage: 'walls', cell })),
+          ...spec.roof.filter((cell) => !isSolidName(localName(cell.x, cell.y, cell.z))).map((cell) => ({ stage: 'roof', cell })),
+        ]
+        if (!missing.length) break
+        for (const { stage: repairStage, cell } of missing.slice(0, 12)) {
+          checkAbort(signal)
+          await approachFor(cell, pass)
+          let outcome = await placeAt(cell)
+          if (outcome !== 'placed' && outcome !== 'already') {
+            // 换站位再试一次（常见于屋顶边缘：正下方被墙挡住，需要侧后方站位）
+            await approachFor(cell, pass + 1)
+            outcome = await placeAt(cell)
+          }
+          if (outcome === 'placed') placed += 1
+          else if (outcome === 'already') already += 1
+          else { skipped += 1; const fail = { stage: `repair-${repairStage}`, x: cell.x, y: cell.y, z: cell.z, reason: outcome }; failures.push(fail); emit('shelter_place_fail', fail) }
+        }
+      }
+      // 屋顶/墙补齐后再拆临时支撑（先补后拆：缺屋顶格可以借支撑放上去）
+      progressAt('clear-support')
+      for (const cell of [...tempCells].reverse()) {
+        checkAbort(signal)
+        const world = toWorld(cell)
+        const existing = nameAtWorld(world.x, world.y, world.z)
+        if (isAirName(existing)) continue
+        let removed = false
+        for (let attempt = 0; attempt < 2 && !removed; attempt += 1) {
+          try {
+            await runOp('dig', { pos: world })
+            removed = true
+          } catch {
+            try {
+              const stand = attempt === 0 ? insideWorld : { x: outsideWorld.x, y: outsideWorld.y, z: outsideWorld.z }
+              await gotoWithRecovery({ x: stand.x + 0.5, y: stand.y, z: stand.z + 0.5, range: 1.1, timeoutMs: 7000, stallMs: 2000, precheck: false }, signal, null)
+            } catch { /* 走不过去也再试一次 dig */ }
+          }
+        }
+        if (!removed) failures.push({ stage: 'clear-support', x: cell.x, y: cell.y, z: cell.z, reason: 'dig failed' })
+      }
+      // 结构验收
+      const verify = verifyShelter(spec, (lx, ly, lz) => localName(lx, ly, lz))
+      progressAt('verify')
+      if (!verify.ok) {
+        emit('shelter_incomplete', { verify, origin, doorSide: spec.doorSide })
+        throw taskFailure('shelter: incomplete', {
+          verify, placed, already, skipped, total, material, origin, size: spec.width, height: spec.height, doorSide: spec.doorSide, failures: failures.slice(0, 12),
+          suggestion: `结构不完整：${verify.summary}。先补缺的墙/屋顶/门洞，别直接重跑整间`,
+        })
+      }
+      // 从门外实际走进去（门还没装，门洞是通的）
+      let entryOk = false
+      let entryError = null
+      try {
+        await walkOnce(makeGoal({ x: insideWorld.x + 0.5, y: insideWorld.y, z: insideWorld.z + 0.5 }, 0.6), { x: insideWorld.x + 0.5, y: insideWorld.y, z: insideWorld.z + 0.5 }, { signal, progress: null, stallMs: 2500, timeoutMs: 9000, arriveRange: 1.1 })
+        const now = currentPosition()
+        entryOk = Boolean(now) && distanceTo(now, { x: insideWorld.x + 0.5, y: insideWorld.y, z: insideWorld.z + 0.5 }) <= 1.6
+      } catch (error) {
+        entryError = String(error?.message ?? error).slice(0, 120)
+      }
+      progressAt('entry')
+      if (!entryOk) {
+        throw taskFailure('shelter: entry-blocked', {
+          verify, entryError, doorSide: spec.doorSide, doorWorld, outsideWorld, insideWorld,
+          suggestion: `小屋结构 OK 但进不去：门洞/门外通路被挡（${verify.summary}）；先清门洞两格、门外垫平，或换 doorSide 重试`,
+        })
+      }
+      // 可选装门（装门后需要交互开门；验收已在装门前完成）
+      let doorPlaced = null
+      if (params.door === true) {
+        const doorItem = (bot.inventory?.items?.() ?? []).find((item) => /_door$/.test(item.name))
+        if (doorItem) {
+          try {
+            await runOp('place', { pos: doorWorld, item: doorItem.name })
+            doorPlaced = doorItem.name
+          } catch (error) { failures.push({ stage: 'door', x: spec.doorCell.x, y: spec.doorCell.y, z: spec.doorCell.z, reason: String(error?.message ?? error).slice(0, 80) }) }
+        }
+      }
+      const home = {
+        origin, center: insideWorld, door: doorWorld, outside: outsideWorld,
+        size: spec.width, height: spec.height, interiorHeight: spec.interiorHeight,
+        material, doorSide: spec.doorSide, doorPlaced, builtAt: Date.now(),
+      }
+      emit('shelter_done', { home, verify, entryOk, placed, already, skipped })
+      progress?.({ stage: 'done', placed, already, skipped, total, home, verify })
+      return {
+        placed, already, skipped, total, material, origin, size: spec.width, height: spec.height,
+        interiorHeight: spec.interiorHeight, doorSide: spec.doorSide, door: doorWorld, doorPlaced,
+        verify, entryOk, home, failures: failures.slice(0, 12),
+      }
     }
     if (task.kind === 'sort' || task.kind === 'deposit') {
       const action = String(params.action ?? 'put')
@@ -2658,6 +2879,15 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
+
+
+
+
+
+
+
+
 
 
 
