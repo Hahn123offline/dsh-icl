@@ -21,6 +21,7 @@
 // 不要并行建会话；绝不重启 desktop、不改 desktop profile、不 kill 用户进程。
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   DEFAULT_MC_PORT, DEFAULT_PORT, PRESETS, REPO_ROOT, STATE_ROOT, apiFor,
@@ -298,6 +299,44 @@ async function up() {
 
 /* ── down ─────────────────────────────────────────────── */
 
+/**
+ * 防污染：lab 用共享 $DSH_HOME，down 后把本次 run 的 workspace/session 从 desktop 列表清掉。
+ * 只清 meta.workspace（仍在测试路径白名单下，脚本自带 safety guard）；绝不删 .state/lab/<run>/ 证据。
+ * --no-clean-workspace 可跳过（调试/取证时用）。
+ */
+function cleanupRunWorkspace(meta, { quiet = false } = {}) {
+  const workspace = meta?.workspace
+  if (!workspace) return Promise.resolve({ skipped: 'no-workspace' })
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['tools/dsh-clean-test-workspaces.mjs', '--apply', '--workspace', workspace, '--json'], {
+      cwd: REPO_ROOT,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { err += chunk })
+    const timer = setTimeout(() => { try { child.kill() } catch { /* already gone */ } }, 30_000)
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        try {
+          const raw = out.trim()
+          let result = null
+          try { result = JSON.parse(raw) } catch { result = JSON.parse(raw.split('\n').filter(Boolean).at(-1)) }
+          if (!quiet) info(`已清理本次 workspace（workspace=${result.workspaceEntries} · session=${result.removedDirs ?? 0} · projcache=${result.removedProjectCacheFiles ?? 0} · 备份=${result.backupDir ?? '无'}）`)
+          resolve({ code, result })
+        } catch { resolve({ code, out }) }
+      } else {
+        info(`workspace 清理失败 code=${code}：${err.trim().slice(-300)}`)
+        resolve({ code, out, err })
+      }
+    })
+    child.on('error', (error) => { clearTimeout(timer); resolve({ code: -1, error: String(error?.message ?? error) }) })
+  })
+}
+
 async function down({ quiet = false, runId: forcedRunId = null } = {}) {
   const run = resolveRun(forcedRunId)
   if (!run?.meta) {
@@ -322,6 +361,7 @@ async function down({ quiet = false, runId: forcedRunId = null } = {}) {
   try { transcript = rebuildTranscript(runDir) } catch (error) { info(`重建 transcript 失败：${String(error?.message ?? error)}`) }
   clearCurrent(runId)
   releaseLocalModelLock(runId)
+  if (!flag('--no-clean-workspace')) await cleanupRunWorkspace(meta, { quiet })
   if (!quiet) {
     info(`已停止；证据目录：${runDir}`)
     if (transcript) info(`transcript：${transcript.file}（${transcript.events} 事件）`)

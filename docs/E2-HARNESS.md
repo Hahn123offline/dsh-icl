@@ -158,6 +158,20 @@ node tools/mc-quality.mjs --run e2-<date> --interval 60
 - agent 架构如何避免工具循环（Mindcraft）→ 重复熔断/冷却。
 
 
+### 10.4 当事人第一人称证据（硬 gate，用户 2026-11-06 拍板）
+
+> 原则全文：`docs/TEST-PRINCIPLES.md`。**受试会话的第一人称回复/抱怨/重复话/困惑是证据，不许只写 metrics。**
+
+- **最低证据**：每个 run 必须保留 `transcript.md` + `events.jsonl`（assistant/message、user/message、tool/call/result），报告与回复都要能引用 seq/时间。
+- **报告模板（顺序固定）**：
+  1. **当事人原话**：≥3 条第一人称原话（带 seq + 时间），覆盖刷屏/重复、抱怨/困惑、死亡/暂停/卡住时的反应；P0/P1 结论每条至少 1 条原话或 seq。
+  2. 结论/状态；
+  3. metrics（turns/tools/deaths/turn-gap/shelter/宏占比…）；
+  4. 证据路径与回滚/未知点。
+- **重复即信号**：同一 say 文本 ≥3、同一工具参数 ≥3、反复问同一句/明显困惑 = 必须人工复核，不得当噪声过滤。
+- **验收 gate**：没有"当事人原话"节 = 报告不完整，不得作为 PASS 依据；停止 run 前先确认 transcript/events 已落盘，再清资源（清理 workspace 不删 `.state/lab/<run>/`）。
+
+
 # E2-HARNESS §10 补充稿：MC 长跑检测机制（mc-body 提案）
 
 > 状态：**MC 长跑冻结（2026-11-06 16:45 HKT）**；本文只设计，不跑测试、不启服、不加工具。

@@ -11,7 +11,8 @@
 //
 // 默认 dry-run。--apply 才动手；动手前会把整个 sessions 匹配目录 + workspace.json 备份到
 // <repo>/.state/archive/desktop-cleanup-<ts>/。
-// 用法：node tools/dsh-clean-test-workspaces.mjs [--apply] [--keep-backup] [--json]
+// 用法：node tools/dsh-clean-test-workspaces.mjs [--apply] [--keep-backup] [--json] [--workspace <path>]
+//   --workspace：只清这一条 lab run workspace（lab down 自动调用用；仍强制在测试路径下，防误删用户工作区）。
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -32,9 +33,20 @@ const TABLES = [
 ]
 const DIRS = [/icl-wt-/i, /state-lab-/i, /her-lab-workspace/i, /state-live2/i]
 
-const args = new Set(process.argv.slice(2))
+const argv = process.argv.slice(2)
+const args = new Set(argv)
 const APPLY = args.has('--apply')
 const JSON_OUT = args.has('--json')
+const WORKSPACE_INDEX = argv.indexOf('--workspace')
+const WORKSPACE_FILTER = WORKSPACE_INDEX >= 0 ? path.resolve(String(argv[WORKSPACE_INDEX + 1] ?? '')) : null
+if (WORKSPACE_INDEX >= 0 && !WORKSPACE_FILTER) {
+  console.error('--workspace 需要一个路径参数')
+  process.exit(2)
+}
+if (WORKSPACE_FILTER && !underTestPath(WORKSPACE_FILTER)) {
+  console.error(`拒绝：--workspace 不在测试路径白名单内（防误删用户真实工作区）：${WORKSPACE_FILTER}`)
+  process.exit(2)
+}
 
 function encodedName(workspacePath) {
   // lab 的 session 目录名：--C-DSH-icl-wt-...-workspace--（去掉盘符冒号、反斜杠变 -）
@@ -56,13 +68,27 @@ if (!fs.existsSync(WORKSPACE_JSON)) {
 
 const store = readJson(WORKSPACE_JSON)
 const ws = store?.tables?.workspaces ?? {}
-const matched = Object.entries(ws).filter(([, w]) => underTestPath(w.path))
+const normPath = (p) => path.resolve(String(p ?? '')).toLowerCase().replace(/\\/g, '/')
+const sameOrUnder = (candidate, filter) => {
+  const left = normPath(candidate)
+  const right = normPath(filter)
+  return left === right || left.startsWith(`${right}/`)
+}
+const matched = workspaceFilter(ws)
 const matchedIds = new Set(matched.map(([id]) => id))
 const matchedSessionIds = new Set()
 for (const [, w] of matched) for (const id of w.sessionIds ?? []) matchedSessionIds.add(id)
 
+function workspaceFilter(entries) {
+  const list = Object.entries(entries)
+  if (!WORKSPACE_FILTER) return list.filter(([, w]) => underTestPath(w.path))
+  return list.filter(([, w]) => sameOrUnder(w.path, WORKSPACE_FILTER))
+}
+
+const encodedFilter = WORKSPACE_FILTER ? encodedName(WORKSPACE_FILTER).toLowerCase() : null
 const sessionDirs = fs.existsSync(SESSIONS)
-  ? fs.readdirSync(SESSIONS, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).filter((name) => DIRS.some((re) => re.test(name)))
+  ? fs.readdirSync(SESSIONS, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
+    .filter((name) => WORKSPACE_FILTER ? name.toLowerCase() === encodedFilter : DIRS.some((re) => re.test(name)))
   : []
 
 const projFiles = fs.existsSync(PROJCACHE)
@@ -71,6 +97,7 @@ const projFiles = fs.existsSync(PROJCACHE)
 
 const summary = {
   apply: APPLY,
+  workspaceFilter: WORKSPACE_FILTER,
   workspaceEntries: matched.length,
   workspaceIdsBefore: (store?.global?.workspaceIds ?? []).length,
   sessionDirs: sessionDirs.length,
@@ -94,6 +121,16 @@ if (!JSON_OUT) {
 if (!APPLY) {
   if (JSON_OUT) console.log(JSON.stringify(summary, null, 2))
   console.log('\n（dry-run，未改动；加 --apply 执行）')
+  process.exit(0)
+}
+
+// 没有可清条目：不备份、不写盘，避免每次 lab down 都产生空备份目录。
+if (!matched.length && sessionDirs.length === 0 && projFiles.length === 0) {
+  summary.removedDirs = 0
+  summary.removedProjectCacheFiles = 0
+  summary.backupDir = null
+  if (JSON_OUT) console.log(JSON.stringify(summary, null, 2))
+  else console.log('没有需要清理的测试 workspace/session/projcache。')
   process.exit(0)
 }
 
