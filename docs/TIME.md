@@ -151,6 +151,9 @@ const PHASES = ['awake', 'sleeping', 'paused']
 - 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason` 与 `priority`、`time_list` 显示 `（sleeping）/（muted）`。
 - 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。**判定规则**：`offer` 返回 `blocked:true` 且 `reason` 为 `sleeping/muted/paused` → 内容已在 time 积压里，等醒来/恢复统一释放，**来源不得再补投**（否则醒来重复一条）；只有 `offer` 抛异常/进程重启丢信号才需要来源侧重试。mc-link 的 `pendingAlarms` 只应覆盖后者，不能把 gate-blocked 的 alarm 再投一次。
 - 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
+- **两个维度**：focus = 空间/命名空间（哪条会话/上下文该不该收），time = 时间/全局锁（现在能不能收）；到达 = 两者都放行，任一门可积压，释放后摘要**重新进入管道**再走双闸门（详见 `docs/DELIVERY-POLICY-DESIGN.md §2.7`）。
+- **直投路径（C6）**：`delivery.push` 现在默认先过 focus 空间闸门、再过 time 时间闸门（host 先装 focus gate，time 插件后装）；`deliveryGate` 读取 `source.tags/focus/priority/pierce/meta`，所以直投的 alarm 与信号路径同一语义（暂停穿透；睡眠/静音按最高优先级进 time 队列）。`channel:'signal'` 的投递不二次裁决。
+- **重放回执（QQ）**：time `flushQueue` 真正投递成功后，按 `activity` 分组调 `ctx.services.get('qq').noteDeliveredSeqs({activity, seqs, via:'time-backlog', at})`；只推 delivered（不推 attended/不算已读），幂等。队列条目在 `enqueue` 时保留 `meta.qq.ledger={activity,seq}`；focus backlog 摘要若被 time 拦下，`meta.replayQq` 随摘要入队，由 time flush 时统一补推。QQ 侧统计在 `qq_status.ledger.deliveredVia.time-backlog`。
 
 ### 4.2 穿透与伪造：风险边界
 
