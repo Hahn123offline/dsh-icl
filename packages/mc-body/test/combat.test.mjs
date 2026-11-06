@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  chooseWeaponItem, isHostile, normalizeHostiles, pickTarget, shouldAbortCombat, threatAssessment,
+  chooseWeaponItem, parseTargetSpec, isHostile, normalizeHostiles, pickTarget, shouldAbortCombat, threatAssessment,
 } from '../src/combat.mjs'
 
 test('combat：敌对识别/规范化/目标选择', () => {
@@ -66,3 +66,12 @@ test('combat：武器选择优先剑、其次斧、空手 null', () => {
   assert.equal(chooseWeaponItem([{ name: 'golden_axe' }, { name: 'stone_axe' }]).item.name, 'stone_axe')
 })
 
+
+test('combat：target 参数解析（字符串/对象、nearest_hostile、指定名字）', () => {
+  assert.deepEqual(parseTargetSpec('nearest_hostile'), { mode: 'nearest_hostile', name: '' })
+  assert.deepEqual(parseTargetSpec('nearest'), { mode: 'nearest', name: '' })
+  assert.deepEqual(parseTargetSpec('zombie'), { mode: 'name', name: 'zombie' })
+  assert.deepEqual(parseTargetSpec('nearest:villager'), { mode: 'nearest', name: 'villager' })
+  assert.deepEqual(parseTargetSpec({ entity: 'chicken' }), { mode: 'name', name: 'chicken' })
+  assert.deepEqual(parseTargetSpec({}), { mode: 'nearest', name: '' })
+})

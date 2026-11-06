@@ -40,3 +40,18 @@
 - `combat: aborted-danger`：低血/苦力怕/多敌 → 先保命（已自动做一次）。
 - `combat: timeout`：没打死 → 换武器/找落单/补给。
 - `flee: cornered` / `flee: timeout`：逃不掉/没跑到安全距离 → 垫高/挖坑/换方向。
+
+## 攻击（mcb_attack / mcb_do attack）补充（2026-11-06 修复后）
+
+- 目标参数：字符串 `"chicken" / "zombie" / "nearest" / "nearest_hostile"` 或 `{"entity":"..."}`；**掉落物/投射物不会被选为攻击目标**（以前会锁到地上的掉落物，出现打不中的假成功）。
+- 返回：`{attacked, id, hit, killed, damage, healthBefore, healthAfter}`；真实受伤才 `hit:true`。
+  - 没打中会**报错**（`attack: 没打中 …` 或 `目标太远`）——不要原样重试，先靠近/换目标。
+  - 目标死亡：`killed:true`；之后用 `pickup` 收掉落。
+- 打鸡/动物也会真的掉血；连续攻击同一目标没死会继续命中（不再空挥）。
+
+## 低血暂停的恢复（重要）
+
+- 低血被暂停后：**先 `mcb_do {"steps":[{"op":"eat"}]}`**（暂停中允许吃）或退到安全点；再 `resume`。
+- `resume` 后有 **3 秒宽限**（不会一秒内又被按回去）；低血暂停有 **8 秒冷却**，只记录 `recover_grace` 提示；极低血（≤4）才会立刻再暂停。
+- `mcb_status` 的 `safety.recovery` 可看 `resumeGraceUntil/lowHealthPauseCooldownUntil/pausedRecoverable`。
+- 长动作：`pickup`/`craft` 有总预算（pickup 20s、craft 30s），超时返回 partial；太重的工作用 `task` 提交，不阻塞。

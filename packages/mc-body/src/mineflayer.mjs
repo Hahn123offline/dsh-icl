@@ -8,7 +8,7 @@ import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
-import { chooseWeaponItem, isHostile, shouldAbortCombat } from './combat.mjs'
+import { chooseWeaponItem, isHostile, parseTargetSpec, shouldAbortCombat } from './combat.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -92,6 +92,7 @@ export function createMineflayerAdapter({
   let lastError = null
   let lastPacketAt = 0
   let lastDeath = null
+  const entityHurtAt = new Map()
   let safePoint = null
   let spawnSafety = null
   let movements = null
@@ -485,6 +486,8 @@ export function createMineflayerAdapter({
       spawned = false
       const b = mineflayer.createBot({ host, port, username, auth: 'offline', version: false })
       bot = b
+      entityHurtAt.clear()
+      b.on('entityHurt', (entity) => { if (entity?.id != null) entityHurtAt.set(entity.id, Date.now()) })
       // pathfinder 必须显式挂上；挂了才有 goto/脱困。失败要留痕，不能变成“身体走不了路但没人知道”。
       try {
         b.loadPlugin(pathfinder)
@@ -1975,14 +1978,28 @@ export function createMineflayerAdapter({
     }
   }
 
-  function resolveEntity(target = {}) {
-    const key = String(target?.entity ?? target?.name ?? 'nearest').toLowerCase()
-    const wanted = key.startsWith('nearest:') ? key.slice('nearest:'.length) : key === 'nearest' ? '' : key
-    const pos = bot.entity?.position
-    return Object.values(bot.entities ?? {})
-      .filter((entity) => entity && entity !== bot.entity && entity.position)
-      .filter((entity) => !wanted || String(entity.name ?? entity.username ?? entity.type ?? '').toLowerCase() === wanted || String(entity.name ?? '').toLowerCase().includes(wanted))
-      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] ?? null
+  // 不可攻击实体（掉落物/投射物/载具/展示框…）：旧实现会锁到地上的 item，造成“攻击假成功”。
+  const NON_ATTACKABLE = /^(item|experience_orb|arrow|spectral_arrow|egg|snowball|ender_pearl|eye_of_ender|firework_rocket|potion|splash_potion|lingering_potion|area_effect_cloud|lightning_bolt|falling_block|primed_tnt|tnt|boat|.*_boat|minecart|.*_minecart|armor_stand|painting|item_frame|glow_item_frame|lead|fishing_bobber|trident)$/
+
+  function resolveEntity(target = {}, { forAttack = false } = {}) {
+    const spec = parseTargetSpec(target)
+    const wanted = spec.mode === 'name' ? spec.name : (spec.mode === 'nearest' && spec.name ? spec.name : '')
+    const pos = bot?.entity?.position ?? null
+    if (!bot?.entities) return null
+    let candidates = Object.values(bot.entities)
+      .filter((entity) => entity && entity !== bot.entity && entity.position && entity.isValid !== false)
+    if (forAttack) candidates = candidates.filter((entity) => !NON_ATTACKABLE.test(String(entity.name ?? entity.username ?? entity.type ?? '')))
+    if (forAttack && spec.mode === 'nearest_hostile') candidates = candidates.filter((entity) => isHostile(entity.name ?? entity.username ?? ''))
+    const matched = wanted
+      ? candidates.filter((entity) => {
+        const name = String(entity.name ?? entity.username ?? entity.type ?? '').toLowerCase()
+        return name === wanted || name.includes(wanted)
+      })
+      : candidates
+    const pool = matched.length ? matched : (wanted ? [] : candidates)
+    if (!pool.length) return null
+    if (!pos) return pool[0]
+    return pool.sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0]
   }
 
   function blockAtTarget(target = {}) {
@@ -2199,12 +2216,16 @@ export function createMineflayerAdapter({
       return { tossed: found.name }
     }
     if (op === 'pickup') {
-      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标。
+      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标；有总预算，不做 45s+ 长阻塞。
       const radius = Math.max(1, Math.min(16, Number(params.radius) || 8))
       const max = Math.max(1, Math.min(16, Number(params.max) || 8))
+      const maxMs = Math.max(3000, Math.min(60_000, Number(params.maxMs) || 20_000))
+      const startedAt = Date.now()
       let picked = 0
+      let partial = false
       const pickedNames = []
       for (let index = 0; index < max; index += 1) {
+        if (Date.now() - startedAt > maxMs) { partial = true; break }
         const pos = currentPosition()
         if (!pos) break
         const drops = Object.values(bot.entities ?? {})
@@ -2227,13 +2248,41 @@ export function createMineflayerAdapter({
         }
       }
       const left = Object.values(bot.entities ?? {}).filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(currentPosition() ?? { x: 0, y: 0, z: 0 }) <= radius).length
-      return { picked, items: pickedNames, radius, left }
+      return { picked, items: pickedNames, radius, left, partial, durationMs: Date.now() - startedAt }
     }
     if (op === 'attack') {
-      const entity = resolveEntity(params.target ?? params)
-      if (!entity) throw new Error('attack: 找不到目标')
-      await bot.attack(entity)
-      return { attacked: entity.name ?? entity.username ?? entity.type }
+      if (!bot?.entities) throw new Error('attack: 身体未连接（entities 不可用）；等连接后重试')
+      const entity = resolveEntity(params.target ?? params, { forAttack: true })
+      if (!entity) throw new Error('attack: 找不到可攻击目标（已排除掉落物/投射物）；用 mcb_scan 看实体，或 target:"nearest_hostile"')
+      const targetName = entity.name ?? entity.username ?? entity.type ?? 'entity'
+      const distance = round1(distanceTo(currentPosition(), entity.position))
+      const maxRange = Math.max(2, Math.min(6, Number(params.range) || 4.5))
+      if (Number.isFinite(distance) && distance > maxRange) {
+        throw new Error(`attack: 目标太远（${targetName} ${distance} 格 > ${maxRange}）；先靠近/用 move 到它旁边再攻击`)
+      }
+      const healthBefore = Number.isFinite(Number(entity.health)) ? Number(entity.health) : null
+      try { await bot.lookAt(entity.position.offset(0, 1.2, 0), true) } catch { /* ignore */ }
+      const hurtBefore = entityHurtAt.get(entity.id) ?? 0
+      const attackAt = Date.now()
+      try { await bot.attack(entity) } catch (error) {
+        throw new Error(`attack: 发起攻击失败（${targetName}）：${String(error?.message ?? error)}`)
+      }
+      let hurtAt = null
+      for (let index = 0; index < 20; index += 1) {
+        await sleep(50)
+        const at = entityHurtAt.get(entity.id)
+        if (at && at >= attackAt - 50 && at >= hurtBefore) { hurtAt = at; break }
+      }
+      const alive = Boolean(bot.entities?.[entity.id])
+      const healthAfter = Number.isFinite(Number(entity.health)) ? Number(entity.health) : null
+      const damage = healthBefore != null && healthAfter != null ? Math.round((healthBefore - healthAfter) * 10) / 10 : null
+      if (!alive) {
+        return { attacked: targetName, id: entity.id, killed: true, hit: true, damage, healthBefore, healthAfter: healthAfter ?? 0 }
+      }
+      if (!hurtAt) {
+        throw new Error(`attack: 没打中 ${targetName}（目标无受伤事件；可能太远/被挡/攻击冷却）；先靠近或换目标，别重复空挥`)
+      }
+      return { attacked: targetName, id: entity.id, hit: true, killed: false, damage, healthBefore, healthAfter }
     }
     if (op === 'craft') {
       const name = String(params.item ?? params.name ?? '')
@@ -2323,8 +2372,14 @@ export function createMineflayerAdapter({
       const inputsBefore = inputs.map((entry) => ({ ...entry, have: countOf(entry.name) }))
       const batches = []
       let craftError = null
+      const craftStartedAt = Date.now()
+      const craftMaxMs = Math.max(3000, Math.min(120_000, Number(params.maxMs) || 30_000))
       // 逐批合成并逐批验证：一批失败/产物没到不会把前面成功的批次算丢（旧实现只等一次）。
       for (let index = 0; index < craftTimes; index += 1) {
+        if (Date.now() - craftStartedAt > craftMaxMs) {
+          craftError = new Error(`craft: 超过 ${Math.round(craftMaxMs / 1000)}s 预算（完成 ${batches.length}/${craftTimes} 批）；先 mcb_inventory 复核，避免一次阻塞太久`)
+          break
+        }
         const batchBefore = countOf(name)
         let batchError = null
         try {
@@ -2603,6 +2658,9 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
+
+
 
 
 

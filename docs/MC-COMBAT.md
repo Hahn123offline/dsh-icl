@@ -124,3 +124,43 @@ E2 run：`.state/lab/e2-20261106-smoke`（phase=stopping 时读取；13 death）
 - [x] 单测（65/65 mc-body 绿）
 - [ ] 真服战斗验证（E2 结束后独立 dev 服；需 summon 怪/夜晚/苦力怕场景）
 - [ ] mc-link 工具 `mcb_combat`/`mcb_attack`、`mcb_status` 敌对列表、`skills/combat.md` 注册
+
+## 8. P0 修复：attack 假成功 / 暂停死锁 / 长动作（2026-11-06 用户现场）
+
+### 8.1 attack 假成功（已修，真服验证）
+
+- **根因**：`resolveEntity` 收到字符串 target 时被当成 `nearest`，把地上 `item` 当目标；`bot.attack` 之后不校验是否真的受伤 → `{"attacked":"chicken"}` 假成功；另有 `bot.entities` 为 null 时未防护。
+- **修**：
+  - target 支持字符串：`chicken` / `nearest` / `nearest_hostile` / `nearest:villager`；攻击路径**排除掉落物/投射物/载具/展示框**（`NON_ATTACKABLE`）；
+  - 攻击前检查距离（>maxRange 4.5 直接报“太远”）；攻击后监听 `entityHurt`（adapter 持久记录）**验证真实受伤**；没受伤 → `attack: 没打中 …`（不再假成功）；目标消失 → `killed:true`；
+  - 结果带 `hit/killed/damage/healthBefore/healthAfter`；`bot.entities` null 有可读错误。
+- **真服证据**（`.state/lab/mc-combat-poc/run6/result.json`）：
+  - 攻击鸡：第 1 下 `{hit:true,killed:false}`；第 2 下 `{hit:true,killed:true}`；第 3 下 `attack: 找不到可攻击目标（已排除掉落物/投射物）`（不再空挥/锁掉落物）；pickup 正常。
+  - `hunt` 僵尸：**done `{killed:true, attacks:5, durationMs:6628}`**，结束血 11。
+
+### 8.2 暂停/恢复死锁（已修，真服验证）
+
+- **根因**：低血 `safetyStop('low-health')` 后 resume，健康仍 ≤10 → 下一 watchdog tick 立刻再次暂停；无宽限/冷却/恢复动作 → resume→pause 忙等（E2 里 38 次 resume、5 连 `身体已暂停(low-health)`；血 0/20 饥饿 0/20）。
+- **修**：
+  - **resume 宽限 3s**（`resumeGraceMs`）：resume 后 3s 内低血不再次暂停（除非 ≤ criticalHealth=4）；
+  - **低血暂停冷却 8s**（`lowHealthPauseCooldownMs`）：暂停后 8s 内低血只记 `recover_grace`，不反复暂停；
+  - **暂停中允许 `eat`**（SAFE_WHILE_PAUSED）：能自己吃回来；`stop/cancel/look/tasks` 也可用；
+  - 状态暴露 `safety.recovery{resumeGraceMs,lowHealthPauseCooldownMs,criticalHealth,resumeGraceUntil,lowHealthPauseCooldownUntil,pausedRecoverable}`；错误文案提示“低血可先 eat/等回血，resume 后有 3s 宽限”。
+- **真服证据**（run4）：`damage 12` → paused(low-health, health 9.5)；resume 后 700ms **paused=false**、health 回升 10.33（未立刻被按回去）；recovery 字段正确。
+
+### 8.3 战斗任务低血阈值
+
+- 战斗任务自带 `params.lowHealth`（默认 10）；body 全局低血暂停阈值对战斗任务改为 **任务阈值-1**，让任务先自行 `combat_abort`（带原因/保命）而不是被 body 直接 interrupt。
+- 真服：`hunt lowHealth=5` 僵尸在 6.6s 内击杀（血 11），未触发暂停。
+
+### 8.4 长动作预算（pickup/craft）
+
+- `pickup`：总预算 `maxMs`（默认 20s，可调 3–60s），超时返回 `partial:true` + `durationMs`，不再一次阻塞 45s+。
+- `craft`：总预算 `maxMs`（默认 30s，3–120s），超时置 `craftError` 并走 `partial` 文案（带已完成批次数），不吞材料/不无限等。
+- 两者都是 `mcb_do` 单步；长任务仍建议走 `task`（不阻塞请求）。
+
+### 8.5 自动躲避真服验证（run4）
+
+- 空闲 + 僵尸 4 格：`auto_defense {reason:'threat-near', action:'flee-threat', durationMs:1215}`，位置移动 **6 格**，未暂停任务。
+- 暂停中低血 + 苦力怕近身：`safety_stop {reason:'threat'}` + `reflex low-health`（alarm/pierce）。
+- 静止被围仍可能死亡（无法保证 100%），但现在会先规避/报警/可逃跑反击，不会“站着被打到死且无事件”。

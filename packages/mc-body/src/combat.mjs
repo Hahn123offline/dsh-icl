@@ -83,3 +83,13 @@ export function pickTarget(hostiles, target = 'nearest_hostile') {
   return list.find((entry) => entry.name === wanted) ?? null
 }
 
+
+/** 解析 target 参数：字符串（nearest/nearest_hostile/实体名/nearest:name）或对象 {entity|name}。 */
+export function parseTargetSpec(target) {
+  const raw = typeof target === 'string' ? target : (target?.entity ?? target?.name ?? 'nearest')
+  const key = String(raw ?? '').trim().toLowerCase()
+  if (!key || key === 'nearest') return { mode: 'nearest', name: '' }
+  if (key.startsWith('nearest:')) return { mode: 'nearest', name: key.slice('nearest:'.length) }
+  if (key === 'nearest_hostile' || key === 'hostile' || key === 'nearest-hostile') return { mode: 'nearest_hostile', name: '' }
+  return { mode: 'name', name: key }
+}

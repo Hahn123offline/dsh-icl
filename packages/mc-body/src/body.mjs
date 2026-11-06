@@ -19,7 +19,7 @@ const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
 const COMBAT_KINDS = new Set(['hunt', 'defend', 'flee', 'guard'])
 // 暂停时仍然允许的 op：感知/查询/恢复/取消/停止，以及**停止**（cancel+反射+报告，不需要先 resume）。
 // 写动作（move/dig/place/task…）一律拒绝。
-const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'stop', 'say', 'wait'])
+const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'stop', 'eat', 'say', 'wait'])
 // alarm 级事件：必须能穿透 pause/focus 把会话叫醒（mc-link 不拦；body 这里打 priority/pierce 标记）。
 const ALARM_TYPES = new Set(['safety_stop', 'death', 'spawn_unsafe', 'kicked', 'reconnect_exhausted', 'quarantine', 'idle_disconnect', 'emergency', 'reflex'])
 // 暂停时的“安全反射”：不停世界，继续有界保命动作；防止脚本暂停 = 站桩挨打。
@@ -70,6 +70,10 @@ export function createBody({
   chatRateMs = 1000,
   lowHealth = 10,
   pausedDisconnectMs = 120_000,
+  // 暂停/恢复死锁修复：resume 后给宽限；低血暂停有冷却；极低血才无视宽限。
+  resumeGraceMs = 3000,
+  lowHealthPauseCooldownMs = 8000,
+  criticalHealth = 4,
   // 暂停期安全反射（方案 B）：暂停只停任务/控制，不停物理世界；反射有界（默认 ≤10s/次、≤2 次/分）。
   reflexEnabled = true,
   reflexMaxDurationMs = REFLEX_MAX_DURATION_MS,
@@ -117,6 +121,10 @@ export function createBody({
   let defenseTimes = []
   const defenseStats = { count: 0, lastAt: null, lastReason: null, lastAction: null, lastDurationMs: null, lastTimedOut: false, lastEventSeq: null }
   let defenseActive = false
+  let resumeGraceUntil = 0
+  let lastLowHealthPauseAt = 0
+  let lowHealthCooldownNotified = 0
+  let eatAllowedWhilePaused = true
   let eyesBusy = false
   let lastEyesAt = 0
   let closed = false
@@ -364,7 +372,7 @@ export function createBody({
         return taskView(tasks.get(existing))
       }
     }
-    if (paused) throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 resume 或 /v1/safety/resume，安全后再下任务`, 409)
+    if (paused) throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 resume 或 /v1/safety/resume（低血可先 eat/等回血，resume 后有 3s 宽限），安全后再下任务`, 409)
     if (connectionState === false) throw httpError('身体未连接（offline）；等重连或显式 resume 后再下任务', 409)
     if (queue.length >= maxQueue) throw httpError(`任务队列已满（${maxQueue}）`, 429)
     const durationMs = kind === 'routine' ? Math.max(10_000, Number(params.durationMs) || 0) : 0
@@ -575,10 +583,11 @@ export function createBody({
     const wasPaused = paused
     paused = false
     pausedReason = null
+    resumeGraceUntil = stamp() + Math.max(0, Number(resumeGraceMs) || 0)
     if (pausedTimer) { clearTimeout(pausedTimer); pausedTimer = null }
-    push('safety_resume', { wasPaused, previousReason, forced: Boolean(force), queued: queue.length })
+    push('safety_resume', { wasPaused, previousReason, forced: Boolean(force), queued: queue.length, graceUntil: resumeGraceUntil })
     void pump()
-    return { paused, wasPaused, previousReason }
+    return { paused, wasPaused, previousReason, graceUntil: resumeGraceUntil }
   }
 
   // ---- 连接状态（单一事实源，状态栏据此显示在线/离线） -------------------------
@@ -673,7 +682,29 @@ export function createBody({
     if (!Number.isFinite(value)) return
     const previous = lastHealth
     lastHealth = value
-    if (value <= lowHealth) {
+    // 战斗任务自己配置了低血中断阈值（params.lowHealth）；全局阈值不要先把它打断。
+    // 战斗任务自己配置了低血中断阈值（params.lowHealth）；body 阈值再低 1，让任务先自行 abort（带原因/保命）。
+    const combatLow = current && COMBAT_KINDS.has(current.kind) ? Math.max(1, Math.min(20, Number(current.params?.lowHealth) || lowHealth)) : null
+    const lowThreshold = combatLow ? Math.max(1, combatLow - 1) : lowHealth
+    if (value <= lowThreshold) {
+      const at = stamp()
+      const inGrace = at < resumeGraceUntil
+      const inCooldown = lastLowHealthPauseAt > 0 && at - lastLowHealthPauseAt < lowHealthPauseCooldownMs
+      // 死锁修复：低血但还能动时，resume 后给 3s 宽限 / 低血暂停有 8s 冷却，先让她吃/撤/回血；
+      // 只有极低血（criticalHealth）或冷却外仍低血才再次暂停。
+      if (value > criticalHealth && (inGrace || inCooldown)) {
+        if (!lowHealthCooldownNotified || at - lowHealthCooldownNotified >= alertWindowMs) {
+          lowHealthCooldownNotified = at
+          push('recover_grace', {
+            health: value, food: food ?? null,
+            graceUntil: inGrace ? resumeGraceUntil : null,
+            cooldownUntil: inCooldown ? lastLowHealthPauseAt + lowHealthPauseCooldownMs : null,
+            hint: '血低但还能动：先 eat/退到安全点/等回血，别反复 resume→又被暂停',
+          })
+        }
+        return
+      }
+      lastLowHealthPauseAt = at
       alertWatchdog('danger', 'low-health', { health: value, food: food ?? null }, () => safetyStop('low-health'))
       return
     }
@@ -1146,7 +1177,7 @@ export function createBody({
         const op = String(step?.op ?? '')
         if (!op) throw httpError(`第 ${index + 1} 步缺少 op`, 400)
         if (paused && !SAFE_WHILE_PAUSED.has(op)) {
-          throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 /v1/safety/resume，或只用 ${[...SAFE_WHILE_PAUSED].join('/')}`, 409)
+          throw httpError(`身体已暂停（${pausedReason ?? 'safety'}）；先 /v1/safety/resume（低血可先 eat/等回血，resume 后有 3s 宽限），或只用 ${[...SAFE_WHILE_PAUSED].join('/')}`, 409)
         }
         if (op === 'task') {
           const taskParams = step.params?.params ?? step.params ?? {}
@@ -1304,6 +1335,12 @@ export function createBody({
           pending: alarmState.pending.size,
           lastAt: alarmState.lastAt,
         },
+        recovery: {
+          resumeGraceMs, lowHealthPauseCooldownMs, criticalHealth,
+          resumeGraceUntil: resumeGraceUntil || null,
+          lowHealthPauseCooldownUntil: lastLowHealthPauseAt ? lastLowHealthPauseAt + lowHealthPauseCooldownMs : null,
+          pausedRecoverable: Boolean(paused && pausedReason === 'low-health' && connectionState !== false),
+        },
         autoDefense: defenseView(),
         lastDefense: defenseStats.lastAt ? {
           at: defenseStats.lastAt,
@@ -1345,6 +1382,12 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
+
+
+
+
 
 
 
