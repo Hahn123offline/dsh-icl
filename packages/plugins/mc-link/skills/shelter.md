@@ -27,5 +27,7 @@
 |---|---|---|
 | `shelter: no-site` | 地形/空间放不下 | 先清平/换位置，或先挖平再重跑 |
 | `shelter: needs-material` | 方块不够（回执带缺数） | 按缺数先 collect/craft 补料，别硬跑 |
-| `shelter: incomplete` | 结构差墙/屋顶/门洞 | 按 `verify.summary` 补缺的，不用重跑整间 |
+| `shelter: incomplete` | 结构差墙/屋顶/门洞 | 按 `verify.summary` 补缺的；缺哪面看 `verify.walls.missingFaces`（例 `south 缺 4/6`），屋顶缺几块看 `roof.missing`；不用重跑整间 |
 | `shelter: entry-blocked` | 结构 OK 但进不去 | 清零格门洞/垫平门外通路，或换 doorSide |
+
+（body 回执里的 `failures[]` 是建造过程调试明细，不用管；看 `verify.summary` 就够。）

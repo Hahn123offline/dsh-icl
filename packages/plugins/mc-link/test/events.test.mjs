@@ -245,6 +245,28 @@ test('宏：shelter done 展示 verify.summary/entryOk/home；失败码按缺面
     assert.match(text, /任务失败/, error)
     assert.match(text, pattern, error)
   }
+  // 失败时把 verify.summary / 缺哪面 / 屋顶缺几块给她，但 failures 调试明细不进文案
+  const incomplete = taskEventText('task_failed', {
+    task: {
+      id: 't-9', kind: 'shelter', error: 'shelter: incomplete',
+      result: {
+        verify: {
+          ok: false, summary: '屋顶缺 1 块', roof: { ok: false, missing: 1, total: 9, cells: [{ x: 1, y: 2, z: 1 }] },
+          walls: { ok: true, missing: 0, total: 14, missingFaces: [] }, door: { ok: true, missing: 0 }, interior: { ok: true, blocked: 0 }, entry: { ok: true },
+        },
+        failures: [{ stage: 'place', x: 1, y: 2, z: 3, reason: 'blocked by grass' }],
+      },
+    },
+  })
+  assert.match(incomplete, /结构验收：屋顶缺 1 块/)
+  assert.doesNotMatch(incomplete, /failures|stage=|blocked by grass/)
+  const faces = taskEventText('task_failed', {
+    task: {
+      id: 't-9', kind: 'shelter', error: 'shelter: incomplete',
+      result: { verify: { ok: false, summary: '结构不完整：缺 south 面墙', walls: { missingFaces: [{ face: 'south', missing: 4, total: 6 }] } } },
+    },
+  })
+  assert.match(faces, /缺墙面：south 缺 4\/6/)
 })
 
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {

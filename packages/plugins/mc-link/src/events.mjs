@@ -206,6 +206,24 @@ function progressText(result, max = 70) {
   return bits.length ? `，进度 ${cut(bits.join(' '), max)}` : ''
 }
 
+/**
+ * shelter 的结构验收摘要（给她看"缺哪面/几块"）：summary + walls.missingFaces + roof/door/interior 缺数。
+ * body 的 failures[] 是建造过程调试明细，不在这里展示。
+ */
+function shelterVerifyDetail(verify) {
+  if (!verify || typeof verify !== 'object') return ''
+  const summary = String(verify.summary ?? '').slice(0, 120)
+  const bits = []
+  if (summary) bits.push(summary)
+  const faces = Array.isArray(verify.walls?.missingFaces) ? verify.walls.missingFaces : []
+  if (faces.length) bits.push(`缺墙面：${faces.slice(0, 4).map((face) => `${face.face ?? '?'} 缺 ${face.missing ?? '?'}${face.total != null ? `/${face.total}` : ''}`).join('、')}`)
+  if (Number(verify.roof?.missing) > 0 && !/屋顶/.test(summary)) bits.push(`屋顶缺 ${verify.roof.missing} 块`)
+  if (Number(verify.door?.missing) > 0 && !/门洞/.test(summary)) bits.push(`门洞缺 ${verify.door.missing}`)
+  if (Number(verify.interior?.blocked) > 0 && !/室内/.test(summary)) bits.push(`室内被占 ${verify.interior.blocked} 格`)
+  if (verify.entry && verify.entry.ok === false && !/进不去|入口/.test(summary)) bits.push('入口不通')
+  return bits.filter(Boolean).join('；')
+}
+
 /** 宏成功的一句话：collect 说收集了多少、tunnel 说通道尺寸与火把，其余给关键进度。 */
 function macroDoneText(task, result) {
   const label = taskLabel(task)
@@ -287,7 +305,9 @@ export function taskEventText(type, data = {}, status = null) {
   if (type === 'task_failed') {
     const error = valueText(task.error, '原因未知', 60)
     const why = reasonHint(error)?.hint
-    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${progress}${suffix}`
+    // shelter 失败时把 body 的结构验收摘要/缺哪面直接给她（failures[] 是建造调试明细，不展示）。
+    const verifyText = task.kind === 'shelter' || task.result?.verify ? shelterVerifyDetail(task.result?.verify) : ''
+    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${progress}${suffix}`
   }
   if (type === 'task_unknown') {
     return `[MC] 任务超时，结果未知：${label}${progress} — 动作可能已经生效，不能当成失败。先 mcb_status / mcb_inventory 复核，再决定要不要重下同一个任务。${suffix}`
