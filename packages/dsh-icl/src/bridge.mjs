@@ -120,7 +120,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 触发条件：连续 N 次（默认 3）完全相同（name + 规范化 args）→ 通过 delivery 注入一条提示；
     // 同一 session 60s 内不重复提示（节流）。不写 system/facts，只是 append-only notice。
     repeat: { sig: null, count: 0, lastNoticeAt: 0 },
-    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0, repeatGuards: 0 },
+    // renderTail（C，lab-only）：当前 turn 内已追加的 tail 计数/上次文本；turn 切换时重置。
+    renderTail: { turn: null, lastText: null, count: 0, chars: 0 },
+    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0, repeatGuards: 0, renderTailAppended: 0, renderTailChars: 0, renderTailSkipped: 0 },
   }
 
   function report(where, error) {
@@ -151,6 +153,101 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     } catch (error) { report('focus.save', error) }
   }
 
+  /* ── 工具结果尾部状态行（renderTail，C，lab-only） ───────── */
+
+  // 默认关；lab preset 可开。ICL_RENDERTAIL=1/0 用于 A/B 覆盖（不改 preset）。
+  const tailRaw = config.renderTail && typeof config.renderTail === 'object' ? config.renderTail : {}
+  const tailEnv = process.env.ICL_RENDERTAIL
+  const tailEnabled = tailEnv == null ? tailRaw.enabled === true : tailEnv === '1'
+  const DEFAULT_TAIL_DENY = [
+    'time_status', 'time_list', 'mcb_status', 'mcb_inventory', 'mcb_map', 'mcb_scan', 'mcb_help',
+    'album_list', 'album_search', 'album_status', 'album_show',
+    'world_status', 'focus_status', 'note_status', 'memos', 'memory_export', 'recall',
+    'qq_unread', 'qq_history', 'todo_write',
+  ]
+  const tailCfg = {
+    enabled: tailEnabled,
+    maxPerTurn: Math.max(0, Number(tailRaw.maxPerTurn ?? 6)),
+    maxCharsPerTurn: Math.max(0, Number(tailRaw.maxCharsPerTurn ?? 360)),
+    maxResultChars: Math.max(200, Number(tailRaw.maxResultChars ?? 2000)),
+    tools: Array.isArray(tailRaw.tools) ? tailRaw.tools.map(String) : [],
+    deny: Array.isArray(tailRaw.deny) ? tailRaw.deny.map(String) : DEFAULT_TAIL_DENY,
+    includeErrors: tailRaw.includeErrors === true,
+  }
+
+  function tailToolAllowed(name) {
+    if (tailCfg.tools.length) return tailCfg.tools.includes(name)
+    return !tailCfg.deny.includes(name)
+  }
+
+  function twoDigit(value) { return String(value).padStart(2, '0') }
+
+  /** 30–45 字符状态行：时间/phase · 焦点 · 目标 · 积压 · MC；字段缺失就省略。 */
+  function buildRenderTail() {
+    const parts = []
+    try {
+      const timeApi = host.shared.get('time') ?? null
+      const status = typeof timeApi?.status === 'function' ? timeApi.status() : null
+      const at = Number(timeApi?.now?.()) || Date.now()
+      const date = new Date(at)
+      if (Number.isFinite(date.getTime())) parts.push(`${twoDigit(date.getHours())}:${twoDigit(date.getMinutes())}`)
+      const phase = String(status?.phase ?? '')
+      if (phase) parts.push(phase === 'awake' ? '醒着' : phase === 'sleeping' ? '睡' : phase === 'paused' ? '暂停' : phase)
+      let focus = null
+      try { focus = host.services.focus.current() } catch { focus = null }
+      if (focus) {
+        const label = String(focus.label ?? focus.id ?? '').trim().slice(0, 18)
+        if (label) parts.push(`焦点${label}`)
+      }
+      const goals = Array.isArray(status?.goals) ? status.goals : []
+      if (goals.length) {
+        const first = String(goals[0]?.id ?? goals[0]?.theme ?? '').trim().slice(0, 18)
+        if (first) parts.push(`目标${first}${goals.length > 1 ? `+${goals.length - 1}` : ''}`)
+      }
+      const backlog = Number(status?.backlog ?? 0)
+      if (backlog > 0) parts.push(`积压${backlog}`)
+      const mc = host.shared.get('mc-link') ?? null
+      const body = typeof mc?.status === 'function' ? mc.status() : null
+      if (body) {
+        const connected = body.connected !== false && body.alive !== false && body.online !== false
+        if (!connected) parts.push('MC离线')
+        else {
+          const hp = body.health ?? body.hp ?? body.status?.health ?? null
+          const food = body.food ?? body.satiety ?? body.status?.food ?? null
+          const paused = body.paused ? '暂停' : ''
+          if (hp != null || food != null || paused) parts.push(`MC${paused}${hp != null ? `${Math.round(Number(hp))}` : '?'}/${food != null ? `饱${Math.round(Number(food))}` : '?'}`)
+        }
+      }
+    } catch { /* tail 不能影响工具结果 */ }
+    if (!parts.length) return ''
+    return `〔状态｜${parts.join(' · ')}〕`
+  }
+
+  /** 只 append 到 tool result 文本；错误/图片/超长/重复/超限都跳过。 */
+  function appendRenderTail(name, out) {
+    if (!tailCfg.enabled) return out
+    if (!out || typeof out !== 'object') return out
+    if (!tailToolAllowed(name)) return out
+    if (Array.isArray(out.images) && out.images.length) { state.stats.renderTailSkipped += 1; return out }
+    if (typeof out.imagePath === 'string' && out.imagePath) { state.stats.renderTailSkipped += 1; return out }
+    if (out.ok === false) { state.stats.renderTailSkipped += 1; return out }
+    const text = typeof out.text === 'string' ? out.text : String(out.text ?? '')
+    if (!tailCfg.includeErrors && /^(Error:|失败[:：]|失败\(|无法|请先)/.test(text)) { state.stats.renderTailSkipped += 1; return out }
+    if (text.length > tailCfg.maxResultChars) { state.stats.renderTailSkipped += 1; return out }
+    if (text.includes('〔状态｜')) { state.stats.renderTailSkipped += 1; return out }
+    if (state.renderTail.count >= tailCfg.maxPerTurn) { state.stats.renderTailSkipped += 1; return out }
+    const line = buildRenderTail()
+    if (!line) return out
+    if (line === state.renderTail.lastText) { state.stats.renderTailSkipped += 1; return out }
+    if (state.renderTail.chars + line.length > tailCfg.maxCharsPerTurn) { state.stats.renderTailSkipped += 1; return out }
+    state.renderTail.lastText = line
+    state.renderTail.count += 1
+    state.renderTail.chars += line.length
+    state.stats.renderTailAppended += 1
+    state.stats.renderTailChars += line.length
+    return { ...out, text: text ? `${text}\n${line}` : line }
+  }
+
   /* ── 工具面 ───────────────────────────────────────────── */
 
   function syncTools() {
@@ -174,7 +271,12 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         try { prev.off() } catch (error) { report(`tool.off:${name}`, error) }
         state.tools.delete(name)
       }
-      const build = (imageOutput) => toDshToolDefinition(def, { saveImage, imageOutput })
+      const build = (imageOutput) => toDshToolDefinition(def, {
+        saveImage,
+        imageOutput,
+        // C renderTail：统一在 normalize 前给 tool result 文本 append 状态行。
+        execute: async (args, exec) => appendRenderTail(def.name, await def.execute(args, exec)),
+      })
       try {
         const off = ctx.tools.register(build(!state.outputFallback))
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
@@ -714,6 +816,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 缓存键是 turn 号：会话恢复/重放若复用同一 turn 号，bind/unbind 会清空缓存（够用）；
     // 若将来支持同一 session 内 rewind，需要额外的 generation 计数，别只靠 turn。
     if (event?.type === 'turn/start') state.turn = Number.isFinite(Number(event.data?.turn)) ? Number(event.data.turn) : state.turn
+    if (event?.type === 'turn/start') state.renderTail = { turn: state.turn, lastText: null, count: 0, chars: 0 }
     // 模型在 turn 内自己改事实的工具（time_*/memo*/lexicon_learn）——它们出现在 facts 文本里
     // （下一个安排/静音到/待办计数/词汇），必须标 dirty，否则同一 turn 后面几十步仍是旧值。
     // 注：silent schedule（如 dream:nightly）走 signals.emit 不走 delivery，不在此列，
@@ -851,6 +954,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       inflight: host.services.delivery.inflightCount(),
       raw: state.raw.length,
       repeat: { count: state.repeat.count, tool: state.repeat.sig ? state.repeat.sig.slice(0, state.repeat.sig.indexOf('|')) : null, lastNoticeAt: state.repeat.lastNoticeAt || null },
+      renderTail: { enabled: tailCfg.enabled, maxPerTurn: tailCfg.maxPerTurn, maxCharsPerTurn: tailCfg.maxCharsPerTurn, turnAppended: state.renderTail.count, lastText: state.renderTail.lastText },
       signals: host.services.signals.stats(),
       stats: { ...state.stats },
     }
