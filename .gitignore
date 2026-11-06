@@ -4,3 +4,4 @@ state/
 .state/
 config/icl.local.json
 mem_export.json
+media/
