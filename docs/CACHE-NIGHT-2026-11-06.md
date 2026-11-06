@@ -164,7 +164,7 @@ night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 
 | 项 | 值 | 判定 |
 |---|---|---|
 | ICL 插件 | 16 个全部 enabled、0 failed（memory…album，无 mc-link） | ✅ |
-| ICL 面工具数 / 字符 | **51 / 34101**（预期 ≈51/34049，实测 +52 字符，按当前 master 插件版本） | ✅ 数量吻合 |
+| ICL 面工具数 / 字符 | **51 / 34101**（**cache 口径 = 全部工具数组的一次 JSON**；`product-surface` 口径 = 各工具 JSON 求和 = **34049**。差 52 = 数组 `[` `]` + 50 个逗号，**不是描述差异**） | ✅ 数量吻合、口径已对齐 |
 | `mcb_*` | **0 个**（产品会话无 MC 工具） | ✅ |
 | `purifySections` | 4 段全在（`harness:identity` / `ui:deliverable-file-references` / `harness:source` / `app:web-surface`）；同机制已在 firstscreen run 实测生效 | ✅ 配置就位 |
 | ICL system 段 | 2899 字符（静态 2824 + facts 73） | 参考值（DSH 层 system 需 live run） |
