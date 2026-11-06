@@ -14,7 +14,7 @@ import dgram from 'node:dgram'
 import { closest as closestIn } from './closest.mjs'
 import { EXIT_REASON_TEXT, exitReasonText, sameReasonAdvice } from './exit.mjs'
 import { createBodySupervisor, describeExit } from './lifecycle.mjs'
-import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT } from './events.mjs'
+import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT, reasonHint } from './events.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'mc-link'
@@ -1116,14 +1116,13 @@ export function apply(ctx) {
     if (failed) {
       const message = String(failed.error?.message ?? failed.error)
       const pausedReason = (/暂停（([^）]+)）/.exec(message) ?? [])[1] ?? null
-      const hint = /暂停/.test(message) ? `；${pauseAdvice(pausedReason)}。暂停期间仍可用 look/inventory/map/scan/move/eat/cancel/tasks/events/resume/stop`
-        : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
-          : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
-            : /队列已满|429|409|上一个 do 动作还在执行/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑；长动作一律用 {"op":"task"} 提交，别并发单步 op'
-              : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
-                : ''
-      const done = parts.length ? `\n\n已完成的前序步骤：\n${parts.join('\n\n')}` : '\n\n失败前没有已完成的步骤。'
-      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}${hint}${done}${repeatHint ? `\n\n${repeatHint}` : ''}`)
+      // 表驱动：每个失败码 → 原因 + 下一步（未知码走兜底），保证错误回执 100% 带"下一步"。
+      const reason = reasonHint(message)
+      const next = /暂停/.test(message)
+        ? `${pauseAdvice(pausedReason)}。暂停期间仍可用 look/inventory/map/scan/move/eat/cancel/tasks/events/resume/stop`
+        : reason.next
+      const done = parts.length ? `已完成：\n${parts.join('\n\n')}` : '已完成：无（失败前没有步骤成功）'
+      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}\n原因：${reason.text}\n下一步：${next}\n\n${done}${repeatHint ? `\n\n${repeatHint}` : ''}`)
     }
     if (noteText) parts.push(noteText)
     if (task) {
