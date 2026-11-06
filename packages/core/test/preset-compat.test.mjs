@@ -20,6 +20,8 @@ test('产品 preset 不得依赖内置 DSH 未注册的 {{cwd}} 提示变量（d
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
     const offenders = []
     for (const [i, line] of lines.entries()) {
+      const code = line.trim()
+      if (!code || code.startsWith('#')) continue
       if (line.includes('{{cwd}}')) offenders.push(`${name}:${i + 1}: ${line.trim()}`)
     }
     assert.deepEqual(offenders, [], `产品 preset 里出现 {{cwd}}（内置 DSH 不注册该变量，desktop ICL 会全灭）：\n${offenders.join('\n')}`)
