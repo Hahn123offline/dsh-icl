@@ -56,6 +56,10 @@ const cfg = {
   /** fast-play：清醒节拍/目标续推间隔（秒），materialize 到 lab preset。 */
   awakeIdleSec: num('--awake-idle-sec', 30),
   goalGapSec: num('--goal-gap-sec', 30),
+  /** time 的 immediate 模式（turn/end 后 ~1s 触发）；time 未实现时由 --fast-followup 兜底。 */
+  awakeMode: String(arg('--awake-mode', 'interval')),
+  awakeMinIdleSec: num('--awake-min-idle-sec', 30),
+  fastFollowup: flag('--fast-followup'),
   /** E2 文案收敛：死亡/暂停提示压成一句策略，不列逐步动作。 */
   tersePrompts: flag('--terse-prompts'),
 }
@@ -137,6 +141,7 @@ const state = {
   sleepEnteredAt: null,
   sleepFlushedAt: null,
   sleepDirectSeen: 0,
+  lastFastFollowupAt: null,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -312,6 +317,8 @@ async function startLab({ fresh = false } = {}) {
     '--server-port', String(cfg.serverPort),
     '--awake-idle-sec', String(cfg.awakeIdleSec),
     '--goal-gap-sec', String(cfg.goalGapSec),
+    '--awake-mode', cfg.awakeMode,
+    '--awake-min-idle-sec', String(cfg.awakeMinIdleSec),
     '--model', cfg.model,
     '--timeout', '300',
     // 不再带 --force：它会 down 掉"当前 lab"（可能是并发的另一条 run）。同 run 重启前 stopLab 已清 current。
@@ -1437,6 +1444,17 @@ async function main() {
       try {
         await sendPrompt('快到你睡觉的时间了（约 20 分钟后）。现在开始收尾：把手上的事停一下，回刚才的安全点（或就近搭个能睡的庇护所），整理一下背包；到点就安排睡下（sleep 安排我已经帮你排好了，到点会生效）。', { timeoutSec: 300 })
       } catch (error) { log(`pre-sleep 提示失败：${String(error?.message ?? error)}`) }
+    }
+
+    // fast-play 兜底（time immediate 未合入时）：turn/end 后 ~0.8s 补一条 followup，避免等 awake-tick。
+    if (cfg.fastFollowup && !sleeping && !state.restMode && !stats.inTurn && hb.lastTurnEndAt) {
+      const sinceEnd = nowMs - Number(hb.lastTurnEndAt)
+      const lastFollow = state.lastFastFollowupAt ? Date.parse(state.lastFastFollowupAt) : 0
+      if (sinceEnd > 500 && sinceEnd < 12_000 && nowMs - lastFollow > 2500) {
+        state.lastFastFollowupAt = nowIso()
+        state.fastFollowups = (state.fastFollowups ?? 0) + 1
+        try { await sendPrompt('继续，下一步。', { timeoutSec: 120 }) } catch (error) { log(`fast-followup 失败：${String(error?.message ?? error)}`) }
+      }
     }
 
     // playbook 单步推进（E2 可调：--playbook-min / --playbook-idle-sec / --no-playbook；睡眠/休息期不催）

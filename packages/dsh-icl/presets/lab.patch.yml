@@ -188,7 +188,9 @@
                   # E2 时序收敛（用户/lead 批准）：清醒节拍 120s→30s，goal 续推 60s→30s。
                   # 目标：turn-gap p95 从 121s 降到 ≤40s（S1 实测 121/154s）。
                   awakeTick:
+                    mode: __LAB_AWAKE_MODE__
                     idleSec: __LAB_AWAKE_IDLE__
+                    minIdleSec: __LAB_AWAKE_MIN_IDLE__
                   goalResumeMinGapSec: __LAB_GOAL_GAP__
                 mc-link:
                   listenPort: __LAB_MC_PORT__

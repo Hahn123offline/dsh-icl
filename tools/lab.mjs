@@ -208,7 +208,9 @@ async function up() {
   // E2 时序可调：清醒节拍/目标续推间隔（秒）。缺省 30。
   const awakeIdleSec = arg('--awake-idle-sec') ? Number(arg('--awake-idle-sec')) : 30
   const goalGapSec = arg('--goal-gap-sec') ? Number(arg('--goal-gap-sec')) : 30
-  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort, awakeIdleSec, goalGapSec })
+  const awakeMode = arg('--awake-mode') ? String(arg('--awake-mode')) : 'interval'
+  const awakeMinIdleSec = arg('--awake-min-idle-sec') ? Number(arg('--awake-min-idle-sec')) : 30
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort, awakeIdleSec, goalGapSec, awakeMode, awakeMinIdleSec })
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,
