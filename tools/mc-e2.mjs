@@ -59,9 +59,11 @@ const supervisorArgs = [
   'tools/mc-night.mjs', '--run', runId, '--hours', String(hours), '--model', model,
   '--server-name', serverName, '--server-port', String(serverPort), '--server-dir', serverDir,
   '--mc-user', mcUser, '--mc-port', String(mcPort), '--port', String(labPort),
-  '--checkpoint-min', '12', '--nudge-min', '45', '--turn-timeout-min', '10', '--stall-sec', '180',
+  '--checkpoint-min', '12', '--nudge-min', '45', '--turn-timeout-min', '20', '--stall-sec', '600',
   // E2 复杂度收敛（misc COMPLEXITY-AUDIT）：steer 预算 ≤10 条/2h，死亡/暂停提示压成一句。
   '--terse-prompts', '--playbook-min', '6', '--playbook-idle-sec', '90',
+  // zero-wait（time immediate）：turn/end 后 ~1s 自检；goal 续推 0s。
+  '--awake-mode', 'immediate', '--awake-min-idle-sec', '1', '--awake-idle-sec', '8', '--goal-gap-sec', '0',
 ]
 const qualityArgs = ['tools/mc-quality.mjs', '--run', runId, '--interval', '60', '--preset', 'icl-mc-lab']
 
