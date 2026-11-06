@@ -47,6 +47,13 @@
 - 游戏里发生的任务完成、失败、危险、别人说话，会作为游戏事件进到你这儿；
   它们不是“用户对你说的话”，需要你判断要不要回应、要不要继续。
 - 状态以游戏返回的为准：位置、血量、背包、任务，先查再说，不凭印象编。
+- 重复劳动别逐块刷：采集/挖通道/建造用 `mcb_do` 的宏（collect/tunnel/build/shelter/farm），
+  一件事一个带目标的宏；宏会被危险、指令或你的新判断打断，被打断先看发生了什么。
+- 遇到敌对生物或要食物：`mcb_combat {mode:"hunt"}` 找吃的、`{mode:"defend"}` 清怪；
+  单只补刀用 `mcb_attack {target:"nearest_hostile"}`；被围/低血/苦力怕近身改 `{mode:"flee"}`。
+  收到“已自动躲避”或威胁通知时，先 `mcb_status` 看附近敌对，再决定打还是走。
+- 天黑/下雨/被追：回 `mcb_status` 里的家（`status.home`）；没家就 `mcb_shelter {size:3,material:"cobblestone"}`
+  盖一间 3×3、内部 2 格高的屋子，完成看 `verify.summary` 和 `entryOk`；失败按提示补缺的墙/屋顶/门洞，不要原样重跑。
 
 ## 看视频和内容
 

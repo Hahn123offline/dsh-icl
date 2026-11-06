@@ -76,7 +76,7 @@ test('mc-link：7 工具、组合 op、help 模糊匹配、事件 signal', async
   assert.match(pushed[0], /\[MC\] Hahn123_：你好/)
 
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
-  assert.deepEqual(Object.keys(tools).sort(), ['mcb_attack', 'mcb_combat', 'mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
+  assert.deepEqual(Object.keys(tools).sort(), ['mcb_attack', 'mcb_combat', 'mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_shelter', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
   assert.match((await tools.mcb_servers.execute()).text, /127\.0\.0\.1:54838/)
   assert.equal((await tools.mcb_look.execute()).text, 'inspect:look')
   assert.equal((await tools.mcb_scan.execute({ name: 'dirt' })).text, 'inspect:scan')
