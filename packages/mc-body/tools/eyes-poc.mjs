@@ -9,8 +9,8 @@
 //
 // 依赖：
 //   prismarine-viewer（不在 mc-body 依赖里；PoC 用独立目录安装）：
-//     mkdir C:/DSH/icl/.state/lab/mc-eyes-poc/viewer
-//     cd  C:/DSH/icl/.state/lab/mc-eyes-poc/viewer
+//     mkdir <repo>/.state/lab/mc-eyes-poc/viewer
+//     cd  <repo>/.state/lab/mc-eyes-poc/viewer
 //     npm init -y && npm i prismarine-viewer@1.33.0
 //   然后 --viewer-root 指到该目录（或设 MC_EYES_VIEWER_ROOT）。
 //   Edge（Windows 自带）：--edge-path 可覆盖。
@@ -51,7 +51,7 @@ function resolveViewerRoot() {
     opt('viewer-root'),
     process.env.MC_EYES_VIEWER_ROOT,
     path.join(REPO_ROOT, 'node_modules'),
-    'C:/DSH/icl/.state/lab/mc-eyes-poc/viewer',
+    path.join(REPO_ROOT, '.state', 'lab', 'mc-eyes-poc', 'viewer'),
   ].filter(Boolean)
   for (const candidate of candidates) {
     const root = path.resolve(String(candidate))
