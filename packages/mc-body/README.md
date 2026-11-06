@@ -142,3 +142,8 @@ PoC：`node packages/mc-body/tools/eyes-poc.mjs --viewer-root <prismarine-viewer
 
 有敌对生物时的追杀/防守/逃跑任务与自动躲避（未暂停也生效）见 [`docs/MC-COMBAT.md`](../../docs/MC-COMBAT.md)。
 body task kind：`hunt / defend / flee / guard`；自动躲避事件 `auto_defense`、威胁暂停 `safety_stop(reason=threat)`；参数/失败码/验收在文档。
+
+## 建房（MC-BUILDING）
+
+小屋/结构：蓝图规格 → 分步建造 → 结构验收（四面墙/屋顶/门洞/室内 2 格高/可进入）→ home 记忆。设计、S2 失败证据与 54839 真服验证（3×3 木屋 done、entryOk、home 持久化；live-world 截图仍空白待修）见 [`docs/MC-BUILDING.md`](../../docs/MC-BUILDING.md)。
+body task kind `shelter`；结果带 `verify{ok,walls,roof,door,interior,floor,entry}`、`entryOk`、`home`；`status.home` 跨重启保留。
