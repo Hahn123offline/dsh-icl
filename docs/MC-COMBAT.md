@@ -164,3 +164,16 @@ E2 run：`.state/lab/e2-20261106-smoke`（phase=stopping 时读取；13 death）
 - 空闲 + 僵尸 4 格：`auto_defense {reason:'threat-near', action:'flee-threat', durationMs:1215}`，位置移动 **6 格**，未暂停任务。
 - 暂停中低血 + 苦力怕近身：`safety_stop {reason:'threat'}` + `reflex low-health`（alarm/pierce）。
 - 静止被围仍可能死亡（无法保证 100%），但现在会先规避/报警/可逃跑反击，不会“站着被打到死且无事件”。
+
+### 8.6 真服验证汇总（54839 独立 dev 服；E2 已结束）
+
+| 场景 | 结果 | 证据 |
+|---|---|---|
+| attack 鸡（真服） | 第 1 下 `{hit:true,killed:false}`；第 2 下 `{hit:true,killed:true}`；第 3 下正确报 `找不到可攻击目标（已排除掉落物/投射物）`；pickup 正常 | `run6/result.json` |
+| hunt 僵尸（铁剑） | **done `{killed:true, attacks:5, durationMs:6628}`**，结束血 11 | `run6/result.json` |
+| flee 僵尸（safeDistance 24） | **done `{fled:true, reason:'no-threat', flees:3, durationMs:21119}`**，威胁曾接近 2.8 格但逃开 | `run7/result.json` |
+| 自动躲避（空闲+僵尸 4 格） | `auto_defense {reason:'threat-near', action:'flee-threat', durationMs:1215}`，位移 **6 格**，未暂停 | `run4/result.json` |
+| 苦力怕近身 | `safety_stop {reason:'threat'}` + reflex（alarm/pierce） | `run4/result.json` |
+| 低血暂停→resume | resume 后 700ms 仍 `paused=false`、health 9.5→10.33；`recovery` 字段正确 | `run4/result.json` |
+
+所有真服测试用 54839 独立 dev 服（server.jar 本地、停止后无监听）；未碰 54838（E2）与用户客户端；54841 有他人服务器未触碰。
