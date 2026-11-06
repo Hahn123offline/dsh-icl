@@ -704,7 +704,7 @@ test('危险穿透：alarm 被 pause 闸门拦下时暂存、next delivery 补�
   const seen = []
   const off = link.host.services.signals.addGate((signal) => {
     if (signal.from?.plugin === 'mc') seen.push(signal)
-    return blocked && signal.from?.plugin === 'mc' && String(signal.tags ?? []).includes('alarm') ? { accept: false, reason: 'paused' } : { accept: true }
+    return blocked && signal.from?.plugin === 'mc' && String(signal.tags ?? []).includes('alarm') ? { accept: false, blocked: true, reason: 'transient' } : { accept: true }
   })
   try {
     await link.api.poll()
@@ -719,7 +719,7 @@ test('危险穿透：alarm 被 pause 闸门拦下时暂存、next delivery 补�
     assert.equal(deathSignal.meta?.priority, 'alarm')
     assert.equal(deathSignal.meta?.pierce, true)
     const status = await link.tools.mcb_status.execute({})
-    assert.match(status.text, /危险补投：\d+ 条排队中/)
+    assert.match(status.text, /危险补投：\d+ 条未进 time 的 alarm/)
     // gate 打开 → 下一次 poll 补投
     blocked = false
     await link.api.poll()
@@ -730,6 +730,27 @@ test('危险穿透：alarm 被 pause 闸门拦下时暂存、next delivery 补�
     assert.match(ledger, /alarm-delivered-late/)
     assert.match(ledger, /"priority":"alarm"/)
     assert.match(ledger, /"pierce":true/)
+  } finally {
+    off?.()
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('危险穿透：time 已 enqueue 的 blocked（sleeping/muted/paused）不补投，只记 alarm-already-stored', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  const off = link.host.services.signals.addGate((signal) => (signal.from?.plugin === 'mc' && String(signal.tags ?? []).includes('alarm') ? { accept: false, blocked: true, reason: 'sleeping' } : { accept: true }))
+  try {
+    await link.api.poll()
+    body.push({ type: 'death', data: { position: { x: 1, y: 64, z: 2 }, lastDeath: { position: { x: 1, y: 64, z: 2 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    const ledger = fs.readFileSync(path.join(link.root, 'events.jsonl'), 'utf8')
+    assert.match(ledger, /alarm-already-stored/, 'sleeping 被 time 存下的 alarm 不能进补投队列')
+    assert.doesNotMatch(ledger, /alarm-blocked/, '不该再记 blocked（内容已在 time 积压里）')
+    const status = await link.tools.mcb_status.execute({})
+    assert.doesNotMatch(status.text, /危险补投/, '补投计数只算没进 time 的')
   } finally {
     off?.()
     await link.cleanup()

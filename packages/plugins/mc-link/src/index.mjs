@@ -15,7 +15,6 @@ import { closest as closestIn } from './closest.mjs'
 import { EXIT_REASON_TEXT, exitReasonText, sameReasonAdvice } from './exit.mjs'
 import { createBodySupervisor, describeExit } from './lifecycle.mjs'
 import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT } from './events.mjs'
-import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'mc-link'
 
@@ -68,9 +67,8 @@ export function apply(ctx) {
   // bot 名：配置优先；lab 里用环境变量按 owner 区分（两个都叫 ICL 会被服务器互踢）。
   const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
   // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
-  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起；
-  // 没有 logFile 也没有显式 stateDir 时才用 ICL_ROOT/state/mc-live 兜底。
-  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : path.join(iclPaths().stateDir, 'mc-live'))))
+  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
   const bodyEntry = String(raw.bodyEntry ?? process.env.ICL_MC_BODY_ENTRY ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)
@@ -158,12 +156,20 @@ export function apply(ctx) {
       return { accepted: false, error: String(error?.message ?? error) }
     }
     record({ kind: 'signal', at: Date.now(), type: payload.tags[1] ?? 'event', priority: payload.meta.priority, pierce: payload.meta.pierce === true, tags: payload.tags, text: payload.text, accepted: result?.accepted !== false, reason: result?.reason ?? null })
+    // time gate 对 sleeping/muted/paused 的 blocked 信号：返回前已 enqueue()+persist()（醒来/恢复时 time 统一释放）。
+    // 这类**不要补投**，否则会"积压一条 + 补投一条"两份危险消息；只对没进 time 的失败（offer 异常等）补投。
+    const STORED_BY_TIME = new Set(['sleeping', 'muted', 'muted-quota', 'paused'])
     if (result?.accepted === false && result?.blocked && alarmPayload(payload)) {
-      const id = payload.id ?? `mc:alarm:${Date.now()}:${pendingAlarms.length}`
-      if (!pendingAlarms.some((row) => row.payload.id === id)) {
-        pendingAlarms.push({ payload: { ...payload, id }, firstAt: Date.now(), attempts: 1, reason: result.reason ?? 'gate' })
-        record({ kind: 'alarm-blocked', at: Date.now(), reason: result.reason ?? 'gate', text: payload.text.slice(0, 120) })
-        if (pendingAlarms.length > 20) pendingAlarms.shift()
+      const reason = String(result.reason ?? 'gate')
+      if (STORED_BY_TIME.has(reason)) {
+        record({ kind: 'alarm-already-stored', at: Date.now(), reason, text: payload.text.slice(0, 120) })
+      } else {
+        const id = payload.id ?? `mc:alarm:${Date.now()}:${pendingAlarms.length}`
+        if (!pendingAlarms.some((row) => row.payload.id === id)) {
+          pendingAlarms.push({ payload: { ...payload, id }, firstAt: Date.now(), attempts: 1, reason })
+          record({ kind: 'alarm-blocked', at: Date.now(), reason, text: payload.text.slice(0, 120) })
+          if (pendingAlarms.length > 20) pendingAlarms.shift()
+        }
       }
     }
     return result
@@ -1072,6 +1078,9 @@ export function apply(ctx) {
         const safety = status?.safety ?? {}
         const task = status?.task ?? beforeTask
         const reasonText = REASON_TEXT[safety.reason ?? status?.pausedReason] ?? safety.reason ?? status?.pausedReason ?? '安全'
+        // body 会把暂停原因规范化成 user-stop，原始调用原因留在 requestedReason（例如 mcb_stop/自定义）。
+        const requestedReason = safety.requestedReason ?? safety.reasonRequested ?? null
+        const reasonSuffix = requestedReason && String(requestedReason) !== String(safety.reason ?? '') ? `（原始原因：${String(requestedReason).slice(0, 40)}）` : ''
         // 新版 body 的 stopAll 回执把"任务"和"身体"分开说（task.note / body.note / reflex）；旧版退回本地文案。
         const cancelled = Array.isArray(stop?.task?.cancelled) ? stop.task.cancelled : []
         const stopped = stop?.task?.note
@@ -1095,7 +1104,7 @@ export function apply(ctx) {
           : null
         return {
           text: [
-            `任务已停：${stopped}（暂停原因：${reasonText}）。`,
+            `任务已停：${stopped}（暂停原因：${reasonText}${reasonSuffix}）。`,
             `身体：${bodyNote}${bodyOnline ? '' : '（当前不在世界上）'}${cancelled.length ? `；本次取消 ${cancelled.map((row) => `${row.kind ?? 'task'} ${row.id ?? ''}`).join('、')}` : ''}。`,
             `当前位置 ${fmtPosition(stop?.body?.position ?? adapter.position)}，生命 ${fmtVital(stop?.body?.health ?? adapter.health)}/20；${danger}。`,
             ...(reflexLine ? [reflexLine] : []),
@@ -1197,7 +1206,7 @@ export function apply(ctx) {
         if (pausedModeNow?.active) {
           lines.push(`暂停模式：time 已开（世界继续/计时不冻结；goal/focus/schedules 保留；alarm 可穿透${pausedModeNow.reason ? `；原因 ${pausedModeNow.reason}` : ''}）——继续 time_resume 或 {"op":"resume"}，离开 mcb_leave`)
         }
-        if (pendingAlarms.length) lines.push(`危险补投：${pendingAlarms.length} 条排队中（被 pause/睡眠/静音拦着，gate 一开就补投）`)
+        if (pendingAlarms.length) lines.push(`危险补投：${pendingAlarms.length} 条未进 time 的 alarm（如 offer 异常/进程重启丢失，下个 poll 补投）`)
         const alarmStats = status.safety?.alarms
         if (alarmStats) {
           lines.push(`body 告警账本：已送达 ${alarmStats.delivered ?? 0}、15s 去重 ${alarmStats.suppressed ?? 0}、补投 ${alarmStats.redelivered ?? 0}、待投 ${alarmStats.pending ?? 0}`)
