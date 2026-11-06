@@ -20,6 +20,30 @@
             name: dsh-icl/index.mjs
             config:
               presetId: icl
+              # 产品化 A1（2026-11-06，lead 批准）：首屏净化 4 段 + 显式插件白名单（去 mc-link）。
+              # MC 只走 icl-mc 场景；产品工具面 66/44,316 → 49/31,824。
+              purifySections:
+                - 'harness:identity'
+                - 'ui:deliverable-file-references'
+                - 'harness:source'
+                - 'app:web-surface'
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - dream
+                - editor
+                - bili
+                - video
+                - album
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:

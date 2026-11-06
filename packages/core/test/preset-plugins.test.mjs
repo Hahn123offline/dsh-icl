@@ -39,18 +39,19 @@ test('lab preset 两个会话都显式挂载 album；两 lab 列表并集覆盖 
   assert.deepEqual(missing, [], `lab preset 并集缺插件（注册了但没挂载）：${missing.join(',')}`)
 })
 
-test('产品 preset 允许暂缓的插件有明确白名单（album/video 等用户批准），且文档写明', () => {
+test('产品 preset A1：显式 16 插件白名单（去 mc-link），不再是隐式全量', () => {
   const lists = pluginLists(read('packages/dsh-icl/presets/icl.patch.yml'))
-  const listed = new Set(lists.flat())
-  const missing = DEFAULT_PLUGINS.filter((id) => !listed.has(id)).sort()
-  // 产品 preset 可以比 DEFAULT 少，但必须逐项有据（目前 album/video：产品化等用户批准）。
-  assert.deepEqual(missing, ['album', 'video'], `产品 preset 未挂载插件必须显式登记：${missing.join(',')}`)
+  const product = lists[0]
+  assert.ok(product, '产品 preset 应有显式 plugins 列表')
+  assert.equal(product.length, 16, `产品 A1 白名单应为 16 个插件，实际 ${product.length}：${product.join(',')}`)
+  assert.ok(!product.includes('mc-link'), '产品 A1 不得包含 mc-link（MC 只走 icl-mc）')
+  const missing = DEFAULT_PLUGINS.filter((id) => !product.includes(id)).sort()
+  assert.deepEqual(missing, ['mc-link'], `产品 preset 相对 DEFAULT 只允许少 mc-link：${missing.join(',')}`)
+  for (const id of product) assert.ok(DEFAULT_PLUGINS.includes(id), `产品白名单只能列已注册插件：${id}`)
   const albumDoc = read('docs/ALBUM.md')
   assert.match(albumDoc, /产品 preset/, 'ALBUM.md 要写清产品 preset 状态')
-  assert.match(albumDoc, /待(用户)?批准/, 'ALBUM.md 要写清 album 产品化等批准')
   const videoDoc = read('docs/VIDEO-EYES.md')
   assert.match(videoDoc, /产品 preset/, 'VIDEO-EYES.md 要写清产品 preset 状态')
-  assert.match(videoDoc, /待(用户)?批准/, 'VIDEO-EYES.md 要写清 video 产品化等批准')
 })
 
 test('MC lab preset 配了工具白名单（复杂度收敛），产品 preset 未配', () => {
