@@ -1489,6 +1489,8 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     const eyes = await link.tools.mcb_help.execute({ skill: 'eye' })
     assert.match(eyes.text, /MC 眼睛/)
     assert.match(eyes.text, /先.*snapshot.*后.*screenshot|日常看场景先用/)
+    assert.match(eyes.text, /超平坦\/负 Y 世界.*可能只截到天空/)
+    assert.match(eyes.text, /不要用截图做结构\/方块验收/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {
