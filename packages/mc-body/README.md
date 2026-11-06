@@ -120,3 +120,10 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
   - `reflex`/`safety`（alarm/pierce 标记）。暂停中可直接调用 stop，不需要先 resume；stop 属于安全 op（不受单飞锁/暂停写动作限制）。
 - **恢复**：`/v1/safety/resume`（或 `{"op":"resume"}`）解暂停后可继续下任务；被 stop 取消的任务需要重新下；断线 `paused` 的任务在 body resume 后用任务级 `resume` 显式继续。
 - **E6/E7**：`status.playable {ok, blockers}`（join 后可玩布尔：offline/paused/spawn-unsafe/reconnecting/dead）；`status.spawnLog`（最近 10 次 spawn：位置/维度/来源/安全判定细节）。
+
+### 与 time / mc-link 的接口对齐（2026-11-06，time `fd81f56` 语义）
+
+- **mcb_stop** → body `pausedReason="user-stop"` 且返回任务/身体分开的回执；mc-link 负责调 `time.setPausedMode({active:true,reason:'mcb_stop',source:'mc-link'})` 和恢复 `{active:false}`；body 不改 time 协议，只是“任务停止、世界继续”。
+- **alarm 穿透**：body 只保证事件带 `priority:"alarm"`+`pierce:true` 且不因 pause 而丢（去重记账+窗口补投），并在 `status.safety.alarms` 记 delivered/suppressed/redelivered/pending；**是否被静音/睡眠拦截由 mc-link/time 决定**（time 默认连 alarm 一起拦：body 不假设“静音里 alarm 一定穿”；上层若拦了，用 body 的 alarm_suppressed/redelivered 计数对账）。
+- **睡眠期**：body 的 safety_stop 照旧独立执行（不等模型）；alarm 事件在 mc-link/time 侧进 `priority:'alarm'` 积压，醒来简报第一条呈现。
+- **E6/E7**：`status.playable {ok,blockers}` 给 mc-link join 后可玩判断；`status.spawnLog` 给 spawn 排查。
