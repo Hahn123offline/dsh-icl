@@ -22,7 +22,15 @@ function statusBody(state) {
     online: state.connected,
     paused: state.paused,
     pausedReason: state.pausedReason,
-    safety: { paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true },
+    pauseReason: state.pausedReason,
+    playable: state.playable ?? { ok: state.connected && !state.paused, blockers: state.connected ? (state.paused ? [`paused:${state.pausedReason ?? 'safety'}`] : []) : ['offline'] },
+    spawnLog: state.spawnLog ?? [{ at: Date.now(), position: { x: 358.4, y: -60, z: 113.6 }, dimension: 'overworld', source: 'initial', safe: true }],
+    safety: {
+      paused: state.paused, reason: state.pausedReason, offline: !state.connected, offlineReason: state.connected ? null : 'socketClosed', everOnline: true,
+      note: state.paused ? 'paused = 停任务/停控制，但身体仍在世界（会掉落/受伤/被推）；安全反射开启' : null,
+      reflex: state.paused ? { enabled: true, active: false, count: 0, maxPerMinute: 2, maxDurationMs: 10000 } : { enabled: true, active: false, count: 0, maxPerMinute: 2, maxDurationMs: 10000 },
+      lastReflex: state.lastReflex ?? null,
+    },
     task: state.task,
     queue: [],
     pausedTasks: extra.pausedTasks,
@@ -122,7 +130,18 @@ async function startFakeBody({ connected = true } = {}) {
     }
     if (url.pathname === '/v1/safety/stop' && req.method === 'POST') {
       state.paused = true
-      return send(200, { ok: true, paused: true })
+      state.pausedReason = 'user-stop'
+      // 新版 body stopAll 的回执：任务/身体分开说 + reflex。
+      const cancelled = state.task && state.task.state !== 'interrupted' ? [{ id: state.task.id, kind: state.task.kind, state: 'cancelled' }] : []
+      return send(200, {
+        ok: true,
+        paused: true,
+        pausedReason: 'user-stop',
+        task: { cancelled, note: cancelled.length ? `任务已停（取消 ${cancelled.length} 个）` : '任务已停（没有在跑/排队的任务）' },
+        body: { online: state.connected, position: { x: 12.5, y: 64, z: -8.5 }, health: state.health, food: 18, note: '身体仍在世界（会掉落/受伤/被推）；安全反射保持开启，resume 后再下任务' },
+        reflex: { enabled: true, active: false, count: 0, maxPerMinute: 2, maxDurationMs: 10000 },
+        safety: { reason: 'user-stop', alarm: true, priority: 'alarm', pierce: true },
+      })
     }
     return send(404, { ok: false, error: 'not found' })
   })
@@ -167,12 +186,12 @@ function openPort() {
   })
 }
 
-test('工具面：11 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
+test('工具面：12 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     const names = Object.keys(link.tools).sort()
-    assert.deepEqual(names, ['mcb_do', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_status'])
+    assert.deepEqual(names, ['mcb_do', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_status', 'mcb_stop'])
     let total = 0
     for (const tool of Object.values(link.tools)) {
       assert.ok(tool.description.length > 60, `${tool.name} 描述太短`)
@@ -628,6 +647,183 @@ test('mcb_leave：默认只停 body 但报告还挂着什么；cleanup:true 释�
     // 幂等：再调一次不报错、不重复清
     const again = await link.tools.mcb_leave.execute({ cleanup: true })
     assert.match(again.text, /没有启动过|无需停止/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_stop：停任务+安全反射但不离开世界；同步 time 暂停模式；resume/leave 退出暂停模式', async () => {
+  const body = await startFakeBody()
+  const calls = []
+  let pausedMode = { active: false }
+  const timeApi = {
+    phase: () => (pausedMode.active ? 'paused' : 'awake'),
+    setPausedMode: (input) => { calls.push(input); pausedMode = { active: Boolean(input.active), reason: input.reason ?? null, source: input.source ?? null }; return pausedMode },
+    status: () => ({ pausedMode, lastPierce: null }),
+    goals: () => [], removeGoal: () => ({ removed: false }), schedules: () => [], queue: () => [], lock: () => null,
+  }
+  const link = await mountLink({ port: body.port, timeApi })
+  try {
+    await link.api.poll()
+    body.state.task = { id: 't-1', kind: 'mine', state: 'running' }
+    const first = await link.tools.mcb_stop.execute({ reason: '去写代码了' })
+    assert.match(first.text, /任务已停：任务已停（取消 1 个）/)
+    assert.match(first.text, /本次取消 mine t-1/)
+    assert.match(first.text, /身体仍在世界/)
+    assert.match(first.text, /暂停原因：/)
+    assert.match(first.text, /time 暂停模式：已开/)
+    assert.match(first.text, /goal\/focus 都保留/)
+    assert.match(first.text, /resume/)
+    assert.match(first.text, /mcb_leave/)
+    assert.equal(body.state.paused, true, 'mcb_stop 必须触发 body 安全反射（暂停）')
+    assert.deepEqual(calls.at(-1), { active: true, reason: '去写代码了', source: 'mc-link' })
+    body.state.task = { id: 't-2', kind: 'goto', state: 'interrupted' }
+    const second = await link.tools.mcb_stop.execute({})
+    assert.match(second.text, /任务已停/)
+    assert.match(second.text, /身体仍在世界/)
+    // mcb_status 显示暂停模式
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /暂停模式：time 已开/)
+    // resume 退出暂停模式
+    await link.tools.mcb_do.execute({ steps: [{ op: 'resume' }] })
+    assert.equal(calls.at(-1)?.active, false, 'resume 应关闭 time 暂停模式')
+    // leave 也退出暂停模式（幂等）
+    await link.tools.mcb_leave.execute({ cleanup: true })
+    assert.equal(calls.at(-1)?.active, false, 'leave 应清掉 time 暂停模式')
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('危险穿透：alarm 被 pause 闸门拦下时暂存、next delivery 补投；meta.priority/pierce 正确透传', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  let blocked = true
+  const seen = []
+  const off = link.host.services.signals.addGate((signal) => {
+    if (signal.from?.plugin === 'mc') seen.push(signal)
+    return blocked && signal.from?.plugin === 'mc' && String(signal.tags ?? []).includes('alarm') ? { accept: false, blocked: true, reason: 'transient' } : { accept: true }
+  })
+  try {
+    await link.api.poll()
+    // 低频死亡 alarm：gate 拦下 → 不应进会话，但要在 pending 里
+    body.push({ type: 'death', data: { position: { x: 1, y: 64, z: 2 }, lastDeath: { position: { x: 1, y: 64, z: 2 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.equal(link.pushed.length, 0, '被 pause 拦下的危险不能直接进会话（等 gate 开）')
+    // 危险信号必须带 meta.priority='alarm' + meta.pierce=true（time gate 认这两个字段）
+    const deathSignal = seen.find((signal) => String(signal.tags ?? []).includes('alarm'))
+    assert.ok(deathSignal, '死亡应作为 alarm 信号发出')
+    assert.equal(deathSignal.meta?.priority, 'alarm')
+    assert.equal(deathSignal.meta?.pierce, true)
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /危险补投：\d+ 条未进 time 的 alarm/)
+    // gate 打开 → 下一次 poll 补投
+    blocked = false
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /死亡|危险|\[MC\]/)
+    const ledger = fs.readFileSync(path.join(link.root, 'events.jsonl'), 'utf8')
+    assert.match(ledger, /alarm-blocked/)
+    assert.match(ledger, /alarm-delivered-late/)
+    assert.match(ledger, /"priority":"alarm"/)
+    assert.match(ledger, /"pierce":true/)
+  } finally {
+    off?.()
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('危险穿透：time 已 enqueue 的 blocked（sleeping/muted/paused）不补投，只记 alarm-already-stored', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  const off = link.host.services.signals.addGate((signal) => (signal.from?.plugin === 'mc' && String(signal.tags ?? []).includes('alarm') ? { accept: false, blocked: true, reason: 'sleeping' } : { accept: true }))
+  try {
+    await link.api.poll()
+    body.push({ type: 'death', data: { position: { x: 1, y: 64, z: 2 }, lastDeath: { position: { x: 1, y: 64, z: 2 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    const ledger = fs.readFileSync(path.join(link.root, 'events.jsonl'), 'utf8')
+    assert.match(ledger, /alarm-already-stored/, 'sleeping 被 time 存下的 alarm 不能进补投队列')
+    assert.doesNotMatch(ledger, /alarm-blocked/, '不该再记 blocked（内容已在 time 积压里）')
+    const status = await link.tools.mcb_status.execute({})
+    assert.doesNotMatch(status.text, /危险补投/, '补投计数只算没进 time 的')
+  } finally {
+    off?.()
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('危险穿透：body 只带 pierce:true（无 alarm tag、类型本来 quiet）也强制 alarm 并透传 meta', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  const seen = []
+  const off = link.host.services.signals.addGate((signal) => { if (signal.from?.plugin === 'mc') seen.push(signal); return { accept: true } })
+  try {
+    await link.api.poll()
+    // watchdog 六类/reflex 风格：类型属于 quiet，但 data.pierce=true（priority 可能缺省）
+    body.push({ type: 'watchdog', data: { pierce: true, reason: 'low-health', note: '危险反射' } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    const alarm = seen.find((signal) => String(signal.tags ?? []).includes('alarm'))
+    assert.ok(alarm, 'pierce:true 的 quiet 事件也必须发 alarm')
+    assert.match(alarm.text, /危险/)
+    assert.equal(alarm.meta?.priority, 'alarm')
+    assert.equal(alarm.meta?.pierce, true)
+    // 普通任务事件不带 pierce：不能滥用 alarm
+    seen.length = 0
+    body.push({ type: 'task_done', data: { task: { id: 't-1', kind: 'mine', result: { mined: 2, net: 2 } } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    const normal = seen.find((signal) => String(signal.text ?? '').includes('任务完成'))
+    assert.ok(normal)
+    assert.notEqual(normal.meta?.priority, 'alarm')
+    assert.notEqual(normal.meta?.pierce, true)
+  } finally {
+    off?.()
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：暂停时显示安全反射与时间相位（暂停≠离开）', async () => {
+  const body = await startFakeBody()
+  body.state.paused = true
+  body.state.pausedReason = 'low-health'
+  const link = await mountLink({ port: body.port, timePhase: 'paused' })
+  try {
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /安全反射：开启（≤10s\/次、≤2 次\/分）/)
+    assert.match(status.text, /暂停：血量过低——任务停\/不接活/)
+    assert.match(status.text, /可玩：否（暂停中（血量过低））/)
+    assert.match(status.text, /最近 spawn：358,-60,114 · overworld · 来源 initial/)
+    assert.match(status.text, /身体仍在世界/)
+    assert.match(status.text, /时间：已暂停/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('参数归因：别名显式说明（name→block / kind 写在 params）、坐标格式错不冒充"世界里没有方块"', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    const alias = await link.tools.mcb_do.execute({ steps: [{ op: 'task', kind: 'mine', params: { name: 'oak_log', count: 2 } }] })
+    assert.match(alias.text, /参数处理：.*name=.*已按 block 处理/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.params.block, 'oak_log')
+    const kindInParams = await link.tools.mcb_do.execute({ steps: [{ op: 'task', params: { kind: 'goto', x: 1, y: 2, z: 3 } }] })
+    assert.match(kindInParams.text, /参数处理：.*kind 写在了 params\.kind/)
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: 'not-a-pos' } }] }), /参数格式不对.*pos 需要 \{x,y,z\} 或 \[x,y,z\]/)
+    // 数组写法仍然可用（不是错误）
+    const arr = await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: [12, -60, 14] } }] })
+    assert.match(arr.text, /\[dig\]/)
   } finally {
     await link.cleanup()
     await body.close()

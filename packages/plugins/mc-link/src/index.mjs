@@ -127,7 +127,20 @@ export function apply(ctx) {
     return body
   }
 
+  /**
+   * 危险 alarm 被时间闸门（pause/睡眠/静音）拦下时暂存，下一次 poll 再补投。
+   * time 的 gate 对 to:'model' 的非 time 信号在 phase=paused 时会 enqueue 并 reject；
+   * blocked 不占用 signal id，所以同一条可以原样重试（见 core/signals.mjs）。
+   */
+  const pendingAlarms = []
+  function alarmPayload(payload) {
+    return payload.meta?.priority === 'alarm' || (payload.tags ?? []).includes('alarm')
+  }
+
   function sendSignal(signal, { activity = 'event' } = {}) {
+    const priority = signal.priority ?? (Array.isArray(signal.tags) && signal.tags.includes('alarm') ? 'alarm' : 'notice')
+    // body 的危险事件可能只带 pierce:true（不带 alarm tag）：透传给 time，让暂停/睡眠也能放行。
+    const pierce = signal.pierce === true || priority === 'alarm'
     const payload = {
       id: signal.id ?? null,
       from: { plugin: 'mc', activity },
@@ -135,15 +148,52 @@ export function apply(ctx) {
       text: String(signal.text ?? ''),
       focus,
       tags: Array.isArray(signal.tags) ? signal.tags : ['mc'],
-      meta: { priority: signal.priority ?? 'notice' },
+      meta: { priority, ...(pierce ? { pierce: true } : {}) },
     }
     let result = null
     try { result = ctx.signals.offer(payload) } catch (error) {
       record({ kind: 'signal-error', at: Date.now(), text: payload.text, error: String(error?.message ?? error) })
       return { accepted: false, error: String(error?.message ?? error) }
     }
-    record({ kind: 'signal', at: Date.now(), type: payload.tags[1] ?? 'event', priority: payload.meta.priority, text: payload.text, accepted: result?.accepted !== false, reason: result?.reason ?? null })
+    record({ kind: 'signal', at: Date.now(), type: payload.tags[1] ?? 'event', priority: payload.meta.priority, pierce: payload.meta.pierce === true, tags: payload.tags, text: payload.text, accepted: result?.accepted !== false, reason: result?.reason ?? null })
+    // time gate 对 sleeping/muted/paused 的 blocked 信号：返回前已 enqueue()+persist()（醒来/恢复时 time 统一释放）。
+    // 这类**不要补投**，否则会"积压一条 + 补投一条"两份危险消息；只对没进 time 的失败（offer 异常等）补投。
+    const STORED_BY_TIME = new Set(['sleeping', 'muted', 'muted-quota', 'paused'])
+    if (result?.accepted === false && result?.blocked && alarmPayload(payload)) {
+      const reason = String(result.reason ?? 'gate')
+      if (STORED_BY_TIME.has(reason)) {
+        record({ kind: 'alarm-already-stored', at: Date.now(), reason, text: payload.text.slice(0, 120) })
+      } else {
+        const id = payload.id ?? `mc:alarm:${Date.now()}:${pendingAlarms.length}`
+        if (!pendingAlarms.some((row) => row.payload.id === id)) {
+          pendingAlarms.push({ payload: { ...payload, id }, firstAt: Date.now(), attempts: 1, reason })
+          record({ kind: 'alarm-blocked', at: Date.now(), reason, text: payload.text.slice(0, 120) })
+          if (pendingAlarms.length > 20) pendingAlarms.shift()
+        }
+      }
+    }
     return result
+  }
+
+  /** 每次 poll 尝试补投被 pause/睡眠/静音拦下的危险通知；gate 一开就送。 */
+  function flushPendingAlarms() {
+    if (!pendingAlarms.length) return
+    for (let index = pendingAlarms.length - 1; index >= 0; index -= 1) {
+      const row = pendingAlarms[index]
+      const waitedMs = Date.now() - row.firstAt
+      if (waitedMs > 6 * 3600_000) {
+        pendingAlarms.splice(index, 1)
+        record({ kind: 'alarm-dropped', at: Date.now(), waitedMs, text: row.payload.text.slice(0, 120) })
+        continue
+      }
+      let result = null
+      try { result = ctx.signals.offer(row.payload) } catch { result = { accepted: false } }
+      row.attempts += 1
+      if (result?.accepted !== false) {
+        pendingAlarms.splice(index, 1)
+        record({ kind: 'alarm-delivered-late', at: Date.now(), waitedMs, attempts: row.attempts, text: row.payload.text.slice(0, 120) })
+      }
+    }
   }
 
   // ── body 进程 ────────────────────────────────────────────────────────────
@@ -164,9 +214,13 @@ export function apply(ctx) {
         lastExitAt = Date.now()
         lastStatus = null
         reachable = false
+        if (event.expected) {
+          // 正常结束（自己 leave/stop，或外部干净关闭）：不计入"第 N 次退出"，也不发崩溃通知。
+          record({ kind: 'exit-expected', at: lastExitAt, source: event.exitClass?.source ?? 'self-stop', reason: event.exitInfo?.reason ?? null })
+          return
+        }
         exitTimes.push(lastExitAt)
         exitTimes = exitTimes.filter((at) => lastExitAt - at <= 600_000)
-        if (event.expected) return
         const exitCount = exitTimes.length
         const reason = exitReasonText(event)
         const status = event.exitInfo?.status ?? null
@@ -199,7 +253,7 @@ export function apply(ctx) {
         sendSignal({
           kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
           id: `mc:exit:${event.pid ?? '?'}:${event.at}`,
-          text: `[MC] 身体进程退出了：${reason}（${describeExit(event.code, event.signal)}；本会话第 ${exitCount} 次退出${exitCount > 1 ? `，近 10 分钟 ${exitCount} 次` : ''}）。${task}${deadPos}${info}${stack ? `；栈：${stack}` : ''}${recent ? `；死前事件：${recent}` : ''}${tail ? `；最后日志：${tail}` : ''}${sameText}。旧任务不会自动续跑；先 mcb_status 看背包/位置，再决定 mcb_join 重连还是 mcb_leave 收尾。`,
+          text: `[MC] 身体进程意外退出了：${reason}（${describeExit(event.code, event.signal)}；**这次不是你 leave/stop 发起的**，是外部结束/崩溃（expected=false）；本会话第 ${exitCount} 次意外退出${exitCount > 1 ? `，近 10 分钟 ${exitCount} 次` : ''}）。${task}${deadPos}${info}${stack ? `；栈：${stack}` : ''}${recent ? `；死前事件：${recent}` : ''}${tail ? `；最后日志：${tail}` : ''}${sameText}。旧任务不会自动续跑；先 mcb_status 看背包/位置，再决定 mcb_join 重连还是 mcb_leave 收尾。`,
         })
       }
     },
@@ -238,6 +292,8 @@ export function apply(ctx) {
   async function poll() {
     if (ready) await ready.catch(() => {})
     const status = await refreshStatus()
+    // 先补投被 pause/睡眠拦下的危险通知（gate 可能刚开），再做常规事件处理。
+    flushPendingAlarms()
     if (!status) return
     let data
     try {
@@ -318,6 +374,27 @@ export function apply(ctx) {
   /** time 的时间相位（awake/sleeping/paused）；没有 time 插件时 null。 */
   function timePhase() {
     try { return ctx.services?.get?.('time')?.phase?.() ?? null } catch { return null }
+  }
+
+  function timeApi() {
+    try { return ctx.services?.get?.('time') ?? null } catch { return null }
+  }
+
+  /** 同步 time 的"暂停模式"（任务停、世界继续、计时不冻结；alarm 可穿透）。旧版 time 没有该接口时静默。 */
+  function setTimePausedMode(active, reason = null) {
+    try {
+      const api = timeApi()
+      if (typeof api?.setPausedMode !== 'function') return null
+      return api.setPausedMode({ active: Boolean(active), ...(reason ? { reason: String(reason) } : {}), source: 'mc-link' }) ?? null
+    } catch { return null }
+  }
+
+  function timePausedMode() {
+    try { return timeApi()?.status?.()?.pausedMode ?? null } catch { return null }
+  }
+
+  function timeLastPierce() {
+    try { return timeApi()?.status?.()?.lastPierce ?? null } catch { return null }
   }
 
   /**
@@ -489,6 +566,9 @@ export function apply(ctx) {
         : '安全停止：成功（当时没有任务在跑）')
       : safety === 'unreachable' ? '安全停止：body 已不在，请求跳过' : '安全停止：失败（body 没响应）')
     details.push(processLine())
+    details.push('说明：mcb_leave 是离开世界（body 进程结束）；只想停任务、身体继续留在世界用 mcb_stop（暂停≠离开）。')
+    // leave = 真正离开：同时退出 time 的暂停模式（如果之前 mcb_stop 开过），别把暂停状态留在 time 里。
+    if (setTimePausedMode(false)) details.push('time 暂停模式：已关闭（离开世界后不再需要）。')
     if (shutdown === 'unsupported') details.push('（这个 body 不支持 /v1/shutdown，只能用 SIGTERM 结束）')
 
     if (cleanup) {
@@ -772,7 +852,8 @@ export function apply(ctx) {
       throw new Error('steps 需要至少 1 步。例：{"steps":[{"op":"task","kind":"mine","params":{"block":"oak_log","count":4}}]}')
     }
     const known = new Set(OPS)
-    return steps.map((raw, index) => {
+    const notes = []
+    const normalized = steps.map((raw, index) => {
       const where = `第 ${index + 1} 步`
       if (!raw || typeof raw !== 'object') throw new Error(`${where}不是对象：${JSON.stringify(raw)}`)
       const op = String(raw.op ?? '').trim()
@@ -783,15 +864,25 @@ export function apply(ctx) {
       }
       const step = { ...raw, op }
       if (op === 'task') {
+        const kindFrom = raw.kind != null ? 'kind' : raw.params?.kind != null ? 'params.kind' : raw.params?.params?.kind != null ? 'params.params.kind' : null
         const kind = String(raw.kind ?? raw.params?.kind ?? raw.params?.params?.kind ?? '').trim()
         if (!kind) throw new Error(`${where} task 缺少 kind。可用 kind：${TASK_KINDS.join('、')}；例：{"op":"task","kind":"mine","params":{"block":"oak_log","count":4}}`)
         if (!TASK_KINDS.includes(kind)) {
           const near = closestIn(kind, TASK_KINDS)
           throw new Error(`${where}未知任务 kind：${kind}${near ? `；你是不是要 ${near}？` : ''}。可用：${TASK_KINDS.join('、')}`)
         }
+        if (kindFrom !== 'kind') notes.push(`kind 写在了 ${kindFrom} 里，已按 kind:"${kind}" 处理（建议直接放顶层）`)
         step.kind = kind
         const params = raw.params?.params ?? raw.params
-        step.params = params && typeof params === 'object' ? params : {}
+        step.params = params && typeof params === 'object' ? { ...params } : {}
+        // 参数别名：mine/collect 的 block ↔ name；显式说"你写的什么、我按什么处理"，别静默纠正。
+        if (step.params.block == null) {
+          const alias = step.params.name ?? step.params.kind ?? step.params.target
+          if (alias != null && (kind === 'mine' || kind === 'collect')) {
+            step.params.block = alias
+            notes.push(`${kind} 没写 block，用了 name=${JSON.stringify(alias)}，已按 block 处理（文档写法是 {block:"..."}）`)
+          }
+        }
         if (step.deadlineMs == null) step.deadlineMs = kind === 'routine' ? Math.max(60_000, Number(step.params.durationMs) || 0) + 30_000 : 600_000
       }
       if (op === 'say') {
@@ -809,14 +900,29 @@ export function apply(ctx) {
       }
       if (op === 'events' && raw.since == null) step.since = lastSeq
       // 坐标容错：params.pos / params.target 或顶层 pos/target，可以写 [x,y,z] 也可以写 {x,y,z}。
+      // 但"给了坐标却解析不了"必须报参数格式错——不能落到 body 的"找不到目标方块"上误导她。
       step.params = fixPositions(step.params)
-      if (step.pos != null) step.pos = posObject(step.pos) ?? step.pos
+      // params.pos 是最常见的写法；给了却解析不了必须报格式错（body 的错误会误导成"世界里没方块"）。
+      if (step.params?.pos != null) {
+        const point = posObject(step.params.pos)
+        if (!point) throw new Error(`${where} 参数格式不对：params.pos 需要 {x,y,z} 或 [x,y,z]，收到 ${JSON.stringify(step.params.pos).slice(0, 60)}。这是参数写法问题，不是"世界里没有方块"。`)
+        step.params = { ...step.params, pos: point }
+      }
+      if (step.pos != null) {
+        const point = posObject(step.pos)
+        if (!point) throw new Error(`${where} 参数格式不对：pos 需要 {x,y,z} 或 [x,y,z]，收到 ${JSON.stringify(step.pos).slice(0, 60)}。这是参数写法问题，不是"世界里没有方块"。`)
+        step.pos = point
+      }
       if (step.target != null) {
         const point = posObject(step.target)
         if (point) step.target = { pos: point }
+        else if (['dig', 'place', 'use', 'chest', 'attack'].includes(op) && (step.params?.target != null) === false) {
+          throw new Error(`${where} 参数格式不对：target 需要 {x,y,z}/[x,y,z] 或 {entity/name}，收到 ${JSON.stringify(step.target).slice(0, 60)}。`)
+        }
       }
       return step
     })
+    return { steps: normalized, notes }
   }
 
   function doTimeoutText(timeoutMs) {
@@ -824,7 +930,8 @@ export function apply(ctx) {
   }
 
   async function runDo(steps, safety = null) {
-    const normalized = normalizeSteps(steps)
+    const { steps: normalized, notes } = normalizeSteps(steps)
+    const noteText = notes.length ? `（参数处理：${notes.join('；')}）` : ''
     const timeoutMs = Number(raw.doTimeoutMs) || 120_000
     try {
       const body = await call('/v1/do', {
@@ -835,6 +942,12 @@ export function apply(ctx) {
       })
       lastStatus = await refreshStatus() ?? lastStatus
       const parts = (body.results ?? []).map(renderRow)
+      // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
+      if (normalized.some((step) => step.op === 'resume')) {
+        const cleared = setTimePausedMode(false)
+        if (cleared) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
+      }
+      if (noteText) parts.push(noteText)
       if (body.task) {
         // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
         // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
@@ -860,7 +973,7 @@ export function apply(ctx) {
     {
       name: 'mcb_servers',
       summary: '列出已知 MC 服务器（name / host:port），用于 mcb_join 选目标。',
-      description: '清单来自 mc-link 自带的 servers.json（flat 测试服 54837、survival 54838），配置里的 servers 会追加；最近一次 mcb_lan 的结果也在里面。不探测在线状态——连不连得上由 mcb_join 的报错告诉你。列表为空时可以直接 mcb_join {host, port}。',
+      description: '清单来自 mc-link 自带 servers.json（flat 54837、survival 54838），配置会追加；最近 mcb_lan 结果也在。不探测在线——连不上由 mcb_join 报错。为空时直接 mcb_join {host,port}。',
       when: ['想去 MC 但不知道连哪台', 'mcb_join 报"没有这个服务器"之后'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -883,7 +996,7 @@ export function apply(ctx) {
     {
       name: 'mcb_join',
       summary: '连接 MC 服务器：必要时启动 mc-body 进程，并等到真正连上；只负责连接，不建 focus/goal。',
-      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服必须唯一；默认 ICL，lab/多 owner 用 ICL_MC_BOT_NAME 区分）。成功返回服务器与连接状态，之后用 mcb_status 复核。失败会给可读原因：进程退出码 + body 日志、端口被占/被别的 body 占着、服务器没开或端口错、同名 bot 被踢。失败不留半死进程，修好原因后可再 join。想认真投入时：连上后 focus_enter 要带 activity:"mc"（MC 事件才和专注同一空间），再用 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾用 mcb_leave {cleanup:true}。',
+      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服唯一；默认 ICL）。成功返回服务器与连接状态，之后 mcb_status 复核。失败给可读原因：进程退出码 + body 日志、端口被占、服务器没开/端口错、同名 bot 被踢；失败不留半死进程，可再 join。想认真投入：连上后 focus_enter 带 activity:"mc"，再 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾 mcb_leave {cleanup:true}。',
       when: ['被叫去玩，或她自己想玩', 'mcb_status 显示未连接、服务器已经开着'],
       avoid: ['body 已经连在另一台服务器：先 mcb_leave', '只想随便玩一小会儿：连上直接玩，不必建 focus/goal'],
       parameters: {
@@ -904,13 +1017,19 @@ export function apply(ctx) {
         const how = out.reused ? '复用了一个已经连着的 body' : 'body 已启动并连上'
         // 新版 body 的 preflight：这张图有什么资源（她问过"能不能给张服务器小卡片"）。
         const env = a.environment?.summary ? `；环境：${String(a.environment.summary).slice(0, 160)}` : ''
-        return { text: `已连接 ${out.joined.host}:${out.joined.port}（${how}），位置 ${pos}${env}。下一步：mcb_status/mcb_look 看周围；要做事用 mcb_do 下任务。` }
+        // E6：join 之后直接说"现在能不能玩/为什么不能"，不让她自己拼状态。
+        const playable = out.status?.playable
+        const blockerText = { offline: '身体离线', 'spawn-unsafe': '出生点危险', reconnecting: '重连中', dead: '已死亡' }
+        const playLine = playable && typeof playable.ok === 'boolean'
+          ? `可玩：${playable.ok ? '是' : `否（${(playable.blockers ?? []).map((row) => String(row).startsWith('paused:') ? `暂停中（${REASON_TEXT[String(row).slice(7)] ?? String(row).slice(7)}）` : blockerText[row] ?? row).join('、')}）`}`
+          : null
+        return { text: `已连接 ${out.joined.host}:${out.joined.port}（${how}），位置 ${pos}${env}${playLine ? `；${playLine}` : ''}。下一步：mcb_status/mcb_look 看周围；要做事用 mcb_do 下任务。` }
       },
     },
     {
       name: 'mcb_leave',
       summary: '退出 MC：安全停止并结束本会话启动的 body；可选 cleanup 一并清 focus/goal。',
-      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部启动的 body 只安全停止、不杀进程（返回里说明）。返回值会报告：安全停止是否成功、进程怎么结束、focus 和 MC 持续目标还挂着什么。默认只停 body（既定语义）；不想被持续叫醒就带 cleanup：释放模型自己的 focus 租约、取消 focus=="mc" 的 time 持续目标（不碰 schedules/积压/时间锁）。幂等，可重复调用确认。',
+      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部 body 只安全停止、不杀进程（返回里说明）。返回报告：安全停止是否成功、进程怎么结束、还挂着什么 focus/goal。默认只停 body；不想被持续叫醒带 cleanup：释放模型 focus、取消 MC 相关 time 目标（按 activity/主题/服务器别名识别）。幂等。离开世界=结束 body；只想停任务用 mcb_stop（暂停≠离开）。',
       when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）', '收工：想同时清掉 focus 和 MC 持续目标'],
       avoid: ['只离开游戏但想保留持续目标：默认 leave 就行，别带 cleanup'],
       parameters: {
@@ -923,9 +1042,83 @@ export function apply(ctx) {
       async execute({ cleanup = false } = {}) { return { text: await leave({ cleanup: Boolean(cleanup) }) } },
     },
     {
+      name: 'mcb_stop',
+      summary: '暂停身体：停掉当前任务并触发安全反射；身体仍留在世界（会掉落/受伤），危险会穿透通知。',
+      description: '暂停身体：停当前任务+触发安全反射，不要求先 resume，幂等。返回"任务已停/身体仍在世界/最近危险"。暂停≠离开：身体还在世界（会掉落/受伤），只是不接任务；继续 {"steps":[{"op":"resume"}]}，彻底退出 mcb_leave。暂停/睡眠期的危险（死亡/低血/安全反射/被踢/断线）仍会 alarm 穿透，被 pause 拦住会暂存补投。',
+      when: ['想暂时不玩/去干别的，但不想退出世界', '任务失控或遇到危险，先停手观察', '被游戏事件打断、需要立刻停掉当前任务'],
+      avoid: ['想彻底退出游戏、结束 body：用 mcb_leave', '只是想知道状态：用 mcb_status'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          reason: { type: 'string', description: '一句话原因（记进 body 台账），如"去写代码了"/"怪太多先撤"。' },
+          taskId: { type: 'string', description: '可选：额外显式 cancel 的任务 id（通常 safety/stop 已经中断当前任务）。' },
+        },
+      },
+      async execute({ reason = null, taskId = null } = {}) {
+        const before = lastStatus
+        const beforeTask = before?.task ?? null
+        let stop = null
+        try {
+          stop = await call('/v1/safety/stop', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: String(reason ?? 'stop') }), timeoutMs: 1500,
+          })
+        } catch (error) {
+          throw new Error(`mcb_stop 没能让 body 停手：${String(error?.message ?? error)}；先 mcb_status 看进程，必要时 mcb_leave。暂停不等于离开，身体可能还在世界。`)
+        }
+        if (taskId) {
+          try { await call(`/v1/tasks/${encodeURIComponent(String(taskId))}/cancel`, { method: 'POST', timeoutMs: 1500 }) } catch { /* safety/stop 通常已中断 */ }
+        }
+        // time 的暂停模式：任务停、世界继续、计时不冻结；goal/focus/schedules 都保留，alarm 可穿透。
+        setTimePausedMode(true, reason ?? 'mcb_stop')
+        lastStatus = await refreshStatus() ?? lastStatus
+        const status = lastStatus
+        const adapter = status?.adapter ?? {}
+        const safety = status?.safety ?? {}
+        const task = status?.task ?? beforeTask
+        const reasonText = REASON_TEXT[safety.reason ?? status?.pausedReason] ?? safety.reason ?? status?.pausedReason ?? '安全'
+        // body 会把暂停原因规范化成 user-stop，原始调用原因留在 requestedReason（例如 mcb_stop/自定义）。
+        const requestedReason = safety.requestedReason ?? safety.reasonRequested ?? null
+        const reasonSuffix = requestedReason && String(requestedReason) !== String(safety.reason ?? '') ? `（原始原因：${String(requestedReason).slice(0, 40)}）` : ''
+        // 新版 body 的 stopAll 回执把"任务"和"身体"分开说（task.note / body.note / reflex）；旧版退回本地文案。
+        const cancelled = Array.isArray(stop?.task?.cancelled) ? stop.task.cancelled : []
+        const stopped = stop?.task?.note
+          ?? (task ? `${task.kind} ${task.id ?? ''} 已中断`.replace('  ', ' ') : '当时没有任务在跑')
+        const bodyNote = stop?.body?.note
+          ?? '**身体仍在世界**（已暂停，不是离开——会掉落/受伤/被推，只是不接任务）'
+        const bodyOnline = stop?.body?.online ?? (adapter.connected !== false)
+        const reflex = stop?.reflex ?? safety.reflex ?? null
+        const danger = status?.danger?.inDanger
+          ? `脚边有危险方块：${(status.danger.blocks ?? []).map((row) => row.name).slice(0, 4).join('、')}`
+          : status?.lastDeath?.at
+            ? `最近一次死亡：${new Date(Number(status.lastDeath.at)).toLocaleTimeString('zh-CN', { hour12: false })} @ ${fmtPosition(status.lastDeath.position)}（掉落 ${status.lastDeath.inventoryCount ?? '?'} 件）`
+            : '最近没有新的危险事件'
+        const pausedMode = timePausedMode()
+        const lastPierce = timeLastPierce()
+        const timeLine = pausedMode
+          ? `time 暂停模式：${pausedMode.active ? '已开（任务停、世界继续、计时不冻结；goal/focus 都保留）' : '未开'}${pausedMode.reason ? `，原因 ${pausedMode.reason}` : ''}${lastPierce ? `；最近穿透：${String(lastPierce.text ?? lastPierce.reason ?? '危险事件').slice(0, 60)}` : ''}`
+          : 'time 暂停模式：这个版本没有该接口（仅 body 暂停）'
+        const reflexLine = reflex
+          ? `安全反射：${reflex.enabled ? '开启' : '关闭'}（≤${Math.round((reflex.maxDurationMs ?? 10000) / 1000)}s/次、≤${reflex.maxPerMinute ?? 2} 次/分）${reflex.active ? `；正在规避（${reflex.count ?? 0} 次）` : ''}`
+          : null
+        return {
+          text: [
+            `任务已停：${stopped}（暂停原因：${reasonText}${reasonSuffix}）。`,
+            `身体：${bodyNote}${bodyOnline ? '' : '（当前不在世界上）'}${cancelled.length ? `；本次取消 ${cancelled.map((row) => `${row.kind ?? 'task'} ${row.id ?? ''}`).join('、')}` : ''}。`,
+            `当前位置 ${fmtPosition(stop?.body?.position ?? adapter.position)}，生命 ${fmtVital(stop?.body?.health ?? adapter.health)}/20；${danger}。`,
+            ...(reflexLine ? [reflexLine] : []),
+            timeLine,
+            '危险不会被吞：死亡/低血/安全反射/被踢/断线这类 alarm 会穿透唤醒你；如果被 pause/静音拦住会暂存，gate 打开后补投。',
+            '不会静默清你的东西：继续用 time_resume 或 {"steps":[{"op":"resume"}]}（会同时退出 time 暂停模式）；离开世界用 mcb_leave / time_cancel。',
+          ].join('\n'),
+        }
+      },
+    },
+    {
       name: 'mcb_status',
       summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/重连/body 进程状态。只读。',
-      description: '返回多行事实。连接行以 body 顶层 connected 为准（断线/重连/被踢时不会假在线）；离线会附原因与是否在重连。任务行给 kind/state：paused=断线挂起（结果未定，重连后用 {"op":"resume","taskId":"t-x"} 继续），unknown=超时结果未知（先看背包/位置再决定），failed 带 error 原因。暂停行给 pausedReason（death/health-drop/low-health/low-oxygen/stuck/disconnect），解除用 {"op":"resume"}。任务历史用 {"steps":[{"op":"tasks"}]}。',
+      description: '返回多行事实。连接行以 body 顶层 connected 为准（不会假在线），离线附原因/重连。任务行 kind/state：paused=断线挂起（{"op":"resume","taskId":"t-x"} 继续）、unknown=超时未知（先看背包/位置）、failed 带 error。暂停行给原因与安全反射；暂停=停任务，身体仍在世界，解除用 {"op":"resume"}。危险补投行说明被 pause/睡眠拦下、等待补投的 alarm。任务历史用 {"steps":[{"op":"tasks"}]}。',
       when: ['行动前确认位置/血量/任务', '任务事件之后核对真实结果', '怀疑掉线/卡死'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -979,6 +1172,49 @@ export function apply(ctx) {
         const boundary = timeSleepBoundary()
         if (boundary) lines.push(boundary.text)
         if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
+        // 暂停 ≠ 离开：把 body 的安全反射状态与时间相位都摆出来，并说明危险仍会穿透。
+        const safetyState = status.safety ?? {}
+        const reflex = safetyState.reflex ?? null
+        if (reflex) {
+          const last = safetyState.lastReflex
+          const lastText = last?.at
+            ? `；最近一次自动规避：${new Date(Number(last.at)).toLocaleTimeString('zh-CN', { hour12: false })}（${last.reason ?? '危险'}${last.action ? ` → ${last.action}` : ''}${last.timedOut ? '，超时未完成' : ''}）`
+            : ''
+          lines.push(`安全反射：${reflex.enabled ? '开启' : '关闭'}（≤${Math.round((reflex.maxDurationMs ?? 10000) / 1000)}s/次、≤${reflex.maxPerMinute ?? 2} 次/分）${reflex.active ? `；正在规避（${reflex.count ?? 0} 次）` : ''}${lastText}`)
+        }
+        if (safetyState.paused) {
+          const reflexReason = REASON_TEXT[safetyState.reason] ?? safetyState.reason ?? status.pausedReason ?? '安全'
+          lines.push(`暂停：${reflexReason}——任务停/不接活，但身体仍在世界（会掉落/受伤/被推）；继续用 {"op":"resume"}，离开世界用 mcb_leave`)
+        }
+        if (status.playable && typeof status.playable.ok === 'boolean') {
+          const blockerText = {
+            offline: '身体离线',
+            'spawn-unsafe': '出生点危险',
+            reconnecting: '重连中',
+            dead: '已死亡',
+          }
+          const blockers = (status.playable.blockers ?? []).map((row) => String(row).startsWith('paused:') ? `暂停中（${REASON_TEXT[String(row).slice(7)] ?? String(row).slice(7)}）` : blockerText[row] ?? row)
+          lines.push(`可玩：${status.playable.ok ? '是' : `否（${blockers.join('、')}）`}`)
+        }
+        if (Array.isArray(status.spawnLog) && status.spawnLog.length) {
+          const lastSpawn = status.spawnLog[status.spawnLog.length - 1]
+          lines.push(`最近 spawn：${fmtPosition(lastSpawn.position)} · ${lastSpawn.dimension ?? '?'}${lastSpawn.source ? ` · 来源 ${lastSpawn.source}` : ''}${lastSpawn.safe === false ? ' · ⚠不安全' : ''}`)
+        }
+        const phaseNow = timePhase()
+        if (phaseNow === 'paused') lines.push('时间：已暂停（新消息进积压；MC 危险 alarm 会暂存、gate 打开后补投）')
+        const pausedModeNow = timePausedMode()
+        if (pausedModeNow?.active) {
+          lines.push(`暂停模式：time 已开（世界继续/计时不冻结；goal/focus/schedules 保留；alarm 可穿透${pausedModeNow.reason ? `；原因 ${pausedModeNow.reason}` : ''}）——继续 time_resume 或 {"op":"resume"}，离开 mcb_leave`)
+        }
+        if (pendingAlarms.length) lines.push(`危险补投：${pendingAlarms.length} 条未进 time 的 alarm（如 offer 异常/进程重启丢失，下个 poll 补投）`)
+        const alarmStats = status.safety?.alarms
+        if (alarmStats) {
+          lines.push(`body 告警账本：已送达 ${alarmStats.delivered ?? 0}、15s 去重 ${alarmStats.suppressed ?? 0}、补投 ${alarmStats.redelivered ?? 0}、待投 ${alarmStats.pending ?? 0}`)
+        }
+        const timeStatus = (() => { try { return timeApi()?.status?.() ?? null } catch { return null } })()
+        if (timeStatus?.lastBlockedAlarm?.reason) {
+          lines.push(`睡眠/静音期危险积压：${timeStatus.lastBlockedAlarm.count ?? 1} 条（${timeStatus.lastBlockedAlarm.reason}；醒来简报第一条会提示）`)
+        }
         const ownState = supervisor.state()
         if (ownState.owns) lines.push(`进程：本会话启动 pid ${ownState.pid ?? '?'}${ownState.alive ? '（运行中）' : '（已退出）'}`)
         const suppressed = Number(status.watchdog?.suppressed ?? 0) + Number(status.watchdog?.healthDropSuppressed ?? 0)
@@ -991,7 +1227,7 @@ export function apply(ctx) {
     {
       name: 'mcb_look',
       summary: '看身体当前视角：位置/朝向/生命/手持/视线方块/附近实体（文本）。只读。',
-      description: '附近实体会列出名字和距离——hostile（zombie/skeleton/creeper）就在旁边时先保命。视线方块给出她正对着什么，用来判断朝向。想知道某类方块在哪用 mcb_scan，想看地形用 mcb_map。',
+      description: '附近实体给名字和距离——hostile（zombie/skeleton/creeper）在旁边先保命。视线方块判断朝向。找某类方块用 mcb_scan，看地形用 mcb_map。',
       when: ['刚进服/刚复活，先看周围', '要判断危险、朝向、附近有什么'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -1002,7 +1238,7 @@ export function apply(ctx) {
     {
       name: 'mcb_inventory',
       summary: '看背包和手持物品（名字+数量）。只读。',
-      description: '空背包会明确说"背包是空的"。挖/合/捡之后用它核对结果：task_done 只表示达成了 body 的判据（mine 是背包净增达标），物品还可能散落在地上；task_failed/unknown 时更要看背包确认到底有没有到手。合成/熔炼/交易前先看材料够不够。',
+      description: '空背包会说明。挖/合/捡后核对结果：task_done 只表示 body 判据达成（mine 是背包净增），物品可能还散在地上；task_failed/unknown 更要看背包确认到手没有。合成/熔炼/交易前先看材料够不够。',
       when: ['合成/熔炼/放置之前', '任务完成后核对产物'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -1014,7 +1250,7 @@ export function apply(ctx) {
     {
       name: 'mcb_scan',
       summary: '扫描附近某类方块的位置和距离（按距离升序）。只读。参数：name 必填，radius/count 可选。',
-      description: 'name 用 Minecraft 方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest。body 的硬限制：radius 默认 16、最大 48；count 默认 8、最大 64（超过按 64）。结果按距离升序、只列 count 个；到上限时返回会附一句"可能还有更多"。返回"附近没有 X"表示范围内真的没有——先调大 radius 或换块名，别假装它存在。',
+      description: 'name 用方块 id（snake_case）：oak_log、dirt、stone、iron_ore、coal_ore、crafting_table、furnace、chest。body 硬限制：radius 默认 16/最大 48；count 默认 8/最大 64。按距离升序只列 count 个，到上限附"可能还有更多"；"附近没有 X"表示范围内真没有——先调大 radius 或换块名。',
       when: ['下 mine 任务之前确认目标存在', '找工作台/熔炉/箱子/矿', '脱困时找方向'],
       parameters: {
         type: 'object',
@@ -1047,7 +1283,7 @@ export function apply(ctx) {
     {
       name: 'mcb_map',
       summary: '看脚下方块层的字符小地图（#实心 .空 ~水 ≈岩浆 ?未加载）。只读。参数：radius 可选。',
-      description: '用来判断地形：前面是墙/悬崖/水/岩浆。**只显示脚下一层（单层 y）**，不是整个工地的立视图——挖出的坑、垒高的台阶要在那一层的地图上看。radius 默认 4 格、最大 8（超过按 8，地图是 (2r+1)² 的字符网格）。←↑→↓ 是朝向。卡住或 goto 走不过去时先看它，再决定绕路还是换目标；想找远处某类方块用 mcb_scan。',
+      description: '判断地形：前面是墙/悬崖/水/岩浆。**只显示脚下一层（单层 y）**，不是立视图——挖出的坑/垒高的台阶要另看。radius 默认 4/最大 8，网格 (2r+1)²；←↑→↓ 是朝向。卡住或 goto 失败先看它；找远处方块用 mcb_scan。',
       when: ['goto/寻路失败', '判断悬崖、水域、洞窟'],
       parameters: {
         type: 'object',
@@ -1066,9 +1302,9 @@ export function apply(ctx) {
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
 宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
-重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下阶梯}（直线通道）、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
-单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；pickup 捡附近掉落 {radius,max} 返回 picked/items/left，别 goto 自己坐标；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
-失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码换目标/补工具/清背包/换方向）。示例用 mcb_help collect/tunnel。`,
+重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；pickup 捡附近掉落 {radius,max} → picked/items/left，别 goto 自己脚下；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）。示例用 mcb_help collect/tunnel。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
       avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
       safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],
@@ -1117,7 +1353,7 @@ export function apply(ctx) {
     {
       name: 'mcb_help',
       summary: '读 MC 的深层操作文档（按需，不常驻）。不带参数列出全部；参数 skill 指定一篇。',
-      description: '文档很短，讲流程/参数示例/失败怎么办，不放进每轮提示词。play=开一局与任务/事件/失败处理全流程；escape=卡住/中断；flee=低血逃生；craft/furnace/chest/trade=各系统操作；endgame=长期主线。名字可以模糊匹配（trad→trade）。',
+      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
       when: ['准备做一整件事（合成、熔炼、交易、脱困、长期发展）', 'mcb_do 报了不懂的错'],
       parameters: {
         type: 'object',
