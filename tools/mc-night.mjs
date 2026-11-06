@@ -1447,8 +1447,10 @@ async function main() {
     }
 
     // fast-play 兜底（time immediate 未合入时）：turn/end 后 ~0.8s 补一条 followup，避免等 awake-tick。
-    if (cfg.fastFollowup && !sleeping && !state.restMode && !stats.inTurn && hb.lastTurnEndAt) {
-      const sinceEnd = nowMs - Number(hb.lastTurnEndAt)
+    // 注意：这里不能用后面的 hb（TDZ，2026-11-06 事故），现场算 turn-end。
+    const fastLastTurnEnd = heartbeatFromEvents(events).lastTurnEndAt
+    if (cfg.fastFollowup && !sleeping && !state.restMode && !stats.inTurn && fastLastTurnEnd) {
+      const sinceEnd = nowMs - Number(fastLastTurnEnd)
       const lastFollow = state.lastFastFollowupAt ? Date.parse(state.lastFastFollowupAt) : 0
       if (sinceEnd > 500 && sinceEnd < 12_000 && nowMs - lastFollow > 2500) {
         state.lastFastFollowupAt = nowIso()
