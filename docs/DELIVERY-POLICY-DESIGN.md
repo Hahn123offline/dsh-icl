@@ -274,6 +274,7 @@ decide(input):
    - `via`：`time-backlog` / `focus-backlog`；QQ 侧统计在 `qq_status.ledger.deliveredVia`。契约见 `docs/QQ.md §7.7`（QQ 实现 commit `83e2b37`；接口返回 `{ok,accepted,skipped,deliveredSeq,attendedSeq,lastSeq,via,at}`，不抛异常）。
    - 若摘要被 time 拦下（睡眠/静音），focus 释放时把 `meta.replayQq` 随摘要带进 time 队列，由 time flush 时统一补推 → 不会丢回执。
    - 失败不抛；没回执的消息在 QQ 侧保持"未交付"（安全侧）。
+- **回执顺序无关**：QQ 的 `deliveredSeq` 由"已交付连续段"实时算（`MIN(seq WHERE delivered_at IS NULL)-1`，无空洞则 lastSeq），**单调不回退**；先释放谁就回执谁、后到的 seq 只填洞，不会把水位改小，也不需要我们按 seq 排序。该边界由 QQ `ed851c8`/`3480980` 测试钉住。
 
 ### 2.8 本轮已实施（2026-11-07，用户拍板）
 
