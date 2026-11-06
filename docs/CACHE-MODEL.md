@@ -542,6 +542,20 @@ node tools/cache-probe.mjs diff --run cache-bf2
 
 ---
 
+9. **图片块 + `compaction-image-offload`（固定提醒，别遗漏）**：QQ 图片通道把图片作为 `ImageAttachmentRef`
+   放进投递消息 content（`[{type:'text'},{type:'image',attachment}]`）。**图片块本身 append-only、渲染稳定**，
+   只是消息列表变长 → 对前缀缓存**安全**；纯文本路由（如 `deepseek-flash`）会在**请求装配期**把图片投影成文字占位，
+   不写历史，同样安全。
+   - **但**：DSH 的 `compaction-image-offload` 在 provider 返回 `IMAGE_OFFLOAD_REQUIRED`（图片把上下文顶爆）时，
+     会 append `image/offload` 事件并把最老图片 **durable 投影成 `offloaded: true`**——这是**一次历史改写**，
+     会使被改消息之后的前缀失效一次，之后重新稳定。与 §7.2 的 `tool-result-pruner` 同类，属"第二股历史重写源"；
+     图片通道第一次让它变得可达（有图 + 长会话 + 超窗才会触发，不是常态）。
+   - **限制建议**：bridge/投递层按 deployment 的 `maxImagesPerMessage` / `maxMessageImageBytes` / `maxImagePixels` /
+     `maxImageDimension`（`ctx.attachments.imageLimits`）预检，别让一条投递塞太多图；长会话报告里若看到 `image/offload`
+     事件，记"一次预期内的全量失效"，不按回归处理。
+   - **自检**：事件流里 grep `image/offload`（有 → 该点之后一次 prefill 变大属预期）；`tools/cache-longrun.mjs --events`
+     输出里可加该计数（下期补）。
+
 ## 8. 事实层字节基线（与 misc/lead 对表）
 
 | 项 | 数值 | 来源 |

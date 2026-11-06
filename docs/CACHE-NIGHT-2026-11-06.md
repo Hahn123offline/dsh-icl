@@ -117,3 +117,17 @@ node tools/cache-longrun.mjs `
 
 输出 `engine.overall`（总表）、`engine.buckets10min`（命中率随时间）、`engine.gaps`（>120s 无活动窗口）、
 `engine.fullInvalidations`（逐条冷启动）、`events`（system 稳定性/快照/turn 数）。
+
+## 8. 长跑健康附加指标（下期报告固定两行）
+
+缓存指标之外，长跑报告固定带两行健康对照，避免"只有缓存好看"：
+
+| 指标 | 读法 | 说明 |
+|---|---|---|
+| **槽健康 `slots.unmatched`** | `host.services.slots.unmatched()`（model-manager 也暴露 `unmatched()`）；或 lab `status.json` / morning-report 里的槽绑定信息 | 返回未绑定 provider 的插槽 `[{id,kind,requires}]`。**夜晚 dream 槽未绑定 = dream 整晚 0 事件块**，必须报到；正常应为 0 个核心槽未匹配 |
+| **dream job 三态** | memory 命名空间 `dream-run`（`kind='run'`，`key=runKey(day,job)`，`data` 里含 ok/skipped 原因）；或 mc-lab morning-report 的 dream 节 | 三态 = **success / skipped（already-ran、no-raw、nothing-clean…）/ failed**；某天某 job 缺失也记 skipped 以外的一类，单独标红 |
+
+> 口径来源：`slots.unmatched()` 见 `packages/core/src/services.mjs:840`；dream 记录见 `packages/plugins/dream/src/index.mjs`
+> （`dream-run` 命名空间、`recordRun()`）。mc-lab 会补一版正式口径，届时以它为准；本表先固定"必须报这两行"。
+
+night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 事件块，`dream-run` 无 success 记录——这是要报的异常，不是缓存问题。
