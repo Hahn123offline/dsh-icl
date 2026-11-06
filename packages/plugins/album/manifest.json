@@ -9,6 +9,10 @@
       "kind": "embedding",
       "requires": {
         "dim": 512
+      },
+      "meta": {
+        "optional": true,
+        "feature": "album-vector-search"
       }
     }
   ],

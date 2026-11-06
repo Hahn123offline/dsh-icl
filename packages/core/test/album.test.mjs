@@ -395,3 +395,11 @@ test('真实 8088 clip-zh 集成（ALBUM_CLIP_SMOKE=1 才跑，CPU，不占 GPU�
   const vec = data?.data?.[0]?.embedding
   assert.ok(Array.isArray(vec) && vec.length === 512, `期望 512d CLIP 向量，实际 ${vec?.length}`)
 })
+
+test('image-embed 槽是 optional：缺 CLIP provider 时进 optionalUnmatched，不把 health 标红', async () => {
+  const { host } = await setup()
+  const unmatched = host.services.slots.unmatched()
+  const slot = unmatched.find((row) => row.id === 'image-embed')
+  assert.ok(slot, '无 provider 时 image-embed 应在 unmatched')
+  assert.equal(slot.optional, true, JSON.stringify(unmatched))
+})

@@ -75,7 +75,7 @@
                   testClock: true
               # dream-chat / embed-text 插槽必须有 providers，否则 dream 的 events/people/lexicon/cleanup
               # 等需要模型的 job 会整段缺席（night-1 事故：只有 wash/consume/index）。
-              # lab 复用 8088 llama-swap（chat: qwen35-9b / embedding: embed-bge-m3），零成本、无 API key。
+              # lab 复用 8088 llama-swap（chat: qwen35-9b / embedding: embed-bge-m3(1024d) / clip-zh(512d, CPU，用于 album 图片记忆)），零成本、无 API key。
               providers:
                 - id: lab-llama-swap-chat
                   kind: chat
@@ -89,6 +89,12 @@
                   shape: { dim: 1024 }
                   baseUrl: 'http://127.0.0.1:8088/v1'
                   model: embed-bge-m3
+                - id: lab-clip-zh
+                  kind: embedding
+                  shape: { dim: 512 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: clip-zh
+                  timeoutMs: 30000
               plugins:
                 - memory
                 - world-state
@@ -169,6 +175,12 @@
                   shape: { dim: 1024 }
                   baseUrl: 'http://127.0.0.1:8088/v1'
                   model: embed-bge-m3
+                - id: lab-clip-zh
+                  kind: embedding
+                  shape: { dim: 512 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: clip-zh
+                  timeoutMs: 30000
               # MC 场景工具白名单（P1 复杂度收敛，用户/lead 批准；只在 lab 生效）：
               # E2 实测 48 工具里 31 个一次没调用；MC 会话只留 mcb_* + 时间安排 + 记忆/待办。
               # 支持精确名与 `前缀*`；空数组 = 全量（产品默认不变）。DSH 原生工具（todo 等）不受影响。
@@ -267,6 +279,12 @@
                   shape: { dim: 1024 }
                   baseUrl: 'http://127.0.0.1:8088/v1'
                   model: embed-bge-m3
+                - id: lab-clip-zh
+                  kind: embedding
+                  shape: { dim: 512 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: clip-zh
+                  timeoutMs: 30000
               pluginConfig:
                 time:
                   testClock: true
