@@ -269,6 +269,36 @@ test('宏：shelter done 展示 verify.summary/entryOk/home；失败码按缺面
   assert.match(faces, /缺墙面：south 缺 4\/6/)
 })
 
+test('事件：自动躲避取消任务 / task_cancelled_for_defense 都说"不是任务失败"', () => {
+  const first = collect([{ seq: 1, type: 'auto_defense', data: { reason: 'threat', action: 'backoff', durationMs: 220, taskCancelled: true, taskId: 't-3', taskKind: 'mine', taskCancelReason: 'auto-defense: threat' } }])
+  assert.match(first.signals[0].text, /已自动躲避并取消当前任务：mine（auto-defense: threat）/)
+  assert.match(first.signals[0].text, /不是任务自己失败/)
+  const second = collect([{ seq: 2, type: 'task_cancelled_for_defense', data: { taskId: 't-3', kind: 'mine', reason: 'auto-defense: threat', threats: ['zombie'] } }])
+  assert.match(second.signals[0].text, /任务被自动躲避取消：mine（t-3）/)
+  assert.match(second.signals[0].text, /zombie/)
+  assert.match(second.signals[0].text, /不是任务失败/)
+})
+
+test('失败码：collect: no-resources 提示先 explore/换 item；shelter needs-material 带 needed/have/deficit/替代/suggestion', () => {
+  const dry = taskEventText('task_failed', { task: { id: 't-1', kind: 'collect', error: 'collect: no-resources' } })
+  assert.match(dry, /资源枯竭/)
+  assert.match(dry, /explore/)
+  assert.match(dry, /别原地重试/)
+  const material = taskEventText('task_failed', {
+    task: {
+      id: 't-2', kind: 'shelter', error: 'shelter: needs-material',
+      result: {
+        material: 'oak_planks', needed: 27, have: 12, deficit: 15,
+        alternatives: [{ material: 'dirt', have: 64, enough: true }, { material: 'stone', have: 3, enough: false }],
+        suggestion: '把 material 改成 "dirt" 重试，不用再收集。',
+      },
+    },
+  })
+  assert.match(material, /材料诊断：材料 oak_planks；需要 27；现有 12；缺 15/)
+  assert.match(material, /可用替代：dirt×64/)
+  assert.match(material, /把 material 改成 "dirt" 重试/)
+})
+
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {
   const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
   assert.match(collected, /宏完成/)

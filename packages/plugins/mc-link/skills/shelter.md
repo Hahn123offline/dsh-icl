@@ -26,7 +26,7 @@
 | 失败码 | 意思 | 下一步 |
 |---|---|---|
 | `shelter: no-site` | 地形/空间放不下 | 先清平/换位置，或先挖平再重跑 |
-| `shelter: needs-material` | 方块不够（回执带缺数） | 按缺数先 collect/craft 补料，别硬跑 |
+| `shelter: needs-material` | 方块不够（回执带 `needed/have/deficit`） | 看 `alternatives`：有够数的替代材料就改 `material` 重试（不用再收集）；否则按 `deficit` dig/collect 补料，别原样重跑 |
 | `shelter: incomplete` | 结构差墙/屋顶/门洞 | 按 `verify.summary` 补缺的；缺哪面看 `verify.walls.missingFaces`（例 `south 缺 4/6`），屋顶缺几块看 `roof.missing`；不用重跑整间 |
 | `shelter: entry-blocked` | 结构 OK 但进不去 | 清零格门洞/垫平门外通路，或换 doorSide |
 
