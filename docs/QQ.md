@@ -23,7 +23,7 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 779 tests（778 pass / 1 skip） | `npm test` |
+| 全量测试 | ✅ 788 tests（787 pass / 1 skip） | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
@@ -583,6 +583,10 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
   正文提示"先看到 #N，后面还有"；`meta.qq.wake.snapshot={included,partial,readThroughSeq}`。
 - 每个 wake 首句是生活化原因（"刚回过想确认接没接话"/"安静了一阵刚好有空"/"离开这会儿又攒了消息"）+ **"这不是对方新消息"**，
   避免模型把提醒当成用户新说话。
+- **time.compactWake 接缝**：QQ 读 `time` 共享服务的可选 `wake` 函数对象（`enabled()/shouldCompact()/bump()`）；
+  `enabled() && shouldCompact()` 为真时把 preamble 换成 3 行短定位（`[QQ积压提醒·紧凑]` 等，整体 ≤400 字符），
+  **未读快照/正文原样保留**，`meta.qq.wake.compact` 标出；`ctx.signals.offer` 后只有 `accepted && queued !== true`
+  才调 `wake.bump()`（blocked/queued 不计）。旧版 time 没有 `wake` 服务时安全降级为全量、不 bump。
 - 人格提示（按需 `qq_help` skill，不占静态 system）：加了"别习惯性潜水"和"反 AI 味/客服腔"两行。
 - 与 `qq_mark_read` 的关系：mark_read 推进已读水位（不能跨未交付）后，下一次 poll 的 `unreadCount` 减少/归零 → nudge 停止；
   未交付消息会一直留在快照/提醒里，直到真正交付。
@@ -906,7 +910,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 779 tests（778 pass / 1 skip）
+node --test packages/core/test packages/mc-body/test   # 788 tests（787 pass / 1 skip）
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
@@ -1127,6 +1131,15 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
     `attendedSeq` 仍 0；`deliveredVia['focus-backlog']` 计数；之后 `mark_read` 才能推进。
   - 正常路径（无 focus）`delivered:true` 立即记 delivered，不回归。
 - `qq-mc-concurrent` T2 断言同步：sacred focus 下 `stats.delivered=0`、`stats.queued>=1`。
+
+### 13.15 B2b compactWake QQ 侧（2026-11-07）
+
+- `qq-wake-compact.test.mjs` → **3 pass**：
+  - fake `time.wake` compact=true：nudge 用 `[QQ积压提醒·紧凑]` 短 preamble（3 行 <400 字符），未读快照/正文保留，
+    真正投递后 `bump()` 计数 +1；
+  - compact=false：保持原长 preamble，bump +1；
+  - focus queued：wake signal 被 focus 积压（accepted+queued）→ **不 bump**；旧版 time 无 `wake` 服务 → 全量文本、不报错。
+- 接缝只读 `time` 共享服务的可选 `wake`，不新增工具/不改静态 system；`meta.qq.wake.compact` 可观测。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 
