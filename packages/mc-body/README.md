@@ -137,3 +137,8 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 
 MC body 本身无渲染；“能不能真看屏幕”的三方案对比、推荐、PoC 与实测数据见 [`docs/MC-EYES.md`](../../docs/MC-EYES.md)。
 PoC：`node packages/mc-body/tools/eyes-poc.mjs --viewer-root <prismarine-viewer 安装目录> --out <png>`（离线区块 → viewer → Edge headless 截图；不占 GPU 模型锁）。
+
+## 战斗与自动躲避（MC-COMBAT）
+
+有敌对生物时的追杀/防守/逃跑任务与自动躲避（未暂停也生效）见 [`docs/MC-COMBAT.md`](../../docs/MC-COMBAT.md)。
+body task kind：`hunt / defend / flee / guard`；自动躲避事件 `auto_defense`、威胁暂停 `safety_stop(reason=threat)`；参数/失败码/验收在文档。

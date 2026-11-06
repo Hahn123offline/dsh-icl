@@ -11,10 +11,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHeartbeat, createProgressTracker, createRateLimiter } from './recovery.mjs'
 import { buildStructuredSnapshot, captureScreenshot } from './eyes.mjs'
+import { threatAssessment } from './combat.mjs'
 
-const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
+const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm', 'hunt', 'defend', 'flee', 'guard'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
 const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
+const COMBAT_KINDS = new Set(['hunt', 'defend', 'flee', 'guard'])
 // 暂停时仍然允许的 op：感知/查询/恢复/取消/停止，以及**停止**（cancel+反射+报告，不需要先 resume）。
 // 写动作（move/dig/place/task…）一律拒绝。
 const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'stop', 'say', 'wait'])
@@ -74,6 +76,13 @@ export function createBody({
   reflexMaxPerMinute = REFLEX_MAX_PER_MINUTE,
   reflexMinIntervalMs = 500,
   alarmDedupeMs = 15_000,
+  // 自动躲避：不必等低血/暂停；敌对近身就做一次有界规避（不打断任务，除非 critical）。
+  autoDefense = true,
+  defenseThreatDistance = 6,
+  defenseCreeperDistance = 6,
+  defenseMaxHostiles = 3,
+  defenseCooldownMs = 8000,
+  defenseMaxPerMinute = 3,
   // 眼睛：结构化快照零依赖；截图需要 adapter viewer + Edge，按需、限频、用完即关。
   mediaDir = null,
   runId = null,
@@ -105,6 +114,9 @@ export function createBody({
   let paused = false
   let pausedReason = null
   let activeDo = null
+  let defenseTimes = []
+  const defenseStats = { count: 0, lastAt: null, lastReason: null, lastAction: null, lastDurationMs: null, lastTimedOut: false, lastEventSeq: null }
+  let defenseActive = false
   let eyesBusy = false
   let lastEyesAt = 0
   let closed = false
@@ -816,6 +828,100 @@ export function createBody({
     return danger
   }
 
+  // 自动躲避（未暂停时也生效）：不必等低血；敌对近身就做一次有界规避（不打断任务，critical 才暂停）。
+  function defenseView() {
+    return {
+      enabled: Boolean(autoDefense),
+      active: defenseActive,
+      count: defenseStats.count,
+      maxPerMinute: defenseMaxPerMinute,
+      cooldownMs: defenseCooldownMs,
+      threatDistance: defenseThreatDistance,
+      creeperDistance: defenseCreeperDistance,
+      lastAt: defenseStats.lastAt,
+      lastReason: defenseStats.lastReason,
+      lastAction: defenseStats.lastAction,
+      lastDurationMs: defenseStats.lastDurationMs,
+      lastTimedOut: defenseStats.lastTimedOut,
+      lastEventSeq: defenseStats.lastEventSeq,
+    }
+  }
+
+  function assessHostiles(status) {
+    const hostiles = Array.isArray(status?.nearbyHostiles) ? status.nearbyHostiles : []
+    if (!hostiles.length) return null
+    return threatAssessment(hostiles, {
+      threatDistance: defenseThreatDistance,
+      creeperDistance: defenseCreeperDistance,
+      maxHostiles: defenseMaxHostiles,
+      health: status?.health,
+      lowHealth,
+    })
+  }
+
+  function runAutoDefense(assessment, at) {
+    if (defenseActive || closed) return false
+    defenseTimes = defenseTimes.filter((time) => at - time < 60_000)
+    if (defenseTimes.length >= defenseMaxPerMinute) {
+      if (!defenseStats.lastSuppressedAt || at - defenseStats.lastSuppressedAt >= alertWindowMs) {
+        defenseStats.lastSuppressedAt = at
+        push('defense_suppressed', { reason: assessment.reasons[0] ?? 'threat-near', count: defenseTimes.length, maxPerMinute: defenseMaxPerMinute })
+      }
+      return false
+    }
+    if (defenseStats.lastAt && at - defenseStats.lastAt < defenseCooldownMs) return false
+    const emergencyFn = typeof adapter.emergency === 'function' ? adapter.emergency : null
+    if (!emergencyFn) return false
+    defenseTimes.push(at)
+    defenseStats.count += 1
+    defenseStats.lastAt = at
+    defenseStats.lastReason = assessment.reasons[0] ?? 'threat-near'
+    defenseActive = true
+    const started = stamp()
+    let timer = null
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), 8000)
+      if (typeof timer.unref === 'function') timer.unref()
+    })
+    Promise.race([
+      Promise.resolve().then(() => emergencyFn('auto-defense')).catch((error) => ({ error: String(error?.message ?? error) })),
+      timeout,
+    ]).then((result) => {
+      if (timer) clearTimeout(timer)
+      defenseActive = false
+      const durationMs = stamp() - started
+      defenseStats.lastDurationMs = durationMs
+      defenseStats.lastTimedOut = result?.timedOut === true
+      defenseStats.lastAction = result?.action ?? (result?.error ? 'error' : (result?.ok === false ? 'offline' : 'no-op'))
+      const event = push('auto_defense', {
+        reason: defenseStats.lastReason,
+        assessment,
+        action: defenseStats.lastAction,
+        durationMs,
+        timedOut: defenseStats.lastTimedOut,
+        error: result?.error ?? null,
+      })
+      defenseStats.lastEventSeq = event.seq
+    }).catch(() => { defenseActive = false })
+    return true
+  }
+
+  function checkHostiles(status, at) {
+    if (!autoDefense || closed || paused) return null // 暂停时由 reflex 接管（threat-near）
+    if (current && COMBAT_KINDS.has(current.kind)) return null // 战斗任务自己处理中断
+    const assessment = assessHostiles(status)
+    if (!assessment?.dangerous) return null
+    const creeperClose = assessment.creeper && Number(assessment.creeper.distance) <= Math.min(4, defenseCreeperDistance)
+    const criticalHealth = Number.isFinite(Number(status?.health)) && Number(status.health) > 0 && Number(status.health) <= lowHealth
+    if (creeperClose || criticalHealth) {
+      // 已经贴脸/残血：升级为安全暂停（进入 reflex 保命，同时 alarm 会穿透通知）。
+      safetyStop('threat')
+      return assessment
+    }
+    runAutoDefense(assessment, at)
+    return assessment
+  }
+
   function watchdogTick(at = stamp()) {
     if (closed) return { ticks: watchdogStats.ticks }
     watchdogStats.ticks += 1
@@ -833,6 +939,7 @@ export function createBody({
     checkConnectionStale(status)
     checkMovementStall(status, at)
     // 暂停期的安全反射（方案 B）与 alarm 补投：pause 不冻结保命动作，也不静默危险。
+    checkHostiles(status, at)
     checkReflex(status, at)
     retryPendingAlarms(at)
     if (heartbeat.due(at)) {
@@ -1197,6 +1304,15 @@ export function createBody({
           pending: alarmState.pending.size,
           lastAt: alarmState.lastAt,
         },
+        autoDefense: defenseView(),
+        lastDefense: defenseStats.lastAt ? {
+          at: defenseStats.lastAt,
+          reason: defenseStats.lastReason,
+          action: defenseStats.lastAction,
+          durationMs: defenseStats.lastDurationMs,
+          timedOut: defenseStats.lastTimedOut,
+          eventSeq: defenseStats.lastEventSeq,
+        } : null,
         lastSafetyStopAt,
       },
       task: taskView(current),
@@ -1229,6 +1345,11 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
+
+
+
 
 
 

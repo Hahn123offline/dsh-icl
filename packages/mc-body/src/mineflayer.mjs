@@ -8,6 +8,7 @@ import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
+import { chooseWeaponItem, isHostile, shouldAbortCombat } from './combat.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -1809,6 +1810,156 @@ export function createMineflayerAdapter({
       emit('macro_done', { kind: 'farm', crop, planted, tilled, total: count })
       return { crop, planted, tilled, total: count, seeds: seedCount, water: waterPositions.length }
     }
+    if (['hunt', 'defend', 'flee', 'guard'].includes(task.kind)) {
+      const mode = task.kind
+      const targetSpec = String(params.target ?? 'nearest_hostile')
+      const radius = Math.max(4, Math.min(32, Number(params.radius) || 16))
+      const attackRange = Math.max(2, Math.min(4, Number(params.attackRange) || 3))
+      const lostTargetMs = Math.max(1000, Math.min(60_000, Number(params.lostTargetMs) || 10_000))
+      const durationMs = Math.max(5000, Math.min(300_000, Number(params.maxDurationMs) || (mode === 'guard' ? 120_000 : mode === 'flee' ? 30_000 : 60_000)))
+      const lowHealthLimit = Math.max(1, Math.min(20, Number(params.lowHealth) || 10))
+      const maxHostiles = Math.max(1, Math.min(12, Number(params.maxHostiles) || 3))
+      const creeperDistance = Math.max(2, Math.min(12, Number(params.creeperDistance) || 5))
+      const safeDistance = Math.max(8, Math.min(48, Number(params.safeDistance) || 24))
+      const startedAt = Date.now()
+      const liveHostiles = (range = radius) => {
+        const pos = currentPosition()
+        if (!pos) return []
+        return Object.values(bot.entities ?? {})
+          .filter((entity) => entity && entity !== bot.entity && entity.position && isHostile(entity.name) && entity.position.distanceTo(pos) <= range)
+          .map((entity) => ({ entity, name: entity.name, distance: round1(entity.position.distanceTo(pos)), position: entity.position }))
+          .sort((a, b) => a.distance - b.distance)
+      }
+      const equipCombatGear = async () => {
+        try {
+          const weapon = chooseWeaponItem(bot.inventory?.items?.() ?? [])
+          if (weapon && bot.heldItem?.name !== weapon.item.name) await bot.equip(weapon.item, 'hand')
+          const shield = (bot.inventory?.items?.() ?? []).find((item) => item.name === 'shield')
+          if (shield && bot.getEquipmentDestSlot?.('off-hand') !== undefined) {
+            try { await bot.equip(shield, 'off-hand') } catch { /* 没盾也打 */ }
+          }
+          return weapon?.item?.name ?? bot.heldItem?.name ?? null
+        } catch { return null }
+      }
+      const combatAbort = async (reason, extra = {}) => {
+        const hostiles = liveHostiles(10).map(({ name, distance }) => ({ name, distance }))
+        emit('combat_abort', { mode, target: targetSpec, reason, hostiles, health: round1(bot.health) })
+        try { await emergency(`combat-${reason}`) } catch { /* 反射失败也要中断 */ }
+        throw taskFailure(`combat: ${reason}`, {
+          mode, target: targetSpec, reason, health: round1(bot.health), hostiles,
+          ...extra,
+          suggestion: reason === 'low-health' ? '低血：先吃/躲/垫高，resume 后再来；可改用 mode:"flee"'
+            : reason === 'creeper-near' ? '苦力怕近身：先跑/垫高，别贴脸打'
+              : '多敌：先撤到安全点，逐个解决',
+        })
+      }
+      await equipCombatGear()
+      if (mode === 'flee') {
+        let flees = 0
+        let lastSafeAt = null
+        while (Date.now() - startedAt < durationMs) {
+          checkAbort(signal)
+          const threats = liveHostiles(radius)
+          if (!threats.length) {
+            emit('combat_done', { mode, reason: 'no-threat', durationMs: Date.now() - startedAt })
+            return { mode, fled: true, reason: 'no-threat', flees, durationMs: Date.now() - startedAt }
+          }
+          const assessment = shouldAbortCombat({ health: bot.health, hostiles: threats, lowHealth: lowHealthLimit, maxHostiles, creeperDistance })
+          const threat = threats[0]
+          if (threat.distance >= safeDistance) {
+            emit('combat_done', { mode, reason: 'safe', distance: threat.distance })
+            return { mode, fled: true, reason: 'safe', distance: threat.distance, flees, durationMs: Date.now() - startedAt }
+          }
+          const pos = currentPosition()
+          if (!pos) throw taskFailure('flee: no-position', {})
+          const dx = pos.x - threat.position.x
+          const dz = pos.z - threat.position.z
+          const len = Math.hypot(dx, dz) || 1
+          const fleeTo = { x: pos.x + (dx / len) * 12, y: Math.floor(pos.y), z: pos.z + (dz / len) * 12 }
+          try {
+            await gotoWithRecovery({ ...fleeTo, range: 2, timeoutMs: 5000, stallMs: 2000 }, signal, null)
+            flees += 1
+            lastSafeAt = Date.now()
+          } catch (error) {
+            if (signal?.aborted) throw error
+            if (lastSafeAt && Date.now() - lastSafeAt > 6000) throw taskFailure('flee: cornered', { threat: threat.name, flees, suggestion: '被围/被地形卡住：垫高或挖坑封口，或用 hunt 先清路' })
+            await sleep(300)
+          }
+          progress?.({ mode, state: 'flee', threat: threat.name, distance: threat.distance, flees, health: round1(bot.health), durationMs: Date.now() - startedAt })
+        }
+        throw taskFailure('flee: timeout', { flees, durationMs: Date.now() - startedAt, suggestion: '没跑到安全距离：继续/换方向/垫高' })
+      }
+      let targetRef = null
+      let attacks = 0
+      let lastSeenAt = Date.now()
+      while (Date.now() - startedAt < durationMs) {
+        checkAbort(signal)
+        const threats = liveHostiles(radius)
+        const assessment = shouldAbortCombat({ health: bot.health, hostiles: threats, lowHealth: lowHealthLimit, maxHostiles, creeperDistance })
+        if (assessment.abort && mode !== 'guard') await combatAbort(assessment.reason, { attacks, hostiles: threats.map(({ name, distance }) => ({ name, distance })) })
+        if (!targetRef || !bot.entities?.[targetRef.entity.id]) {
+          if (targetRef && attacks > 0) {
+            emit('combat_done', { mode, target: targetRef.name, killed: true, attacks, durationMs: Date.now() - startedAt })
+            return { mode, killed: true, target: targetRef.name, attacks, durationMs: Date.now() - startedAt }
+          }
+          const candidates = targetSpec === 'nearest_hostile' || targetSpec === 'nearest'
+            ? threats
+            : threats.filter((threat) => threat.name === targetSpec.toLowerCase())
+          const picked = candidates[0] ?? null
+          if (picked) {
+            targetRef = picked
+            lastSeenAt = Date.now()
+            await equipCombatGear()
+            progress?.({ mode, state: 'acquired', target: picked.name, distance: picked.distance, health: round1(bot.health) })
+          } else {
+            if (mode === 'guard' || mode === 'defend') {
+              if (Date.now() - startedAt + 1000 >= durationMs) break
+              await sleep(500)
+              progress?.({ mode, state: 'scanning', hostiles: threats.length, health: round1(bot.health), durationMs: Date.now() - startedAt })
+              continue
+            }
+            if (targetRef && Date.now() - lastSeenAt > lostTargetMs) throw taskFailure('combat: target-lost', { target: targetSpec, attacks, suggestion: '目标丢了：换 target/扩大 radius 或先 scan' })
+            if (Date.now() - startedAt > Math.min(durationMs, 15_000)) throw taskFailure('combat: no-target', { target: targetSpec, radius, suggestion: '附近没有敌对目标：确认目标名/换地方/用 scan 看实体' })
+            await sleep(400)
+            continue
+          }
+        }
+        const target = targetRef
+        const entity = target.entity
+        if (!entity || !bot.entities?.[entity.id]) { targetRef = null; continue }
+        const distance = round1(entity.position.distanceTo(currentPosition()))
+        progress?.({ mode, state: 'chase', target: entity.name, targetHealth: entity.health ?? null, distance, attacks, health: round1(bot.health), durationMs: Date.now() - startedAt })
+        if (entity.name === 'creeper' && distance <= creeperDistance && attacks === 0) {
+          targetRef = null
+          await combatAbort('creeper-near', { attacks: 0, distance })
+        }
+        if (distance > attackRange) {
+          try {
+            await gotoWithRecovery({ x: entity.position.x, y: entity.position.y, z: entity.position.z, range: Math.max(1.5, attackRange - 1), timeoutMs: 6000, stallMs: 2500 }, signal, progress)
+          } catch (error) {
+            if (signal?.aborted) throw error
+            await sleep(250)
+          }
+          continue
+        }
+        try { await bot.lookAt(entity.position.offset(0, 1.2, 0), true) } catch { /* ignore */ }
+        try {
+          bot.attack(entity)
+          attacks += 1
+          if (bot.food <= 14) await autoEat(signal, progress).catch(() => false)
+          await sleep(650)
+        } catch (error) {
+          if (signal?.aborted) throw error
+          await sleep(200)
+        }
+        progress?.({ mode, state: 'attack', target: entity.name, targetHealth: entity.health ?? null, distance: round1(entity.position.distanceTo(currentPosition())), attacks, health: round1(bot.health), durationMs: Date.now() - startedAt })
+      }
+      if (mode === 'guard' || mode === 'defend') {
+        emit('combat_done', { mode, reason: 'duration', attacks, durationMs: Date.now() - startedAt })
+        return { mode, attacks, reason: 'duration', durationMs: Date.now() - startedAt }
+      }
+      throw taskFailure('combat: timeout', { mode, target: targetSpec, attacks, durationMs: Date.now() - startedAt, suggestion: '没打死：换武器/找落单目标/先补血补给' })
+    }
     throw new Error(`unsupported task: ${task.kind}`)
   }
 
@@ -2452,6 +2603,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
 
 
 

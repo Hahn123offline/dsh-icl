@@ -30,6 +30,7 @@ function fakeAdapter() {
     oxygen: 20,
     submerged: false,
     danger: null,
+    hostiles: [],
     packetSilentMs: 0,
   }
   const adapter = {
@@ -48,6 +49,7 @@ function fakeAdapter() {
       packetSilentMs: state.packetSilentMs,
       inventoryCount: 0,
       nearby: {},
+      nearbyHostiles: state.hostiles ?? [],
     }),
     chat: async (text) => { state.chats.push(text) },
     inspect: async (kind) => ({ text: `fake:${kind}` }),
@@ -703,5 +705,84 @@ test('body：eyesSnapshot 结构化快照（零依赖；暂停/离线也能出�
 test('body：eyesScreenshot 在无截图能力时给可读 501（不崩）', async () => {
   const { body } = await startedBody({ watchdogMs: 60_000 })
   await assert.rejects(() => body.eyesScreenshot({ kind: 'test' }), /未配置截图能力|501/)
+  await body.stop()
+})
+
+
+test('body：未暂停时自动躲避（hostile 近身 → 有界 emergency，不打断任务，有冷却）', async () => {
+  const adapter = fakeAdapter()
+  let clock = 1_000_000
+  const { body } = await startedBody({
+    adapter, now: () => clock, watchdogMs: 60_000,
+    autoDefense: true, defenseCooldownMs: 5000, defenseMaxPerMinute: 3, defenseThreatDistance: 6,
+  })
+  adapter.state.hostiles = [{ name: 'zombie', distance: 4, position: { x: 5, y: 64, z: 1 } }]
+  body.watchdogTick(clock)
+  await waitFor(() => adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length >= 1, 1500, 'auto-defense emergency')
+  const st = body.status()
+  assert.equal(st.safety.autoDefense.enabled, true)
+  assert.equal(st.safety.autoDefense.count, 1)
+  assert.equal(st.safety.autoDefense.lastReason, 'threat-near')
+  assert.ok(body.eventsSince(0).events.some((event) => event.type === 'auto_defense'))
+  // 冷却内再来一次：不应重复 emergency
+  adapter.state.hostiles = [{ name: 'zombie', distance: 3, position: { x: 5, y: 64, z: 1 } }]
+  body.watchdogTick(clock + 1000)
+  await sleep(100)
+  assert.equal(adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length, 1)
+  // 冷却过后可再次规避
+  body.watchdogTick(clock + 6000)
+  await waitFor(() => adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length >= 2, 1500, 'second auto-defense')
+  assert.ok(body.status().safety.autoDefense.count >= 2)
+  await body.stop()
+})
+
+test('body：贴脸苦力怕/残血时自动躲避升级为安全暂停（reflex 接管）', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000, lowHealth: 10 })
+  adapter.state.hostiles = [{ name: 'creeper', distance: 3, position: { x: 2, y: 64, z: 1 } }]
+  body.watchdogTick(1_000_000)
+  assert.equal(body.status().paused, true)
+  assert.equal(body.status().pausedReason, 'threat')
+  adapter.state.hostiles = []
+  adapter.state.health = 6
+  const body2 = await startedBody({ adapter: fakeAdapter(), watchdogMs: 60_000, lowHealth: 10 })
+  body2.adapter.state.hostiles = [{ name: 'zombie', distance: 5 }]
+  body2.adapter.state.health = 6
+  body2.body.watchdogTick(1_000_000)
+  assert.equal(body2.body.status().paused, true)
+  await body2.body.stop()
+  await body.stop()
+})
+
+test('body：暂停时由 reflex 处理威胁（不重复跑 autoDefense），战斗任务运行时不抢自动躲避', async () => {
+  const adapter = fakeAdapter()
+  let clock = 2_000_000
+  const { body } = await startedBody({ adapter, now: () => clock, watchdogMs: 60_000 })
+  body.safetyStop('manual')
+  adapter.state.hostiles = [{ name: 'zombie', distance: 5 }]
+  body.watchdogTick(clock)
+  await waitFor(() => body.status().safety.reflex.count >= 1, 1500, 'paused reflex threat')
+  assert.equal(body.status().safety.lastReflex.reason, 'threat-near')
+  assert.equal(body.status().safety.autoDefense.count, 0)
+  await body.stop()
+
+  const adapter2 = fakeAdapter()
+  const second = await startedBody({ adapter: adapter2, watchdogMs: 60_000 })
+  const task = second.body.createTask({ kind: 'hunt', params: { hang: true } })
+  await waitFor(() => second.body.getTask(task.id)?.state === 'running', 2000, 'hunt running')
+  adapter2.state.hostiles = [{ name: 'zombie', distance: 4 }]
+  second.body.watchdogTick(3_000_000)
+  await sleep(100)
+  assert.equal(adapter2.state.emergencies.filter((entry) => entry === 'auto-defense').length, 0)
+  await second.body.stop()
+})
+
+test('body：hunt 任务被接受（KINDS）并走 adapter runTask', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  const task = body.createTask({ kind: 'hunt', params: { target: 'nearest_hostile', maxDurationMs: 5000 } })
+  assert.equal(task.kind, 'hunt')
+  await waitFor(() => body.getTask(task.id)?.state === 'done', 2000, 'hunt done')
+  assert.equal(adapter.state.runTaskCalls.at(-1).kind, 'hunt')
   await body.stop()
 })

@@ -1,0 +1,126 @@
+# MC 战斗 / 自动躲避（MC-COMBAT）
+
+> 用户反馈（2026-11-06）：“她无法杀死任何生物” + “实测完全没有遇到危险生物时的自动躲避”。本文定义战斗任务与自动躲避语义，并给出 E2 里为什么没躲避的证据。
+
+## 0. 结论（TL;DR）
+
+- **之前的问题不是“反射坏了”，而是“没有主动敌对检测/没有战斗能力”**：body 的 watchdog 只在**低血/危险方块/低氧**时触发 `safetyStop`→`emergency`，暂停期 `reflex` 才会检测附近敌对；**未暂停时没有任何“敌对近身就规避”的 watchdog 路径**，也没有追杀/防守任务。E2 证据见 §4。
+- 本次新增：
+  1. **战斗任务** `task kind: hunt|defend|flee|guard`（可取消、有 progress、危机自动中断保命）；
+  2. **自动躲避** `checkHostiles`（未暂停也生效；敌对近身→有界 `emergency`；贴脸苦力怕/残血→升级为安全暂停 + alarm）；
+  3. 战斗/躲避的纯逻辑（`src/combat.mjs`）+ 单测；mc-link 侧工具/技能由 mc-link 接。
+- **真服战斗验证待 E2 结束**（不在 54838 上测）：起独立 dev 服 + summon 怪 → 验证 hunt 一只怪、苦力怕接近时 flee。
+
+## 1. 战斗任务（body task kind）
+
+| 模式 | 语义 | 成功判据 | 失败码 |
+|---|---|---|---|
+| `hunt` | 追最近敌对（或指定 target）直到击杀 | 目标实体消失且攻击次数≥1 | `no-target` / `target-lost` / `timeout` / `aborted-danger` |
+| `defend` | 在半径内清怪；没怪时原地扫描到 duration | duration 结束（无怪）或击杀 | 同上 |
+| `guard` | 守点：怪进入半径就打，不追远 | duration 结束（可攻击不中断打断） | `no-target`? guard 不因没怪失败；`timeout` 只在 duration 结束（按成功） |
+| `flee` | 远离最近威胁到安全距离 | 威胁距离 ≥ safeDistance 或附近无威胁 | `cornered`（被卡住）/`timeout`/`aborted-danger` |
+
+### 参数（均可选）
+
+```json
+{
+  "target": "nearest_hostile | zombie | skeleton | creeper | …",
+  "radius": 16,             // 搜索半径（4–32）
+  "attackRange": 3,         // 2–4
+  "lostTargetMs": 10000,    // 目标消失多久算丢（1–60s）
+  "maxDurationMs": 60000,   // 5–300s（guard 默认 120s，flee 30s）
+  "lowHealth": 10,          // ≤ 此血自动中断保命
+  "maxHostiles": 3,         // 附近敌数 ≥ 此值自动中断
+  "creeperDistance": 5,     // 苦力怕 ≤ 此距离自动中断
+  "safeDistance": 24,       // flee 的安全距离（8–48）
+  "autoTool": true          // 自动换武器（剑>斧，按材质等级）/盾（off-hand）
+}
+```
+
+### progress / 结果 / 事件
+
+- progress：`{mode, state:'acquired|chase|attack|flee|scanning', target, targetHealth, distance, attacks, health, hostiles, durationMs}`。
+- done result：`{mode, killed, target, attacks, durationMs}`（flee：`{fled, reason:'safe'|'no-threat', distance}`；guard/defend：`{attacks, reason:'duration'}`）。
+- 事件：`combat_abort {mode,target,reason,hostiles,health}`、`combat_done {...}`。
+- 取消：任务级 cancel（body 状态机已有）；低血/多敌/苦力怕近身由任务自己 `abort` 并先跑一次 `emergency`。
+
+### 危机中断优先级
+
+`low-health` > `creeper-near` > `too-many`。中断时：`combat_abort` 事件 → `emergency('combat-<reason>')`（有界保命）→ `task_failed('combat: <reason>')`，附 `suggestion`（先吃/躲/垫高/改用 flee）。**hunt 不会硬拼到死**。
+
+## 2. 自动躲避（body watchdog，未暂停也生效）
+
+- 每个 watchdog tick（默认 2s）调 `checkHostiles(status)`：
+  - 来源：`adapter.status().nearbyHostiles`（zombie/skeleton/creeper/spider/witch/phantom/slime/… 等，半径 8）。
+  - 评估（`threatAssessment`）：
+    - 苦力怕 ≤ `defenseCreeperDistance`（默认 6）→ `creeper-near`（critical）
+    - 任一敌对 ≤ `defenseThreatDistance`（默认 6）→ `threat-near`
+    - 该范围内敌数 ≥ `defenseMaxHostiles`（默认 3）→ `too-many`
+    - 血量 ≤ `lowHealth`（默认 10）→ `low-health`
+  - 行为：
+    - **critical（苦力怕贴脸 ≤4 或残血）** → `safetyStop('threat')`：暂停 + alarm 穿透通知 + reflex 保命（之后由 reflex 持续处理）；
+    - **非 critical** → `runAutoDefense`：有界调用 `adapter.emergency('auto-defense')`（吃/后退/逃离威胁/回安全点），**不打断当前任务**；事件 `auto_defense {reason,assessment,action,durationMs}`。
+  - 限频：`defenseCooldownMs=8s`、`defenseMaxPerMinute=3`；被限频记 `defense_suppressed`。
+- 暂停期间：`checkReflex`（已有）检测 `nearbyHostiles` 并调用 `emergency`（reason `threat-near`），不重复跑 autoDefense。
+- 战斗任务运行中：跳过 autoDefense（任务自己负责危机中断）。
+- `status.safety.autoDefense` / `lastDefense` 暴露开关、次数、最近一次动作；结构化快照也带。
+
+## 3. 配置（body）
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `autoDefense` | `true` | 关掉就只剩暂停期 reflex |
+| `defenseThreatDistance` | 6 | 敌对近身阈值 |
+| `defenseCreeperDistance` | 6 | 苦力怕阈值（critical 判定用更小 4） |
+| `defenseMaxHostiles` | 3 | 多敌阈值 |
+| `defenseCooldownMs` | 8000 | 两次自动躲避最小间隔 |
+| `defenseMaxPerMinute` | 3 | 每分钟上限 |
+| `reflex*` | 见暂停语义 | 暂停期反射（低血/威胁/危险方块/低氧） |
+
+## 4. E2 证据：为什么 12+ 次死亡没有躲避
+
+E2 run：`.state/lab/e2-20261106-smoke`（phase=stopping 时读取；13 death）。
+
+- body 事件计数（body.jsonl）：`safety_stop 84`（low-health 53、death 13、leave 6、low-oxygen 5、disconnect 2、health-drop 5）、`emergency 76`（low-health 62、threat-near **4**、low-oxygen 5、leave 2、health-drop 3）、`reflex 35`（low-health 29、threat-near **4**、low-oxygen 2）、`death 13`、`alarm_suppressed 664`。
+- **没有 `auto_defense`/主动 threat watchdog**（此前不存在该路径）。
+- 最后一次死亡前后（body.jsonl）：
+  - `health 1.47` → 约 3s 后 `health 0` → `death @ 32.9,68,-43`；
+  - 死亡前后只有 `health`/`alarm_suppressed`（低血告警 15s 去重）事件；**`emergency threat-near` 与 `reflex threat-near` 出现在死亡之后**（phantom 5.6m）。
+- 结论：
+  1. **未暂停时没有敌对检测**：只有低血才 `safetyStop`→`emergency`，那时已来不及；
+  2. **暂停期 reflex 有 threat-near**（4 次），但只在被打到低血/暂停后才触发；一次有界 emergency 后任务/身体恢复，不会持续逃离/反击；
+  3. **没有战斗能力**：无法主动清除威胁，creeper 近身也无法处理；
+  4. alarm 去重（15s）会让重复低血告警合并（设计如此，不是根因；根因是检测缺失/太晚）。
+- 修复后：同样的“怪靠近”会先触发 `auto_defense`（远早于低血）；贴脸苦力怕直接 safetyStop+alarm+reflex；模型可下 `hunt/flee` 任务主动处理。
+
+## 5. 失败码（task_failed.error）
+
+| 码 | 含义 | 下一步 |
+|---|---|---|
+| `combat: no-target` | 半径内没目标（15s） | 换 target/换地方/scan |
+| `combat: target-lost` | 目标消失超过 lostTargetMs 且未攻击 | 重新 hunt 或 scan |
+| `combat: aborted-danger` | 低血/苦力怕/多敌 | 已自动保命；先补血/换 flee/清落单 |
+| `combat: timeout` | duration 到没打死 | 换武器/找落单/补给 |
+| `flee: cornered` | 被地形/围住逃不掉 | 垫高/挖坑/先清路 |
+| `flee: timeout` | 没跑到 safeDistance | 继续跑/换方向 |
+
+## 6. 验收标准
+
+1. **单测**（已过）：敌对识别/威胁评估/中断判据/武器选择；body auto-defense 触发、冷却、暂停时走 reflex、战斗任务不抢自动躲避、hunt KINDS 接受。
+2. **真服（E2 结束后独立 dev 服）**：
+   - 下 `hunt {target:'nearest_hostile'}`：追到并击杀一只怪；progress 有目标/距离/攻击数；cancel 能中断；
+   - 故意低血/引 3 只怪/苦力怕近身：任务 `aborted-danger` 且先做 emergency；
+   - 不放任务、站怪旁：未暂停时出现 `auto_defense` 且位置明显远离威胁；苦力怕贴脸 → `safety_stop(reason=threat)` + alarm；
+   - 暂停时敌对近身：reflex `threat-near` 触发（E2 已证 4 次）；
+   - 0 新增“站着被打到死且无任何 auto_defense/reflex”的场景。
+3. **模型侧**：mc-link 暴露 `mcb_combat`/`mcb_attack`，`mcb_status` 显示敌对列表；skills 写“打架/逃跑/中断”。
+4. **风控**：自动躲避不连续追击/不生成新目标；限频 ≤3/min；不打断普通任务除非 critical；暂停语义（alarm 穿透）不变。
+
+## 7. 状态
+
+- [x] `src/combat.mjs` 纯逻辑 + 单测
+- [x] adapter `hunt/defend/flee/guard` 实现（剑/斧/盾/吃、追击、危机中断、progress、cancel）
+- [x] body `checkHostiles` 自动躲避 + critical 升级 + 限频 + status/快照
+- [x] 单测（65/65 mc-body 绿）
+- [ ] 真服战斗验证（E2 结束后独立 dev 服；需 summon 怪/夜晚/苦力怕场景）
+- [ ] mc-link 工具 `mcb_combat`/`mcb_attack`、`mcb_status` 敌对列表、`skills/combat.md` 注册
