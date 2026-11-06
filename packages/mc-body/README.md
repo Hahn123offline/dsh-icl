@@ -130,3 +130,5 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 
 - **alarm 标记三层**（给 mc-link/time 任一层识别，避免只透传一层就漏）：事件对象顶层 `priority:"alarm"`+`pierce:true`、`data.priority/pierce`、`data.meta.priority/pierce`；覆盖 ALARM 类型与危险 watchdog（`watchdog` + severity=danger：low-health/danger-block/low-oxygen/stuck/health-drop/connection-stale）。`status.safety.alarms{delivered,suppressed,redelivered,pending}` 口径：**body suppressed>0 是 body 内部 15s 去重/待补投，不代表 time/mc-link 漏收**。
 - 字段名稳定不改：`pausedReason:"user-stop"` ↔ time `pausedMode.source/reason`；`safety.reflex/lastReflex`、`playable`、`spawnLog` 只读对齐。
+
+- **pausedReason 规范值**：`mcb_stop` 不管调用方传 `reason:"mcb_stop"|"manual"|"api"|"stop"`，body 一律把 `pausedReason` 置为 **`user-stop`**（便于与 time `pausedMode.source/reason` 对账），原始原因保留在 `requestedReason` / `safety.requestedReason`。真服 smoke（54839，`.state/lab/mc-body-soak/pause-smoke/`）已验证：stop 回执任务/身体分开、`safety_stop` 事件顶层+data+meta 三层 alarm/pierce、暂停中 stop 幂等/查询可用/写动作 409、resume 后新任务 done（net 3）。
