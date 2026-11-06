@@ -149,5 +149,11 @@
 产品 preset 未挂载项必须是最小的、写进文档的待批准白名单）。
 
 **cache 红线**：album 只新增工具 schema，不注册任何 `prompt.section`/facts 上下文 → 静态 system 与 `icl:facts` 布局零变化；
-`toolsHash/toolsChars` 会变、工具数 34→41 属预期（cache 下次 sanctioned run 记新指纹；历史 34 指纹不回改）。
+`toolsHash/toolsChars` 会变、工具数 34→41 属预期（历史 34 指纹不回改）。
+
+**实测基线（cache，master `c7b590d`，run `cache-layout-album`，cloud 5 轮）**：
+tools **41 / 23,286 字符 / hash `6a5eee138aab`**（旧 34 / 19,760 / `38dfbee1cd9b`）；7 个 `album_*` 全在，第 2 轮模型实际调用了 `album_list`；
+system 1 append/0 replace、2296 字符/5764 字节（与上轮 2300 差 4 字符 = run 目录名长度，cwd 在 system 里，非布局漂移）；
+`systemHasDynamicFacts=false`、facts 1 快照/5 轮、sections 含 `icl:facts`、`image/offload=0`。
+指纹演进与复核记录见 `docs/CACHE-NIGHT-2026-11-06.md §9.1/§9.2`（历史不回改）。
 
