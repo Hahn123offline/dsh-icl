@@ -1,3 +1,4 @@
+
 # E2 — 24h 半生产长测 harness 设计（wt/mc-lab）
 
 > 状态：**设计 + 实现就绪，未启动**。启动前必须走 §2 的 gate（先通知用户/lead 安排）。
@@ -156,8 +157,6 @@ node tools/mc-quality.mjs --run e2-<date> --interval 60
 - 长程任务如何分解与恢复（APT）→ 映射到 goal/时间安排/记忆；
 - agent 架构如何避免工具循环（Mindcraft）→ 重复熔断/冷却。
 
----
-
 
 # E2-HARNESS §10 补充稿：MC 长跑检测机制（mc-body 提案）
 
@@ -165,14 +164,14 @@ node tools/mc-quality.mjs --run e2-<date> --interval 60
 > 定位：mc-lab 已在 [`E2-HARNESS.md §10`](../../mc-lab/docs/E2-HARNESS.md) 落了 10.1–10.3 的初版；本稿是 **mc-body 视角的可执行增强版**，供 lead/mc-lab 合入/替换原 §10。冻结依据见 mc-lab [`MC-FREEZE-2026-11-06.md`](../../mc-lab/docs/MC-FREEZE-2026-11-06.md)，证据见本仓 [`MC-LOCAL3-FORENSICS.md`](MC-LOCAL3-FORENSICS.md)、研究见 [`MC-RESEARCH.md`](MC-RESEARCH.md)。
 > 原则：**先验收指标，再谈工具**；不新增 MC 工具/宏，不把“跑得更久”当目标。
 
-## 10.0 核心判断
+## 11.0 核心判断
 
 local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/会记住”。它只能放大三个问题——材料失败循环（shelter 92 次尝试/90 败/0 home）、重复聊天（49+33 次同句）、寻路/长任务在坏状态下继续。恢复 MC 前，必须先有**机器可判的验收 + 可回放的分段检测**；否则只是把同样失败跑更久。
 
 **检测对象**：一次 run 的“能力证据包”，不是“存活时长”。
 **验收单位**：一个**任务卡（scenario）** + 一段**可回放 checkpoint**，而不是一整段 24h 的自然语言早报。
 
-## 10.1 验收指标（先固定）
+## 11.1 验收指标（先固定）
 
 每条指标必须有：定义、数据源（事件/ledger/世界读取）、gate（PASS/FAIL）、采样窗口、是否可回放验证。**禁止用模型自述/聊天内容作为唯一证据**。
 
@@ -233,7 +232,7 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 | 回放素材 | 至少一段可回放的 scenario 记录（tool calls + 预期事件） |
 | 截图 | 只作辅助；不作为结构验收唯一证据 |
 
-## 10.2 检测阶梯：L0 → L3（禁止直接 24h）
+## 11.2 检测阶梯：L0 → L3（禁止直接 24h）
 
 | 层级 | 内容 | 时长/成本 | 准入 |
 |---|---|---|---|
@@ -244,7 +243,7 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 
 > 结论：先做 **L1 回放**，再谈“24h”。local3 的 90min 数据应转成回放素材/期望事件，而不是直接再跑一次。
 
-## 10.3 回放 / checkpoint 设计（mc-body 只读参与）
+## 11.3 回放 / checkpoint 设计（mc-body 只读参与）
 
 **每次 L2 段必须落一个 checkpoint 包：**
 
@@ -271,7 +270,7 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 - checkpoint 必须包含 body commit + mc-link commit + world seed；否则不可比较；
 - 段间允许“从 checkpoint 继续”，但报告中保留“本段起点”。
 
-## 10.4 Gate/stop 规则
+## 11.4 Gate/stop 规则
 
 **启动 gate（沿用 mc-lab E2-GATE.json）**：`userNotifiedAt` + `phase` + lead approval 缺一不可。
 
@@ -291,7 +290,7 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 5. `path_stuck` 连续 ≥5 且无恢复动作；
 6. 任何“未注册技能/未验收 home”进入记忆。
 
-## 10.5 任务卡 suite（最小集）
+## 11.5 任务卡 suite（最小集）
 
 | 卡 | 输入/初始条件 | 机器验收 |
 |---|---|---|
@@ -303,7 +302,7 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 
 每张卡固定“初始 world/物品/时间/天气”；卡间可 checkpoint 复用，但报告分开。
 
-## 10.6 MC 恢复前的前置条件（P0 checklist）
+## 11.6 MC 恢复前的前置条件（P0 checklist）
 
 - [ ] §10.1 指标以机器可读形式落盘（segment-report schema）；
 - [ ] L1 回放至少覆盖 `shelter-3x3`、`collect-resource`、`auto_defense` 三条；
@@ -316,14 +315,14 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 
 **不满足以上任一项，不恢复 24h。**
 
-## 10.7 与原 §10 的关系
+## 11.7 与原 §10 的关系
 
 - 原 mc-lab §10.1（验收清单）保留为“人类可读摘要”；
 - 本稿把清单**变成可执行 gate/scorecard/schema**，并补 L0–L3 回放/checkpoint/stop 设计；
 - 原 §10.2 的 6 条机制（重复熔断/聊天去重/材料诊断/事件驱动/验收驱动/研究计划）作为实现输入，不重复列；
 - 原 §10.3 研究问题由 [`MC-RESEARCH.md`](MC-RESEARCH.md) 回答（Voyager 技能库、MineAnyBuild 验收、APT 蓝图、Mindcraft/Cradle 架构）。
 
-## 10.8 开放问题
+## 11.8 开放问题
 
 1. 回放器用“fake adapter”还是“mc-body dry-run”：优先 fake adapter（不依赖 mineflayer）；
 2. checkpoint 的世界快照成本：区域快照 vs 全服备份，需 mc-lab 定；
