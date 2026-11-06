@@ -1,6 +1,6 @@
 # 插件
 
-> 读者：要加一个插件、或要判断某个插件能不能依赖的开发者 / 范围：`packages/plugins/*` 的 19 个插件、它们声明的 43 个工具与全部外部依赖 / 最后核对：2026-11-04
+> 读者：要加一个插件、或要判断某个插件能不能依赖的开发者 / 范围：`packages/plugins/*` 的 21 个插件、它们声明的 56 个工具与全部外部依赖 / 最后核对：2026-11-06（B 站 C 路线 + 通用视频插件落地后）
 
 本文是插件事实的唯一归属地：工具名、参数、`ctx.config` 键、成熟度、外部依赖只在这里写。服务契约见 [ARCHITECTURE.md](ARCHITECTURE.md)，记忆的数据形状与检索算法见 [MEMORY.md](MEMORY.md)。
 
@@ -28,11 +28,13 @@
 | `dsh-raw` | 130 | 1 | `raw_export` | 成熟 | DSH 会话原文索引与导出 |
 | `model-manager` | 83 | 0 | — | 可用待调 | 供应商 → 插槽绑定 |
 | `editor` | 71 | 3 | `read_file` `write_file` `list_dir` | 遗留 | 工作区文件读写，路径逃逸拦截 |
-| `bili` | 151 | 4 | `bili_search` `bili_watch` `bili_comments` `bili_frames` | 临时接缝 | B 站搜索 / 视频 / 评论 / 宫格图 |
+| `qq` | — | 2 | `qq_status` `qq_send` | 实验接缝 | 腾讯 QQ 连接器（OneBot）；入站只读、出站默认关 |
+| `bili` | 403（+`runtime` 180 / `login` 122） | 7 | `bili_search` `bili_watch` `bili_comments` `bili_feed` `bili_frames` `bili_login_start` `bili_login_poll` | 可用待调 | B 站只读接入（C 路线：repo 内 vendor + 只读白名单 + ICL stateDir 凭证） |
+| `video` | 377 | 6 | `video_probe` `video_open` `video_storyboard` `video_zoom` `video_locate` `video_frames` | 可用待调 | 通用视频浏览器（本地路径）：分镜/回看/定位/单帧，图进 DSH attachment |
 
-合计：**19 个插件 / 43 个工具**。manifest 的 `tools` 与 `ctx.tools.register` 的名字 **19/19 完全一致**，没有声明了不注册、也没有注册了不声明。
+合计：**21 个插件 / 56 个工具**。manifest 的 `tools` 与 `ctx.tools.register` 的名字逐个比对一致，没有声明了不注册、也没有注册了不声明（`qq` 随 master 合入，未参与本次逐行复核）。
 
-12 个插件有工具，7 个没有（`dream` `rhythm` `compaction` `persona` `model-manager` `eager-recall` `loop-probe`）——它们注册的是提示词段、上下文策略、插槽、信号监听或共享服务。
+14 个插件有工具，7 个没有（`dream` `rhythm` `compaction` `persona` `model-manager` `eager-recall` `loop-probe`）——它们注册的是提示词段、上下文策略、插槽、信号监听或共享服务。
 
 成熟度口径：`成熟` = 主路径可直接依赖；`可用待调` = 已知缺陷会改变正常使用下的输出；`临时接缝` = 依赖本机绝对路径或外部进程；`遗留` = 仓库内只有脚手架脚本装配。
 
@@ -173,10 +175,29 @@
 
 ### bili
 
-- **工具**：`bili_search`（必填 `keyword`；`num` 默认 8、`order` 默认 `totalrank`）；`bili_watch`（必填 `target`）；`bili_comments`（必填 `target`；`num` 默认 10）；`bili_frames`（必填 `target`；`from`、`to`、`cells` 默认 6，夹 1..16）→ `{text, imagePath}`，是唯一带非文本出口的工具。
-- **配置**：`maxChars`（`6000`）、`vision`（对象，原样透传给 `services.vision`）、`visionEnabled`（`false` 时跳过画面描述）。
-- **依赖**：`services.vision`（可选，缺了就不描述画面）、`execFile` / `execFileSync`、4 条绝对路径（§6.1）；manifest 无 `requires` 键。
-- **状态**：临时接缝 —— 换机器要重设 `BILI_PYTHON` `ICL_ROOT` `STORYBOARD_CLI` `BILI_DIR` 四条路径，否则 4 个工具全废；子进程分支零测试。工具的使用顺序（画面 → 字幕/信息 → 评论 → 记一句）写在 `prompts/live.md`，不是代码强制的。
+- **工具**（7 个，全部只读）：
+  - `bili_search`（必填 `keyword`；`num` 默认 8、`order` 默认 `totalrank`）→ 清洗过的清单（空 `bvid` 卡片被丢掉）；
+  - `bili_watch`（必填 `target`：URL/BV）→ 标题/统计/简介/字幕全文；
+  - `bili_comments`（必填 `target`；`num` 默认 10）→ 热门评论 + 前 2 条楼中楼；
+  - `bili_feed`（`kind` = `hot`|`rank`|`weekly`|`buzz`，`num` 默认 10；`rank` 另收 `category`/`day`，`weekly` 收 `week`）→ 首页热门/排行榜/每周必看/热搜词；
+  - `bili_frames`（必填 `target`；`from`/`to`/`cells`）→ 宫格图 **作为 attachment** + 可引用清单；
+  - `bili_login_start` → 二维码 PNG（attachment）+ `key`；`bili_login_poll`（必填 `key`）→ 成功后原子写凭证。
+- **配置**：`stateDir`（由 `bootstrap.configFor('bili')` 注入 ICL 的 stateDir）、`maxChars`（`6000`）、`timeoutMs`（`90_000`），以及路径覆盖 `pythonPath` / `runnerPath` / `vendorDir` / `storyboardCli` / `legacyBiliDir` / `credentialFile`（测试用 `fetchImpl`）。
+- **依赖**：repo 内 `vendor/bilibili-mcp/`（MIT，见 `NOTICE.md` / `PATCHES.md`）、`tools/bili-run.py` 只读桥、`execFile`、storyboard CLI（仅 `bili_frames`）、Python venv（bilibili-api-python / aiohttp / mcp<2 / qrcode）。插件**不直接发 HTTP**：扫码登录走 host 的 `ctx.fetch`。
+- **状态**：可用待调 —— C 路线最小可跑已落地（2026-11-06）：repo 自持 vendor、只读白名单、凭证从旧家目录一次性迁移到 `<stateDir>/bili/`、热门/排行接出、错误归一化（`E_AUTH`/`E_RATE_LIMIT`/`E_NETWORK`/`E_TOOL`…）。已知待办：venv 仍默认用旧目录那份（迁移到 stateDir 属后续）；storyboard 的 cookies 到期时间独立于 B 站凭证（见 `docs/BILI-FEASIBILITY.md` §7.1）。
+
+### video
+
+- **工具**（6 个，全部本地路径、不出网）：
+  - `video_probe`（必填 `path`）→ 时长/分辨率/fps/音轨/字幕轨/大小；
+  - `video_open`（必填 `path`；`overview` 默认 true，`from`/`to`/`cells`）→ 目录：视频清单；文件：元数据 + 概览宫格图 + 清单；
+  - `video_storyboard`（必填 `path`；`from`/`to`/`cells`/`sheets`/`detail`/`textOnly`）→ 宫格图（最多 4 张）+ 可引用清单；
+  - `video_zoom`（必填 `path`+`from`+`to`；`cells`/`minGap`）→ 更少更大的格子（窗口 ≤180s）；
+  - `video_locate`（必填 `path`+`query`；`from`/`to`/`max`/`transcriptFile`）→ 命中格位/时间码/台词（不出图）；
+  - `video_frames`（必填 `path`；`times` 1–6 个秒数或 `at` 单个秒数）→ 单帧/多帧拼图。
+- **配置**：`stateDir`（`bootstrap.configFor('video')`）、`storyboardCli`、`ffmpeg`/`ffprobe`、`maxFileBytes`（默认 8 GiB）、`overviewSeconds`（240）、`maxTextChars`。
+- **依赖**：`dsh-video-storyboard` 的 `bin/storyboard.mjs`（分镜/切点/选帧/ASR/缓存）、ffmpeg/ffprobe；不依赖 network。图片经桥接层 `ctx.attachments.saveImage()` 进模型（与 qq 图片通道同一机制）。
+- **状态**：可用待调 —— 最小实现 + 契约测试已落地；详见 `docs/VIDEO-EYES.md`。已知缺口：MC 录屏落盘约定、album 索引、长片 `--batch` 暴露、无字幕视频的 ASR 配置入口。
 
 ## 6. 依赖与硬编码清单
 
@@ -184,28 +205,34 @@
 
 | 位置 | 值 | 可否覆盖 |
 |---|---|---|
-| `bili` 的 Python 解释器 | `C:\Users\ai_admin\.dsh\bili-duty\.venv\Scripts\python.exe` | `BILI_PYTHON` |
-| `bili` 的仓库根 | `C:/DSH/qwenstuff/icl` | `ICL_ROOT` |
-| `bili` 的 storyboard CLI | `C:\Users\ai_admin\.dsh\profiles\desktop\node_modules\dsh-video-storyboard\bin\storyboard.mjs` | `STORYBOARD_CLI` |
-| `bili` 的 bili-duty 目录 | `C:\Users\ai_admin\.dsh\bili-duty` | `BILI_DIR` |
+| `bili` 的 Python 解释器 | 默认 `C:\Users\ai_admin\.dsh\bili-duty\.venv\Scripts\python.exe` | `BILI_PYTHON` / 插件 config `pythonPath` |
+| `bili` 的只读桥 | 仓库内 `tools/bili-run.py` | `BILI_RUNNER` / `runnerPath` |
+| `bili` 的 vendored MCP | 仓库内 `packages/plugins/bili/vendor/bilibili-mcp/` | `BILI_VENDOR` / `vendorDir` |
+| `bili` 的旧家目录（仅一次性迁移凭证） | `C:\Users\ai_admin\.dsh\bili-duty` | `BILI_DIR` / `legacyBiliDir` |
+| `bili` / `video` 的 storyboard CLI | `C:\Users\ai_admin\.dsh\profiles\desktop\node_modules\dsh-video-storyboard\bin\storyboard.mjs` | `STORYBOARD_CLI` / `ICL_STORYBOARD_CLI` / 插件 config `storyboardCli` |
+| `video` 的 ffmpeg/ffprobe | `ffmpeg` / `ffprobe`（PATH） | `ICL_FFMPEG` / `ICL_FFPROBE` |
 | 人格卡（`config/icl.example.json:2`、`config/icl.local.json:2`） | `C:/DSH/qwenstuff/focus-core/大肥鱼-QQ人格卡.md` | 配置项本身 |
 | dsh-qq 记忆库（`tools/recall-bench.mjs:33`、`recall-diagnose.mjs:24`、`replay.mjs:38`） | `C:/DSH/qwenstuff/dsh-qq/state/memory.db` | ❌ 写死 |
 
 换一台机器会坏在哪：
 
-- **bili 的 3 个内容工具**（`bili_search` / `bili_watch` / `bili_comments`）依赖 `BILI_PYTHON` 与 `BILI_RUNNER`（默认派生自 `ICL_ROOT`）：解释器或桥接脚本不存在，`callTool` 返回 `{ok: false, error}`，工具回 `搜不动：…` / `打不开：…` / `读不到评论：…`。
-- **`bili_frames`** 单独依赖 `STORYBOARD_CLI` 与 `node`：CLI 不存在则回 `看不成画面：…`，与上面 3 个工具互不影响。
-- **人格卡**是唯一有正规配置出口的机器相关路径：改 `config/icl.*.json` 的 `persona` 即可，插件本身不读这个路径（`persona` 插件读的是 `card` 正文）。
+- **bili 的 5 个在线工具**（`bili_search` / `bili_watch` / `bili_comments` / `bili_feed` / `bili_frames`）走 `tools/bili-run.py` → `BILI_PYTHON` + `BILI_VENDOR`；缺任何一项时 `preflight` 会**逐条**说清缺哪个、怎么补（并明确"不是视频/网络的问题"）。
+- **`bili_frames`** 另需 `STORYBOARD_CLI` 与 `node`；`video_*` 另需 ffmpeg/ffprobe（`video_probe`/`video_frames`）与 `STORYBOARD_CLI`（`video_open`/`video_storyboard`/`video_zoom`/`video_locate`）。
+- **凭证**：bili 的 `<stateDir>/bili/bili_credential.json` 若缺失，会从旧家目录**复制一次**（只复制文件，不读内容）；源码里没有任何 cookie/token 字面量。
+- **人格卡**是唯一有正规配置出口的机器相关路径：改 `config/icl.*.json` 的 `persona` 即可（`persona` 插件读的是 `card` 正文）。
 - **三个脚手架脚本**（`recall-bench` / `recall-diagnose` / `replay`）指向 `dsh-qq` 的库，路径不可覆盖，换机后评测与回放无法复现。
 
 ### 6.2 子进程
 
 | 触发 | 命令 | 超时 / 缓冲 |
 |---|---|---|
-| `bili_search` / `bili_watch` / `bili_comments` | `execFile(python.exe, [tools/bili-run.py, <fn>, <json>])`，env 注入 `PYTHONIOENCODING=utf-8` 与 `BILI_DIR` | 60 000 ms / 4 MB |
-| `bili_frames` | `execFileSync(node, [storyboard.mjs, url, --cells, --out, --manifest, --allow-anonymous, --from, --to, --scan-height 240])` | 600 000 ms / 8 MB |
+| `bili_search` / `bili_watch` / `bili_comments` / `bili_feed` | `execFile(python, [tools/bili-run.py, <fn>, <json>])`，env 注入 `PYTHONIOENCODING=utf-8`、`BILI_CREDENTIAL`、`BILI_VENDOR`、`BILI_HOME` | 90 000 ms / 8 MB |
+| `bili_frames` | `execFile(node, [storyboard.mjs, url, --cells, --out, --manifest, --allow-anonymous, --from, --to, --scan-height 240, --text])` | 600 000 ms / 32 MB |
+| `video_storyboard` / `video_zoom` / `video_locate` / `video_open` | `execFile(node, [storyboard.mjs, path, --cells, --from, --to, --sheets, --pick, --burn, --min-gap, --transcript, --detail, --out, --manifest, --text])` | 900 000 ms / 64 MB |
+| `video_probe` | `execFile(ffprobe, [-v error -print_format json -show_format -show_streams path])` | 45 000 ms / 32 MB |
+| `video_frames` | `execFile(ffmpeg, [-ss t -i path -frames:v 1 …])`，多帧再拼一张 `tile` | 120 000 ms / 32 MB |
 
-宫格图写进 `os.tmpdir()/icl-board-*`，默认只扫前 240 秒；`packages/` 其余部分没有子进程。
+宫格图/帧图写进 `<stateDir>/video/work/` 或 `os.tmpdir()/icl-bili-board-*`（24h 清理）；图片在工具返回后才被桥读取，所以不会提前删。
 
 ### 6.3 端口与地址
 
@@ -226,19 +253,20 @@
 | `qwen35-9b` | 同上，`llama-swap-chat` 供应商 |
 | `embed-bge-m3`（dim 1024） | 同上，`bge-m3` 供应商；`memory` 的 `embed-text` 插槽要求 `requires.dim = 1024` |
 
-### 6.5 环境变量（23 个）
+### 6.5 环境变量（27 个）
 
 | 组 | 变量 | 产品路径是否读 |
 |---|---|---|
-| `ICL_*`（11） | `ICL_TOOL_TIME` `ICL_NO_LITERAL` `ICL_ROOT` `ICL_VISION_BASE` `ICL_VISION_MODEL` `ICL_TIME_STATE` `ICL_LLM_BASE` `ICL_LLM_MODEL` `ICL_EMBED_BASE` `ICL_EMBED_MODEL` `ICL_LEX_DEBUG` | 5 个：`ICL_TOOL_TIME`（`host.mjs:20`）、`ICL_NO_LITERAL`（`memory:11`）、`ICL_VISION_BASE` / `ICL_VISION_MODEL`（`vision.mjs:11-12`）、`ICL_ROOT`（`bili:12`） |
-| 接缝与凭据（6） | `BILI_PYTHON` `BILI_RUNNER` `BILI_DIR` `STORYBOARD_CLI` `DEEPSEEK_API_KEY` `DASHSCOPE_API_KEY` | 5 个：四条 `BILI_*`/`STORYBOARD_CLI` 在 `bili`，`DEEPSEEK_API_KEY` 经 `providers[].apiKeyEnv` 由 `model-manager` 读；`DASHSCOPE_API_KEY` 只在 `tools/marathon.mjs:59` |
+| `ICL_*`（11） | `ICL_TOOL_TIME` `ICL_NO_LITERAL` `ICL_ROOT` `ICL_VISION_BASE` `ICL_VISION_MODEL` `ICL_TIME_STATE` `ICL_LLM_BASE` `ICL_LLM_MODEL` `ICL_EMBED_BASE` `ICL_EMBED_MODEL` `ICL_LEX_DEBUG` | 4 个：`ICL_TOOL_TIME`（`host.mjs:20`）、`ICL_NO_LITERAL`（`memory:11`）、`ICL_VISION_BASE` / `ICL_VISION_MODEL`（`vision.mjs:11-12`）。`ICL_ROOT` 自 B 站 C 路线后**不再被产品路径读**（旧接缝用它找 `bili-run.py`） |
+| 接缝与凭据（7） | `BILI_PYTHON` `BILI_RUNNER` `BILI_VENDOR` `BILI_DIR` `STORYBOARD_CLI` `DEEPSEEK_API_KEY` `DASHSCOPE_API_KEY` | 5 个：`BILI_PYTHON`/`BILI_RUNNER`/`BILI_VENDOR` 在 `bili`（`BILI_DIR` 只用于旧凭证一次性迁移）、`STORYBOARD_CLI` 在 `bili`；`DEEPSEEK_API_KEY` 经 `providers[].apiKeyEnv` 由 `model-manager` 读；`DASHSCOPE_API_KEY` 只在 `tools/marathon.mjs:59` |
+| 视频（3） | `ICL_STORYBOARD_CLI` `ICL_FFMPEG` `ICL_FFPROBE` | 3 个，全在 `video`（`storyboardCli` / `ffmpeg` / `ffprobe` 的默认值） |
 | DSH 与系统（6） | `DSH_HOME` `DSH_LAUNCH_TOKEN` `DSH_BASE_URL` `DSH_AUTH_TOKEN` `USERPROFILE` `HOME` | 4 个：`DSH_HOME` / `DSH_LAUNCH_TOKEN`（`dsh-client.mjs:20,37`）、`USERPROFILE` / `HOME`（`dsh-raw:42`）；`DSH_BASE_URL` / `DSH_AUTH_TOKEN` 只在 `tools/dsh-session.mjs` |
 
-只在脚手架里读的 9 个：`ICL_TIME_STATE` `ICL_LLM_BASE` `ICL_LLM_MODEL` `ICL_EMBED_BASE` `ICL_EMBED_MODEL` `ICL_LEX_DEBUG` `DASHSCOPE_API_KEY` `DSH_BASE_URL` `DSH_AUTH_TOKEN`。`DEEPSEEK_API_KEY` 两处都读：产品侧经 `providers[].apiKeyEnv` 由 `model-manager` 取（`process.env[keyEnv]`），4 个评测脚本里另有直读。凭据只从环境变量来，没有从配置文件读密钥的分支。
+只在脚手架/历史里读的 11 个：`ICL_ROOT` `ICL_TIME_STATE` `ICL_LLM_BASE` `ICL_LLM_MODEL` `ICL_EMBED_BASE` `ICL_EMBED_MODEL` `ICL_LEX_DEBUG` `DASHSCOPE_API_KEY` `DSH_BASE_URL` `DSH_AUTH_TOKEN`（以及 `BILI_CREDENTIAL`/`BILI_HOME` 这两个由插件内部注入、不是用户配置面）。`DEEPSEEK_API_KEY` 两处都读：产品侧经 `providers[].apiKeyEnv` 由 `model-manager` 取（`process.env[keyEnv]`），4 个评测脚本里另有直读。凭据只从环境变量来，没有从配置文件读密钥的分支。
 
 ## 7. 哪些不是产品路径
 
-产品路径 = `packages/core/src/*`、`packages/plugins/*`（16 个）、`prompts/live.md`、`prompts/dream.md`、`config/icl.example.json`、`config/icl.local.json`。判定依据三条独立证据：在根 `package.json` 的 `workspaces` 内、走 `createHost` + `registerPlugin` + `enable` 的正常装配链、文件头注释自述的用途。
+产品路径 = `packages/core/src/*`、`packages/plugins/*`（21 个，含 `bili/vendor/*` 与 `video`）、`prompts/persona.md`、`prompts/sim.md`、`prompts/dream.md`、`config/icl.example.json`、`config/icl.local.json`。判定依据三条独立证据：在根 `package.json` 的 `workspaces` 内、走 `createHost` + `registerPlugin` + `enable` 的正常装配链、文件头注释自述的用途。
 
 | 路径 | 是什么 | 为什么不算产品 |
 |---|---|---|

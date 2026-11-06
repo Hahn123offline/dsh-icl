@@ -19,6 +19,22 @@ export const TEXT_OUTPUT_SCHEMA = Object.freeze({
   additionalProperties: false,
 })
 
+/**
+ * 带图片的工具结果：`{ text, images?: ImageAttachmentRef[] }`。
+ *
+ * 图片**不是**路径：路径在 execute 阶段已经被 `ctx.attachments.saveImage()` 换成
+ * 不可变引用（ref），这里只负责把它渲染成 DSH 的 image content block。
+ * `images` 可选：绝大多数 ICL 工具仍然只回文本。
+ */
+export const IMAGE_OUTPUT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    text: { type: 'string', required: true },
+    images: { type: 'array', items: { type: 'json' } },
+  },
+})
+
 /** 规范化 ICL 的 JSON Schema 参数：对象必须显式 additionalProperties。 */
 export function normalizeParameters(parameters) {
   const schema = parameters && typeof parameters === 'object' ? parameters : { type: 'object' }
@@ -56,19 +72,47 @@ function normalizeValueSchema(value) {
   return { ...value }
 }
 
-/** ICL 插件执行结果 → DSH 规范值。字符串与 { text } 都接受。 */
-export function normalizeToolResult(result) {
+/**
+ * ICL 插件执行结果 → DSH 规范值。字符串与 { text } 都接受。
+ *
+ * 图片：插件可以回 `{ text, images: [绝对路径] }`（或旧的单个 `imagePath`）。
+ * 给了 `saveImage` 时，路径会被提交成 attachment 引用，模型真的能看到图；
+ * 没给（测试/老宿主）时退化成文本提示——绝不假装图已经在上下文里。
+ * @param {unknown} result
+ * @param {{ saveImage?: ((file: string) => Promise<unknown>) | null }} [options]
+ */
+export async function normalizeToolResult(result, { saveImage = null } = {}) {
   if (result == null) return { text: '' }
   if (typeof result === 'string') return { text: result }
   if (typeof result !== 'object') return { text: String(result) }
   const text = typeof result.text === 'string' ? result.text : String(result.text ?? '')
-  // 图片暂时不进 DSH 附件（需要 attachment 服务）；至少别让路径信息丢掉。
-  const suffix = typeof result.imagePath === 'string' && result.imagePath ? `\n（图片文件：${result.imagePath}）` : ''
-  return { text: text + suffix }
+  const listed = Array.isArray(result.images)
+    ? result.images.filter((file) => typeof file === 'string' && file)
+    : []
+  if (typeof result.imagePath === 'string' && result.imagePath) listed.push(result.imagePath)
+  if (!listed.length) return { text }
+
+  if (typeof saveImage === 'function') {
+    const images = []
+    for (const file of listed) {
+      try {
+        const ref = await saveImage(file)
+        if (ref) images.push(ref)
+      } catch { /* 单张失败不拖垮整次调用，下面会退回文本提示 */ }
+    }
+    if (images.length) return { text, images }
+  }
+  // 没有附件服务：至少别让路径信息丢掉。
+  const suffix = listed.map((file) => `（图片文件：${file}）`).join('\n')
+  return { text: [text, suffix].filter(Boolean).join('\n') }
 }
 
-/** 把 ICL 工具定义翻成 DSH 的 ToolDefinition（含必填 output）。 */
-export function toDshToolDefinition(definition, { execute = null } = {}) {
+/**
+ * 把 ICL 工具定义翻成 DSH 的 ToolDefinition（含必填 output）。
+ * @param {object} definition
+ * @param {{ execute?: Function | null, saveImage?: ((file: string) => Promise<unknown>) | null }} [options]
+ */
+export function toDshToolDefinition(definition, { execute = null, saveImage = null } = {}) {
   const name = String(definition?.name ?? '')
   if (!name) throw new Error('DSH 工具缺少 name')
   if (typeof definition.execute !== 'function' && typeof execute !== 'function') {
@@ -79,12 +123,17 @@ export function toDshToolDefinition(definition, { execute = null } = {}) {
     description: String(definition.description ?? definition.summary ?? ''),
     parameters: normalizeParameters(definition.parameters),
     output: {
-      schema: TEXT_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+      schema: IMAGE_OUTPUT_SCHEMA,
+      render: (_args, value) => {
+        const images = Array.isArray(value?.images) ? value.images : []
+        const blocks = images.map((attachment) => ({ type: 'image', attachment }))
+        blocks.push({ type: 'text', text: String(value?.text ?? '') })
+        return blocks
+      },
     },
     async execute(args, exec) {
       const out = await (execute ?? definition.execute)(args, exec)
-      return normalizeToolResult(out)
+      return normalizeToolResult(out, { saveImage })
     },
   }
 }

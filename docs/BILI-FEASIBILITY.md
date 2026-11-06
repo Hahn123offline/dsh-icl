@@ -422,6 +422,43 @@ DSH / ICL 会话
 
 ---
 
+## 11. 实施状态（2026-11-06：C 路线最小可跑已落地）
+
+用户 2026-11-06 批准 C 路线。本节记录**已经做了什么**（与 §8 草案对应），别把"计划"当成"现状"。
+
+**已落地**
+
+| 项 | 落点 | 验证 |
+|---|---|---|
+| vendored MCP 收编（MIT + NOTICE + PATCHES） | `packages/plugins/bili/vendor/bilibili-mcp/`（含 `LICENSE`、`NOTICE.md`、`PATCHES.md`、`mcp_server.py`、`requirements.txt`） | `npm test` 的 bili 单测 + `bili-eval` 真网络 |
+| 只读白名单 | `tools/bili-run.py` 的 `ALLOWED`（8 个读函数）；写函数（reply/send/upload/dynamic/opus/favorite/login…）一律 `E_READ_ONLY` | `packages/plugins/bili/test/bili.test.mjs` 用真 Python 跑 `--list` 与拒绝路径 |
+| 凭证归 ICL | `<stateDir>/bili/bili_credential.json`，首次从旧家目录**复制一次**（只复制文件、不读内容） | 单测 `凭证迁移`；`bili-eval` 在临时 stateDir 实测 |
+| `bili_feed`（热门/排行/每周/热词） | `packages/plugins/bili/src/index.mjs`，接 vendor 的 `bili_hot_videos`/`bili_rank`/`bili_weekly_hot`/`bili_hot_buzzwords` | 单测 + 真网络（1.4 s 拿到 3 条热门） |
+| 扫码登录/续期 | `src/login.mjs`（passport QR + Set-Cookie + 原子写）；走 host 的 `ctx.fetch`（插件不直接发 HTTP） | 单测用假 fetch 验证 key/poll/写盘/到期解析 |
+| 错误归一化 | `src/runtime.mjs`：`E_AUTH` / `E_RATE_LIMIT` / `E_TIMEOUT` / `E_NETWORK` / `E_TOOL` / `E_PREFLIGHT` / `E_EMPTY`，每种带"下一步" | 单测 + `bili-eval` |
+| `bili_frames` 图进模型 | 返回 `{text, images:[png]}`，由 `dsh-icl` 桥接层 `ctx.attachments.saveImage()` 变成 image block | 单测（假 CLI）+ 桥接层单测 |
+| 搜索空 bvid 清洗 | `formatSearch` 丢掉无 `bvid` 卡片 | 单测 |
+| 通用视频浏览器（另开） | `packages/plugins/video` + `docs/VIDEO-EYES.md`；本地路径/QQ 落盘/MC 录屏都走 `video_open` | `packages/plugins/video/test` |
+
+**还没做（顺序即优先级）**
+
+1. **venv 迁到 ICL stateDir**：现在默认仍指向旧插件的 `.venv`（`BILI_PYTHON` 可覆盖），代码/凭证已自持，解释器还没自持。
+2. **限速/退避**：目前只做错误分类，没有自动重试。夜间连续 10–20 次调用前建议补 ≥1 req/s + 指数退避（`-412`/`-509`）。
+3. **storyboard cookies 续期**：`~/.dsh/video.json` 的 cookie 2026-12-01 到期（§7.1.1），到期后切帧匿名降级（480P、无报错）——需要在 12-01 前重新导出，或接受降级并在 `bili_frames` 里标记 degraded。
+4. **ASR 配置入口**：无字幕视频的本地转写还没接到 ICL（通用视频插件的 `video_locate` 同样依赖字幕轨/`transcriptFile`）。
+5. **desktop profile 旧注释**：按 lead 判断不动用户 profile；需要用户自己决定是否清理。
+6. **DSH 桌面加载新版本**：本 worktree 的改动要合并/安装并重启 desktop 才会在真实 ICL 会话里生效（本轮没重启）。
+
+**证据命令**
+
+```bash
+npm test                 # 579 pass（含 bili 10 + video 4 + 桥接图片 2）
+node tools/bili-eval.mjs --credential   # 13/13；只读；不打印 cookie/token
+node tools/bili-eval.mjs --offline      # 路径/工具面/到期时间，不联网
+```
+
+---
+
 ## 附录 A：证据索引（文件:行）
 
 **旧插件 `dsh-bili-scroll`**（`%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-bili-scroll`）：

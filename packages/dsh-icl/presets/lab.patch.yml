@@ -60,6 +60,7 @@
                 - dream
                 - editor
                 - bili
+                - video
                 - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'

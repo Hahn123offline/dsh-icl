@@ -245,8 +245,8 @@ test('editor：写保护 ICL 自己的状态文件（记忆/日程/focus/原文�
   assert.equal(peek.text, 'FAKE-DB', '读不受限')
 })
 
-test('bili：缺依赖时 4 个工具给可操作的错误，frames 不再承诺"图已发给你"', async () => {
-  const saved = { BILI_PYTHON: process.env.BILI_PYTHON, BILI_RUNNER: process.env.BILI_RUNNER, BILI_DIR: process.env.BILI_DIR, STORYBOARD_CLI: process.env.STORYBOARD_CLI, ICL_ROOT: process.env.ICL_ROOT }
+test('bili：缺依赖时给可操作的错误；frames 的图现在是作为附件返回的', async () => {
+  const saved = { BILI_PYTHON: process.env.BILI_PYTHON, BILI_RUNNER: process.env.BILI_RUNNER, BILI_DIR: process.env.BILI_DIR, STORYBOARD_CLI: process.env.STORYBOARD_CLI }
   process.env.BILI_PYTHON = path.join(tempRoot('nopy'), 'python.exe')
   process.env.BILI_RUNNER = path.join(tempRoot('norun'), 'bili-run.py')
   process.env.BILI_DIR = path.join(tempRoot('nodir'), 'bili-duty')
@@ -259,11 +259,10 @@ test('bili：缺依赖时 4 个工具给可操作的错误，frames 不再承诺
     const tools = new Map(host.services.tools.list().map((d) => [d.name, d]))
     const search = await tools.get('bili_search').execute({ keyword: '测试' })
     assert.match(search.text, /BILI_PYTHON/, `应指出去哪配 python：${search.text}`)
-    assert.match(search.text, /不是视频或网络的问题/)
+    assert.match(search.text, /不是视频\/网络的问题/)
     const frames = await tools.get('bili_frames').execute({ target: 'BV1xx411c7mD' })
     assert.match(frames.text, /STORYBOARD_CLI/, `应指出 storyboard CLI 缺：${frames.text}`)
-    assert.doesNotMatch(tools.get('bili_frames').summary, /sent to you as an image/)
-    assert.match(tools.get('bili_frames').summary, /NOT attached/)
+    assert.match(tools.get('bili_frames').summary, /image is attached/)
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]

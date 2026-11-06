@@ -46,9 +46,45 @@ function sameTool(prev, def) {
     && JSON.stringify(prev.def?.parameters ?? {}) === JSON.stringify(def.parameters ?? {})
 }
 
+/** 图片扩展名 → attachment 接受的 mediaType（只认 DSH 支持的四类）。 */
+function imageMediaType(file) {
+  const ext = path.extname(String(file ?? '')).toLowerCase()
+  if (ext === '.png') return 'image/png'
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return null
+}
+
+/**
+ * 拿宿主附件服务（可选）。没有它时工具结果退回"路径文本"，绝不假装图已在上下文里。
+ * 不用 `inject` 强制依赖：headless/测试环境未必装了 attachment-local。
+ */
+function resolveAttachments(ctx) {
+  try {
+    if (ctx?.attachments && typeof ctx.attachments.saveImage === 'function') return ctx.attachments
+    const viaGet = typeof ctx?.get === 'function' ? ctx.get('attachments') : null
+    if (viaGet && typeof viaGet.saveImage === 'function') return viaGet
+  } catch { /* 没有这个服务 */ }
+  return null
+}
+
+/** 把本地图片文件提交成 attachment 引用；失败交给上层退回文本。 */
+function makeSaveImage(attachments) {
+  if (!attachments) return null
+  return async (file) => {
+    const mediaType = imageMediaType(file)
+    if (!mediaType) throw new Error(`不支持的图片扩展名：${path.extname(file) || '(无)'}`)
+    const data = fs.readFileSync(file)
+    return attachments.saveImage({ data, mediaType, name: path.basename(file) })
+  }
+}
+
 export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   if (!ctx?.tools || typeof ctx.tools.register !== 'function') throw new Error('DSH 桥需要 ctx.tools.register')
   if (!host?.services) throw new Error('DSH 桥需要 ICL host')
+  const attachments = resolveAttachments(ctx)
+  const saveImage = makeSaveImage(attachments)
 
   const state = {
     session: null,
@@ -124,7 +160,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         state.tools.delete(name)
       }
       try {
-        const off = ctx.tools.register(toDshToolDefinition(def))
+        const off = ctx.tools.register(toDshToolDefinition(def, { saveImage }))
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
         added.push(name)
       } catch (error) {

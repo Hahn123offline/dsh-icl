@@ -1,8 +1,8 @@
 {
   "id": "bili",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "entry": "./src/index.mjs",
-  "tools": ["bili_search", "bili_watch", "bili_comments", "bili_frames"],
+  "tools": ["bili_search", "bili_watch", "bili_comments", "bili_feed", "bili_frames", "bili_login_start", "bili_login_poll"],
   "slots": [],
   "focus": {},
   "requires": {}
