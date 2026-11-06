@@ -89,12 +89,23 @@ export function toDshToolDefinition(definition, { execute = null } = {}) {
   }
 }
 
-/** 一条 user-role 消息；与 @deepseek-ai/dsh-llm 的 createUserMessage 同形。 */
-export function toDshUserMessage(text, { id = null, source = { kind: 'user' } } = {}) {
+/**
+ * 一条 user-role 消息；与 @deepseek-ai/dsh-llm 的 createUserMessage 同形。
+ * images 是 DSH attachment ref 列表（ImageAttachmentRef），由 bridge 用
+ * ctx.attachments.saveImages 生成；字节/路径/URL 都不进正文。
+ */
+export function toDshUserMessage(text, { id = null, source = { kind: 'user' }, images = [] } = {}) {
+  const body = String(text ?? '')
+  const content = []
+  if (body || !Array.isArray(images) || images.length === 0) content.push({ type: 'text', text: body })
+  for (const attachment of Array.isArray(images) ? images : []) {
+    if (!attachment || typeof attachment !== 'object') continue
+    content.push({ type: 'image', attachment })
+  }
   return {
     id: id ?? randomUUID(),
     role: 'user',
-    content: [{ type: 'text', text: String(text ?? '') }],
+    content,
     source,
   }
 }

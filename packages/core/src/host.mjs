@@ -48,7 +48,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       to: 'session',
       channel: 'signal',
       source: { plugin: signal.from.plugin, activity: signal.from.activity ?? 'signal', seq: null },
-      content: { text: signal.text },
+      content: { text: signal.text, images: Array.isArray(signal.images) ? signal.images : [] },
       batchKey: `signal:${signal.from.plugin}:${signal.focus ?? ''}`,
       exactlyOnce: false,
     })

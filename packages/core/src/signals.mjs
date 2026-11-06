@@ -35,7 +35,9 @@ export function validateSignal(input) {
     return { ok: false, error: `未知的 to：${input.to}（focus 是字段，不是路由）` }
   }
   const text = String(input.text ?? '')
-  if (!text.trim() && !input.meta) return { ok: false, error: '信号既没有 text 也没有 meta' }
+  if (!text.trim() && !input.meta && !(Array.isArray(input.images) && input.images.length)) {
+    return { ok: false, error: '信号既没有 text 也没有 meta/images' }
+  }
   return {
     ok: true,
     signal: {
@@ -44,6 +46,15 @@ export function validateSignal(input) {
       kind: String(input.kind),
       to: String(input.to ?? 'model'),
       text,
+      // 图片只作为"投递附件"随信号走（不入正文）；data 是字节，由 bridge 换成 DSH attachment ref。
+      images: Array.isArray(input.images)
+        ? input.images.filter((img) => img && img.data && img.data.byteLength > 0 && typeof img.mediaType === 'string').map((img) => ({
+          data: img.data,
+          mediaType: String(img.mediaType),
+          name: img.name == null ? null : String(img.name),
+          path: img.path == null ? null : String(img.path),
+        }))
+        : [],
       focus: input.focus == null ? null : String(input.focus),
       tags: Array.isArray(input.tags) ? input.tags.map(String) : [],
       createdAt: Number(input.createdAt) > 0 ? Number(input.createdAt) : null,

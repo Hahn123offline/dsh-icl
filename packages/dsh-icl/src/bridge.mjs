@@ -73,6 +73,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     turn: null,
     factsCache: { turn: null, text: null },
     factsDirty: false,
+    attachments: null,
+    attachmentsInjected: false,
+    ticking: false,
     stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0 },
   }
 
@@ -349,9 +352,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 投递：delivery → agent.followup ──────────────────── */
 
+  function pluginLabel(plugin) {
+    return plugin === 'mc' ? 'MC' : plugin === 'time' ? '时间' : plugin === 'focus' ? '焦点' : plugin === 'qq' ? '外部消息' : plugin
+  }
+
   function noticeMessage(batch, text) {
     const plugin = String(batch?.entries?.[0]?.source?.plugin ?? 'icl').replace(/[^a-z0-9:_-]/gi, '') || 'icl'
-    const label = plugin === 'mc' ? 'MC' : plugin === 'time' ? '时间' : plugin === 'focus' ? '焦点' : plugin === 'qq' ? '外部消息' : plugin
+    const label = pluginLabel(plugin)
     return toDshUserMessage(text, {
       id: `icl-notice-${batch.id}-${randomUUID()}`,
       source: {
@@ -363,33 +370,105 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     })
   }
 
-  function tick() {
-    if (!state.agent) return { sent: 0, skipped: 'no-agent' }
-    let sent = 0
-    for (const batch of host.services.delivery.drain('session')) {
-      const text = String(batch.text ?? '').trim()
-      if (!text) { host.services.delivery.ack(batch.id); continue }
+  /** 延迟取 DSH attachment 服务；没有就返回 null（调用方降级为文字提示）。 */
+  function attachmentsService() {
+    if (state.attachments?.saveImages) return state.attachments
+    if (ctx.attachments?.saveImages) return ctx.attachments
+    if (!state.attachmentsInjected && typeof ctx.inject === 'function') {
+      state.attachmentsInjected = true
       try {
-        const message = noticeMessage(batch, text)
-        if (typeof state.agent.steer === 'function') {
-          // 插件来源的 notice：空闲起一轮、运行中在下一个 step 边界注入，不是伪造 user。
-          state.agent.steer(message)
-          state.stats.steered += 1
-        } else {
-          // 老宿主没有 steer 才退；仍然是 plugin source，不写死 user。
-          state.agent.followup(message)
-          state.stats.followupFallback += 1
-        }
-        host.services.delivery.ack(batch.id)
-        state.stats.delivered += 1
-        state.factsDirty = true // 事件类事实（time/focus 通知）→ 下一步刷新快照
-        sent += 1
+        ctx.inject(['attachments'], (sub) => {
+          if (sub?.attachments?.saveImages) state.attachments = sub.attachments
+        })
       } catch (error) {
-        host.services.delivery.nack(batch.id, error?.message ?? error)
-        state.stats.failed += 1
-        report('delivery.steer', error)
-        break
+        report('attachments.inject', error)
       }
+    }
+    return null
+  }
+
+  /**
+   * 图片通道（QQ 等入站附件）：
+   *   · batch.images 里是插件给来的字节描述符（data/mediaType/name/path），
+   *     这里换成 DSH ImageAttachmentRef → content 里的 image block；正文不写 URL/base64。
+   *   · attachment 不可用/保存失败：消息照常投递，正文追加一行降级提示（带本地媒体路径，可用 read_image），
+   *     **不丢消息**，也绝不把字节塞进正文。
+   */
+  async function noticeMessageWithImages(batch, text) {
+    const descriptors = (Array.isArray(batch?.images) ? batch.images : [])
+      .filter((img) => img && img.data && img.mediaType)
+    const refs = []
+    const fallback = []
+    if (descriptors.length) {
+      const store = attachmentsService()
+      if (store) {
+        try {
+          const saved = await store.saveImages(descriptors.map((img) => ({
+            data: img.data instanceof Uint8Array ? img.data : new Uint8Array(img.data),
+            mediaType: String(img.mediaType),
+            ...(img.name ? { name: String(img.name) } : {}),
+          })))
+          for (const ref of Array.isArray(saved) ? saved : []) {
+            if (ref && typeof ref === 'object') refs.push(ref)
+          }
+        } catch (error) {
+          const disk = descriptors.map((img) => img.path).filter(Boolean).slice(0, 2)
+          fallback.push(`（${descriptors.length} 张图片未能显示：${String(error?.message ?? error).slice(0, 120)}${disk.length ? `；本地文件：${disk.join('、')}` : ''}）`)
+          report('delivery.image-attach', error)
+        }
+      } else {
+        const disk = descriptors.map((img) => img.path).filter(Boolean).slice(0, 2)
+        fallback.push(`（${descriptors.length} 张图片未能显示：当前会话没有 attachment 服务${disk.length ? `；本地文件：${disk.join('、')}` : ''}）`)
+      }
+    }
+    const fullText = fallback.length ? `${text}\n${fallback.join('\n')}` : text
+    const plugin = String(batch?.entries?.[0]?.source?.plugin ?? 'icl').replace(/[^a-z0-9:_-]/gi, '') || 'icl'
+    return toDshUserMessage(fullText, {
+      id: `icl-notice-${batch.id}-${randomUUID()}`,
+      source: {
+        kind: `plugin:${plugin}`,
+        form: 'notice',
+        summary: `${pluginLabel(plugin)}：${text.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
+      },
+      images: refs,
+    })
+  }
+
+  async function tick() {
+    if (!state.agent) return { sent: 0, skipped: 'no-agent' }
+    // 图片通道会让 tick 变 async；定时器可能重入，用 busy 标志避免同一批被 drain 两次。
+    if (state.ticking) return { sent: 0, skipped: 'busy' }
+    state.ticking = true
+    let sent = 0
+    try {
+      for (const batch of host.services.delivery.drain('session')) {
+        const text = String(batch.text ?? '').trim()
+        const hasImages = Array.isArray(batch.images) && batch.images.length > 0
+        if (!text && !hasImages) { host.services.delivery.ack(batch.id); continue }
+        try {
+          const message = hasImages ? await noticeMessageWithImages(batch, text) : noticeMessage(batch, text)
+          if (typeof state.agent.steer === 'function') {
+            // 插件来源的 notice：空闲起一轮、运行中在下一个 step 边界注入，不是伪造 user。
+            state.agent.steer(message)
+            state.stats.steered += 1
+          } else {
+            // 老宿主没有 steer 才退；仍然是 plugin source，不写死 user。
+            state.agent.followup(message)
+            state.stats.followupFallback += 1
+          }
+          host.services.delivery.ack(batch.id)
+          state.stats.delivered += 1
+          state.factsDirty = true // 事件类事实（time/focus 通知）→ 下一步刷新快照
+          sent += 1
+        } catch (error) {
+          host.services.delivery.nack(batch.id, error?.message ?? error)
+          state.stats.failed += 1
+          report('delivery.steer', error)
+          break
+        }
+      }
+    } finally {
+      state.ticking = false
     }
     return { sent }
   }
@@ -397,7 +476,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   function startTimer() {
     if (state.timer) return
     const interval = Math.max(50, Number(config.tickMs) || 500)
-    state.timer = setInterval(() => { tick() }, interval)
+    state.timer = setInterval(() => { tick().catch((error) => report('delivery.tick', error)) }, interval)
     if (typeof state.timer.unref === 'function') state.timer.unref()
   }
 

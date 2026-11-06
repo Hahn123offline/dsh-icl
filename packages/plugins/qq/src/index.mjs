@@ -27,8 +27,9 @@ import { createOneBotHttp } from './onebot-http.mjs'
 import { createBackfill } from './backfill.mjs'
 import { createReplyResolver, pendingReplyText, replyContextText } from './reply-cache.mjs'
 import { expandForwardIds } from './forward.mjs'
-import { extractForwardIds, extractReplyId } from './rich.mjs'
+import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf } from './normalize.mjs'
+import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 
 export const name = 'qq'
 
@@ -104,6 +105,15 @@ const DEFAULTS = Object.freeze({
   forwardExpandMaxChars: 1200,
   // 说话人信封：正文前缀 + meta.qq.envelope；只影响 QQ 自己的可读性，不碰 bridge
   senderEnvelope: true,
+  // 入站媒体（图片走 DSH attachment，视频/文件落本地统一媒体目录）
+  mediaEnabled: true,
+  mediaInboxDir: '',
+  mediaFetchImpl: null,
+  maxImages: MEDIA_DEFAULTS.maxImages,
+  maxImageBytes: MEDIA_DEFAULTS.maxImageBytes,
+  maxVideoBytes: MEDIA_DEFAULTS.maxVideoBytes,
+  maxFileBytes: MEDIA_DEFAULTS.maxFileBytes,
+  mediaRetentionDays: MEDIA_DEFAULTS.retentionDays,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -145,8 +155,11 @@ export function normalizeQqConfig(input = {}) {
   cfg.replyResolveEnabled = cfg.replyResolveEnabled !== false
   cfg.forwardExpandEnabled = cfg.forwardExpandEnabled !== false
   cfg.senderEnvelope = cfg.senderEnvelope !== false
+  cfg.mediaEnabled = cfg.mediaEnabled !== false
+  cfg.mediaFetchImpl = typeof input.mediaFetchImpl === 'function' ? input.mediaFetchImpl : null
+  cfg.mediaInboxDir = String(cfg.mediaInboxDir ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -234,6 +247,8 @@ export async function apply(ctx) {
     retryDropped: 0,
     recorded: 0,
     recordErrors: 0,
+    mediaSaved: 0,
+    mediaFailed: 0,
     // 只读观测：最近一条进来的私聊 / 最近一次丢弃 / 最近一次被 time 锁拦下
     recent: { lastAccepted: null, lastDropped: null, lastBlocked: null },
   }
@@ -241,6 +256,7 @@ export async function apply(ctx) {
   let endpoint = null
   let retryTimer = null
   let disposed = false
+  let mediaDir = ''
   // P0-1：账本 + 补课（http 只做 get_friend_msg_history，不参与发送）
   let ledger = null
   let http = null
@@ -419,13 +435,136 @@ export async function apply(ctx) {
   }
 
   /**
-   * P0-2 入站富内容：进闸门前做两件"慢但必要"的事（都受配置控制、失败不阻塞消息）：
+   * 入站媒体（图片/视频/文件）：
+   *   · 图片：安全抓取 → 字节随 signal.images 交给 bridge 换 DSH attachment（图片正文不写 URL/base64）；
+   *   · 视频/文件：安全抓取 → 存 `<mediaInboxDir>/<date>/` + index.jsonl，正文追加本地绝对路径
+   *     （供通用视频浏览器/read_image 使用）；
+   *   · 任何失败都只降级为文字提示，不丢消息。
+   */
+  function inboundAt(raw) {
+    const sec = Number(raw?.time)
+    if (!Number.isFinite(sec) || sec <= 0) return now()
+    return sec > 1e12 ? Math.round(sec) : Math.round(sec * 1000)
+  }
+
+  function directMediaUrl(seg) {
+    const data = seg?.data && typeof seg.data === 'object' ? seg.data : {}
+    for (const value of [data.url, data.file]) {
+      if (/^https?:\/\//i.test(String(value ?? ''))) return String(value)
+    }
+    return null
+  }
+
+  async function mediaUrlFor(seg) {
+    const direct = directMediaUrl(seg)
+    if (direct) return direct
+    const data = seg?.data && typeof seg.data === 'object' ? seg.data : {}
+    const fileId = data.file_id ?? data.fileId ?? data.file
+    if (fileId != null && http?.ok) {
+      try {
+        const res = await http.call('get_private_file_url', { file_id: String(fileId) })
+        const url = res?.url ?? res?.data?.url ?? null
+        if (url) return String(url)
+      } catch { /* 取不到就按失败处理 */ }
+    }
+    return null
+  }
+
+  async function collectInboundMedia(raw) {
+    if (!cfg.mediaEnabled || !Array.isArray(raw?.message)) return null
+    const peerId = senderIdOf(raw)
+    const sender = String(raw.sender?.card || raw.sender?.nickname || peerId || '')
+    const messageId = raw.message_id ?? null
+    const at = inboundAt(raw)
+    const fetchImpl = cfg.mediaFetchImpl ?? globalThis.fetch
+    const images = []
+    const mediaFiles = []
+    const errors = []
+    const appended = []
+    let imageFailures = 0
+
+    const imageSegs = raw.message.filter((seg) => seg?.type === 'image' || seg?.type === 'mface').slice(0, Math.max(0, cfg.maxImages))
+    for (let i = 0; i < imageSegs.length; i += 1) {
+      const item = extractMedia([imageSegs[i]])[0]
+      if (!item) continue
+      try {
+        const fetched = await fetchImageMedia(item, {
+          fetchImpl,
+          getImage: http?.ok ? (file) => http.call('get_image', { file }) : null,
+          maxBytes: cfg.maxImageBytes,
+        })
+        if (fetched.error) throw new Error(fetched.error)
+        const saved = saveInboxMedia({
+          dir: mediaDir, kind: 'image', buffer: fetched.buffer, mimeType: fetched.mimeType,
+          at, messageId, peerId, sender, index: i + 1, originalName: item.file || '',
+        })
+        images.push({ data: fetched.buffer, mediaType: fetched.mimeType, name: path.basename(saved.path), path: saved.path })
+        mediaFiles.push({ kind: 'image', path: saved.path, bytes: saved.bytes, mime: saved.mime })
+        stats.mediaSaved += 1
+      } catch (error) {
+        imageFailures += 1
+        stats.mediaFailed += 1
+        errors.push(`image: ${String(error?.message ?? error).slice(0, 120)}`)
+      }
+    }
+    if (imageFailures > 0) appended.push('\n（图片未能获取）')
+
+    const videoSegs = raw.message.filter((seg) => seg?.type === 'video').slice(0, 1)
+    for (const seg of videoSegs) {
+      try {
+        const url = await mediaUrlFor(seg)
+        if (!url) throw new Error('没有可用的视频地址')
+        const fetched = await safeFetchBuffer(url, { fetchImpl, maxBytes: cfg.maxVideoBytes, label: '视频' })
+        const accepted = acceptVideoBuffer(fetched.buffer, { maxBytes: cfg.maxVideoBytes })
+        const saved = saveInboxMedia({
+          dir: mediaDir, kind: 'video', buffer: accepted.buffer, mimeType: accepted.mimeType,
+          at, messageId, peerId, sender, index: 1, originalName: seg?.data?.name ?? '',
+        })
+        mediaFiles.push({ kind: 'video', path: saved.path, bytes: saved.bytes, mime: saved.mime })
+        stats.mediaSaved += 1
+        appended.push(`\n[视频已保存：${saved.path}]`)
+      } catch (error) {
+        stats.mediaFailed += 1
+        errors.push(`video: ${String(error?.message ?? error).slice(0, 120)}`)
+        appended.push('\n[视频获取失败]')
+      }
+    }
+
+    const fileSegs = raw.message.filter((seg) => seg?.type === 'file').slice(0, Math.max(0, MEDIA_DEFAULTS.maxFiles))
+    for (let i = 0; i < fileSegs.length; i += 1) {
+      const seg = fileSegs[i]
+      const data = seg?.data && typeof seg.data === 'object' ? seg.data : {}
+      const originalName = String(data.name ?? data.file_name ?? '')
+      try {
+        const url = await mediaUrlFor(seg)
+        if (!url) throw new Error('没有可用的文件地址')
+        const fetched = await safeFetchBuffer(url, { fetchImpl, maxBytes: cfg.maxFileBytes, label: '文件' })
+        const saved = saveInboxMedia({
+          dir: mediaDir, kind: 'file', buffer: fetched.buffer, mimeType: String(data.mime ?? ''),
+          at, messageId, peerId, sender, index: i + 1, originalName,
+        })
+        mediaFiles.push({ kind: 'file', path: saved.path, bytes: saved.bytes, mime: saved.mime })
+        stats.mediaSaved += 1
+        appended.push(`\n[文件已保存：${saved.path}]`)
+      } catch (error) {
+        stats.mediaFailed += 1
+        errors.push(`file: ${String(error?.message ?? error).slice(0, 120)}`)
+        appended.push('\n[文件获取失败]')
+      }
+    }
+
+    if (errors.length) ctx.log({ level: 'info', msg: 'qq.media.partial', messageId, errors: errors.slice(0, 3) })
+    return { images, mediaFiles, errors, appended: appended.join('') }
+  }
+
+  /**
+   * P0-2 入站富内容：进闸门前做三件"慢但必要"的事（都受配置控制、失败不阻塞消息）：
    *   1) 引用解析：`get_msg` 慢取缓存；等不到就放占位文字，不丢原消息；
-   *   2) 合并转发展开：`get_forward_msg` 取一层/两层，拼成可读文本（有深度/字数上限）。
-   * 图片/文件这里**不下载**：只保留 meta 定位信息，真正看图片等 DSH attachment 通道。
+   *   2) 合并转发展开：`get_forward_msg` 取一层/两层，拼成可读文本（有深度/字数上限）；
+   *   3) 媒体：图片抓取字节（bridge 换 attachment）；视频/文件落本地媒体目录。
    */
   async function enrichInbound(raw) {
-    if (!cfg.richEnabled || !Array.isArray(raw?.message)) return raw
+    if ((!cfg.richEnabled && !cfg.mediaEnabled) || !Array.isArray(raw?.message)) return raw
     let message = raw.message
     let enriched = null
     const replyId = extractReplyId(message)
@@ -461,6 +600,11 @@ export async function apply(ctx) {
         ctx.log({ level: 'info', msg: 'qq.forward.expand-fail', error: String(error?.message ?? error) })
       }
     }
+    const media = await collectInboundMedia({ ...raw, message })
+    if (media) {
+      if (media.appended) message = [...message, { type: 'text', data: { text: media.appended } }]
+      enriched = { ...(enriched ?? raw), __qqMedia: media }
+    }
     return message === raw.message && !enriched ? raw : { ...(enriched ?? raw), message }
   }
 
@@ -472,9 +616,11 @@ export async function apply(ctx) {
       connector?.onMeta?.() // 保留扩展点：当前只更新连接器内部 lastPacketAt
       return { accept: false, code: 'meta' }
     }
-    // 只有带引用/转发的消息才需要异步慢取；普通文本保持同步路径（现有调用方/测试语义不变）。
-    const needsEnrich = cfg.richEnabled && raw?.post_type === 'message' && Array.isArray(raw.message)
-      && (extractReplyId(raw.message) != null || extractForwardIds(raw.message).length > 0)
+    // 带引用/转发/媒体的消息才需要异步慢取；普通文本保持同步路径（现有调用方/测试语义不变）。
+    const hasMediaSegments = cfg.mediaEnabled && raw?.post_type === 'message' && Array.isArray(raw.message)
+      && raw.message.some((seg) => ['image', 'mface', 'video', 'file'].includes(seg?.type))
+    const needsEnrich = raw?.post_type === 'message' && Array.isArray(raw.message)
+      && (hasMediaSegments || (cfg.richEnabled && (extractReplyId(raw.message) != null || extractForwardIds(raw.message).length > 0)))
     if (needsEnrich) return enrichInbound(raw).then((event) => ingestEvent(event, { backfilled }))
     return ingestEvent(raw, { backfilled })
   }
@@ -528,6 +674,12 @@ export async function apply(ctx) {
     }
     const signal = decision.signal
     applySenderEnvelope(signal, decision)
+    const inboundMedia = event.__qqMedia
+    if (inboundMedia) {
+      if (inboundMedia.images?.length) signal.images = inboundMedia.images
+      if (inboundMedia.mediaFiles?.length) signal.meta.qq.mediaFiles = inboundMedia.mediaFiles
+      if (inboundMedia.errors?.length) signal.meta.qq.mediaErrors = inboundMedia.errors.slice(0, 5)
+    }
     stats.accepted += 1
     stats.recent.lastAccepted = {
       at: decision.messageAt,
@@ -553,7 +705,7 @@ export async function apply(ctx) {
           sender: decision.senderName,
           text: signal.text,
           mention: true,
-          media: null,
+          media: signal.meta.qq.mediaFiles ?? null,
         })
         signal.meta.qq.ledger = { activity: signal.from.activity, seq: appended.seq }
         if (appended.duplicate) stats.ledgerDuplicates = (stats.ledgerDuplicates ?? 0) + 1
@@ -632,6 +784,24 @@ export async function apply(ctx) {
       const anchor = cfg.dedupeFile || cfg.recordFile || cfg.statusFile
       if (anchor) ledgerFile = path.join(path.dirname(resolvePath(anchor)), 'qq-ledger.db')
     }
+    // 入站媒体统一目录：显式配置优先；否则放在 state 文件同级的 media/inbox/qq（默认 .state/media/inbox/qq）。
+    if (cfg.mediaInboxDir) mediaDir = resolvePath(cfg.mediaInboxDir)
+    else {
+      const anchor = cfg.ledgerFile || cfg.dedupeFile || cfg.recordFile || cfg.statusFile
+      mediaDir = anchor
+        ? path.join(path.dirname(resolvePath(anchor)), 'media/inbox/qq')
+        : path.join(process.cwd(), '.state/media/inbox/qq')
+    }
+    ctx.log({
+      msg: 'qq.media.ready',
+      dir: mediaDir,
+      enabled: cfg.mediaEnabled,
+      maxImages: cfg.maxImages,
+      maxImageBytes: cfg.maxImageBytes,
+      maxVideoBytes: cfg.maxVideoBytes,
+      maxFileBytes: cfg.maxFileBytes,
+      retentionDays: cfg.mediaRetentionDays,
+    })
     ledger = createLedger({ file: ledgerFile || null, log: (entry) => ctx.log({ plugin: 'qq', ...entry }) })
     http = createOneBotHttp({
       endpointUrl: cfg.httpUrl || endpoint.httpUrl || '',
@@ -708,7 +878,18 @@ export async function apply(ctx) {
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
       ledger: ledger?.stats() ?? { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0 },
-      http: { ok: Boolean(http?.ok), url: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
+      http: { ok: Boolean(http?.ok), endpointUrl: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
+      media: {
+        enabled: cfg.mediaEnabled,
+        dir: mediaDir || null,
+        saved: stats.mediaSaved,
+        failed: stats.mediaFailed,
+        maxImages: cfg.maxImages,
+        maxImageBytes: cfg.maxImageBytes,
+        maxVideoBytes: cfg.maxVideoBytes,
+        maxFileBytes: cfg.maxFileBytes,
+        retentionDays: cfg.mediaRetentionDays,
+      },
       stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
       recordFile: recordFile || null,
       statusFile: statusFile || null,
