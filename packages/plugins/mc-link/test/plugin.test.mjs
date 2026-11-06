@@ -30,6 +30,15 @@ function statusBody(state) {
       note: state.paused ? 'paused = 停任务/停控制，但身体仍在世界（会掉落/受伤/被推）；安全反射开启' : null,
       reflex: state.paused ? { enabled: true, active: false, count: 0, maxPerMinute: 2, maxDurationMs: 10000 } : { enabled: true, active: false, count: 0, maxPerMinute: 2, maxDurationMs: 10000 },
       lastReflex: state.lastReflex ?? null,
+      autoDefense: state.autoDefense ?? {
+        enabled: true, active: false, count: 2, maxPerMinute: 4, cooldownMs: 8000, threatDistance: 6, creeperDistance: 5,
+        lastAt: Date.now() - 30_000, lastReason: 'threat', lastAction: 'backoff', lastDurationMs: 220, lastTimedOut: false,
+      },
+      lastDefense: state.lastDefense ?? { at: Date.now() - 30_000, reason: 'threat', action: 'backoff', durationMs: 220, timedOut: false },
+      recovery: state.recovery ?? {
+        resumeGraceMs: 3000, lowHealthPauseCooldownMs: 8000, criticalHealth: 4,
+        resumeGraceUntil: Date.now() + 2000, lowHealthPauseCooldownUntil: null, pausedRecoverable: true,
+      },
     },
     task: state.task,
     queue: [],
@@ -50,6 +59,7 @@ function statusBody(state) {
       inventoryCount: state.inventoryCount ?? 4,
       inventory: { used: state.inventoryUsed ?? 2, full: false },
       nearby: { villager: 1 },
+      nearbyHostiles: state.nearbyHostiles ?? [{ name: 'zombie', distance: 6.2, position: { x: 20.4, y: 64, z: -3.1 } }],
       dimension: 'overworld',
       environment: extra.environment,
       pathfinder: extra.pathfinder,
@@ -162,7 +172,7 @@ async function startFakeBody({ connected = true } = {}) {
             results.push({ index: results.length, op: 'resume', result: step.taskId ? { id: step.taskId, kind: 'mine', state: 'running' } : { paused: false } })
           }
           else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
-          else if (step.op === 'pickup') results.push({ index: results.length, op: 'pickup', result: { picked: 2, items: ['dirt', 'oak_log'], radius: 8, left: 1 } })
+          else if (step.op === 'pickup') results.push({ index: results.length, op: 'pickup', result: state.pickupResult ?? { picked: 2, items: ['dirt', 'oak_log'], radius: 8, left: 1 } })
           else if (step.op === 'attack') results.push({ index: results.length, op: 'attack', result: state.attackResult ?? { attacked: 'chicken' } })
           else if (step.op === 'wait') results.push({ index: results.length, op: 'wait', result: { ok: true, ms: step.params?.ms } })
           else if (step.op === 'dig') results.push({ index: results.length, op: 'dig', result: { dug: 'dirt', pos: { x: 12.6, y: -59.6, z: 14.4 } } })
@@ -229,20 +239,20 @@ function openPort() {
   })
 }
 
-test('工具面：14 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
+test('工具面：16 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     const names = Object.keys(link.tools).sort()
-    assert.deepEqual(names, ['mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
+    assert.deepEqual(names, ['mcb_attack', 'mcb_combat', 'mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
     let total = 0
     for (const tool of Object.values(link.tools)) {
       assert.ok(tool.description.length > 60, `${tool.name} 描述太短`)
       assert.ok(tool.description.length <= 900, `${tool.name} 描述超 900 预算：${tool.description.length}`)
       total += tool.description.length
     }
-    // 12→14 个工具（眼睛 P0/P1）后总量上调；每工具 900 预算不变（composeToolDescription 强制）
-    assert.ok(total <= 4800, `工具描述总量 ${total} 超预算`)
+    // 16 个工具（眼睛 + 战斗/攻击）总量上调；每工具 900 预算不变（composeToolDescription 强制）
+    assert.ok(total <= 6000, `工具描述总量 ${total} 超预算`)
     // 操作教学必须在工具描述里，而不是全局提示词段里。
     assert.match(link.tools.mcb_join.description, /server|host/)
     assert.match(link.tools.mcb_do.description, /tasks|op/)
@@ -463,6 +473,98 @@ test('mcb_do：攻击结果必须能判断命中（新字段命中/伤害/剩余
     body.state.attackResult = { attacked: 'chicken', hit: false, reason: '太远' }
     const miss = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'chicken' } }] })
     assert.match(miss.text, /没打中 chicken（太远）/)
+    // 击杀 → 提示 pickup 捡掉落
+    body.state.attackResult = { attacked: 'chicken', id: 7, hit: true, killed: true, damage: 2, healthBefore: 2, healthAfter: 0 }
+    const killed = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'chicken' } }] })
+    assert.match(killed.text, /打死 chicken/)
+    assert.match(killed.text, /最后一击 2 伤害/)
+    assert.match(killed.text, /pickup/)
+    // 血量前后都带
+    body.state.attackResult = { attacked: 'sheep', hit: true, killed: false, damage: 1.5, healthBefore: 6, healthAfter: 4.5 }
+    const hp = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'sheep' } }] })
+    assert.match(hp.text, /造成 1\.5 伤害（血 6→4\.5）/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_attack：单目标工具（target 必填，命中/击杀可读）；mcb_combat：战斗宏一条 task', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await assert.rejects(() => link.tools.mcb_attack.execute({}), /需要 target/)
+    body.state.attackResult = { attacked: 'zombie', hit: true, killed: true, damage: 5, healthBefore: 5, healthAfter: 0 }
+    const hit = await link.tools.mcb_attack.execute({ target: 'zombie', range: 4 })
+    assert.match(hit.text, /打死 zombie/)
+    const sentAttack = body.state.requests.at(-1).steps[0]
+    assert.equal(sentAttack.op, 'attack')
+    assert.equal(sentAttack.params.target, 'zombie')
+    assert.equal(sentAttack.params.range, 4)
+    await assert.rejects(() => link.tools.mcb_combat.execute({ mode: 'fly' }), /需要 mode：hunt\/defend\/flee\/guard/)
+    const combat = await link.tools.mcb_combat.execute({ mode: 'hunt', target: 'zombie', lowHealth: 8 })
+    assert.match(combat.text, /任务 t-1（hunt）已接受/)
+    const sentCombat = body.state.requests.at(-1).steps[0]
+    assert.equal(sentCombat.kind, 'hunt')
+    assert.equal(sentCombat.params.target, 'zombie')
+    assert.equal(sentCombat.params.lowHealth, 8)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：附近敌对 / 自动防御 / 恢复宽限（低血恢复期）都单列', async () => {
+  const body = await startFakeBody()
+  body.state.paused = true
+  body.state.pausedReason = 'low-health'
+  const link = await mountLink({ port: body.port })
+  try {
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /附近敌对：zombie\(6\.2m @ 20,64,-3\)/)
+    assert.match(status.text, /自动防御：开启（已 2 次；冷却 8s；威胁距离 6m \/ 苦力怕 5m）/)
+    assert.match(status.text, /最近一次：.*有威胁.*→ backoff（220ms）/)
+    assert.match(status.text, /恢复规则：resume 宽限剩余 \d+s/)
+    assert.match(status.text, /低血暂停冷却/)
+    assert.match(status.text, /极低血 ≤4 才会立即再暂停/)
+    assert.match(status.text, /当前暂停可恢复/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('事件：auto_defense / combat_abort / safety_stop(threat) 都有可读文案', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    body.push({ type: 'auto_defense', data: { reason: 'threat', action: 'backoff', durationMs: 220, timedOut: false } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /自动躲避：.*→ 已自动躲避（220ms）/)
+    assert.doesNotMatch(link.pushed.join('\n'), /\[object Object\]/)
+    body.push({ type: 'combat_abort', data: { mode: 'hunt', reason: 'low-health', hostiles: [{ name: 'zombie', distance: 3 }], health: 6 } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /战斗中断：low-health（zombie 3m）/)
+    body.push({ type: 'safety_stop', data: { reason: 'threat' } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /安全停止：有威胁/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('pickup partial：超时未捡完要说清楚（不假装全捡到）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.pickupResult = { picked: 1, items: ['dirt'], radius: 8, left: 3, partial: true, durationMs: 20000 }
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'pickup', params: { radius: 8 } }] })
+    assert.match(out.text, /捡到 1 个（dirt）；附近还剩 3 个掉落（partial：20000ms 内没捡完/)
   } finally {
     await link.cleanup()
     await body.close()
@@ -1266,6 +1368,7 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     assert.match(list.text, /tunnel/)
     assert.match(list.text, /macro/)
     assert.match(list.text, /eyes/)
+    assert.match(list.text, /combat/)
     const play = await link.tools.mcb_help.execute({ skill: 'play' })
     assert.match(play.text, /开一局/)
     assert.match(play.text, /mcb_leave/)
