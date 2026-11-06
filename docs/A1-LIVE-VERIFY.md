@@ -74,3 +74,31 @@
 ---
 
 **结论一句话**：A1 已在 desktop 部署（配置正确、离线指纹 = 51 工具/34,101/34,049/无 mcb），但 **desktop 内置 DSH 不注册 `{{cwd}}`，A1 preset 的 persona suffix 又依赖它 → ICL 会话每次 turn 在请求前报错（0 请求）**，live 校验被阻塞；按 §5 清掉 suffix 并重启 desktop 后即可完成 §6 复核。
+
+## 7. 修复进展（2026-11-07 02:45 更新）
+
+misc 已在 `wt/misc` 提交 **`e0c8e4a`**（待 lead 合并入主仓库 → desktop 重启生效）：
+
+- `packages/dsh-icl/presets/icl.patch.yml` 产品 3 处 `tool-persona.suffix` 改为 **空字符串**（保留 `prefix: ''` 的身份覆盖；只去掉 `{{cwd}}` 引用），文件头注明"desktop 内置 DSH 只注册 provider/model，不能引用 cwd"；
+- `docs/PROMPT-CONTRACT.md`、`docs/FIRST-SCREEN.md` 标注运行时差异（产品 suffix 必须为空；lab 用 npm DSH 有 cwd，lab preset 未改）；
+- 只改 preset 文本 + 文档，不动 tools/facts/system 布局；lab 的 system 基线（4,195 字符）不受影响。
+
+**修复后复验（cache 执行，一条命令）**：
+
+```powershell
+cd C:\DSH\icl-wt\cache
+git fetch C:\DSH\icl master; git merge master --no-edit   # 拿到 e0c8e4a
+node tools/cache-live-audit.mjs --latest-icl
+```
+
+直接输出：request/header 工具总数、ICL 面 51 命中/缺失、`mcb_*` 数量、toolsChars 两口径、`toolsHash`；
+system 字符/字节 + 4 段净化 marker（应全 false）+ `systemHasDynamicFacts`；facts 快照条数/轮与 sections；`image/offload`。
+
+**预期**（与离线 A1 对齐）：
+- ICL 面工具 **51/51 命中**、`mcb_* = 0`；总工具数 = 51 + DSH/desktop 其它插件（会高于 51）；
+- `icl` 段 toolsChars：**34,101（数组口径）/ 34,049（Σ 口径）**；整体 `toolsHash` 记 live 新值；
+- `system`：比修复前（若旧布局有 suffix）少约 84 字符（suffix 渲染文本），净化 4 段 marker 全 false，`systemHasDynamicFacts=false`；
+- facts 快照 ≤1 条/轮、sections 含 `icl:facts`；`image/offload=0`。
+
+> 注意：修复只让 ICL turn 恢复；**旧会话 737ec994 的 header 仍是 2026-11-05 的 pre-A1 快照**（59 工具/11 个 mcb），不能当 A1 证据；
+> live 复核必须用**重启后新建/恢复并产生过 request 的 icl 会话**（`--latest-icl` 会挑最新 icl 会话，工具会显示 `ok:false` 若还没有 header）。
