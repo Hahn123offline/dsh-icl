@@ -109,6 +109,11 @@ export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = 
      * E2 实测每轮 2.5 条 runtime-context/91k 字符主要来自把每条 MC 事件都当 dirty——收窄后应回到 ≤1 条/轮。
      */
     factsDirtyPlugins: Array.isArray(raw.factsDirtyPlugins) ? raw.factsDirtyPlugins.map(String) : ['time', 'focus'],
+    /**
+     * renderTail（C，lab-only）：给 ICL 工具结果尾部追加一行状态；产品默认 {}（bridge 内 enabled:false）。
+     * 只影响 tool/result 文本 append，不新增 system/facts/tools schema（cache 安全）。
+     */
+    renderTail: raw.renderTail && typeof raw.renderTail === 'object' ? { ...raw.renderTail } : {},
     /** 按插件 id 覆盖 configFor 的默认值（部署相关，不写进代码）。 */
     pluginConfig: raw.pluginConfig && typeof raw.pluginConfig === 'object' ? { ...raw.pluginConfig } : {},
     tickMs: Math.max(0, Number(raw.tickMs ?? 500)),

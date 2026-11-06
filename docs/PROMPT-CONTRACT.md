@@ -68,7 +68,9 @@ scoped `@deepseek-ai/dsh-persona`：
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: ''                                  # 空段会被 DSH 丢弃，等于去掉 coding-agent 身份
-    suffix: 'Your working directory is {{cwd}}.' # 保留工作目录事实
+    suffix: '' # 产品 preset 不能引用 {{cwd}}：desktop 内置 DSH 只注册 provider/model，引用会让 turn 前直接失败
+# 历史/说明：npm DSH 的 agent-loop 注册了 cwd（lab 可用），但产品以 desktop 内置版为准；
+# lab preset 仍可保留 cwd suffix（当前 lab 基线含该段），产品必须为空。
 ```
 
 实测（lab，2026-11-05）：系统提示词首行只剩 `You are an AI agent powered by DeepSeek Harness.`，

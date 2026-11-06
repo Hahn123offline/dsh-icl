@@ -1165,3 +1165,81 @@ test('重复动作保护：config.repeatGuard=false 关闭', async () => {
     bridge.dispose()
   }
 })
+
+/* ── renderTail（C，lab-only）：tool result 尾部状态行 ─────────────── */
+
+async function renderTailSetup({ renderTail = { enabled: true, maxPerTurn: 2, maxCharsPerTurn: 200 }, status = null } = {}) {
+  const host = createHost({ log: () => {} })
+  const plugin = {
+    id: 'fake-tail', version: '0.0.1', entry: './x.mjs', tools: ['mcb_do', 'mcb_status', 'tail_fail', 'tail_image', 'time_arrange'],
+  }
+  host.registerPlugin(plugin, {
+    apply(pluginCtx) {
+      pluginCtx.tools.register({ name: 'mcb_do', summary: 'do', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { return { text: 'ok' } } })
+      pluginCtx.tools.register({ name: 'mcb_status', summary: 'status', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { return { text: 'status-result' } } })
+      pluginCtx.tools.register({ name: 'time_arrange', summary: 'arrange', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { return { text: 'arranged' } } })
+      pluginCtx.tools.register({ name: 'tail_fail', summary: 'fail', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { throw new Error('boom') } })
+      pluginCtx.tools.register({ name: 'tail_image', summary: 'image', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { return { text: 'pic', imagePath: 'C:/tmp/x.png' } } })
+      pluginCtx.services.provide('time', {
+        now: () => 1_700_000_000_000,
+        status: () => status ?? { phase: 'awake', backlog: 2, goals: [{ id: 'g1' }] },
+      })
+      return () => {}
+    },
+  }, {})
+  await host.enable('fake-tail')
+  const root = tempRoot('render-tail')
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), tickMs: 3_600_000, renderTail } })
+  bridge.start()
+  const session = fakeSession('tail-session')
+  bridge.bindSession(session)
+  bridge.bindAgent(fakeAgent(session))
+  bridge.onEvent(session, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+  return { host, ctx, bridge, session, tools: ctx.tools_ }
+}
+
+test('renderTail：动作类工具追加状态行，denylist 状态工具不加', async () => {
+  const { bridge, tools } = await renderTailSetup()
+  try {
+    const doOut = await tools.get('mcb_do').execute({}, {})
+    assert.match(doOut.text, /〔状态｜/); 
+    assert.match(doOut.text, /醒着/);
+    assert.match(doOut.text, /积压2/);
+    assert.match(doOut.text, /目标g1/);
+    const statusOut = await tools.get('mcb_status').execute({}, {})
+    assert.equal(statusOut.text, 'status-result')
+    assert.doesNotMatch(statusOut.text, /〔状态｜/)
+    assert.equal(bridge.status().stats.renderTailAppended, 1)
+  } finally { bridge.dispose() }
+})
+
+test('renderTail：同一轮相同 tail 去重；maxPerTurn 上限；turn 切换重置', async () => {
+  const { bridge, session, tools } = await renderTailSetup({ renderTail: { enabled: true, maxPerTurn: 1, maxCharsPerTurn: 200 } })
+  try {
+    const first = await tools.get('mcb_do').execute({}, {})
+    assert.match(first.text, /〔状态｜/)
+    const second = await tools.get('mcb_do').execute({}, {})
+    assert.doesNotMatch(second.text, /〔状态｜/, 'maxPerTurn=1 后不再追加')
+    const reason = await tools.get('mcb_do').execute({}, {})
+    assert.doesNotMatch(reason.text, /〔状态｜/)
+    bridge.onEvent(session, { type: 'turn/start', seq: 2, data: { turn: 2 } })
+    const nextTurn = await tools.get('mcb_do').execute({}, {})
+    assert.match(nextTurn.text, /〔状态｜/, '新 turn 重置额度')
+  } finally { bridge.dispose() }
+})
+
+test('renderTail：错误/图片结果不追加；关闭开关完全无效', async () => {
+  const { bridge, tools } = await renderTailSetup()
+  try {
+    await assert.rejects(() => tools.get('tail_fail').execute({}, {}), /boom/)
+    const img = await tools.get('tail_image').execute({}, {})
+    assert.doesNotMatch(String(img.text ?? ''), /〔状态｜/)
+    assert.match(String(img.text ?? ''), /图片文件：C:\/tmp\/x\.png/, '图片结果仍走原 normalize 路径')
+  } finally { bridge.dispose() }
+  const off = await renderTailSetup({ renderTail: { enabled: false } })
+  try {
+    const out = await off.tools.get('mcb_do').execute({}, {})
+    assert.equal(out.text, 'ok')
+  } finally { off.bridge.dispose() }
+})
