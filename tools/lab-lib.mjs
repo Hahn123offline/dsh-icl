@@ -149,7 +149,7 @@ export const KNOWN_MC_SERVERS = Object.freeze({
   flat: { host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
 })
 
-export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace, serverPort = null, awakeIdleSec = 30, goalGapSec = 30, awakeMode = 'interval', awakeMinIdleSec = 30 }) {
+export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace, serverPort = null, awakeIdleSec = 30, goalGapSec = 30, awakeMode = 'interval', awakeMinIdleSec = 30, compactWake = false }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
@@ -181,6 +181,7 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'I
     .replaceAll('__LAB_AWAKE_IDLE__', String(Number(awakeIdleSec) > 0 ? Number(awakeIdleSec) : 30))
     .replaceAll('__LAB_AWAKE_MIN_IDLE__', String(Number(awakeMinIdleSec) > 0 ? Number(awakeMinIdleSec) : 30))
     .replaceAll('__LAB_GOAL_GAP__', String(Number(goalGapSec) >= 0 ? Number(goalGapSec) : 30))
+    .replaceAll('__LAB_COMPACT_WAKE__', compactWake === true ? 'true' : 'false')
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')
