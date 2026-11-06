@@ -14,13 +14,13 @@
 |---|---|---|
 | 产品 preset `packages/dsh-icl/presets/icl.patch.yml` | 三个 preset（`icl` / `icl-loop` / `icl-mc`）；`icl-core` 只配 `presetId: icl`，**无 `plugins:`、无 `purifySections`** | 文件本身 |
 | 产品 preset 实际插件 | 继承 `DEFAULT_PLUGINS`（17 个）：memory/world-state/recall/note/lexicon/whois/persona/focus/eager-recall/model-manager/time/dream/editor/bili/video/mc-link/album | 本地 `bootstrapHost` 装配模拟 |
-| 产品实际 ICL 工具数 | **66**（含 7 个 `album_*`、6 个 `video_*`、7 个 `bili_*`、17 个 `mcb_*`、editor 等） | 同上（`normalizeConfig({presetId:'icl'})` + bootstrap） |
+| 产品实际 ICL 工具数 | **66 / 44,316 字符**（含 7 个 `album_*`、6 个 `video_*`、7 个 `bili_*`、17 个 `mcb_*`、editor 3 等） | 同上（`normalizeConfig({presetId:'icl'})` + bootstrap）；分项见 `PRODUCT-SURFACE.md` §1 |
 | 首屏净化 | 只在 lab preset 开（4 段 shadow）；产品未开 | `docs/FIRST-SCREEN.md` §2/§6 |
 | sandbox | 只在 lab 进程 `workspace-write`；产品仍按 desktop profile（未改） | `docs/SANDBOX-PLAN.md` §7/§7.7 |
 | 工具/静态体积（cache） | icl-lab（有 video/新插件）**54 工具 / 39,350 字符 / `c1df0e849a9f`**；system **4,195 字符**；icl-mc-lab（allowlist）**27 / 21,459 / `c91bce1e703b`** | cache sanctioned 审计（`6d2c518`），`CACHE-NIGHT §9.1/§9.2` |
-| 旧文档漂移 | `ALBUM.md §10`、`PLUGINS.md`、`VIDEO-EYES.md` 仍写"产品 preset 未挂 album/video（34/41 工具）" | 与上面实际装配冲突，产品化时要一起改文档 |
+| 旧文档漂移 | `ALBUM.md §10`、`PLUGINS.md`、`VIDEO-EYES.md` 曾写"产品 preset 未挂 album/video（34/41 工具）"——**已在本轮修正为当前事实**（产品按默认装配含 album/video，66 工具） | 见三份文档 §启用范围 |
 
-> **结论**：产品化的第一步是"确认 66 工具/40k 字符量级的固定前缀成本是否可接受"（cache 的 icl-lab 54 工具/39,350 字符可作量级参考，产品 66 工具需重启后实测；cache 已建议 lead 单审"工具面预算"）。如果不可接受，先做产品侧工具子集（参照 MC lab 的 `toolAllowlist`，本次已有通用实现），再谈重启。
+> **结论**：产品化的第一步是"确认 66 工具 / 44,316 字符的固定前缀成本是否可接受"（cache 的 icl-lab 54/39,350 可作量级参考）。**方案见 `docs/PRODUCT-SURFACE.md`**：把 mc-link(17/12,492) 从产品 `icl` 移到已有的 `icl-mc` 场景 → **49/31,824**（A1）；sandbox 后再下线 editor(3/1,125) → **46/30,699**（A2），正好 45–50 工具 / 28–32k 字符目标。
 
 ## 2. 草案 A：产品 preset patch（`presets/icl.patch.yml`，**不直接应用**）
 
@@ -138,10 +138,10 @@ plugins:
 
 ## 5. 需要用户拍板的清单（按顺序）
 
-1. **工具面预算**：产品接受 66 工具、约 40k 字符量级的固定前缀吗（cache 的 icl-lab 54/39,350 可作量级参考，产品需重启后实测）？若否，先做产品 `toolAllowlist`（参考 MC lab，本次已有通用实现）。
+1. **工具面预算**：产品接受 66 工具 / **44,316 字符**的固定前缀吗？若不接受，按 `PRODUCT-SURFACE.md` 推荐：A1 = 产品 `icl` 去掉 `mc-link`（→ **49/31,824**，MC 只走 `icl-mc`）；A2 = sandbox 同批下线 `editor`（→ **46/30,699**）。A1/A2 都落在 45–50 工具 / 28–32k 字符目标内，且不动 memory/time/album/video 等生活功能。
 2. **首屏净化**：产品开 4 段 shadow？（推荐先开；仅风险是 deliverable 指引消失。）
-3. **显式插件白名单**：产品写死 17 个（无行为变化）？还是删掉 album/video/bili/editor 中的若干？（后者是行为变化。）
-4. **album 产品启用**：批准隐私边界（私密默认不展示、无自动删、发送需审批）后，产品可用。
+3. **显式插件白名单**：产品写死 15 个（A2：去掉 mc-link/editor，其余同默认）？还是保留 17 个默认全集（无行为变化，66 工具）？
+4. **album 产品启用**：批准隐私边界（私密默认不展示、无自动删、发送需审批）后，产品显式列 `album`（当前默认已生效，显式化不改行为）。
 5. **video 产品启用**：本地视频工具（无 URL 下载）产品可用。
 6. **sandbox**：`workspace-write` + `workspaceRoot` 具体目录 + 审批通道（QQ P1）是否就绪；只限制写、不限制读是否接受。
 7. **重启窗口**：用户定时间；desktop 由用户重启。

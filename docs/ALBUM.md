@@ -151,13 +151,11 @@
 | 范围 | 状态 | 说明 |
 |---|---|---|
 | `DEFAULT_PLUGINS`（`packages/dsh-icl/src/config.mjs`） | 已含 `album` | 新装的 ICL 默认会启用相册 |
-| **lab preset**（`presets/lab.patch.yml` 的 `icl-lab` / `icl-mc-lab`） | **已显式挂载 `- album`** | lab 工具面 34 → **41**（+7 个 `album_*`）；`album` 状态目录 = `<ICL_ROOT>/album` |
-| **产品 preset**（`presets/icl.patch.yml`） | **暂不挂载（待用户批准）** | 产品会话目前仍是 34 工具；用户批准后再加 `- album` 一行即可 |
+| **lab preset**（`presets/lab.patch.yml` 的 `icl-lab` / `icl-mc-lab`） | **已显式挂载 `- album`** | lab 面随 video/bili/新插件变化，当前 cache 实测 `icl-lab` **54 工具 / 39,350 字符**（历史"34→41"是 album 刚落地时的口径）；`album` 状态目录 = `<ICL_ROOT>/album` |
+| **产品 preset**（`presets/icl.patch.yml`） | **未显式列 `plugins`，按 `DEFAULT_PLUGINS` 装配** | 产品 `icl` 实际已含 `album_*`（本地装配 66 工具，其中 album 7）；"产品未启用 album"是旧文档（34/41 工具时代）。显式白名单与产品工具面预算待用户批准/拍板，见 `docs/PRODUCT-SURFACE.md` |
 
-**为什么必须显式挂载**：preset 的 `plugins:` 是白名单——即使插件在 `DEFAULT_PLUGINS` 里，没列进 preset 就不会加载
-（cache 的 layout 审计实测：34 工具、`album_*` 全部不可见，模型只能改用 `list_dir`）。
-回归测试：`packages/core/test/preset-plugins.test.mjs`（lab 两个会话都必须挂 album；两 lab 列表并集覆盖 `DEFAULT_PLUGINS`；
-产品 preset 未挂载项必须是最小的、写进文档的待批准白名单）。
+**为什么 lab 必须显式挂载、产品却是默认生效**：lab preset 的 `plugins:` 是白名单——即使插件在 `DEFAULT_PLUGINS` 里，没列进 lab preset 就不会加载（cache 历史 layout 审计：34 工具、`album_*` 全部不可见，模型只能改用 `list_dir`）。产品 `icl` preset 目前不写 `plugins`，所以继承 `DEFAULT_PLUGINS`（已含 album/video/bili/editor/mc-link），产品侧反而是"默认全量"；产品化要把这份隐式默认改成显式批准清单（见 `PRODUCT-SURFACE.md` §3）。
+回归测试：`packages/core/test/preset-plugins.test.mjs`（lab 两个会话都必须挂 album；两 lab 列表并集覆盖 `DEFAULT_PLUGINS`；产品 preset 未挂载项必须是最小的、写进文档的待批准白名单）。
 
 **cache 红线**：album 只新增工具 schema，不注册任何 `prompt.section`/facts 上下文 → 静态 system 与 `icl:facts` 布局零变化；
 `toolsHash/toolsChars` 会变、工具数 34→41 属预期（历史 34 指纹不回改）。
