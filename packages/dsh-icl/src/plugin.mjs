@@ -109,7 +109,12 @@ export function createIclPlugin({ ctx, config = {} }) {
     // 表现是"dream 整晚没成块、index 永远 0"。启动时把未绑定槽打出来，不静默。
     let unmatchedSlots = []
     try { unmatchedSlots = host.services.slots?.unmatched?.() ?? [] } catch { unmatchedSlots = [] }
-    const slotIds = unmatchedSlots.map((row) => String(row?.id ?? row)).filter(Boolean)
+    // 只有"必需槽"未绑定才算 health error；可选槽（如 album 的 image-embed，没有 CLIP 时图片记忆降级）
+    // 单独放 optionalUnmatched，不把长跑健康行长期标红。
+    const required = unmatchedSlots.filter((row) => row?.optional !== true)
+    const optional = unmatchedSlots.filter((row) => row?.optional === true)
+    const slotIds = required.map((row) => String(row?.id ?? row)).filter(Boolean)
+    const optionalIds = optional.map((row) => String(row?.id ?? row)).filter(Boolean)
     if (slotIds.length) logError({ msg: 'icl.slots-unmatched', slots: slotIds })
     log({
       msg: 'icl.ready',
@@ -117,7 +122,7 @@ export function createIclPlugin({ ctx, config = {} }) {
       plugins: result.enabled.length,
       failed: result.failed,
       tools: bridge.status().tools.length,
-      slots: { unmatched: slotIds },
+      slots: { unmatched: slotIds, optionalUnmatched: optionalIds },
       stateDir: cfg.stateDir,
     })
     return result

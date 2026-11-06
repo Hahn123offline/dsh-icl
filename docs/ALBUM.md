@@ -100,7 +100,7 @@
 - `embedSlot`（默认 `image-embed`，host 声明 512d embedding 插槽）；`embedDim`（默认 512，**维度断言**）；
 - `embedBatchMax`（默认 8）；`caption`（vision 服务 config：baseUrl/model）；`captionPrompt`；`captionMax`（默认 3）。
 
-**provider**：`config/icl.example.json` 已加 `clip-zh` / `clip-en`（dim 512，8088 `/embeddings`）。model-manager 自动接到 album 的 `image-embed` 插槽；文本 query 用同一插槽；图片按 data URL 走 OpenAI 兼容 `/embeddings`（若你的裁剪服务接口不同，改 provider 适配层，不改 album）。
+**provider**：`config/icl.example.json` 已加 `clip-zh` / `clip-en`（dim 512，8088 `/embeddings`）；lab preset 三个会话也配了 `lab-clip-zh`（CPU）。`image-embed` 槽带 `meta.optional:true`——没配 CLIP 时只进 `icl.ready.slots.optionalUnmatched`，**不把必需槽健康行标红**（长跑 `slots.unmatched==[]` 仍成立，语义是"向量检索未配置"）。model-manager 自动接到 album 的 `image-embed` 插槽；文本 query 用同一插槽；图片按 data URL 走 OpenAI 兼容 `/embeddings`（若你的裁剪服务接口不同，改 provider 适配层，不改 album）。
 
 **album_import**：图片入库后若插槽可用 → 立刻嵌入；失败只提示"向量未建：<原因>"，**不阻断入库**；去重命中也会补缺失向量；无 provider 时静默跳过（不污染导入输出）。
 **album_search**：`query` 文本 / `image` 本地路径（图-图）+ `tags`/kind/source/时间窗；返回 topK + 相似度 + 路径；隐私默认不返回（需 `includePrivate+allowPrivate`，与列表同口径）；嵌入不可用/无向量时**降级**为 caption/tags/文件名并说明原因；空查询不凑数。

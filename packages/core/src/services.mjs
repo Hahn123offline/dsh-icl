@@ -838,7 +838,7 @@ export function createSlotRegistry({ onError = null } = {}) {
       return bound.call(request)
     },
     unmatched() {
-      return [...slots.values()].filter((s) => !bindings.has(s.id)).map((s) => ({ id: s.id, kind: s.kind, requires: s.requires }))
+      return [...slots.values()].filter((s) => !bindings.has(s.id)).map((s) => ({ id: s.id, kind: s.kind, requires: s.requires, optional: s.meta?.optional === true }))
     },
     providers() { return [...providers.values()].map((p) => ({ id: p.id, kind: p.kind, shape: p.shape })) },
     list() { return [...slots.values()].map((s) => ({ ...s, binding: bindings.get(s.id) ?? null })) },
