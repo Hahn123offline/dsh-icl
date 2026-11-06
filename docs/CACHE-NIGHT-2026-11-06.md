@@ -124,7 +124,8 @@ node tools/cache-longrun.mjs `
 
 | 指标 | 读法 | 说明 |
 |---|---|---|
-| **槽健康 `slots.unmatched`** | `host.services.slots.unmatched()`（model-manager 也暴露 `unmatched()`）；或 lab `status.json` / morning-report 里的槽绑定信息 | 返回未绑定 provider 的插槽 `[{id,kind,requires}]`。**夜晚 dream 槽未绑定 = dream 整晚 0 事件块**，必须报到；正常应为 0 个核心槽未匹配 |
+| **槽健康 `slots.unmatched`（必需）** | `icl.ready.slots.unmatched`（新格式 `{unmatched:[必需], optionalUnmatched:[可选]}`）；或 `host.services.slots.unmatched()`（返回项带 `optional` 布尔） | **必需槽**未绑定 = 问题（例如 dream-chat 未绑定 → 整晚 0 事件块）。判定仍用 **`slots.unmatched==[]`**；正常应无必需槽缺失 |
+| **槽健康 `slots.optionalUnmatched`（可选）** | 同上 | `image-embed`（album 向量，dim=512）已标 `meta.optional=true`：缺 CLIP 时它出现在这里、**不算红**（语义 = "向量检索未配置"）。lab preset 已接 `lab-clip-zh`（embedding 512d，CPU）；注意**绑定只看 shape**：若 8088 的 `clip-zh` 别名没加载，绑定仍绿但 album import 会报"向量未建" → 健康行同时看 `album.vectors` / import 输出，别只看 slots |
 | **dream job 三态** | memory 命名空间 `dream-run`（`kind='run'`，`key=runKey(day,job)`，`data` 里含 ok/skipped 原因）；或 mc-lab morning-report 的 dream 节 | 三态 = **success / skipped（already-ran、no-raw、nothing-clean…）/ failed**；某天某 job 缺失也记 skipped 以外的一类，单独标红 |
 
 > **口径（misc `109c894` 正式版）**：
