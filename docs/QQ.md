@@ -23,12 +23,15 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 571 pass | `npm test` |
+| 全量测试 | ✅ 605 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
 | **图片通道：QQ 图片字节 → DSH attachment/ImageBlock** | ✅ 已实现（bridge 换 ref；失败降级文字；fake bridge 3 条） | §7.6、`bridge.mjs`、`qq-media.test.mjs`、`dsh-bridge.test.mjs` |
 | **视频/文件落本地媒体目录 + 视频浏览器接口** | ✅ 已实现（`.state/media/inbox/qq/<date>/` + `index.jsonl`；path 约定） | §7.6、`media.mjs`、`qq-media.test.mjs` |
+| **P1 账本工具（qq_unread / qq_history / qq_replied）** | ✅ 已实现（水位/历史/已回，fake 5 条） | §7.7、`ledger.mjs`、`qq-ledger-tools.test.mjs` |
+| **P1 出站引用回复（reply 段）** | ✅ 已实现（单条、账本内目标校验、审计 replyTo） | §7.2、`outbound.mjs`、`qq-send`/`qq-ledger-tools` 测试 |
+| **P1 表情包（本地库列表 + 发送本地图片）** | ✅ 已实现（路径/大小/格式校验，不下载远程） | §7.8、`send-tool.mjs`、`qq-stickers.test.mjs` |
 | **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
 | **F1/F3 QQ 策略进 sim（按需，不进静态 system）** | ✅ `qq_help` 工具 + `skills/reply.md`；qq_status/qq_send 描述承载边界 | §7.5、`src/index.mjs`、`skills/reply.md` |
 | **A2/B1/B2 说话人信封（QQ 部分）** | ✅ 正文前缀 + `meta.qq.envelope`；bridge 侧剩余项见 §7.5 | `src/index.mjs`、`qq-envelope.test.mjs` |
@@ -365,14 +368,17 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 ```
 
 - `index.mjs` **不 import 发送实现**：keys 打开时才 `await import('./send-tool.mjs')`；`send-tool` 才 import `outbound.mjs` 的 `createOutbound`。
-- **目标**：只接受私聊 QQ 号，且必须在 `allowPrivate` 里；phase 1 再要求等于 `ownerQQ`（默认配置 3429502459）。群/富媒体/多目标广播的代码不存在（静态安全测试守着 `send_group_msg` 不出现）。
+- **目标**：只接受私聊 QQ 号，且必须在 `allowPrivate` 里；phase 1 再要求等于 `ownerQQ`（默认配置 3429502459）。群发送代码不存在（静态安全测试守着 `send_group_msg` 不出现）。
 - **内容**：纯文本、非空、≤`maxSendChars`（默认 2000）、敏感信息拦截（`api_key/token/password/sk-…/PRIVATE KEY` 等默认 pattern，可配置）。发送前 Markdown 会转纯文本（`markdownToPlain` 可关）。
+- **引用回复（P1）**：`qq_send {text, replyToMessageId}` → OneBot reply 段（`[{type:'reply',data:{id}},{type:'text',data:{text}}]`）。
+  只允许**单条**文本带引用（多气泡 + 引用拒绝）；目标必须在**当前私聊账本**里（防引用别的会话/伪造 id）；成功后账本把"发送前收到的消息"标记为已回（见 §7.7）。
+- **表情包（P1）**：`qq_send_sticker {id}` 发送**本地库**里的图片（png/jpeg/gif/webp、大小/路径校验、base64:// 段），与 qq_send 共享 owner/白名单/限速/每轮/审计；不下载远程、不执行文件（见 §7.8）。
 - **人类化（P0-3）**：一段回复可拆成 **1–8 条气泡**；条间默认 1–3s、20% 概率 5–10s 长停顿（`gapMode: auto|fixed|typing|byLength`，typing 按 1.4 字/秒估算）；单条超 `maxMessageChars`（默认 500）自动切分，**URL 整条保留、emoji 不被切开**；一条输入被拆成过多气泡时整体拒绝（不发半截）。
 - **限速**：同 peer 最小间隔 5s、每分钟最多 10、每小时最多 60（按气泡数预留）、同文 60s 去重、每轮最多 1 次调用（`turn-end` 重置）。
 - **回执三态**：`ok`（retcode=0 且有 message_id）/ `rejected`（后端明确拒绝）/ `unknown`（超时/连接断/无回执）。**unknown 不自动重试**（OneBot 无幂等键，盲重试会双发）。
 - **失败不冒充成功**：工具文本明确写"没发出去：原因"；多气泡时如实报"已发 k/N，其余未发送"（失败即停、不重试）；`qq_status` 暴露 `send.recent`（时间/peer/outcome/sent/total/messageId/ms）与计数。
 - **kill switch**：每次调用**和每条气泡前**重读 live config；运行中把 `allowSend` 改成 false，下一次/下一气泡立即拒绝。
-- **审计**：`auditFile` JSONL **每条气泡一行** `{at,kind:'send',peerId,chars,textHash,outcome,messageId,ms,batch:{index,total},error?}`，**不存正文全文**。
+- **审计**：`auditFile` JSONL **每条气泡一行** `{at,kind:'send',peerId,chars,textHash,outcome,messageId,ms,batch:{index,total},replyTo?,error?}`（表情行是 `{kind:'sticker',sticker,bytes,...}`），**不存正文/图片字节**。
 - 传输走**独立的出站 WS 连接**（与只读入站分开）：入站连接仍保持 `framesSent===0`；出站连接单独统计帧数。
 
 真实 shadow 的"只收"边界（只读模式仍适用）：
@@ -490,6 +496,32 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
    若要在正文里显式标“这条曾在专注时被拦”，需要 bridge/focus 在重放/摘要时补标记（跨模块项）。
 3. **状态提示**：`qq_status` 已经有最近一条/回执/gap；若要在提示词里给“有人找你”一行，属于 runtime-context 改动（同上）。
 
+### 7.7 P1 账本工具：qq_unread / qq_history / qq_replied
+
+三个工具都**只读账本**（不网络、不改状态），与 §7.3 的 SQLite 账本/补课共用同一份事实：
+
+| 工具 | 参数 | 返回/语义 |
+|---|---|---|
+| `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：所有有记录的私聊（水位/最后/未读约数）；填 peer：水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]` 等标记）。 |
+| `qq_history` | `peer?`, `afterSeq?`, `beforeSeq?`, `limit?` | 按 seq 补看历史（升序）；不填 peer 用最近一个私聊。补课消息正文自带 `[补课]`。 |
+| `qq_replied` | `peer?`, `messageId?` | 填 messageId：该条是否已回 + seq/时间；不填：最后 seq、已回到哪、未回条数。 |
+
+**水位/已回口径（必须写清）**：
+- 水位 = `signals.offer` 被接受（进投递队列、未被 time/focus 拦下）；被拦下的仍在水位之后。插件看不到 focus defer/bridge ack，所以"未读"不等于"用户没看到"。
+- 已回 = **成功发出** QQ 回复时，把"发送前账本里的所有消息"标为已回（quoted reply 至少标到被引用那条的 seq）；
+  发送失败/unknown/被拒绝不会标记。`qq_replied` 只反映这个账本事实，不是送达回执。
+- 补课消息与普通消息同一套账本；`qq_history` 里能看到 `[补课]` 标记。
+
+### 7.8 P1 表情包：本地库列表 + 发送本地图片
+
+- 目录：`stickerDir`（默认 state 同级 `media/stickers`；显式配置优先）；只扫描**单层普通文件**，扩展名 png/jpeg/jpg/gif/webp。
+- `qq_stickers {query?, limit?}`：只读列表（文件名/大小），不读图、不下载、不执行；目录为空/未配置会明确说明。
+- `qq_send_sticker {id, to?}`：
+  - 只接受库内单层文件名（`path.basename`、拒绝 `..`、拒绝目录/符号链接）；`lstat` + 大小上限（默认 10MB）+ 魔数嗅探（png/jpeg/gif/webp）。
+  - 发送为 OneBot `send_private_msg` 的 `image` 段，`file: "base64://…"`；**正文/审计不含本地路径或图片字节**。
+  - 与 `qq_send` 共享：owner/白名单目标、三把钥匙、每轮上限、同 peer 最小间隔/每分钟/每小时、`turn-end` 重置。
+- **收藏**：当前只支持"把文件放进 `stickerDir`"（运维/用户本地操作），不做远程下载/自动收藏；后续 P1 再考虑入站表情收集。
+
 ## 8. 权限与开关
 
 插件全部配置（`host.registerPlugin(... config)` / preset 的 `pluginConfig.qq`）：
@@ -538,6 +570,9 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `maxVideoBytes` / `maxFileBytes` | `52428800` / `52428800` | 单视频/单文件上限 | 超限降级文字、不落盘 |
 | `mediaRetentionDays` | `7` | 保留天数（当前未自动删） | 只记录口径；清理任务后续加，待用户确认 |
 | `mediaFetchImpl` | `null` | 测试注入 fetch | 生产不填 |
+| `stickerDir` | `''` | 本地表情库目录 | 空：state 同级 `media/stickers`；只接受单层图片文件，不下载远程 |
+| `maxStickerBytes` | `10485760` | 单张表情大小上限 | 超限拒绝发送 |
+| `stickerListLimit` | `100` | `qq_stickers`/状态里的列表上限 | 只影响展示，不影响发送 |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -797,7 +832,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 571 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 605 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
@@ -805,6 +840,8 @@ node --test packages/core/test/qq-backfill.test.mjs    # 6 pass（账本/补课�
 node --test packages/core/test/qq-rich.test.mjs        # 11 pass（富段/引用/转发/媒体安全/focus 语义）
 node --test packages/core/test/qq-envelope.test.mjs    # 5 pass（说话人信封/qq_help/工具描述边界）
 node --test packages/core/test/qq-media.test.mjs       # 5 pass（图片字节/视频文件落盘/降级/安全）
+node --test packages/core/test/qq-ledger-tools.test.mjs  # 5 pass（账本工具/引用回复/已回）
+node --test packages/core/test/qq-stickers.test.mjs    # 4 pass（本地表情库/发送/安全边界）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -970,6 +1007,15 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 
 `dsh-bridge.test.mjs` 新增 3 条（共 32）：attachment 成功 → `content` 含 text + image block（ref）；
 `saveImages` 失败 / 没有 attachment 服务 → 只剩文字降级（带本地路径），仍 ack/steer，不丢消息。
+
+### 13.11 P1 账本工具 / 引用回复 / 表情包（fake 已验证）
+
+- `qq-ledger-tools.test.mjs` → **5 pass**：SQLite 账本 `messages/unread/markReplied/replyState` 与重启保留；
+  `qq_unread`（水位/汇总/afterSeq）、`qq_history`（分段补看）、`qq_replied`（单条与聚合）；
+  引用回复：`reply` 段 + messageId、审计 `replyTo`、成功发送后账本标记已回；不在账本里的 id / 多气泡带引用都拒绝且零帧。
+- `qq-stickers.test.mjs` → **4 pass**：列表（扩展名/普通文件/query）、发送本地 PNG（`base64://` 段、无本地路径/字节进审计）、
+  路径穿越/目录/坏格式/超大/不存在拒绝、非白名单目标拒绝、与文字发送共享限速/每轮。
+- 引用回复边界：只支持单条文本；目标必须在本私聊账本里（防跨会话/伪造）；表情发送只接受 `stickerDir` 单层文件。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

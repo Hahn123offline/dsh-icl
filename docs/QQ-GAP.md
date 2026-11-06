@@ -76,7 +76,7 @@
 | 群事件（入群/退群/改名片/撤回） | `social/group-events.js`：规整/去重/分类（stranger/knownElsewhere/returning）；断线丢失靠成员名单对账 | ❌ 无 | 群阶段；P2 | 2 | P2 |
 | poke / notice / request / upload | `qq-ws.js:31-78` 归一 poke/notice/upload；`qq-events.js:150-165` | ❌ 全部忽略（本轮） | 群/社交阶段再定 | 1 | P2 |
 | markdown/json/xml/卡片 | `bridge.js:1387-1398`：markdown 段读 text/content，卡片占位 | ❌ 未知段忽略 | 低风险 | 0.25 | P1 |
-| 入站历史查询工具 | focus-core `qq_history/unread/conversations`；dsh-qq `qq_get_*` 系列 | ❌ 模型无法自己查 | 账本 P0-1 顺带提供 `qq_unread/qq_history` | 见 1.1 | P0-1/P1 |
+| 入站历史查询工具 | focus-core `qq_history/unread/conversations`；dsh-qq `qq_get_*` 系列 | ✅ 已实现 `qq_unread/qq_history/qq_replied`（读 SQLite 账本；`[补课]` 保留） | 未做 `qq_mark_read`（用户未要求）；水位口径见 docs/QQ.md §7.7 | 0（已完成） | 完成 |
 | 消息时间/发送时间分离 | `qq-ledger.js:22-43` sent_at/received_at；`qq-poller.js` | ✅ `normalize.mjs:84-89`+meta | 无 | 0 | — |
 | 入站限流/过期 | 旧靠批处理/预算（`attention-window.js`、`policy.js`） | ✅ 本地 gate 限流/过期 | 无 | 0 | — |
 
@@ -90,7 +90,7 @@
 | 长文安全切分 | `md-to-plain.js:39-67`：按换行/4000 字、**不切代理对**；dsh-qq `splitLongSegment` 保护 URL | ❌ >2000 字直接拒绝 | 拒绝太粗暴；P0-3 | 0.25 | **P0-3** |
 | 引用回复（出站 reply 段） | `qq.js:70-77` 私聊必须用 reply 段（只传 message_id 参数无效）；dsh-qq `resolveReplyTargetV2` 必须确认归属 | ❌ 无 replyTo | P1；P0-2 入站解析是前置 | 1 | P1 |
 | @ 提及 | `qq-ws.js` sendGroup at 段；群阶段 | ❌ 无 | 群阶段 | 0.5 | P2 |
-| 表情包发送/收藏/备注 | dsh-qq `sticker-lib.js`（297 行知识库）+ `send_custom_face`/`add_custom_face`/`modify_custom_face` 动作 + 收集策略配置 | ❌ 无 | P1；需图片发送能力（与 P0-2 共用） | 3 | P1 |
+| 表情包发送/收藏/备注 | dsh-qq `sticker-lib.js`（297 行知识库）+ `send_custom_face`/`add_custom_face`/`modify_custom_face` 动作 + 收集策略配置 | ✅ 首版：本地库列表 `qq_stickers` + 发送本地图片 `qq_send_sticker`（base64:// 段；路径/大小/格式校验） | 知识库/自动收藏/备注留后续；不下载远程 | 0（首版完成） | 完成（首版） |
 | 语音发送 | `voice-tts.js`：QQ AI 声聊（群 `send_group_ai_record`，需 get_msg 回读校验）+ 本地 TTS 端口；`voice-core.js` 音色库/预算 1/min 20/day | ❌ 无 | P2；群 AI 声聊仅群；本地 TTS 依赖额外模型 | 2.5 | P2 |
 | 文件发送 | `files-send.js`：upload_group_file→send_group_msg(file)；私聊 upload_private_file；类型白名单/≤N MB/每会话 3/小时 | ❌ 无 | P2 | 1.5 | P2 |
 | 拍一拍/回应/撤回 | `qq-ws.js` actions；dsh-qq tools | ❌ 无 | P2 | 1 | P2 |
@@ -217,9 +217,14 @@
 
 ### P1（P0 稳定后）
 
-- 账本工具：`qq_unread/qq_history/qq_recent/replied` + `qq_mark_read`（只到已看水位，防假装已读）；验收同旧 `qq-ledger.test.mjs` 5 条。
-- 出站引用回复：reply 段（私聊必须 reply 段）；验收 fake + 真实 1 条。
-- 表情包：移植 `sticker-lib.js`（知识库/备注/策略注入）+ 入站收集 + `send_custom_face`/图片发送；预算/大小/上限；验收 fake + 受控真实 1 张。
+- ✅ **账本工具（2026-11-06 已落地）**：`qq_unread`（水位/未读/汇总）、`qq_history`（按 peer/seq 补看，`[补课]` 保留）、
+  `qq_replied`（单条/聚合"已回"）；账本加 `replied_at`（旧库自动 ALTER），发送成功后把"发送前收到的消息"标为已回。
+  未做 `qq_mark_read`（用户未要求；水位口径见 docs/QQ.md §7.7）。
+- ✅ **出站引用回复（已落地）**：`qq_send {text, replyToMessageId}` → OneBot reply 段；仅单条、目标必须是本私聊账本消息；
+  审计 `replyTo`，不计正文。测试覆盖成功/未知 id/多气泡+引用拒绝。
+- ✅ **表情包（首版已落地）**：本地 `stickerDir` 列表（`qq_stickers`）+ 发送本地图片（`qq_send_sticker`，base64:// 段）；
+  单层文件名/路径穿越/符号链接/大小/魔数校验；与 qq_send 共享目标/限速/每轮/审计；**不下载远程、不执行文件**。
+  表情知识库/自动收藏（旧 `sticker-lib.js`）留后续。
 - 注意力/唤醒矩阵：per-conversation 配置（mode/triggers/budget/batchWindow/睡眠观察）、replyCheck、proactive、nudge digest；**只生成 signal，不接管投递**；验收：配置矩阵单测 + "同一批积压只提醒一次" + 不越权穿透 focus/time。
   **前置语义已修正（2026-11-06 红队）**：私聊默认 ambient，普通消息会被 focus 拦进积压；唤醒矩阵不得自动补 `mention`
   或自造 `admin/alarm` 特权，只在显式 @/真正紧急来源时穿透。
@@ -320,7 +325,7 @@
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-media.test.mjs` 5、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；`dsh-bridge.test.mjs` 32；全量 571 pass。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-media.test.mjs` 5、`qq-ledger-tools.test.mjs` 5、`qq-stickers.test.mjs` 4、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；`dsh-bridge.test.mjs` 36；全量 605 pass。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证

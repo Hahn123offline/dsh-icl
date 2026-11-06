@@ -46,7 +46,7 @@ function memoryLedger() {
         activity: key, seq, qqId: id, signalId: signalId == null ? null : String(signalId),
         at: Number(at) || null, sentAt: Number(sentAt) || null, receivedAt: Number(receivedAt) || null,
         sender: clip(sender, 200), text: clip(text, MAX_TEXT), mention: mention === true,
-        media: media ? JSON.stringify(media) : null, deliveredAt: null,
+        media: media ? JSON.stringify(media) : null, deliveredAt: null, repliedAt: null,
       }
       row.rows.set(seq, message)
       if (id) row.byQqId.set(id, seq)
@@ -67,9 +67,57 @@ function memoryLedger() {
       row.attendedSeq = Math.max(row.attendedSeq, Number(seq) || 0)
       return true
     },
+    /** 按 seq 取消息（升序）；beforeSeq 用于"更早的 N 条"。 */
+    messages(activity, { afterSeq = 0, beforeSeq = null, limit = 50 } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return []
+      const max = Math.max(1, Math.min(200, Number(limit) || 50))
+      const after = Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : 0
+      const rows = [...row.rows.values()].sort((a, b) => a.seq - b.seq)
+        .filter((m) => m.seq > after && (beforeSeq == null || m.seq < Number(beforeSeq)))
+      return rows.slice(0, max).map((m) => ({ ...m }))
+    },
+    /** 水位之后的消息（= 还没被算作"处理过"的）。 */
+    unread(activity, { afterSeq = null, limit = 20 } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return { watermark: { attendedSeq: 0, lastSeq: 0 }, messages: [] }
+      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : row.attendedSeq
+      const messages = [...row.rows.values()].filter((m) => m.seq > after).sort((a, b) => a.seq - b.seq)
+        .slice(0, Math.max(1, Math.min(100, Number(limit) || 20))).map((m) => ({ ...m }))
+      return { watermark: { attendedSeq: row.attendedSeq, lastSeq: row.nextSeq - 1, lastAt: row.lastAt }, messages }
+    },
+    markReplied(activity, { throughSeq = null, at = Date.now() } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return 0
+      const through = Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : row.nextSeq - 1
+      let count = 0
+      for (const message of row.rows.values()) {
+        if (message.seq <= through && message.repliedAt == null) { message.repliedAt = at; count += 1 }
+      }
+      return count
+    },
+    replyState(activity, { messageId = null } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return messageId == null ? { lastSeq: 0, lastRepliedSeq: 0, lastRepliedAt: null, unreplied: 0 } : { found: false, replied: false }
+      if (messageId != null) {
+        const seq = row.byQqId.get(String(messageId))
+        if (!seq) return { found: false, replied: false, messageId: String(messageId) }
+        const message = row.rows.get(seq)
+        return { found: true, messageId: String(messageId), seq, replied: message.repliedAt != null, repliedAt: message.repliedAt ?? null, at: message.at ?? null }
+      }
+      const rows = [...row.rows.values()].sort((a, b) => a.seq - b.seq)
+      const repliedRows = rows.filter((m) => m.repliedAt != null)
+      const lastReplied = repliedRows.length ? repliedRows[repliedRows.length - 1] : null
+      return {
+        lastSeq: row.nextSeq - 1,
+        lastRepliedSeq: lastReplied ? lastReplied.seq : 0,
+        lastRepliedAt: lastReplied ? lastReplied.repliedAt : null,
+        unreplied: rows.filter((m) => m.repliedAt == null).length,
+      }
+    },
     lastKnown(activity) {
       const row = activities.get(String(activity))
-      return row ? { lastQqId: row.lastQqId, lastAt: row.lastAt, attendedSeq: row.attendedSeq, lastInAt: row.lastInAt } : null
+      return row ? { lastQqId: row.lastQqId, lastAt: row.lastAt, attendedSeq: row.attendedSeq, lastInAt: row.lastInAt, lastSeq: row.nextSeq - 1 } : null
     },
     activities() {
       const out = []
@@ -92,8 +140,7 @@ function memoryLedger() {
   }
 }
 
-function sqliteLedger(file, log) {
-  let db
+function sqliteLedger(file, log) {  let db
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     db = new DatabaseSync(file)
@@ -111,6 +158,7 @@ function sqliteLedger(file, log) {
         mention INTEGER NOT NULL DEFAULT 0,
         media TEXT,
         delivered_at INTEGER,
+        replied_at INTEGER,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (activity, seq)
       );
@@ -126,6 +174,8 @@ function sqliteLedger(file, log) {
         updated_at INTEGER
       );
     `)
+    // 旧库升级：replied_at 是 P1 加的列；已有库没有就补。
+    try { db.exec('ALTER TABLE qq_messages ADD COLUMN replied_at INTEGER') } catch { /* 已存在 */ }
   } catch (error) {
     try { db?.close() } catch { /* ignore */ }
     log?.({ level: 'warn', msg: 'qq.ledger.open-fail', error: String(error?.message ?? error), file })
@@ -151,7 +201,28 @@ function sqliteLedger(file, log) {
   const stHas = db.prepare('SELECT 1 AS hit FROM qq_messages WHERE activity = ? AND qq_id = ?')
   const stDeliver = db.prepare('UPDATE qq_messages SET delivered_at = COALESCE(delivered_at, ?) WHERE activity = ? AND seq = ?')
   const stBumpAttended = db.prepare('UPDATE qq_activity SET attended_seq = MAX(attended_seq, ?), updated_at = ? WHERE activity = ?')
-  const stLast = db.prepare('SELECT last_qq_id, last_at, attended_seq, last_in_at FROM qq_activity WHERE activity = ?')
+  const stLast = db.prepare('SELECT last_qq_id, last_at, attended_seq, last_in_at, next_seq FROM qq_activity WHERE activity = ?')
+  const stMessages = db.prepare(`
+    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at
+    FROM qq_messages
+    WHERE activity = ? AND seq > ? AND (? IS NULL OR seq < ?)
+    ORDER BY seq ASC LIMIT ?
+  `)
+  const stUnread = db.prepare(`
+    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at
+    FROM qq_messages
+    WHERE activity = ? AND seq > ?
+    ORDER BY seq ASC LIMIT ?
+  `)
+  const stMarkReplied = db.prepare('UPDATE qq_messages SET replied_at = ? WHERE activity = ? AND seq <= ? AND replied_at IS NULL')
+  const stReplyByQq = db.prepare('SELECT seq, at, replied_at FROM qq_messages WHERE activity = ? AND qq_id = ?')
+  const stReplyAgg = db.prepare(`
+    SELECT MAX(CASE WHEN replied_at IS NOT NULL THEN seq END) AS last_replied_seq,
+           MAX(replied_at) AS last_replied_at,
+           SUM(CASE WHEN replied_at IS NULL THEN 1 ELSE 0 END) AS unreplied,
+           (SELECT next_seq - 1 FROM qq_activity WHERE activity = ?) AS last_seq
+    FROM qq_messages WHERE activity = ?
+  `)
   const stActivities = db.prepare(`
     SELECT a.activity,
            a.attended_seq,
@@ -170,6 +241,24 @@ function sqliteLedger(file, log) {
     FROM qq_messages
   `)
   const stActivityCount = db.prepare('SELECT COUNT(*) AS n FROM qq_activity')
+
+  function mapMessage(row) {
+    return {
+      activity: String(row.activity),
+      seq: Number(row.seq),
+      qqId: row.qq_id == null ? null : String(row.qq_id),
+      signalId: row.signal_id == null ? null : String(row.signal_id),
+      at: row.at == null ? null : Number(row.at),
+      sentAt: row.sent_at == null ? null : Number(row.sent_at),
+      receivedAt: row.received_at == null ? null : Number(row.received_at),
+      sender: String(row.sender ?? ''),
+      text: String(row.text ?? ''),
+      mention: Number(row.mention) === 1,
+      media: row.media == null ? null : row.media,
+      deliveredAt: row.delivered_at == null ? null : Number(row.delivered_at),
+      repliedAt: row.replied_at == null ? null : Number(row.replied_at),
+    }
+  }
 
   return {
     mode: 'sqlite',
@@ -203,7 +292,54 @@ function sqliteLedger(file, log) {
     },
     lastKnown(activity) {
       const row = stLast.get(String(activity))
-      return row ? { lastQqId: row.last_qq_id == null ? null : String(row.last_qq_id), lastAt: row.last_at == null ? null : Number(row.last_at), attendedSeq: Number(row.attended_seq) || 0, lastInAt: row.last_in_at == null ? null : Number(row.last_in_at) } : null
+      return row ? {
+        lastQqId: row.last_qq_id == null ? null : String(row.last_qq_id),
+        lastAt: row.last_at == null ? null : Number(row.last_at),
+        attendedSeq: Number(row.attended_seq) || 0,
+        lastInAt: row.last_in_at == null ? null : Number(row.last_in_at),
+        lastSeq: Number(row.next_seq) - 1,
+      } : null
+    },
+    messages(activity, { afterSeq = 0, beforeSeq = null, limit = 50 } = {}) {
+      const rows = stMessages.all(String(activity), Number(afterSeq) || 0, beforeSeq == null ? null : Number(beforeSeq), beforeSeq == null ? null : Number(beforeSeq), Math.max(1, Math.min(200, Number(limit) || 50)))
+      return rows.map(mapMessage)
+    },
+    unread(activity, { afterSeq = null, limit = 20 } = {}) {
+      const key = String(activity)
+      const known = stLast.get(key)
+      const attended = Number(known?.attended_seq) || 0
+      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : attended
+      const rows = stUnread.all(key, after, Math.max(1, Math.min(100, Number(limit) || 20)))
+      return {
+        watermark: { attendedSeq: attended, lastSeq: Number(known?.next_seq ?? 1) - 1, lastAt: known?.last_at == null ? null : Number(known.last_at) },
+        messages: rows.map(mapMessage),
+      }
+    },
+    markReplied(activity, { throughSeq = null, at = Date.now() } = {}) {
+      const key = String(activity)
+      const known = stLast.get(key)
+      const through = Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : (Number(known?.next_seq ?? 1) - 1)
+      const result = stMarkReplied.run(at, key, through)
+      return Number(result?.changes) || 0
+    },
+    replyState(activity, { messageId = null } = {}) {
+      const key = String(activity)
+      if (messageId != null) {
+        const row = stReplyByQq.get(key, String(messageId))
+        if (!row) return { found: false, replied: false, messageId: String(messageId) }
+        return {
+          found: true, messageId: String(messageId), seq: Number(row.seq),
+          replied: row.replied_at != null, repliedAt: row.replied_at == null ? null : Number(row.replied_at),
+          at: row.at == null ? null : Number(row.at),
+        }
+      }
+      const row = stReplyAgg.get(key, key) ?? {}
+      return {
+        lastSeq: Number(row.last_seq) || 0,
+        lastRepliedSeq: Number(row.last_replied_seq) || 0,
+        lastRepliedAt: row.last_replied_at == null ? null : Number(row.last_replied_at),
+        unreplied: Number(row.unreplied) || 0,
+      }
     },
     activities() {
       return stActivities.all().map((row) => ({

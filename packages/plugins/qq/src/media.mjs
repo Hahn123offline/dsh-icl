@@ -225,7 +225,15 @@ export function saveInboxMedia({
   if (!b || !b.length) throw new Error('saveInboxMedia 需要非空字节')
   const { file, day } = inboxMediaPath({ dir, at, messageId, sender, index, mimeType, originalName })
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, Buffer.from(b))
+  // 先写临时文件再 rename：视频浏览器可能并发 ffprobe，半截文件会被判成坏视频。
+  const tmp = `${file}.part-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  try {
+    fs.writeFileSync(tmp, Buffer.from(b))
+    fs.renameSync(tmp, file)
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* 清理失败不掩盖原错误 */ }
+    throw error
+  }
   const record = {
     at: Number(at) || Date.now(),
     kind: String(kind ?? 'file'),

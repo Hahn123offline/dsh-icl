@@ -28,7 +28,7 @@ import { createBackfill } from './backfill.mjs'
 import { createReplyResolver, pendingReplyText, replyContextText } from './reply-cache.mjs'
 import { expandForwardIds } from './forward.mjs'
 import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
-import { senderIdOf } from './normalize.mjs'
+import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 
 export const name = 'qq'
@@ -114,6 +114,10 @@ const DEFAULTS = Object.freeze({
   maxVideoBytes: MEDIA_DEFAULTS.maxVideoBytes,
   maxFileBytes: MEDIA_DEFAULTS.maxFileBytes,
   mediaRetentionDays: MEDIA_DEFAULTS.retentionDays,
+  // 表情包本地库（只读列表/发送本地文件；不下载远程、不执行文件）
+  stickerDir: '',
+  maxStickerBytes: 10 * 1024 * 1024,
+  stickerListLimit: 100,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -158,8 +162,9 @@ export function normalizeQqConfig(input = {}) {
   cfg.mediaEnabled = cfg.mediaEnabled !== false
   cfg.mediaFetchImpl = typeof input.mediaFetchImpl === 'function' ? input.mediaFetchImpl : null
   cfg.mediaInboxDir = String(cfg.mediaInboxDir ?? '')
+  cfg.stickerDir = String(cfg.stickerDir ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'maxStickerBytes', 'stickerListLimit']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -348,6 +353,7 @@ export async function apply(ctx) {
     }
     try {
       const { registerSendTool } = await import('./send-tool.mjs')
+      const activityFor = (peerId) => activityIdForPrivate(String(peerId))
       sendHandle = await registerSendTool({
         ctx,
         cfg,
@@ -355,6 +361,18 @@ export async function apply(ctx) {
         endpoint,
         now,
         log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
+        validateReply: ({ peerId, messageId }) => Boolean(ledger?.hasMessage(activityFor(peerId), messageId)),
+        onSendStart: ({ peerId }) => ledger?.lastKnown(activityFor(peerId))?.lastSeq ?? 0,
+        onSent: ({ peerId, replyToMessageId, throughSeq, at }) => {
+          if (!ledger) return
+          const activity = activityFor(peerId)
+          let through = Number(throughSeq) || 0
+          if (replyToMessageId) {
+            const target = ledger.replyState(activity, { messageId: replyToMessageId })
+            if (target?.found) through = Math.max(through, Number(target.seq) || 0)
+          }
+          if (through > 0) ledger.markReplied(activity, { throughSeq: through, at })
+        },
       })
       ctx.log({ msg: 'qq.send.enabled', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate, audit: cfg.auditFile || null })
     } catch (error) {
@@ -802,6 +820,11 @@ export async function apply(ctx) {
       maxFileBytes: cfg.maxFileBytes,
       retentionDays: cfg.mediaRetentionDays,
     })
+    // 表情包本地库：显式配置优先；否则 state 同级的 media/stickers（不自动下载/不执行）。
+    cfg.stickerDir = cfg.stickerDir
+      ? resolvePath(cfg.stickerDir)
+      : path.join(path.dirname(path.dirname(mediaDir)), 'stickers')
+    ctx.log({ msg: 'qq.stickers.ready', dir: cfg.stickerDir, maxBytes: cfg.maxStickerBytes, listLimit: cfg.stickerListLimit })
     ledger = createLedger({ file: ledgerFile || null, log: (entry) => ctx.log({ plugin: 'qq', ...entry }) })
     http = createOneBotHttp({
       endpointUrl: cfg.httpUrl || endpoint.httpUrl || '',
@@ -980,6 +1003,131 @@ export async function apply(ctx) {
       properties: { skill: { type: 'string', description: '策略 id（当前只有 reply）；不填列出可用条目。' } },
     },
     async execute({ skill } = {}) { return { text: helpText(skill) } },
+  })
+
+  function ledgerPeerOf(activity) {
+    const match = /^qq:private:([1-9]\d{0,11})$/.exec(String(activity ?? ''))
+    return match ? match[1] : null
+  }
+
+  function ledgerLatestActivity() {
+    const rows = ledger?.activities() ?? []
+    const hit = rows.find((row) => ledgerPeerOf(row.activity))
+    return hit ? String(hit.activity) : null
+  }
+
+  function ledgerActivityFor(peer) {
+    return activityIdForPrivate(String(peer))
+  }
+
+  function resolveLedgerPeer(peer) {
+    const raw = peer == null ? '' : String(peer).trim()
+    if (raw) return raw
+    const latest = ledgerLatestActivity()
+    return latest ? ledgerPeerOf(latest) : null
+  }
+
+  function formatLedgerTime(at) {
+    const n = Number(at)
+    if (!Number.isFinite(n) || n <= 0) return '时间未知'
+    try { return new Date(n).toLocaleString('zh-CN', { hour12: false }) } catch { return '时间未知' }
+  }
+
+  function formatLedgerRow(row) {
+    const sender = row.sender ? `[${row.sender}] ` : ''
+    return `#${row.seq} ${formatLedgerTime(row.at)} ${sender}${row.text || ''}`.trim()
+  }
+
+  ctx.tools.register({
+    name: 'qq_unread',
+    summary: '看 QQ 私聊的未读/上次水位（账本口径：水位只在消息进入投递队列后前进；被 time/focus 拦下的仍在水位之后）。',
+    when: ['想知道有没有还没处理的 QQ 私聊', '想确认上次看到哪条（水位）'],
+    avoid: ['把它当实时未读计数（需要等投递/重连补课）', '用 qq_history 补看具体内容'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        peer: { type: 'string', description: '私聊 QQ 号；不填汇总所有有记录的私聊。' },
+        afterSeq: { type: 'number', description: '只看这个 seq 之后的未读（默认用账本水位）。' },
+        limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）。' },
+      },
+    },
+    async execute({ peer, afterSeq, limit } = {}) {
+      if (!ledger) return { text: '账本未启用，无法查询未读。' }
+      const targetPeer = peer == null ? null : String(peer).trim()
+      if (!targetPeer) {
+        const rows = (ledger.activities() ?? []).map((row) => ({ ...row, peer: ledgerPeerOf(row.activity) })).filter((row) => row.peer)
+        if (!rows.length) return { text: '还没有任何 QQ 私聊记录。' }
+        const lines = rows.map((row) => {
+          const known = ledger.lastKnown(row.activity)
+          const attended = known?.attendedSeq ?? row.attendedSeq ?? 0
+          const last = known?.lastSeq ?? row.total ?? 0
+          return `- ${row.peer}：水位 #${attended}，最后 #${last}，未读约 ${Math.max(0, last - attended)} 条（共 ${row.total} 条）`
+        })
+        return { text: `QQ 私聊账本：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号"} 看具体未读，或 qq_history 补看。` }
+      }
+      const activity = ledgerActivityFor(targetPeer)
+      const out = ledger.unread(activity, { afterSeq: afterSeq == null ? null : Number(afterSeq), limit })
+      const head = `私聊 ${targetPeer}：上次水位 #${out.watermark.attendedSeq}，最后 #${out.watermark.lastSeq}`
+      if (!out.messages.length) return { text: `${head}；没有水位之后的未读消息。` }
+      return { text: `${head}；未读 ${out.messages.length} 条：\n${out.messages.map(formatLedgerRow).join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_history',
+    summary: '按私聊/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]，来源信封带 [QQ私聊·主人] 等）。',
+    when: ['想回看某条 QQ 私聊之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
+    avoid: ['以为这里能看群消息（群整类不接）', '把它当实时未读（用 qq_unread）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        afterSeq: { type: 'number', description: '只看这个 seq 之后。' },
+        beforeSeq: { type: 'number', description: '只看这个 seq 之前（补看更早的用）。' },
+        limit: { type: 'number', description: '最多几条（默认 20，上限 200）。' },
+      },
+    },
+    async execute({ peer, afterSeq, beforeSeq, limit } = {}) {
+      if (!ledger) return { text: '账本未启用，无法查询历史。' }
+      const targetPeer = resolveLedgerPeer(peer)
+      if (!targetPeer) return { text: '没有可查询的 QQ 私聊记录。' }
+      const activity = ledgerActivityFor(targetPeer)
+      const rows = ledger.messages(activity, {
+        afterSeq: afterSeq == null ? 0 : Number(afterSeq),
+        beforeSeq: beforeSeq == null ? null : Number(beforeSeq),
+        limit: limit == null ? 20 : Number(limit),
+      })
+      if (!rows.length) return { text: `私聊 ${targetPeer} 没有符合条件的记录（afterSeq/beforeSeq/limit）。` }
+      return { text: `私聊 ${targetPeer} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_replied',
+    summary: '查某条 QQ 私聊是否已经回过（账本口径：成功发出 QQ 回复时，把发送前收到的消息标为已回；不伪造未发出的回复）。',
+    when: ['想知道对方某条消息是否已经回过了', '避免重复回复同一条'],
+    avoid: ['把它当发送回执（用 qq_status 看 send.recent）', '以为焦点/睡眠拦下的消息已经被回过'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        messageId: { type: 'string', description: '具体消息 messageId（与正文/信封里的 id 对应）。' },
+      },
+    },
+    async execute({ peer, messageId } = {}) {
+      if (!ledger) return { text: '账本未启用，无法查询。' }
+      const targetPeer = resolveLedgerPeer(peer)
+      if (!targetPeer) return { text: '没有可查询的 QQ 私聊记录。' }
+      const activity = ledgerActivityFor(targetPeer)
+      if (messageId != null && String(messageId).trim() !== '') {
+        const state = ledger.replyState(activity, { messageId: String(messageId).trim() })
+        if (!state.found) return { text: `私聊 ${targetPeer} 的账本里没有 messageId=${messageId} 这条消息。` }
+        if (state.replied) return { text: `已经回过（#${state.seq}，回于 ${formatLedgerTime(state.repliedAt)}）。` }
+        return { text: `还没回过（#${state.seq}，收到于 ${formatLedgerTime(state.at)}）。` }
+      }
+      const state = ledger.replyState(activity)
+      return { text: `私聊 ${targetPeer}：最后 #${state.lastSeq}，已回到 #${state.lastRepliedSeq}${state.lastRepliedAt ? `（${formatLedgerTime(state.lastRepliedAt)}）` : ''}；未回 ${state.unreplied} 条。` }
+    },
   })
 
   // 给 driver / 测试读的共享能力（不暴露给模型）

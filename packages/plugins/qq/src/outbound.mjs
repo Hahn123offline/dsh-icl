@@ -215,21 +215,49 @@ export function createOutbound({
     })
   }
 
-  /** 单条文本私聊。只做传输与三态归一；目标/内容/限速由 send-tool 在上层判定。 */
-  async function sendPrivate(peerId, text) {
+  /** 单条私聊文本（可选 reply 段）。传输与三态归一；目标/内容/限速由 send-tool 上层判定。 */
+  async function sendPrivate(peerId, text, { replyToMessageId = null } = {}) {
     const startedAt = now()
     const body = String(text ?? '').trim()
-    log({ msg: 'qq.outbound.attempt', peerId: String(peerId), chars: body.length })
+    let message = body
+    if (replyToMessageId != null && String(replyToMessageId).trim() !== '') {
+      // OneBot 私聊的引用必须用 reply 段（只传 message_id 参数无效）。
+      message = [
+        { type: 'reply', data: { id: String(replyToMessageId).trim() } },
+        { type: 'text', data: { text: body } },
+      ]
+    }
+    log({ msg: 'qq.outbound.attempt', peerId: String(peerId), chars: body.length, replyTo: replyToMessageId == null ? null : String(replyToMessageId) })
     try {
-      const reply = await call('send_private_msg', { user_id: Number(peerId), message: body })
+      const reply = await call('send_private_msg', { user_id: Number(peerId), message })
       const verdict = classifyReply(reply)
-      const result = { ...verdict, ms: now() - startedAt, at: now() }
+      const result = { ...verdict, ms: now() - startedAt, at: now(), replyToMessageId: replyToMessageId == null ? null : String(replyToMessageId) }
       state.lastSent = { at: result.at, peerId: String(peerId), outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
       return result
     } catch (error) {
       const outcome = error?.outcome === 'unknown' || error?.code === 'timeout' || error?.code === 'disconnected' ? 'unknown' : 'unknown'
       const result = { ok: false, outcome, error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
       state.lastSent = { at: result.at, peerId: String(peerId), outcome, messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 单条私聊图片（表情包）：本地字节 → base64:// 段；不发远程 URL。 */
+  async function sendPrivateImage(peerId, { data, mimeType = 'image/png', name = null } = {}) {
+    const startedAt = now()
+    if (!data || !data.byteLength) return { ok: false, outcome: 'rejected', error: '图片字节为空', ms: 0, at: now() }
+    const base64 = Buffer.from(data).toString('base64')
+    const message = [{ type: 'image', data: { file: `base64://${base64}`, ...(name ? { name: String(name) } : {}) } }]
+    log({ msg: 'qq.outbound.attempt', peerId: String(peerId), kind: 'sticker', bytes: data.byteLength, mimeType })
+    try {
+      const reply = await call('send_private_msg', { user_id: Number(peerId), message })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now(), bytes: data.byteLength }
+      state.lastSent = { at: result.at, peerId: String(peerId), outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, peerId: String(peerId), outcome: 'unknown', messageId: null, ms: result.ms }
       return result
     }
   }
@@ -255,6 +283,7 @@ export function createOutbound({
     },
     call,
     sendPrivate,
+    sendPrivateImage,
     status() {
       return {
         state: state.state,
