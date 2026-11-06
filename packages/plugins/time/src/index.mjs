@@ -413,7 +413,7 @@ export function apply(ctx) {
   const goalResumeMinGapSec = Math.max(0, Number(ctx.config.goalResumeMinGapSec ?? 60))
   const maxMuteMs = Math.max(60_000, Number(ctx.config.maxMuteMs ?? 8 * 3_600_000))
   const defaultMuteMin = Math.max(1, Number(ctx.config.defaultMuteMin ?? 30))
-  const emergencyQuotaDefault = Math.max(0, Number(ctx.config.emergencyQuota ?? 2))
+  const emergencyQuotaDefault = Math.max(0, Number(ctx.config.emergencyQuota ?? 0))
   const emergencyTags = (Array.isArray(ctx.config.emergencyTags) ? ctx.config.emergencyTags : ['alarm', 'safety', 'emergency']).map(String)
   const emergencyFrom = Array.isArray(ctx.config.emergencyFrom) ? ctx.config.emergencyFrom.map(String) : null
   const listLimit = Math.max(1, Number(ctx.config.listLimit ?? 20))
@@ -464,6 +464,7 @@ export function apply(ctx) {
     sleepUntil: null,
     lock: null,
     pausedAt: null,
+    pauseReason: null,
     inboxOffset: 0,
     // 清醒节拍/心跳：最后一次 turn-end、下一次自检、最近一小时的节拍时间戳
     lastTurnEndAt: null,
@@ -478,6 +479,10 @@ export function apply(ctx) {
     sleepBrief: null,
     lastSleepBrief: null,
     lastDreamResult: null,
+    // 暂停模式（用户语义：任务停止、世界继续、危险穿透）；phase='paused' 是 time 自己的计时冻结。
+    pausedMode: { active: false, reason: null, since: null, source: null },
+    lastPierce: null,
+    lastBlockedAlarm: null,
     turnEnds: 0,
     heartbeatOverdueLoggedAt: null,
     stats: { dropped: 0, missed: 0, expired: 0, overflow: 0, failed: 0, inboxBad: 0 },
@@ -514,8 +519,12 @@ export function apply(ctx) {
       state.sleepBrief = saved.sleepBrief && typeof saved.sleepBrief === 'object' ? saved.sleepBrief : null
       state.lastSleepBrief = saved.lastSleepBrief && typeof saved.lastSleepBrief === 'object' ? saved.lastSleepBrief : null
       state.lastDreamResult = saved.lastDreamResult && typeof saved.lastDreamResult === 'object' ? saved.lastDreamResult : null
+      state.pausedMode = saved.pausedMode && typeof saved.pausedMode === 'object' ? { active: false, reason: null, since: null, source: null, ...saved.pausedMode } : { active: false, reason: null, since: null, source: null }
+      state.lastPierce = saved.lastPierce && typeof saved.lastPierce === 'object' ? saved.lastPierce : null
+      state.lastBlockedAlarm = saved.lastBlockedAlarm && typeof saved.lastBlockedAlarm === 'object' ? saved.lastBlockedAlarm : null
       state.lock = saved.lock && typeof saved.lock === 'object' ? saved.lock : null
       state.pausedAt = Number(saved.pausedAt) > 0 ? Number(saved.pausedAt) : null
+      state.pauseReason = saved.pauseReason == null ? null : String(saved.pauseReason)
       state.sleepingId = saved.sleepingId == null ? null : String(saved.sleepingId)
       state.sleepUntil = Number(saved.sleepUntil) > 0 ? Number(saved.sleepUntil) : null
       state.since = Number(saved.since) > 0 ? Number(saved.since) : nowTime()
@@ -744,17 +753,18 @@ export function apply(ctx) {
 
   const protectTags = (Array.isArray(ctx.config.protectTags) ? ctx.config.protectTags : ['mention', 'at', 'private', 'direct', 'admin']).map(String)
 
-  /** 条目优先级：有 @/私聊等标签的比 ambient 群消息更值得留。 */
+  /** 条目优先级：alarm 最高，其次 @/私聊，最后 ambient；溢出时先丢 ambient。 */
   function queuePriority(item) {
+    if (item?.priority === 'alarm') return 2
     const tags = Array.isArray(item?.tags) ? item.tags : []
     return tags.some((tag) => protectTags.includes(tag)) ? 1 : 0
   }
 
-  function enqueue(signal, reason) {
+  function enqueue(signal, reason, { priority = 'normal' } = {}) {
     // 同一个信号 id 被重复 offer（blocked 不占 id，调用方可能重试）时不要重复入队。
     if (signal.id != null && state.queue.some((item) => item.signalId === signal.id)) return
     if (state.queue.length >= maxQueue) {
-      // 溢出丢"最不重要的最旧一条"：先保 mention/私聊，再保普通消息。
+      // 溢出丢"最不重要的最旧一条"：先保 alarm/mention/私聊，再保普通消息。
       let victim = 0
       for (let i = 0; i < state.queue.length; i += 1) {
         if (queuePriority(state.queue[i]) < queuePriority(state.queue[victim])) { victim = i; break }
@@ -762,7 +772,7 @@ export function apply(ctx) {
       const dropped = state.queue.splice(victim, 1)[0]
       state.stats.dropped += 1
       state.stats.overflow += 1
-      log('warn', 'time.queue.overflow', { max: maxQueue, dropped: dropped?.id ?? null, from: dropped?.from?.plugin ?? null, protected: queuePriority(dropped) === 1 })
+      log('warn', 'time.queue.overflow', { max: maxQueue, dropped: dropped?.id ?? null, from: dropped?.from?.plugin ?? null, priority: queuePriority(dropped) })
     }
     state.queue.push({
       id: `q-${++queueSeq}-${Date.now().toString(36)}`,
@@ -773,6 +783,7 @@ export function apply(ctx) {
       tags: Array.isArray(signal.tags) ? signal.tags.slice(0, 8) : [],
       focus: signal.focus ?? null,
       reason,
+      priority,
       at: nowTime(),
       createdAt: signal.createdAt ?? null,
       expiresAt: signal.expiresAt ?? null,
@@ -788,17 +799,20 @@ export function apply(ctx) {
   }
 
   function buildBacklogText(reason, items, expired = 0) {
-    const shown = items.slice(0, backlogShow)
+    // 危险/紧急条目排最前（睡眠中攒下的 alarm 醒来第一眼看到），其余保持原顺序。
+    const ordered = [...items.filter((item) => item.priority === 'alarm'), ...items.filter((item) => item.priority !== 'alarm')]
+    const shown = ordered.slice(0, backlogShow)
     const lines = shown.map((item) => {
       const source = item.from?.activity ? `${item.from.plugin}/${item.from.activity}` : (item.from?.plugin ?? '?')
-      return `· [${source}] ${String(item.text ?? '')}`.slice(0, 240)
+      const mark = item.priority === 'alarm' ? '⚠ ' : ''
+      return `· ${mark}[${source}] ${String(item.text ?? '')}`.slice(0, 240)
     })
     let body = lines.join('\n')
-    const more = items.length - shown.length
+    const more = ordered.length - shown.length
     if (more > 0) body += `\n…还有 ${more} 条（${reasonCounts()}）`
     if (body.length > backlogMaxChars) body = `${body.slice(0, backlogMaxChars - 1)}…`
     const expiredNote = expired > 0 ? `；另有 ${expired} 条已过期` : ''
-    return `（${reason}）积压了 ${items.length} 条消息${expiredNote}：\n${body}`
+    return `（${reason}）积压了 ${ordered.length} 条消息${expiredNote}：\n${body}`
   }
 
   /**
@@ -840,6 +854,42 @@ export function apply(ctx) {
     return tags.some((tag) => emergencyTags.includes(tag))
   }
 
+  /** 暂停（用户语义：任务停止、世界继续）：time 的 phase=paused 或外部 pause mode 都算。 */
+  function pausedActive() {
+    return state.phase === 'paused' || state.pausedMode?.active === true
+  }
+
+  /** 危险消息穿透时留痕：状态里可查，time-events 可被 supervisor/mc-link 消费。 */
+  function recordPierce(signal, context) {
+    const at = nowTime()
+    state.lastPierce = {
+      at,
+      plugin: signal.from?.plugin ?? '?',
+      activity: signal.from?.activity ?? null,
+      tags: Array.isArray(signal.tags) ? signal.tags.slice(0, 6) : [],
+      text: String(signal.text ?? '').slice(0, 200),
+      context,
+    }
+    if (state.pausedMode?.active) state.pausedMode.lastPierce = state.lastPierce
+    persist()
+    recordEvent('pause-pierce', { plugin: state.lastPierce.plugin, tags: state.lastPierce.tags, text: state.lastPierce.text, context })
+    log('warn', 'time.pause.pierce', { plugin: state.lastPierce.plugin, tags: state.lastPierce.tags, context })
+  }
+
+  /** 危险消息被拦（睡眠/静音）时留痕；醒来简报/状态会优先展示。 */
+  function recordBlockedAlarm(signal, reason) {
+    state.lastBlockedAlarm = {
+      at: nowTime(),
+      plugin: signal.from?.plugin ?? '?',
+      activity: signal.from?.activity ?? null,
+      tags: Array.isArray(signal.tags) ? signal.tags.slice(0, 6) : [],
+      text: String(signal.text ?? '').slice(0, 200),
+      reason,
+    }
+    recordEvent('alarm-blocked', { plugin: state.lastBlockedAlarm.plugin, tags: state.lastBlockedAlarm.tags, reason })
+    log('warn', 'time.alarm.blocked', { plugin: state.lastBlockedAlarm.plugin, tags: state.lastBlockedAlarm.tags, reason })
+  }
+
   /* ── 唯一拦截层 ── */
 
   function gate(signal) {
@@ -848,32 +898,41 @@ export function apply(ctx) {
     if (signal.to === 'plugin') return { accept: true }
     // 她自己的闹钟/结束语/目标续推：静音不关自己的闹钟（FOCUS.md §1.6）。
     if (signal.from?.plugin === 'time') return { accept: true }
-    if (state.phase === 'paused') { enqueue(signal, 'paused'); return { accept: false, reason: 'paused' } }
-    // 静音优先于睡眠：静音期间连睡眠白名单也不放（除非锁自己的白名单/紧急配额）。
+    const alarm = isEmergency(signal)
+    // 1) 静音（显式沉默）优先：连 alarm 也拦（默认 quota=0），但记录；显式 allow/配额可 opt-in 放行。
     if (state.lock) {
-      if (allowMatch(state.lock.allow, signal)) return { accept: true }
-      if (isEmergency(signal)) {
+      if (allowMatch(state.lock.allow, signal)) { if (alarm) recordPierce(signal, 'mute-allow'); return { accept: true } }
+      if (alarm) {
         const quota = Number(state.lock.emergency?.quota ?? 0)
         const used = Number(state.lock.emergency?.used ?? 0)
         if (used < quota) {
           state.lock.emergency.used = used + 1
           state.lock.emergency.log = [...(state.lock.emergency.log ?? []), { at: nowTime(), plugin: signal.from?.plugin ?? '?', text: String(signal.text ?? '').slice(0, 120) }].slice(-20)
-          persist()
+          recordPierce(signal, 'mute-quota')
           log('info', 'time.lock.emergency', { plugin: signal.from?.plugin ?? '?', used: used + 1, quota })
           return { accept: true, emergency: true }
         }
-        enqueue(signal, 'muted-quota')
-        return { accept: false, reason: 'muted-quota' }
+        enqueue(signal, 'muted', { priority: 'alarm' })
+        recordBlockedAlarm(signal, 'muted')
+        return { accept: false, reason: 'muted', priority: 'alarm' }
       }
       enqueue(signal, 'muted')
       return { accept: false, reason: 'muted' }
     }
+    // 2) 睡眠：危险**不叫醒**，但最高优先级进积压，醒来简报第一条呈现。
     if (state.phase === 'sleeping') {
       const span = activeSleepSpan()
       const allow = Array.isArray(span?.allow) ? span.allow : DEFAULT_ALLOW
-      if (allowMatch(allow, signal)) return { accept: true }
-      enqueue(signal, 'sleeping')
-      return { accept: false, reason: 'sleeping' }
+      if (allowMatch(allow, signal)) { if (alarm) recordPierce(signal, 'sleep-allow'); return { accept: true } }
+      enqueue(signal, 'sleeping', { priority: alarm ? 'alarm' : 'normal' })
+      if (alarm) recordBlockedAlarm(signal, 'sleeping')
+      return { accept: false, reason: 'sleeping', priority: alarm ? 'alarm' : undefined }
+    }
+    // 3) 暂停（任务停止、世界继续）：危险必须穿透并把会话叫醒；其余进积压。
+    if (pausedActive()) {
+      if (alarm) { recordPierce(signal, 'pause'); return { accept: true, pierce: 'alarm' } }
+      enqueue(signal, 'paused')
+      return { accept: false, reason: 'paused' }
     }
     return { accept: true }
   }
@@ -1317,14 +1376,27 @@ export function apply(ctx) {
     }
     const backlogText = queue.length ? `积压 ${queue.length} 条（${sourceText}）` : '没有积压'
     const anomalyText = anomalies.length ? `异常：${anomalies.join('、')}` : '无异常'
+    // 睡眠期的危险/紧急消息：不叫醒，但醒来必须第一条看到。
+    const alarms = queue.filter((item) => item.priority === 'alarm')
+    const alarmSources = [...new Set(alarms.map((item) => item.from?.plugin ?? '?'))].join('、')
+    const alarmSamples = alarms.slice(0, 2).map((item) => `[${item.from?.plugin ?? '?'}] ${String(item.text ?? '').slice(0, 60)}`)
+    const alarmText = alarms.length
+      ? `⚠ 睡眠期间有 ${alarms.length} 条危险/紧急事件（${alarmSources}）${alarmSamples.length ? `：${alarmSamples.join(' / ')}` : ''}`
+      : null
+    const text = [
+      `（睡眠简报：睡了 ${fmtDuration(durationSec * 1000)}；${backlogText}；${dream}；${anomalyText}）`,
+      ...(alarmText ? [alarmText] : []),
+    ].join('\n')
+    if (alarms.length) anomalies.push(`睡眠期危险消息 ${alarms.length} 条`)
     return {
-      text: `（睡眠简报：睡了 ${fmtDuration(durationSec * 1000)}；${backlogText}；${dream}；${anomalyText}）`,
+      text,
       durationSec,
       backlog: queue.length,
       sources: sourceText,
       anomalies,
       dream,
       startedAt,
+      alarms: alarms.length ? { count: alarms.length, sources: alarmSources, samples: alarmSamples } : null,
     }
   }
 
@@ -1371,14 +1443,36 @@ export function apply(ctx) {
 
   /* ── 暂停（冻结计时，不只是停 tick） ── */
 
-  function pause() {
-    if (state.phase === 'paused') return { paused: true, already: true, since: state.pausedAt }
+  function pause(reason = 'time-pause') {
+    if (state.phase === 'paused') return { paused: true, already: true, since: state.pausedAt, reason: state.pauseReason }
     state.pausedAt = nowTime()
+    state.pauseReason = String(reason ?? 'time-pause').slice(0, 200)
     state.phase = 'paused'
     clearAwakeTick()
     persist()
-    log('info', 'time.pause', { at: state.pausedAt })
-    return { paused: true, since: state.pausedAt }
+    recordEvent('pause-on', { reason: state.pauseReason, since: state.pausedAt })
+    log('info', 'time.pause', { at: state.pausedAt, reason: state.pauseReason })
+    return { paused: true, since: state.pausedAt, reason: state.pauseReason }
+  }
+
+  /**
+   * 外部暂停模式（用户语义：任务停止、世界继续、危险穿透）。
+   * mc-body/mc-link 的 mcb_stop 应调用它；不冻结 time 计时（schedule/sleep 照常）。
+   */
+  function setPausedMode(input = {}) {
+    const active = input.active !== false
+    const previous = state.pausedMode?.lastPierce ?? null
+    state.pausedMode = {
+      active,
+      reason: active ? String(input.reason ?? 'external-pause').slice(0, 200) : null,
+      since: active ? nowTime() : null,
+      source: active ? String(input.source ?? 'external') : null,
+      lastPierce: active ? previous : null,
+    }
+    persist()
+    recordEvent(active ? 'paused-mode-on' : 'paused-mode-off', { reason: state.pausedMode.reason, source: state.pausedMode.source })
+    log('info', 'time.paused-mode', { active, reason: state.pausedMode.reason, source: state.pausedMode.source })
+    return { pausedMode: status().pausedMode }
   }
 
   function resume() {
@@ -1396,6 +1490,7 @@ export function apply(ctx) {
     }
     if (state.lock) state.lock.until = Number(state.lock.until) + delta
     state.pausedAt = null
+    state.pauseReason = null
     const sleeping = Boolean(activeSleepSpan())
     state.phase = sleeping ? 'sleeping' : 'awake'
     state.since = now
@@ -1581,8 +1676,10 @@ export function apply(ctx) {
     try {
       switch (cmd) {
         case 'status': return { ok: true, result: api.status() }
-        case 'pause': return { ok: true, result: pause() }
+        case 'pause': return { ok: true, result: pause(args?.reason ?? 'time-pause') }
         case 'resume': return { ok: true, result: resume() }
+        case 'pause_mode':
+        case 'paused_mode': return { ok: true, result: setPausedMode(args) }
         case 'arrange': return { ok: true, result: addSchedule(args) }
         case 'cancel': return { ok: true, result: cancel(args.id) }
         case 'edit': return { ok: true, result: editSchedule(args.id, args) }
@@ -1700,6 +1797,21 @@ export function apply(ctx) {
       lastSleepBoundary: state.lastSleepBoundary ? { ...state.lastSleepBoundary } : null,
       lastSleepBrief: state.lastSleepBrief ? { ...state.lastSleepBrief } : null,
       lastDreamResult: state.lastDreamResult ? { ...state.lastDreamResult } : null,
+      // 用户语义：暂停 = 任务停止、世界继续、危险穿透。mc-body/mc-link 读它对齐文案。
+      pausedMode: {
+        active: pausedActive(),
+        phasePaused: state.phase === 'paused',
+        external: Boolean(state.pausedMode?.active),
+        reason: state.pausedMode?.active ? state.pausedMode.reason : (state.phase === 'paused' ? (state.pauseReason ?? 'time-pause') : null),
+        since: state.pausedMode?.active ? state.pausedMode.since : (state.phase === 'paused' ? state.pausedAt : null),
+        source: state.pausedMode?.active ? state.pausedMode.source : (state.phase === 'paused' ? 'time' : null),
+        worldContinues: true,
+        alarmsPierce: true,
+        lastPierce: state.lastPierce ? { ...state.lastPierce } : null,
+        lastBlockedAlarm: state.lastBlockedAlarm ? { ...state.lastBlockedAlarm } : null,
+      },
+      lastPierce: state.lastPierce ? { ...state.lastPierce } : null,
+      lastBlockedAlarm: state.lastBlockedAlarm ? { ...state.lastBlockedAlarm } : null,
       goalResumeMinGapSec,
       missed: state.stats.missed,
       dropped: state.stats.dropped,
@@ -1725,6 +1837,19 @@ export function apply(ctx) {
     }
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
     lines.push(`状态：${bits.join('；')}。`)
+    // 暂停语义（用户拍板）：任务停止、世界继续、危险会穿透。给 mc-body/mc-link 对齐的口径。
+    if (pausedActive()) {
+      const mode = state.pausedMode?.active ? `${state.pausedMode.source ?? 'external'}：${state.pausedMode.reason ?? ''}` : `time：${state.pauseReason ?? 'time-pause'}`
+      const pierce = state.lastPierce
+        ? `；最近穿透：${state.lastPierce.plugin}（${stampAt(Number(state.lastPierce.at), timeZone)}，${(state.lastPierce.tags ?? []).join('/')}）`
+        : ''
+      lines.push(`暂停（${mode}）：任务停止、世界继续；危险（alarm/safety）会穿透并叫醒你${pierce}。`)
+      const preserved = []
+      if (state.goals.length) preserved.push(`目标 ${state.goals.map((goal) => goal.id).join('、')}`)
+      const focusLease = focusApi?.current?.()
+      if (focusLease) preserved.push(`专注 ${focusLease.title ?? focusLease.label}`)
+      if (preserved.length) lines.push(`保留：${preserved.join('；')}（继续用 time_resume / focus_leave；离开用 time_cancel）。`)
+    }
     const hb = heartbeatStatus()
     if (hb.enabled && state.phase === 'awake') {
       if (hb.state === 'overdue') {
@@ -1807,6 +1932,8 @@ export function apply(ctx) {
     let line = `时间：${p.y}-${pad2(p.m)}-${pad2(p.d)} 周${WEEKDAYS_ZH[isoWeekday(now, timeZone) - 1]} ${hourText}；${phase}`
     if (state.phase === 'sleeping' && state.sleepUntil) line += `（睡到 ${timeOnly(Number(state.sleepUntil), timeZone)}）`
     if (state.lock) line += `（静音到 ${timeOnly(Number(state.lock.until), timeZone)}）`
+    // 暂停事实：任务停止、世界继续、危险会穿透（不写教导，只陈述）。
+    if (pausedActive()) line += `（任务已暂停、世界继续；危险事件会穿透）`
     line += '。'
     const tail = []
     const next = nextUpcoming(now)
@@ -1849,6 +1976,9 @@ export function apply(ctx) {
     unmute,
     lock: () => (state.lock ? { ...state.lock } : null),
     setClock(fn) { return clock ? clock.set(fn) : () => {} },
+    /** 外部暂停模式（mcb_stop 等）：任务停止、世界继续、危险穿透；不冻结 time 计时。 */
+    setPausedMode,
+    pausedMode: () => status().pausedMode,
     ownsClock: () => Boolean(clock?.owns?.()),
     /** 测试/复核用（需 config.testClock）：平移 time 看到的时钟。 */
     advanceClock,
@@ -1959,9 +2089,9 @@ export function apply(ctx) {
   })
   tool({
     name: 'time_pause',
-    summary: '暂停计时：所有到点、长日程、目标期限一起冻结，外部消息转为积压。',
+    summary: '暂停计时：所有到点、长日程、目标期限一起冻结，普通外部消息转为积压；危险（alarm/safety）仍会穿透叫醒你。',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    async execute() { const out = pause(); return { text: out.already ? '已经是暂停状态。' : '已暂停计时。' } },
+    async execute() { const out = pause(); return { text: out.already ? '已经是暂停状态。' : '已暂停计时（任务停止、世界继续；危险会穿透）。' } },
   })
   tool({
     name: 'time_resume',
@@ -1975,8 +2105,8 @@ export function apply(ctx) {
   })
   tool({
     name: 'time_mute',
-    summary: '静音：暂时拦下所有外部消息（可留白名单与紧急配额），到点自动恢复，自己的闹钟不受影响。',
-    description: 'minutes 默认 30；until 可给 ISO/HH:mm/in 式时长，最长 8 小时（超时自动解除，不会把系统卡死）。allow 是白名单规则（同睡眠）。emergencyQuota 是紧急消息放行次数（默认 2）；紧急消息指带 alarm/safety/emergency 标签的来源。静音期间 to:"model" 的外部信号进有界积压。time_status 查剩余，time_unmute 立刻恢复并释放积压摘要。',
+    summary: '静音：暂时拦下所有外部消息（含危险消息，默认也拦；要放行危险请显式配 emergencyQuota/allow），到点自动恢复；自己的闹钟不受影响。',
+    description: 'minutes 默认 30；until 可给 ISO/HH:mm/in 式时长，最长 8 小时（超时自动解除，不会把系统卡死）。默认连 alarm/safety/emergency 也拦下并记录（醒来/恢复时可见）；allow 是白名单规则，emergencyQuota 是显式放行危险的次数（默认 0＝不放行）。静音期间 to:"model" 的外部信号进有界积压。time_status 查剩余，time_unmute 立刻恢复并释放积压摘要。',
     parameters: {
       type: 'object', additionalProperties: false, properties: {
         minutes: { type: 'number', description: '静音多少分钟（默认 30，最长 480）' },

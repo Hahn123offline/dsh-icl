@@ -8,6 +8,7 @@
 //   node tools/time.mjs cancel '{"id":"s-xxx"}'      # 长日程/安排/目标同 id 一起收尾
 //   node tools/time.mjs pause
 //   node tools/time.mjs resume
+//   node tools/time.mjs pause_mode '{"active":true,"reason":"mcb_stop","source":"mc-link"}'
 //   node tools/time.mjs mute '{"minutes":30,"reason":"安静一会儿"}'
 //   node tools/time.mjs unmute
 //   node tools/time.mjs lock

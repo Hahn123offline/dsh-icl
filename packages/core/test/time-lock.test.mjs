@@ -68,17 +68,31 @@ test('静音锁：外部消息进积压、time 自己的闹钟照常响、status
   assert.doesNotThrow(() => host.services.signals.offer({}), '无效信号不该炸掉 gate')
 })
 
-test('静音锁：紧急标签有独立配额，超配额进积压', async () => {
+test('静音锁：显式 emergencyQuota 时危险可 opt-in 放行，超配额进积压', async () => {
   const { host, api } = await boot()
   api.mute({ minutes: 30, emergencyQuota: 1 })
   const first = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '安全停止', tags: ['mc', 'safety', 'alarm'] })
-  assert.equal(first.accepted, true, '紧急事件在配额内必须放行')
+  assert.equal(first.accepted, true, '显式配额内必须放行')
   host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '第二条紧急', tags: ['safety'] })
   const state = api.status()
   assert.equal(state.lock.emergency.used, 1)
   assert.equal(state.backlog, 1)
-  assert.equal(api.queue()[0].reason, 'muted-quota')
+  assert.equal(api.queue()[0].reason, 'muted')
+  assert.equal(api.queue()[0].priority, 'alarm')
   assert.match(drainText(host), /安全停止/)
+})
+
+test('静音默认连 alarm 也拦并记录（用户拍板：只有 mute/sleep 拦）', async () => {
+  const { host, api } = await boot()
+  api.mute({ minutes: 30 })
+  const out = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '危险：血量过低', tags: ['mc', 'safety', 'alarm'] })
+  assert.equal(out.blocked, true)
+  assert.equal(out.reason, 'muted')
+  assert.equal(drainText(host), '', '静音中不叫醒')
+  assert.equal(api.status().lastBlockedAlarm?.reason, 'muted')
+  assert.equal(api.status().lastBlockedAlarm?.plugin, 'mc')
+  assert.equal(api.queue()[0].priority, 'alarm')
+  assert.ok(api.status().lock.emergency.used === 0)
 })
 
 test('静音锁：到期自动解除并释放有界摘要', async () => {
@@ -839,3 +853,72 @@ test('暂停中重启：pausedAt 持久化，resume 后仍然后移', async () =
   assert.match(drainText(second), /重启后的闹钟/)
 })
 
+
+/* ───────────────────── 暂停 / 危险穿透（用户 2026-11-06 拍板） ───────────────────── */
+
+test('暂停不吞 alarm：phase=paused 时 alarm/safety 穿透并记录 lastPierce，普通消息进积压', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  api.pause('mcb_stop')
+  const alarm = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '危险：血量过低', tags: ['mc', 'safety', 'alarm'] })
+  assert.equal(alarm.accepted, true, '暂停中危险必须穿透')
+  assert.match(drainText(host), /危险：血量过低/)
+  const normal = host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '普通消息' })
+  assert.equal(normal.blocked, true)
+  assert.equal(normal.reason, 'paused')
+  const state = api.status()
+  assert.equal(state.pausedMode.active, true)
+  assert.equal(state.pausedMode.alarmsPierce, true)
+  assert.equal(state.lastPierce?.plugin, 'mc')
+  assert.match(api.statusText(), /暂停（time：mcb_stop）：任务停止、世界继续；危险（alarm\/safety）会穿透/)
+  assert.match(api.statusText(), /最近穿透：mc/)
+})
+
+test('外部暂停模式（mcb_stop）：不冻结 time 计时，alarm 穿透，普通消息积压', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  const out = api.setPausedMode({ active: true, reason: 'mcb_stop', source: 'mc-link' })
+  assert.equal(out.pausedMode.active, true)
+  api.add({ id: 'paused-wake', in: '1m', message: '暂停中的闹钟' })
+  virtualNow += 61_000
+  api.tick()
+  assert.match(drainText(host), /暂停中的闹钟/, '外部 pause 不冻结 time 计时（世界继续）')
+  const alarm = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '安全停止', tags: ['safety', 'alarm'] })
+  assert.equal(alarm.accepted, true)
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '普通' })
+  assert.equal(api.status().backlog, 1)
+  const off = api.setPausedMode({ active: false })
+  assert.equal(off.pausedMode.active, false)
+})
+
+test('睡眠中 alarm 不叫醒、进最高优先级积压，醒来简报第一条呈现', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host) // 清掉入睡消息
+  const out = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: '危险：血量过低', tags: ['mc', 'safety', 'alarm'] })
+  assert.equal(out.blocked, true)
+  assert.equal(out.reason, 'sleeping')
+  assert.equal(drainText(host), '', '睡眠中 alarm 不叫醒')
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '普通消息' })
+  assert.equal(api.queue().find((item) => item.priority === 'alarm')?.text, '危险：血量过低')
+  assert.equal(api.status().lastBlockedAlarm?.reason, 'sleeping')
+  virtualNow += 30 * 60_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /⚠ 睡眠期间有 1 条危险\/紧急事件（mc）/)
+  assert.ok(text.indexOf('⚠ 睡眠期间') < text.indexOf('积压了 2 条消息'), '危险摘要必须在积压摘要之前')
+  assert.ok(text.indexOf('危险：血量过低') < text.indexOf('普通消息'), '危险条目排在积压最前')
+  assert.equal(api.status().lastSleepBrief?.alarms?.count, 1)
+})
+
+test('暂停时保留目标/专注并给继续与离开选项（不静默清空）', async () => {
+  const { host, api } = await boot({ withFocus: true, config: { awakeTick: { enabled: false }, goalResumeMinGapSec: 0 } })
+  api.addGoal({ theme: '继续挖矿', focus: 'mc' })
+  drainText(host)
+  api.pause('mcb_stop')
+  const text = api.statusText()
+  assert.match(text, /保留：目标 g-/)
+  assert.match(text, /继续用 time_resume/)
+  assert.equal(api.goals().length, 1, '暂停不清空 goal')
+  assert.ok(host.services.focus.list().some((lease) => lease.label === 'mc'), '暂停不清空 focus')
+})
