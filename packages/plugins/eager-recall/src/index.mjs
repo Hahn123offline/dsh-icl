@@ -5,6 +5,8 @@
 //   1. 不推消息，只交提示词段（走 ctx.prompt.onTurn，由核心装配）
 //   2. 宁缺毋滥：低于阈值一条都不给
 //   3. 只给参考：标明这是记忆检索结果，不是事实
+import fs from 'node:fs'
+
 export const name = 'eager-recall'
 
 export function apply(ctx) {
@@ -19,29 +21,37 @@ export function apply(ctx) {
   const maxItems = Math.max(1, Number(ctx.config.maxItems ?? 2))
   const maxChars = Math.max(40, Number(ctx.config.maxChars ?? 200))
 
-  function effectiveMinScore() {
+  // 用户批准（2026-11-06）：每次评估记 hits/injected/chars，进质量数据（E2 可判定）。
+  const counterFile = ctx.config.counterFile ? String(ctx.config.counterFile) : null
+  function recordCount(entry) {
+    if (!counterFile) return
+    try { fs.appendFileSync(counterFile, `${JSON.stringify({ at: Date.now(), ...entry })}\n`, 'utf8') } catch { /* 计数失败不影响召回 */ }
+  }
+  function effectiveThreshold() {
     let embedded = false
     try { embedded = Boolean(memory.stats?.()?.embedded) } catch { embedded = false }
-    return embedded ? minScore : Math.min(minScore, minScoreNoEmbed)
+    return { threshold: embedded ? minScore : Math.min(minScore, minScoreNoEmbed), embedded }
   }
 
   ctx.prompt.onTurn(async ({ message }) => {
-    if (!enabled) return null
+    if (!enabled) { recordCount({ enabled: false, queryChars: 0, hits: 0, injected: 0, chars: 0 }); return null }
     const query = String(message ?? '').trim()
     if (!query) return null
-    const threshold = effectiveMinScore()
+    const { threshold, embedded } = effectiveThreshold()
     const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore: threshold })
     const picked = hits
       .filter((h) => Number(h.score) >= threshold)
       .filter((h) => h.item.kind !== 'cursor')
       .slice(0, maxItems)
-    if (!picked.length) return null
+    const base = { queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, threshold, embedded }
+    if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
       return `· [${tag}] ${String(h.item.text).slice(0, 80)}`
     })
     let text = `你可能记得（检索结果，仅供参考）：\n${lines.join('\n')}`
     if (text.length > maxChars) text = text.slice(0, maxChars - 1).trimEnd() + '…'
+    recordCount({ ...base, chars: text.length })
     return text
   })
 

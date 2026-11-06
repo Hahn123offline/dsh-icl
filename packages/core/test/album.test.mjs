@@ -208,3 +208,56 @@ test('拼图：没有图片时给下一步（不生成空文件）', async () =>
   assert.match(out.text, /没有可用的图片|没有可拼的图片/)
   assert.equal(out.imagePath, undefined)
 })
+
+test('隐私相册：默认列表/搜索/拼图都看不到；show 必须 allowPrivate 才给路径', async () => {
+  const { root, tools } = await setup()
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  const normal = writePng(src, 'n.png', makePng(2, 2, [1, 1, 1]))
+  const secret = writePng(src, 's.png', makePng(2, 2, [9, 9, 9]))
+  await tools.album_import.execute({ paths: [normal], caption: '普通图' })
+  const imp = await tools.album_import.execute({ paths: [secret], caption: '隐私图', private: true })
+  assert.match(imp.text, /隐私相册/)
+  // 物理分区：private/ 目录存在
+  assert.ok(fs.existsSync(path.join(root, 'private')), '隐私文件应在 private/ 子目录')
+  // 默认列表/搜索/拼图都看不到
+  assert.doesNotMatch((await tools.album_list.execute({})).text, /隐私图/)
+  assert.match((await tools.album_search.execute({ query: '隐私图' })).text, /没有匹配/)
+  const collageAll = await tools.album_collage.execute({ cols: 2 })
+  assert.doesNotMatch(collageAll.text, /#2/, '默认拼图不能包含隐私图')
+  // includePrivate 列表可见且带标记
+  const withPrivate = await tools.album_list.execute({ includePrivate: true })
+  assert.match(withPrivate.text, /隐私相册/)
+  // show 门槛
+  const denied = await tools.album_show.execute({ id: 2 })
+  assert.match(denied.text, /隐私相册/)
+  assert.equal(denied.imagePath, undefined)
+  const allowed = await tools.album_show.execute({ id: 2, allowPrivate: true })
+  assert.ok(allowed.imagePath && fs.existsSync(allowed.imagePath))
+})
+
+test('不自动清理：超过告警阈值仍保留全部，只在 status 提示（用户拍板）', async () => {
+  const { root, tools } = await setup({ config: { warnBytes: 1024 * 1024 } })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  // 1.5MiB 的"文件"（扩展名合法即可入库；尺寸解析失败也不影响）
+  const big = path.join(src, 'big.png')
+  fs.writeFileSync(big, Buffer.alloc(1.5 * 1024 * 1024, 7))
+  await tools.album_import.execute({ paths: [big], caption: '大文件' })
+  const small = writePng(src, 's.png', makePng(2, 2, [3, 3, 3]))
+  await tools.album_import.execute({ paths: [small], caption: '小文件' })
+  const list = await tools.album_list.execute({})
+  assert.equal((list.text.match(/^#\d+/gm) ?? []).length, 2, '超过阈值也不能自动删')
+  const status = await tools.album_status.execute({})
+  assert.match(status.text, /⚠ 已超过告警阈值/, status.text)
+  assert.match(status.text, /不会自动删/)
+})
+
+test('手清：prune 默认跳过隐私项，allowPrivate 才可能删到', async () => {
+  const { tools, service } = await setup()
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  await tools.album_import.execute({ paths: [writePng(src, 'a.png', makePng(2, 2, [1, 2, 3]))] })
+  await tools.album_import.execute({ paths: [writePng(src, 'b.png', makePng(2, 2, [4, 5, 6]))], private: true })
+  const noPrivate = service.prune({ dryRun: true, limitBytes: 1, days: 0 })
+  assert.deepEqual(noPrivate.victims.map((v) => v.id), [1], '默认只清普通相册')
+  const withPrivate = service.prune({ dryRun: true, limitBytes: 1, days: 0, allowPrivate: true })
+  assert.equal(withPrivate.victims.length, 2)
+})

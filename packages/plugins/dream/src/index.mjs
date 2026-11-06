@@ -146,6 +146,13 @@ export function apply(ctx) {
   const maxLineChars = Math.max(40, Number(ctx.config.maxLineChars ?? 400))
   const maxDayLogChars = Math.max(shardChars, Number(ctx.config.maxDayLogChars ?? maxPayloadChars))
   const maxShards = Math.max(1, Number(ctx.config.maxShards ?? 24))
+  // 用户 2026-11-06 批准的记忆分块参数（红队 D1 / E2 质量门）：
+  //   day log 分段落盘（每段 ≤40k，保留绝对行号）；event block 正文 ≤1200 字、摘要 ≤100 字，超长拆 parts；
+  //   events 先按"经历窗口"（相邻行时间间隔 >30min）切段，再在段内合并。
+  const maxSegmentChars = Math.min(maxDayLogChars, Math.max(500, Number(ctx.config.maxSegmentChars ?? 40_000)))
+  const segmentGapMin = Math.max(1, Number(ctx.config.segmentGapMin ?? 30))
+  const maxBlockBody = Math.max(200, Number(ctx.config.maxBlockBody ?? 1200))
+  const maxBlockSummary = Math.max(40, Number(ctx.config.maxBlockSummary ?? 100))
 
   function clipText(value, max = maxLineChars) {
     const s = String(value ?? '')
@@ -234,6 +241,110 @@ export function apply(ctx) {
     }
   }
 
+  /** 当天 day log 的合法 key：`day:<date>`（单段/旧数据）与 `day:<date>:p2..pN`（分段）。 */
+  function isDayLogKey(day, key) {
+    const text = String(key ?? '')
+    if (text === `day:${day}`) return true
+    return text.startsWith(`day:${day}:p`) && /^\d+$/.test(text.slice(`day:${day}:p`.length))
+  }
+
+  /**
+   * 读回当天完整 day log（可能被 wash 分成了多段）。
+   * 返回与旧单条兼容的视图 { text, data:{times,...} }：行号是绝对编号，拼接不改变 evidence 映射。
+   */
+  function readDayLog(day) {
+    let rows = []
+    try { rows = memory.query({ namespace: 'day', kind: 'log', limit: 500 }) } catch { rows = [] }
+    const parts = rows.filter((row) => isDayLogKey(day, row.key))
+    if (!parts.length) return null
+    const orderOf = (row) => {
+      const m = /:p(\d+)$/.exec(String(row.key ?? ''))
+      return m ? Number(m[1]) : 1
+    }
+    parts.sort((a, b) => orderOf(a) - orderOf(b))
+    const text = parts.map((row) => String(row.text ?? '')).filter(Boolean).join('\n')
+    const times = Array.isArray(parts[0]?.data?.times) ? parts[0].data.times : []
+    return { text, data: { times, parts: parts.length, day, omittedLines: Number(parts[0]?.data?.omittedLines ?? 0), totalLines: Number(parts[0]?.data?.totalLines ?? 0) } }
+  }
+
+  /** 把渲染好的 day log 行按字符预算切成多段（每段 ≤ maxSegmentChars，行边界切）。 */
+  function splitLinesByBudget(lines, budget) {
+    const parts = []
+    let current = []
+    let size = 0
+    for (const line of lines) {
+      const cost = String(line).length + 1
+      if (current.length && size + cost > budget) { parts.push(current); current = []; size = 0 }
+      current.push(line)
+      size += cost
+    }
+    if (current.length) parts.push(current)
+    return parts.length ? parts : [[]]
+  }
+
+  /** 解析 material 行里的 HH:MM；解析不到返回 null（归到当前经历段）。 */
+  function lineMinuteOf(line) {
+    const match = /^\s*\[(\d+)\]\s*(?:(\d{1,2}):(\d{2}))?/.exec(String(line ?? ''))
+    if (!match || match[2] == null) return null
+    return Number(match[2]) * 60 + Number(match[3])
+  }
+
+  /** 按"经历窗口"分组：相邻行时间间隔 > gapMin 分钟就切一段（同一天内；跨午夜按同日处理）。 */
+  function groupByExperience(lines, gapMin = 30) {
+    const gapMs = Math.max(1, Number(gapMin) || 30) * 60_000
+    const groups = []
+    let current = []
+    let prevMin = null
+    for (const line of lines) {
+      const minute = lineMinuteOf(line)
+      if (minute != null && prevMin != null && current.length) {
+        let gap = minute - prevMin
+        if (gap < 0) gap += 24 * 60
+        if (gap * 60_000 > gapMs) { groups.push(current); current = [] }
+      }
+      current.push(line)
+      if (minute != null) prevMin = minute
+    }
+    if (current.length) groups.push(current)
+    return groups.length ? groups : [lines]
+  }
+
+  /** 先按经历段切，再按单请求大小分片；总量超 maxShards 时保留头 80%/尾 20% 并记省略。 */
+  function shardByExperience(material, { gapMin = 30 } = {}) {
+    const segments = groupByExperience(material, gapMin)
+    const shards = []
+    let omitted = 0
+    for (const segment of segments) {
+      const out = shardLinesOf(segment)
+      shards.push(...out.shards)
+      omitted += Number(out.omitted) || 0
+    }
+    if (shards.length <= maxShards) return { shards, omitted, segments: segments.length }
+    const head = Math.max(1, Math.floor(maxShards * 0.8))
+    const tail = Math.max(0, maxShards - head)
+    const kept = [...shards.slice(0, head), ...shards.slice(shards.length - tail)]
+    return { shards: kept, omitted: omitted + (shards.length - kept.length), segments: segments.length }
+  }
+
+  /** 把长正文按句子边界切成 ≤ max 字的块（没有句读就硬切），用于 block parts。 */
+  function splitBodyChunks(body, max) {
+    const text = String(body ?? '').trim()
+    if (!text) return ['']
+    if (text.length <= max) return [text]
+    const chunks = []
+    let current = ''
+    for (const piece of text.split(/(?<=[。！？!?\n])/)) {
+      if (!piece) continue
+      if (current.length + piece.length <= max) { current += piece; continue }
+      if (current) { chunks.push(current); current = '' }
+      let rest = piece
+      while (rest.length > max) { chunks.push(rest.slice(0, max)); rest = rest.slice(max) }
+      current = rest
+    }
+    if (current) chunks.push(current)
+    return chunks.length ? chunks : [text.slice(0, max)]
+  }
+
   function runKey(day, job) { return `run:${day}:${job}` }
   function alreadyRan(day, job) {
     const rows = memory.query({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), limit: 1 })
@@ -267,6 +378,19 @@ export function apply(ctx) {
         data: { ok: true, job, skipped: String(result.skipped), ...(result.rawSources ? { rawSources: result.rawSources } : {}), ...(Number(result.missing) ? { missing: Number(result.missing) } : {}) },
         now,
       })
+      return
+    }
+    // 兜底（mc-lab E2 发现）：ok:true 但既没 skipped、也没自己 recordRun 的 job 会三态全缺。
+    // 用"成功 key 是否已存在"判断，不依赖各 job 是否自觉记录；补一行 run:（empty:true），不改语义。
+    if (result?.ok !== false) {
+      const existing = memory.query({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), limit: 1 })
+      if (!existing.length) {
+        memory.put({
+          namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: `${day} ${job}`,
+          data: { ok: true, job, empty: true },
+          now,
+        })
+      }
     }
   }
 
@@ -346,18 +470,33 @@ export function apply(ctx) {
       lines = kept
       total = lines.reduce((n, line) => n + line.length + 1, 0)
     }
-    memory.put({
-      namespace: 'day',
-      kind: 'log',
-      key: `day:${day}`,
-      text: lines.join('\n'),
-      data: { day, lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total, times: cleaned.map((x) => x.at) },
-      now,
+    // 用户批准（2026-11-06）：day log 分段落盘，每段 ≤ maxSegmentChars（默认 40k），行号仍是绝对编号；
+    // events/lexicon 通过 readDayLog(day) 按段拼接读取。先清掉当天旧分段，force 重跑不留过期部分。
+    try {
+      const stale = memory.query({ namespace: 'day', kind: 'log', limit: 500 }).filter((row) => isDayLogKey(day, row.key))
+      for (const row of stale) memory.remove({ namespace: 'day', id: row.id })
+    } catch { /* 清理失败不影响主流程 */ }
+    const segments = splitLinesByBudget(lines, maxSegmentChars)
+    segments.forEach((partLines, index) => {
+      const partText = partLines.join('\n')
+      memory.put({
+        namespace: 'day',
+        kind: 'log',
+        key: index === 0 ? `day:${day}` : `day:${day}:p${index + 1}`,
+        text: partText,
+        data: {
+          day, part: index + 1, parts: segments.length, lines: partLines.length,
+          totalLines: cleaned.length, omittedLines, chars: partText.length,
+          // times 用完整数组（绝对行号 id-1 索引），每段都存一份，拼接后 evidence 映射不变。
+          times: cleaned.map((x) => x.at),
+        },
+        now,
+      })
     })
-    recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total }, now)
+    recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total, parts: segments.length }, now)
     return {
       job: 'wash', ok: true, lines: lines.length, totalLines: cleaned.length,
-      omittedLines, chars: total, degraded: omittedLines > 0,
+      omittedLines, chars: total, parts: segments.length, degraded: omittedLines > 0 || segments.length > 1,
     }
   }
 
@@ -367,16 +506,14 @@ export function apply(ctx) {
     if (!force && alreadyRan(day, 'events')) return { job: 'events', skipped: 'already-ran' }
     // 事件笔记也要跨天：太短没写成块的片段，明天要跟新材料一起重试。
     const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500, order: 'desc' }))
-    let dayLogGate = null
-    try { dayLogGate = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLogGate = null }
-    if (!notes.length && !dayLogGate) return { job: 'events', skipped: 'no-notes' }
+    // day log 可能被 wash 分成了多段：按段拼接读取（行号是绝对编号，evidence 映射不变）。
+    const dayLog = readDayLog(day)
+    if (!notes.length && !dayLog) return { job: 'events', skipped: 'no-notes' }
 
     // 每行带稳定 id：摘要必须能指回原句。
     const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
-    let dayLog = null
-    try { dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLog = null }
-    // 材料行：dayLog（wash 已按预算截断）优先，否则 notes。按片喂模型，单请求 ≤ shardChars。
+    // 材料行：dayLog（wash 已按预算截断/分段）优先，否则 notes。先按经历窗口切段，再按请求大小分片。
     const material = dayLog
       ? dayLog.text.split('\n')
       : notes
@@ -384,7 +521,7 @@ export function apply(ctx) {
         .sort((a, b) => timeOf(a) - timeOf(b))
         .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
     const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
-    const { shards, omitted: omittedShards } = shardLinesOf(material)
+    const { shards, omitted: omittedShards, segments: experienceSegments } = shardByExperience(material, { gapMin: segmentGapMin })
     if (omittedShards) ctx.log({ level: 'warn', msg: 'dream.events-shards-capped', omittedShards, kept: shards.length })
     const instruction = [
       '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
@@ -421,20 +558,19 @@ export function apply(ctx) {
       }
     }
     const written = []
+    const dayLines = dayLog ? dayLogIndex(dayLog) : null
     for (const block of blocks) {
-      const summary = String(block?.summary ?? '').trim()
-      if (!summary) continue
-      const key = `evt:${day}:${hash(summary)}`
+      const summaryRaw = String(block?.summary ?? '').trim()
+      if (!summaryRaw) continue
+      const summary = summaryRaw.slice(0, maxBlockSummary)
+      const baseKey = `evt:${day}:${hash(summary)}`
       const evidence = dayLog
-        ? (() => {
-          const lines = dayLogIndex(dayLog)
-          return (Array.isArray(block?.evidence) ? block.evidence : [])
-            .map((id) => Number(id))
-            .filter((id) => Number.isFinite(id) && lines.has(id))
-            .map((id) => dayEvidence(lines, id))
-        })()
+        ? (Array.isArray(block?.evidence) ? block.evidence : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && dayLines.has(id))
+          .map((id) => dayEvidence(dayLines, id))
         : validEvidence(block?.evidence, notes)
-      const previous = memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
+      const previous = memory.query({ namespace: 'event', kind: 'block', key: baseKey, limit: 1 })[0]
       // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
       if (!evidence.length && previous) continue
       // 同一 summary 重跑：新证据优先，但旧证据不丢（旧行号/正文快照仍可追）。
@@ -442,48 +578,59 @@ export function apply(ctx) {
       for (const old of previous?.data?.evidence ?? []) {
         if (!mergedEvidence.some((e) => e.type === old.type && Number(e.id) === Number(old.id))) mergedEvidence.push(old)
       }
-      const created = memory.put({
-        namespace: 'event',
-        kind: 'block',
-        key,
-        text: summary.slice(0, 200),
-        // 没有出处的块不拒写，但降级；证据存下来以后能追。
-        ...(evidence.length ? {} : {}),
-        data: {
-          body: String(block?.body ?? '').slice(0, 4000),
-          evidence: mergedEvidence,
-          provisional: mergedEvidence.length === 0,
-          day,
-          people: (block?.people ?? []).map(String),
-          tags: normalizeTags(block?.tags),
-          sources: [...new Set([
-            ...notes.map((n) => n.key).filter(Boolean),
-            ...(previous?.data?.sources ?? []),
-          ])],
-          ...(() => {
-            if (dayLog) {
-              const lines = dayLogIndex(dayLog)
-              const times = mergedEvidence
-                .map((e) => Number(e.at) || Number(lines.get(Number(e.id))?.at) || 0)
-                .filter(Boolean)
-              return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
-            }
-            const cited = mergedEvidence.map((e) => notes.find((n) => Number(n.id) === Number(e.id))).filter(Boolean)
-            const times = cited.map((n) => Number(n.data?.at ?? n.createdAt ?? 0)).filter(Boolean)
-            return times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
-          })(),
-        },
-        now,
-      })
-      if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${block?.body ?? ''}`)
-      if (!mergedEvidence.length) {
-        raiseQuestion({
-          text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
-          about: { namespace: 'event', key },
-          raisedBy: 'events',
+      const times = (() => {
+        if (dayLines) {
+          return mergedEvidence
+            .map((e) => Number(e.at) || Number(dayLines.get(Number(e.id))?.at) || 0)
+            .filter(Boolean)
+        }
+        return mergedEvidence
+          .map((e) => notes.find((n) => Number(n.id) === Number(e.id)))
+          .filter(Boolean)
+          .map((n) => Number(n.data?.at ?? n.createdAt ?? 0))
+          .filter(Boolean)
+      })()
+      const span = times.length ? { from: Math.min(...times), to: Math.max(...times) } : {}
+      // 用户批准（2026-11-06）：body ≤1200 字；超长按句子拆成 parts（同一 groupId，检索可合并）。
+      const bodyChunks = splitBodyChunks(String(block?.body ?? ''), maxBlockBody)
+      const total = bodyChunks.length
+      const groupId = hash(summary)
+      for (let index = 0; index < bodyChunks.length; index += 1) {
+        const part = index + 1
+        const key = index === 0 ? baseKey : `${baseKey}:p${part}`
+        const previousPart = index === 0 ? previous : memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
+        const partEvidence = index === 0 ? mergedEvidence : (previousPart?.data?.evidence ?? mergedEvidence)
+        const created = memory.put({
+          namespace: 'event',
+          kind: 'block',
+          key,
+          text: index === 0 ? summary : `${summary}（${part}/${total}）`.slice(0, maxBlockSummary + 8),
+          data: {
+            body: bodyChunks[index],
+            evidence: partEvidence,
+            provisional: partEvidence.length === 0,
+            day,
+            ...(total > 1 && index > 0 ? { parts: { groupId, part, total } } : {}),
+            people: (block?.people ?? []).map(String),
+            tags: normalizeTags(block?.tags),
+            sources: [...new Set([
+              ...notes.map((n) => n.key).filter(Boolean),
+              ...(previous?.data?.sources ?? []),
+            ])],
+            ...span,
+          },
+          now,
         })
+        if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${bodyChunks[index]}`)
+        if (index === 0 && !mergedEvidence.length) {
+          raiseQuestion({
+            text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
+            about: { namespace: 'event', key: baseKey },
+            raisedBy: 'events',
+          })
+        }
+        written.push(created.id)
       }
-      written.push(created.id)
     }
     // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
     const cited = new Set()
@@ -514,9 +661,8 @@ export function apply(ctx) {
     const { start, end } = dayRange(now, tzOf())
     const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'people')) return { job: 'people', skipped: 'already-ran' }
-    // 先看当天原话：人物不应该依赖 wash 恰好抽到了谁
-    let dayLog = null
-    try { dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${day}`, limit: 1 })[0] ?? null } catch { dayLog = null }
+    // 先看当天原话：人物不应该依赖 wash 恰好抽到了谁。day log 可能被分成多段，按段拼接读取。
+    const dayLog = readDayLog(day)
     if (dayLog) {
       try {
         const raw = await ask({
@@ -1033,8 +1179,8 @@ export function apply(ctx) {
     // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
     let sourceLines = []
     try {
-      // 优先用当天洗好的干净原话；没有才退回原文来源
-      const dayLog = memory.query({ namespace: 'day', kind: 'log', key: `day:${dayKey(now, tzOf())}`, limit: 1 })[0]
+      // 优先用当天洗好的干净原话（可能分多段）；没有才退回原文来源
+      const dayLog = readDayLog(dayKey(now, tzOf()))
       if (dayLog?.text) sourceLines = dayLog.text.split('\n')
       else {
         const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []

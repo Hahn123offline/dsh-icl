@@ -156,9 +156,11 @@ export function apply(ctx) {
   const dbFile = path.join(root, 'media.db')
   const collagesDir = path.join(root, 'collages')
   const tmpDir = path.join(root, 'tmp')
-  const maxBytes = Math.max(1024 * 1024, Number(ctx.config.maxBytes ?? 2 * 1024 * 1024 * 1024))
-  const maxFileBytes = Math.max(1024 * 1024, Number(ctx.config.maxFileBytes ?? 200 * 1024 * 1024))
-  const retentionDays = Math.max(1, Number(ctx.config.retentionDays ?? 180))
+  // 用户拍板（2026-11-06）：不自动删除（默认 retentionDays=0 关闭）；单文件默认 512MiB；
+  // 总量只做软告警（默认 >10GiB 提示），不做自动清理；清理只走手动 album_prune。
+  const warnBytes = Math.max(1024 * 1024, Number(ctx.config.warnBytes ?? 10 * 1024 * 1024 * 1024))
+  const maxFileBytes = Math.max(1024 * 1024, Number(ctx.config.maxFileBytes ?? 512 * 1024 * 1024))
+  const retentionDays = Math.max(0, Number(ctx.config.retentionDays ?? 0))
   const collageMax = Math.min(24, Math.max(1, Number(ctx.config.collageMax ?? 16)))
   const maxImportPerCall = Math.min(32, Math.max(1, Number(ctx.config.maxImportPerCall ?? 32)))
   const python = String(ctx.config.python ?? process.env.ALBUM_PYTHON ?? 'python')
@@ -186,6 +188,7 @@ export function apply(ctx) {
       caption TEXT,
       tags TEXT,
       pinned INTEGER NOT NULL DEFAULT 0,
+      private INTEGER NOT NULL DEFAULT 0,
       sent_at INTEGER,
       created_at INTEGER,
       imported_at INTEGER NOT NULL,
@@ -194,11 +197,16 @@ export function apply(ctx) {
     CREATE INDEX IF NOT EXISTS idx_items_library ON items(library, deleted_at, imported_at);
     CREATE INDEX IF NOT EXISTS idx_items_source ON items(source);
   `)
+  // 旧库迁移：items 没有 private 列时补上（默认 0=普通相册）
+  try {
+    const columns = db.prepare('PRAGMA table_info(items)').all().map((row) => row.name)
+    if (!columns.includes('private')) db.exec('ALTER TABLE items ADD COLUMN private INTEGER NOT NULL DEFAULT 0')
+  } catch { /* 迁移失败时新库直接按 CREATE TABLE 走 */ }
   const q = {
     bySha: db.prepare('SELECT * FROM items WHERE sha256 = ?'),
     byId: db.prepare('SELECT * FROM items WHERE id = ? AND deleted_at IS NULL'),
-    insert: db.prepare(`INSERT INTO items (sha256, library, kind, path, ext, bytes, width, height, duration_ms, source, origin, caption, tags, pinned, created_at, imported_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    insert: db.prepare(`INSERT INTO items (sha256, library, kind, path, ext, bytes, width, height, duration_ms, source, origin, caption, tags, pinned, created_at, imported_at, private)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     updateMeta: db.prepare('UPDATE items SET library = COALESCE(?, library), source = COALESCE(?, source), origin = COALESCE(?, origin), caption = COALESCE(?, caption), tags = COALESCE(?, tags) WHERE id = ?'),
     touchDeleted: db.prepare('UPDATE items SET deleted_at = ? WHERE id = ?'),
     total: db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM items WHERE deleted_at IS NULL'),
@@ -211,7 +219,7 @@ export function apply(ctx) {
     const tags = tagList(row.tags)
     return `#${row.id} ${stamp(row.imported_at)} ${row.kind}${row.width ? ` ${row.width}x${row.height}` : ''} ${fmtSize(row.bytes)}` +
       `${tags.length ? ` [${tags.join(',')}]` : ''}${row.source ? ` · ${row.source}` : ''}${row.caption ? ` · ${row.caption}` : ''} — ${displayPath(row)}` +
-      `${row.sent_at ? `（已发过 ${stamp(row.sent_at)}）` : ''}`
+      `${Number(row.private) ? '（隐私相册）' : ''}${row.sent_at ? `（已发过 ${stamp(row.sent_at)}）` : ''}`
   }
   const kindOf = (ext) => (IMAGE_EXT.has(ext) ? 'image' : VIDEO_EXT.has(ext) ? 'video' : null)
   const describe = (query, row) => {
@@ -220,7 +228,7 @@ export function apply(ctx) {
   }
 
   /** 导入单个文件；内部做去重/落盘/元数据。 */
-  async function importFile({ path: src, library = DEFAULT_LIBRARY, source = 'manual', caption = null, tags = null, origin = null, createdAt = null, pinned = false } = {}) {
+  async function importFile({ path: src, library = DEFAULT_LIBRARY, source = 'manual', caption = null, tags = null, origin = null, createdAt = null, pinned = false, private: isPrivate = false } = {}) {
     const file = path.resolve(String(src ?? ''))
     if (!file) throw new Error('缺少 path')
     let st
@@ -241,7 +249,8 @@ export function apply(ctx) {
     const head = fs.readFileSync(file, { encoding: null, flag: 'r' }).subarray(0, Math.min(64 * 1024, st.size))
     const size = kind === 'image' ? readImageSize(head, ext) : null
     const lib = safeLibrary(library)
-    const bucket = path.join(lib, dayKey(createdAt ?? Date.now()))
+    // 隐私分区：物理上放 private/<library>/<yyyy-mm>/，普通列表默认看不到。
+    const bucket = isPrivate ? path.join('private', lib, dayKey(createdAt ?? Date.now())) : path.join(lib, dayKey(createdAt ?? Date.now()))
     const targetDir = path.join(root, bucket)
     fs.mkdirSync(targetDir, { recursive: true })
     const name = `${sha.slice(0, 16)}${ext}`
@@ -252,14 +261,15 @@ export function apply(ctx) {
     const now = ctx.now()
     const info = q.insert.run(sha, lib, kind, rel, ext, st.size, size?.width ?? null, size?.height ?? null, null,
       String(source ?? 'manual'), origin ? JSON.stringify(origin) : null, caption ? String(caption).slice(0, 500) : null,
-      tags ? JSON.stringify(tagList(tags)) : null, pinned ? 1 : 0, createdAt ? Number(createdAt) : null, now)
+      tags ? JSON.stringify(tagList(tags)) : null, pinned ? 1 : 0, createdAt ? Number(createdAt) : null, now, isPrivate ? 1 : 0)
     const row = q.byId.get(Number(info.lastInsertRowid))
-    maybeShrink()
     return { ok: true, deduped: false, row }
   }
 
-  function queryRows({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includeDeleted = false } = {}) {
+  function queryRows({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includePrivate = false, allowPrivate = false, includeDeleted = false } = {}) {
     let rows = includeDeleted ? q.all.all() : q.all.all()
+    // 隐私项默认完全不出现在列表/搜索/拼图里；显式 includePrivate 才可见（且标记）。
+    if (!includePrivate) rows = rows.filter((row) => !Number(row.private))
     if (library) rows = rows.filter((row) => row.library === safeLibrary(library))
     if (kind) rows = rows.filter((row) => row.kind === String(kind))
     if (source) rows = rows.filter((row) => String(row.source ?? '') === String(source))
@@ -270,16 +280,17 @@ export function apply(ctx) {
   }
 
   /** 体积上限：删最旧、未置顶的，删前允许 dryRun。 */
-  function pruneNow({ dryRun = true, limitBytes = maxBytes, days = retentionDays } = {}) {
+  function pruneNow({ dryRun = true, limitBytes = warnBytes, days = retentionDays, allowPrivate = false } = {}) {
     const now = ctx.now()
-    const cutoff = now - days * 86_400_000
+    const cutoff = days > 0 ? now - days * 86_400_000 : 0
     const rows = q.all.all()
     let total = rows.reduce((n, row) => n + Number(row.bytes || 0), 0)
     const victims = []
     // 先按保留天数（未置顶）标老件，再按体积上限从最旧开始标。
     for (const row of [...rows].reverse()) {
       if (row.pinned) continue
-      const old = Number(row.imported_at) < cutoff
+      if (Number(row.private) && !allowPrivate) continue
+      const old = days > 0 && Number(row.imported_at) < cutoff
       const over = total > limitBytes
       if (!old && !over) continue
       victims.push({ row, reason: old ? 'expired' : 'size' })
@@ -292,27 +303,20 @@ export function apply(ctx) {
         q.touchDeleted.run(now, row.id)
       }
     }
-    return { dryRun, victims: victims.map((v) => ({ id: v.row.id, path: displayPath(v.row), bytes: v.row.bytes, reason: v.reason })), freed, limitBytes, days }
+    return { dryRun, victims: victims.map((v) => ({ id: v.row.id, path: displayPath(v.row), bytes: v.row.bytes, reason: v.reason, private: Boolean(Number(v.row.private)) })), freed, limitBytes, days }
   }
 
-  /** 导入后自动按体积上限缩（不按天数静默删）。 */
-  function maybeShrink() {
-    if (ctx.config.autoPrune === false) return
-    const { n, b } = q.total.get()
-    if (Number(b) <= maxBytes) return
-    const out = pruneNow({ dryRun: false, limitBytes: maxBytes, days: 36500 })
-    if (out.victims.length) ctx.log({ msg: 'album.auto-prune', removed: out.victims.length, freed: out.freed })
-  }
-
-  async function collage({ ids = null, library = null, tag = null, source = null, since = null, until = null, cols = 4, cell = 320, label = true } = {}) {
+  async function collage({ ids = null, library = null, tag = null, source = null, since = null, until = null, cols = 4, cell = 320, label = true, includePrivate = false, allowPrivate = false } = {}) {
     let picked = []
     if (Array.isArray(ids) && ids.length) {
       for (const raw of ids.slice(0, collageMax)) {
         const row = q.byId.get(Number(raw))
-        if (row && row.kind === 'image') picked.push(row)
+        if (!row || row.kind !== 'image') continue
+        if (Number(row.private) && !(includePrivate && allowPrivate)) continue
+        picked.push(row)
       }
     } else {
-      picked = queryRows({ library, kind: 'image', tag, source, since, until, limit: collageMax })
+      picked = queryRows({ library, kind: 'image', tag, source, since, until, limit: collageMax, includePrivate: includePrivate && allowPrivate, allowPrivate })
     }
     picked = picked.slice(0, collageMax)
     if (!picked.length) {
@@ -361,14 +365,15 @@ export function apply(ctx) {
         source: { type: 'string', description: 'Where it came from: bili / qq / manual / ...' },
         caption: { type: 'string', description: 'One-line description (searchable).' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Short tags.' },
+        private: { type: 'boolean', description: 'Put it in the private album (never listed/shown/sent unless explicitly allowed).' },
       },
     },
-    async execute({ paths = [], library = DEFAULT_LIBRARY, source = 'manual', caption = null, tags = null } = {}) {
+    async execute({ paths = [], library = DEFAULT_LIBRARY, source = 'manual', caption = null, tags = null, private: isPrivate = false } = {}) {
       const list = (Array.isArray(paths) ? paths : []).map(String).filter(Boolean).slice(0, maxImportPerCall)
       if (!list.length) return { text: '给我至少一个本地文件路径。' }
       const lines = []
       for (const file of list) {
-        const out = await importFile({ path: file, library, source, caption, tags })
+        const out = await importFile({ path: file, library, source, caption, tags, private: Boolean(isPrivate) })
         lines.push(out.ok
           ? `#${out.row.id} ${out.deduped ? '已在相册里（去重命中）' : '入库'} — ${metaLine(out.row)}`
           : `失败（${file}）：${out.error}`)
@@ -393,10 +398,11 @@ export function apply(ctx) {
         since: { type: 'number', description: 'Epoch ms lower bound (imported_at).' },
         until: { type: 'number' },
         limit: { type: 'number', description: 'Default 20, max 200.' },
+        includePrivate: { type: 'boolean', description: 'Also list the private album (default false).' },
       },
     },
-    execute({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20 } = {}) {
-      const rows = queryRows({ library, kind, tag, source, since, until, limit })
+    execute({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includePrivate = false } = {}) {
+      const rows = queryRows({ library, kind, tag, source, since, until, limit, includePrivate: Boolean(includePrivate) })
       if (!rows.length) {
         const { n } = q.total.get()
         return { text: n === 0 ? '相册还是空的：还没有导入任何图片/视频。' : `没有符合这个条件的（相册共 ${n} 件；换个筛选条件试试）。` }
@@ -414,13 +420,19 @@ export function apply(ctx) {
       type: 'object',
       additionalProperties: false,
       required: ['query'],
-      properties: { query: { type: 'string' }, limit: { type: 'number', description: 'Default 10, max 50.' } },
+      properties: {
+        query: { type: 'string' },
+        limit: { type: 'number', description: 'Default 10, max 50.' },
+        includePrivate: { type: 'boolean', description: 'Search the private album too (needs allowPrivate:true).' },
+        allowPrivate: { type: 'boolean', description: 'Explicitly allow touching the private album.' },
+      },
     },
-    execute({ query = '', limit = 10 } = {}) {
+    execute({ query = '', limit = 10, includePrivate = false, allowPrivate = false } = {}) {
       const needle = String(query ?? '').trim()
       const { n } = q.total.get()
       if (!needle) return { text: n === 0 ? '相册还是空的。' : `要搜什么？相册共 ${n} 件。` }
-      const rows = q.all.all().filter((row) => describe(needle, row)).slice(0, Math.min(50, Math.max(1, Number(limit) || 10)))
+      const canSeePrivate = Boolean(includePrivate && allowPrivate)
+      const rows = q.all.all().filter((row) => (canSeePrivate || !Number(row.private)) && describe(needle, row)).slice(0, Math.min(50, Math.max(1, Number(limit) || 10)))
       if (!rows.length) return { text: `相册里没有匹配的（共 ${n} 件，关键词「${needle.slice(0, 40)}」）。换个说法、去掉标签/来源限制，或者先 album_list 看看？` }
       return { text: `找到 ${rows.length} 件：\n${rows.map(metaLine).join('\n')}` }
     },
@@ -444,6 +456,8 @@ export function apply(ctx) {
         cols: { type: 'number', description: 'Default 4, 1-8.' },
         cell: { type: 'number', description: 'Pixel size per cell (default 320, 128-1024).' },
         label: { type: 'boolean', description: 'Burn #id in each cell (default true).' },
+        includePrivate: { type: 'boolean', description: 'Include private-album images (needs allowPrivate:true).' },
+        allowPrivate: { type: 'boolean', description: 'Explicitly allow touching the private album.' },
       },
     },
     execute(args = {}) { return collage(args) },
@@ -454,10 +468,13 @@ export function apply(ctx) {
     summary: 'Show one album item in detail (path, size, tags, source, sent state).',
     when: ['you need the local path of one picture/clip'],
     avoid: ['browsing - use album_list'],
-    parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'number' } } },
-    execute({ id } = {}) {
+    parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'number' }, allowPrivate: { type: 'boolean', description: 'Explicitly allow showing a private-album item.' } } },
+    execute({ id, allowPrivate = false } = {}) {
       const row = q.byId.get(Number(id))
       if (!row) return { text: `相册里没有 #${id}（可能已删除）。` }
+      if (Number(row.private) && !allowPrivate) {
+        return { text: `#${id} 在隐私相册里：不能直接展示/发送。确认只有你自己看（或用户明确允许）后，用 album_show {id, allowPrivate:true}。` }
+      }
       return { text: metaLine(row), imagePath: row.kind === 'image' ? absOf(row) : undefined }
     },
   })
@@ -470,12 +487,15 @@ export function apply(ctx) {
     parameters: {
       type: 'object',
       additionalProperties: false,
-      properties: { dryRun: { type: 'boolean', description: 'Default true.' } },
+      properties: {
+        dryRun: { type: 'boolean', description: 'Default true; false only when you really want to delete.' },
+        allowPrivate: { type: 'boolean', description: 'Also allow pruning private-album items (default false).' },
+      },
     },
-    execute({ dryRun = true } = {}) {
-      const out = pruneNow({ dryRun: Boolean(dryRun) })
+    execute({ dryRun = true, allowPrivate = false } = {}) {
+      const out = pruneNow({ dryRun: Boolean(dryRun), allowPrivate: Boolean(allowPrivate) })
       const head = out.dryRun ? `清理预览（没动手）：将删 ${out.victims.length} 件、释放 ${fmtSize(out.freed)}` : `已清理 ${out.victims.length} 件、释放 ${fmtSize(out.freed)}`
-      const lines = out.victims.slice(0, 20).map((v) => `#${v.id} ${v.reason === 'expired' ? '超过保留天数' : '超出体积上限'} ${fmtSize(v.bytes)} — ${v.path}`)
+      const lines = out.victims.slice(0, 20).map((v) => `#${v.id} ${v.reason === 'expired' ? '超过保留天数' : '超出体积上限'} ${fmtSize(v.bytes)}${v.private ? '（隐私）' : ''} — ${v.path}`)
       return { text: [head, ...lines, out.victims.length > 20 ? `…还有 ${out.victims.length - 20} 件` : ''].filter(Boolean).join('\n') }
     },
   })
@@ -488,6 +508,7 @@ export function apply(ctx) {
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     execute() {
       const { n, b } = q.total.get()
+      const warn = Number(b) > warnBytes ? `\n⚠ 已超过告警阈值（${fmtSize(warnBytes)}）：只提示，不会自动删；要清用 album_prune（默认 dryRun 预览）。` : ''
       const rows = q.all.all()
       const libs = [...new Set(rows.map((row) => row.library))]
       const sources = [...new Set(rows.map((row) => row.source).filter(Boolean))]
@@ -495,8 +516,8 @@ export function apply(ctx) {
       const pinned = rows.filter((row) => row.pinned).length
       return {
         text: `相册：${n} 件（图片 ${images} / 视频 ${n - images}，置顶 ${pinned}），共 ${fmtSize(b)}；`
-          + `上限 ${fmtSize(maxBytes)}，保留 ${retentionDays} 天；库：${libs.join(', ') || '（空）'}；来源：${sources.join(', ') || '（空）'}；`
-          + `位置：${root}`,
+          + `告警阈值 ${fmtSize(warnBytes)}（只提示，不自动删；保留策略 ${retentionDays === 0 ? '关闭（全部保留，手清）' : `${retentionDays} 天`}）；库：${libs.join(', ') || '（空）'}；来源：${sources.join(', ') || '（空）'}；`
+          + `位置：${root}${warn}`,
       }
     },
   })
@@ -506,7 +527,7 @@ export function apply(ctx) {
     root,
     importFile,
     list: (opts = {}) => queryRows(opts).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, caption: row.caption, tags: tagList(row.tags), importedAt: row.imported_at })),
-    search: (query, opts = {}) => q.all.all().filter((row) => describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
+    search: (query, opts = {}) => q.all.all().filter((row) => (opts.includePrivate ? true : !Number(row.private)) && describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
     prune: (opts = {}) => pruneNow(opts),
     status: () => ({ count: Number(q.total.get().n), bytes: Number(q.total.get().b), root, dbFile }),
   })

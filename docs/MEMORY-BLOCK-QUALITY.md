@@ -134,15 +134,17 @@ memory.index(id) → false                              ← 静默 0 的原因
 - E2 指标：`indexCoverage = vec / recallableItems`，无 embed 时显示"未配置嵌入"而不是 0%；
 - eager-recall：每次评估记 `hits/injected/chars` 计数（进质量数据），便于区分"没命中"与"坏了"。
 
-### 3.6 待用户批准（行为修改，**均未实施**）
+### 3.6 用户已批准并已实施（2026-11-06）
 
-1. **day log 分段落盘**：`day:<yyyy-mm-dd>:p1..pN`，每段 ≤40k 字符、保留原话绝对行号；events/lexicon 按段读取（§3.3）。
-2. **event block 上限 + parts**：`summary ≤ 100`、`body ≤ 1200` 字（对齐 E2 块 p95 阈值）；超长事件拆 `data.parts={groupId,part,total}`（§3.3）。
-3. **按经历时间窗切段**：events 先按"事件间隔 > 30min"切经历段，再段内按话题合并（§3.3）。
-4. **recall 触发教学**：`prompts/sim.md` 补 2–3 条具体触发场景 + 一个"查完说依据"示例；`recall` 工具描述补 when（§3.4）。
-5. **eager-recall 计数可观测**：hits/injected/chars 进质量数据（§3.5，纯观测，可与 1–4 分开批）。
+1. **day log 分段落盘**：`day:<yyyy-mm-dd>` + `day:<yyyy-mm-dd>:p2..pN`，每段 ≤ `maxSegmentChars`（默认 40k，可配）；保留原话绝对行号；`readDayLog(day)` 按段拼接供 events/people/lexicon 读取（§3.3）。
+2. **event block 上限 + parts**：`summary ≤ maxBlockSummary`（默认 100）、`body ≤ maxBlockBody`（默认 1200）；超长正文按句拆块，后续块带 `data.parts={groupId,part,total}`，首块不带 parts；检索可按 groupId 合并（§3.3）。
+3. **按经历时间窗切段**：events 先按"相邻行 HH:MM 间隔 > `segmentGapMin`（默认 30min）"切经历段，再段内按请求大小分片（§3.3）。
+4. **recall 触发教学**：`prompts/sim.md` 补 3 条触发场景（问过去/要旧细节/不确定先查）+ "没找到就说没找到"；`recall` 工具 `when` 补对应场景（§3.4）。
+5. **eager-recall 计数可观测**：每次评估把 `hits/injected/chars/threshold/embedded/queryChars` 追加到 `eager-recall.jsonl`（`configFor('eager-recall')` 默认 `<stateDir>/eager-recall.jsonl`）；E2 可直接读（§3.5）。
 
-> 以上任何一条改动前都会先给出可回滚的测试与验收判据；1–3 会影响 dream/recall 的现有行为，需要回归 `dream-jobs`/`recall-honesty`/`e2` 场景。
+测试：`packages/core/test/memory-blocks.test.mjs`（4 条：day 分段/block parts/经历窗口/eager 计数）；回归 `dream-jobs`、`recall-honesty`、`dream-observability`、`eager-recall` 全绿。
+
+> 语义影响：1–3 改变 dream 的输出形状（day 行数、块数、请求数），但 **不改** memory 检索/评分语义，也不改静态 system/facts 结构（cache 红线：`icl:core`/`icl:facts` 布局不变；sim 文案有更新属静态文本演进）。
 
 ## 4. E2 判据 ↔ mc-quality 快照字段对齐
 
@@ -175,9 +177,9 @@ mc-lab 的 `tools/mc-quality.mjs` 现状快照字段（night-1 即由它产出�
 ## 5. 执行顺序与当前状态
 
 1. ✅ **已实施（低风险可观测）**：dream job 失败/跳过落 `dream-run`（`fail:`/`skip:` 行）+ `jobIndex` 的 `no-embed` skip + `slots.unmatched` 启动日志——见 §3.0，测试 `dream-observability.test.mjs`。
-2. ⏳ **lab 配置（mc-lab 负责）**：lab patch 注入 providers（夜间长测前必须，否则 dream 永远不会成块）。
-3. ⏳ **E2 指标口径（mc-lab 负责）**：原料/块分离 + dream job 三态 + 槽健康（字段对照见 §4；现有 quality 解析器可直接读 `fail:`/`skip:` 行）。
-4. ⏸ **分块策略（待用户批准）**：day log 分段 + block 上限/parts + 经历窗口（记忆模块改动，需回归 dream/recall/cleanup）。
-5. ⏸ **recall 教学（待用户批准）**：sim 2–3 条触发场景 + 指标观测。
+2. ✅ **lab 配置**：mc-lab 已在两个 lab preset 注入 8088 chat/embedding providers（commit `34b450a`），槽健康恢复。
+3. ✅ **E2 指标口径**：mc-lab 已改为三态统计（ran/skip/fail + 缺行 `dream-job-missing` 告警）与原料/块分离（§4 字段）。
+4. ✅ **分块策略（用户 2026-11-06 批准）**：day log 分段 + block 上限/parts + 经历窗口，见 §3.6；测试 `memory-blocks.test.mjs`。
+5. ✅ **recall 教学（用户批准）**：sim 3 条触发场景 + recall `when`；eager 计数落 `eager-recall.jsonl`（§3.6）。
 
-> 蓝队补充：本轮已落地的 `dream-result` 回执（`60d8abe`）会把 dream 失败带进醒来简报——只要 lab 绑定 providers 前，她至少会看到"记忆整理：失败（…）"，不会再以为整理成功。
+> 蓝队补充：`dream-result` 回执（`60d8abe`）会把 dream 失败带进醒来简报；`recordOutcome` 新增兜底：`ok:true` 但 job 没自己写 `run:` 时补 `run:`（`empty:true`），保证三态不因未来新 job 漏记。
