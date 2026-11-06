@@ -68,8 +68,8 @@
 | 引用回复解析（入站） | `bridge.js:11570-11697`：慢取缓存（120s）、并发去重、归属校验防跨会话、pending 占位、回复引用也当"叫你" | ✅ P0-2 已实现（`reply-cache.mjs`：等待可配/归属校验/pending/缓存） | 慢取时延受上游影响；真机 `get_msg` 语义待验证 | 0.5（已完成） | P0-2 |
 | 合并转发展开（含嵌套） | `qq-forward.js:62-91`（≤2 层、≤12 条、1200 字）；`qq-events.js:53-60` | ✅ P0-2 已实现（`forward.mjs`；假数据 fake 覆盖） | 真机 `get_forward_msg` 慢（旧项目实测 ~76s）→ 收消息不等它，失败保留 id 占位 | 0.5（已完成） | P0-2 |
 | 图片（下载 + 进模型） | `qq.js:150-196` 下载 ≤2 张/≤8MB；`qq-media.js` 落盘；v2 用 `get_image`/CDN 兜底 + `safeFetchBuffer` 安全抓取（`bridge.js:9341-9419`）；模型不能看图时降级文字 | ✅ 已实现：`media.mjs` 安全抓取 → `signal.images` → bridge `ctx.attachments.saveImages` → `ImageBlock`；失败降级文字 | SSRF/大小/类型/超时已限；attachment 形状真机待验 | 0（已完成） | 完成 |
-| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ✅ 文本带 `[文件：name（size）]` + 落盘 `.state/media/inbox/qq/<date>/` + index.jsonl + 本地路径进正文 | 目录/保留策略待用户确认；不自动清理 | 0（已完成） | 完成 |
-| 视频段 | focus-core 仅占位；dsh-qq 视频下载未接 | ✅ 落本地 `.../inbox/qq/`，正文 `[视频已保存：<绝对路径>]`；交给 bili 通用视频浏览器（本地绝对路径接口） | 大小/保留默认值待确认 | 0（已完成） | 完成 |
+| 文件段 | `qq.js:82-...` 保留 name/size/fileId；dsh-qq `files.js`/`files-send.js` 支持收发（上传/下载） | ✅ 文本带 `[文件：name（size）]` + 落盘 `.state/media/inbox/qq/<date>/` + index.jsonl + 本地路径进正文 | 默认 ≤512MiB、全部保留手清、不自动 album；超限拒绝给原因 | 0（已完成） | 完成 |
+| 视频段 | focus-core 仅占位；dsh-qq 视频下载未接 | ✅ 落本地 `.../inbox/qq/`，正文 `[视频已保存：<绝对路径>]`；交给 bili 通用视频浏览器（本地绝对路径接口） | 默认 ≤512MiB/1 个；总量 2GiB 软告警；不自动删；`.part→rename` | 0（已完成） | 完成 |
 | 语音（入站转写） | `bridge.js:61-70` 接 ASR；dsh-qq `voice-asr.js`：`fetch_ptt_text` 重试 3 次×3s，空串常见；失败降级 `[语音]`；本地 whisper 端口预留 | ❌ `[语音]` 占位 | QQ 原生转写依赖网关；延迟/失败率未知；P2 | 1.5 | P2 |
 | 表情/收藏表情元数据 | `bridge.js:1421-1463` 保留 emoji_id/package/key/url/sub_type/summary（防字段丢失后无法兜底）；dsh-qq `sticker-lib.js` 297 行知识库 | ❌ 只 `[表情]` | P1 表情体系的前置 | 0.5 | P1 |
 | 群成员/好友/人物库 | `qq-forward.js:34-55`、focus-core people；dsh-qq `social/people.js`(28KB) 入群/退群/改名片/连续性 | ❌ 无 | 群阶段；P2 | 2 | P2 |
@@ -162,6 +162,8 @@
      消息仍投递。**不改 prompt.section/facts 布局**（CACHE-MODEL §7 有说明小条、数字未动）。
    - 视频/文件：落 `mediaInboxDir/<date>/`（默认 `.state/media/inbox/qq`），`index.jsonl` 记录元数据；
      正文追加 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`——bili 的通用视频浏览器按**本地绝对路径**接收。
+     **策略（用户 2026-11-06）**：单文件/视频默认 ≤512MiB、图片 3 张/8MB；保留 0=不自动删（全部保留手清）；
+     总量 2GiB 只软告警；归档手动（不自动 album）；不做外部上传/标记；路径默认等 paths 的 `ICL_ROOT` 推导（当前 config 覆盖）。
    - 已知降级：time/focus 积压重放只保留 text，睡眠中被拦的图片重放时不会变成 attachment；语音 PTT 仍占位。
 
 ---

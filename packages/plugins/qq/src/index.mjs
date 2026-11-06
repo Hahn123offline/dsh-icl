@@ -29,7 +29,7 @@ import { createReplyResolver, pendingReplyText, replyContextText } from './reply
 import { expandForwardIds } from './forward.mjs'
 import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
-import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, safeFetchBuffer, saveInboxMedia } from './media.mjs'
+import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 
 export const name = 'qq'
 
@@ -114,6 +114,7 @@ const DEFAULTS = Object.freeze({
   maxVideoBytes: MEDIA_DEFAULTS.maxVideoBytes,
   maxFileBytes: MEDIA_DEFAULTS.maxFileBytes,
   mediaRetentionDays: MEDIA_DEFAULTS.retentionDays,
+  mediaSoftLimitBytes: MEDIA_DEFAULTS.softLimitBytes,
   // 表情包本地库（只读列表/发送本地文件；不下载远程、不执行文件）
   stickerDir: '',
   maxStickerBytes: 10 * 1024 * 1024,
@@ -164,7 +165,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.mediaInboxDir = String(cfg.mediaInboxDir ?? '')
   cfg.stickerDir = String(cfg.stickerDir ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'maxStickerBytes', 'stickerListLimit']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -254,6 +255,8 @@ export async function apply(ctx) {
     recordErrors: 0,
     mediaSaved: 0,
     mediaFailed: 0,
+    mediaBytes: 0,
+    mediaSoftWarned: false,
     // 只读观测：最近一条进来的私聊 / 最近一次丢弃 / 最近一次被 time 锁拦下
     recent: { lastAccepted: null, lastDropped: null, lastBlocked: null },
   }
@@ -280,6 +283,39 @@ export async function apply(ctx) {
   }
   // phase 1 出站：只有三把钥匙打开时才动态装配（index 不静态 import 发送实现）
   let sendHandle = null
+
+  /** 媒体目录当前占用（启动时算一次；之后按新增累加，只做软告警，不删除）。 */
+  function dirBytes(dir) {
+    if (!dir) return 0
+    let total = 0
+    const walk = (current) => {
+      let entries
+      try { entries = fs.readdirSync(current, { withFileTypes: true }) } catch { return }
+      for (const entry of entries) {
+        const file = path.join(current, entry.name)
+        try {
+          if (entry.isDirectory()) walk(file)
+          else if (entry.isFile()) total += fs.statSync(file).size
+        } catch { /* 单个文件读不到不影响总量估算 */ }
+      }
+    }
+    walk(dir)
+    return total
+  }
+
+  function maybeWarnMediaSize() {
+    const limit = Number(cfg.mediaSoftLimitBytes) || 0
+    if (limit <= 0 || stats.mediaBytes <= limit || stats.mediaSoftWarned) return
+    stats.mediaSoftWarned = true
+    ctx.log({
+      level: 'warn',
+      msg: 'qq.media.soft-limit',
+      bytes: stats.mediaBytes,
+      limitBytes: limit,
+      dir: mediaDir,
+      hint: '媒体目录超过软上限：只告警不删除；清理由人决定（album/prune 手动）',
+    })
+  }
 
   function peerList() {
     const list = new Set(cfg.allowPrivate.map(String))
@@ -500,6 +536,7 @@ export async function apply(ctx) {
     const errors = []
     const appended = []
     let imageFailures = 0
+    let imageOversize = false
 
     const imageSegs = raw.message.filter((seg) => seg?.type === 'image' || seg?.type === 'mface').slice(0, Math.max(0, cfg.maxImages))
     for (let i = 0; i < imageSegs.length; i += 1) {
@@ -519,13 +556,17 @@ export async function apply(ctx) {
         images.push({ data: fetched.buffer, mediaType: fetched.mimeType, name: path.basename(saved.path), path: saved.path })
         mediaFiles.push({ kind: 'image', path: saved.path, bytes: saved.bytes, mime: saved.mime })
         stats.mediaSaved += 1
+        stats.mediaBytes += saved.bytes
+        maybeWarnMediaSize()
       } catch (error) {
         imageFailures += 1
         stats.mediaFailed += 1
-        errors.push(`image: ${String(error?.message ?? error).slice(0, 120)}`)
+        const message = String(error?.message ?? error)
+        if (/超限/.test(message)) imageOversize = true
+        errors.push(`image: ${message.slice(0, 120)}`)
       }
     }
-    if (imageFailures > 0) appended.push('\n（图片未能获取）')
+    if (imageFailures > 0) appended.push(`\n（图片未能获取${imageOversize ? '：超限' : ''}）`)
 
     const videoSegs = raw.message.filter((seg) => seg?.type === 'video').slice(0, 1)
     for (const seg of videoSegs) {
@@ -540,11 +581,14 @@ export async function apply(ctx) {
         })
         mediaFiles.push({ kind: 'video', path: saved.path, bytes: saved.bytes, mime: saved.mime })
         stats.mediaSaved += 1
+        stats.mediaBytes += saved.bytes
+        maybeWarnMediaSize()
         appended.push(`\n[视频已保存：${saved.path}]`)
       } catch (error) {
         stats.mediaFailed += 1
-        errors.push(`video: ${String(error?.message ?? error).slice(0, 120)}`)
-        appended.push('\n[视频获取失败]')
+        const reason = String(error?.message ?? error).replace(/https?:\/\/[^\s]+/g, '(链接)').slice(0, 80)
+        errors.push(`video: ${reason}`)
+        appended.push(`\n[视频获取失败：${reason}]`)
       }
     }
 
@@ -563,11 +607,14 @@ export async function apply(ctx) {
         })
         mediaFiles.push({ kind: 'file', path: saved.path, bytes: saved.bytes, mime: saved.mime })
         stats.mediaSaved += 1
+        stats.mediaBytes += saved.bytes
+        maybeWarnMediaSize()
         appended.push(`\n[文件已保存：${saved.path}]`)
       } catch (error) {
         stats.mediaFailed += 1
-        errors.push(`file: ${String(error?.message ?? error).slice(0, 120)}`)
-        appended.push('\n[文件获取失败]')
+        const reason = String(error?.message ?? error).replace(/https?:\/\/[^\s]+/g, '(链接)').slice(0, 80)
+        errors.push(`file: ${reason}`)
+        appended.push(`\n[文件获取失败：${reason}]`)
       }
     }
 
@@ -819,7 +866,13 @@ export async function apply(ctx) {
       maxVideoBytes: cfg.maxVideoBytes,
       maxFileBytes: cfg.maxFileBytes,
       retentionDays: cfg.mediaRetentionDays,
+      softLimitBytes: cfg.mediaSoftLimitBytes,
     })
+    stats.mediaBytes = dirBytes(mediaDir)
+    if (stats.mediaBytes > cfg.mediaSoftLimitBytes && cfg.mediaSoftLimitBytes > 0) {
+      stats.mediaSoftWarned = true
+      ctx.log({ level: 'warn', msg: 'qq.media.over-soft-limit', bytes: stats.mediaBytes, limitBytes: cfg.mediaSoftLimitBytes, dir: mediaDir })
+    }
     // 表情包本地库：显式配置优先；否则 state 同级的 media/stickers（不自动下载/不执行）。
     cfg.stickerDir = cfg.stickerDir
       ? resolvePath(cfg.stickerDir)
@@ -907,11 +960,17 @@ export async function apply(ctx) {
         dir: mediaDir || null,
         saved: stats.mediaSaved,
         failed: stats.mediaFailed,
+        bytes: stats.mediaBytes,
+        softLimitBytes: cfg.mediaSoftLimitBytes,
+        overSoftLimit: cfg.mediaSoftLimitBytes > 0 && stats.mediaBytes > cfg.mediaSoftLimitBytes,
         maxImages: cfg.maxImages,
         maxImageBytes: cfg.maxImageBytes,
         maxVideoBytes: cfg.maxVideoBytes,
         maxFileBytes: cfg.maxFileBytes,
         retentionDays: cfg.mediaRetentionDays,
+        // 归档是手动的：QQ 只落盘/给路径，不自动 album_import、不上传外部。
+        autoAlbum: false,
+        autoDelete: false,
       },
       stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
       recordFile: recordFile || null,
@@ -934,6 +993,10 @@ export async function apply(ctx) {
       const bk = gp.backfill ?? {}
       lines.push(`账本：${s.ledger?.mode ?? 'off'}（${s.ledger?.messages ?? 0} 条消息，已交付 ${s.ledger?.delivered ?? 0}）${s.ledger?.file ? `；文件：${s.ledger.file}` : '；内存模式（重启不保留）'}`)
       lines.push(`断线补课：重连 ${gp.reconnects ?? 0} 次${gp.lastDowntimeMs != null ? `（最近断开 ${Math.round(gp.lastDowntimeMs / 1000)}s）` : ''}；补课 ${gp.backfillRuns ?? 0} 次，补回 ${gp.filled ?? 0} 条，过期跳过 ${gp.dropped ?? 0}，失败 ${gp.failed ?? 0}${gp.unsupported ? `，无 HTTP 端点 ${gp.unsupported} 次` : ''}${s.http?.ok ? '' : '（补课不可用）'}${gp.lastError ? `；最近错误：${gp.lastError}` : ''}`)
+      const media = s.media ?? {}
+      if (media.enabled) {
+        lines.push(`媒体：已存 ${media.saved ?? 0} 条 / ${formatBytes(media.bytes ?? 0)}（软上限 ${formatBytes(media.softLimitBytes ?? 0)}${media.overSoftLimit ? '，已超限只告警不删' : ''}）；失败 ${media.failed ?? 0}；目录：${media.dir}；保留：${media.retentionDays > 0 ? `${media.retentionDays} 天（未自动删）` : '全部保留/手清'}；不自动进 album`)
+      }
     }
     const g = s.gate
     lines.push(`准入：收到 ${g.received} 条，放行 ${g.accepted} 条；去重 ${g.byCode.duplicate ?? 0}，限流 ${g.byCode.rate ?? 0}，白名单外 ${g.byCode['not-allowlisted'] ?? 0}，过旧 ${g.byCode.stale ?? 0}，群 ${g.byCode.group ?? 0}，自发 ${g.byCode.self ?? 0}，空 ${g.byCode.empty ?? 0}`)

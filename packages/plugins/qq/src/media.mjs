@@ -14,13 +14,15 @@ export const MEDIA_DEFAULTS = Object.freeze({
   maxImageBytes: 8 * 1024 * 1024,
   maxImages: RICH_LIMITS.maxImages,
   timeoutMs: 15_000,
-  maxFileBytes: 50 * 1024 * 1024,
-  maxVideoBytes: 50 * 1024 * 1024,
+  // 用户日常没接触 >200MB 的 QQ 传输；单文件/视频保守放到 512MiB，超限拒绝并给原因。
+  maxFileBytes: 512 * 1024 * 1024,
+  maxVideoBytes: 512 * 1024 * 1024,
   maxVideos: 1,
   maxFiles: 2,
-  // 保留策略默认值（等用户确认；目前不自动删，只在文档里列出）
-  retentionDays: 7,
-  maxInboxBytes: 500 * 1024 * 1024,
+  // 0 = 不自动删除（用户拍板：全部保留、手清；prune 由手动/容量告警决定）。
+  retentionDays: 0,
+  // 总量只软告警（不拒绝、不删除）；超了日志/状态提示，由人决定清理。
+  softLimitBytes: 2 * 1024 * 1024 * 1024,
 })
 
 const IMAGE_TYPES = Object.freeze({ 'image/png': true, 'image/jpeg': true, 'image/gif': true, 'image/webp': true })

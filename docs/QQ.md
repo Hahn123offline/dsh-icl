@@ -462,10 +462,14 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - 索引：`<root>/index.jsonl`，一行一个 JSON（字段如上）；视频浏览器按 **本地绝对路径** 接收输入
   （与 DSH `video_probe`/`video_storyboard` 的 `input` 约定一致）。
 - 正文里的 `[视频已保存：<path>]` 是模型能看到的路径；索引供工具/维护者检索，不要求模型读。
-- **默认限制（待用户确认）**：图片 ≤3 张/条、≤8MB/张；视频 ≤1 个/条、≤50MB；文件 ≤2 个/条、≤50MB；
-  保留 7 天（当前**不自动删除**，只记录 `mediaRetentionDays`；目录总上限建议 500MB，后续加清理任务）。
+- **默认限制（用户 2026-11-06 拍板）**：图片 ≤3 张/条、≤8MB/张；视频 ≤1 个/条、**≤512MiB**；文件 ≤2 个/条、**≤512MiB**；
+  **保留 = 全部保留/手清**（`mediaRetentionDays` 默认 0 = 不自动删）；总量软上限默认 2GiB，超过只日志/状态告警，
+  **不拒绝、不自动删除**；清理由人/`album/prune` 手动决定。
+- **归档手动**：QQ 只落盘 + 给绝对路径，**不自动进 album**；`album_import` 由 misc 侧手动/她主动决定。
+- **隐私**：入站媒体不自动标记/不上传任何外部服务；只做"落盘 + 路径"，不解密/不发送到 QQ 之外。
+- 路径：`mediaInboxDir` 可显式配置；等 paths 子任务落 `ICL_ROOT` 推导后默认改用它（当前仍按 state 同级/config 覆盖）。
 - 安全：只 http(s)、拒 localhost/私网/带凭据 URL、大小上限、魔数嗅探（png/jpeg/gif/webp、mp4/webm）；
-  下载失败或类型不符 → 降级文字，不落盘。
+  下载失败/超限/类型不符 → 降级文字并给原因，不落盘。
 - 语音（PTT）本轮仍只占位，留 P2。
 
 ### 7.5 说话人信封与策略入口（F1/F3、A2/B1/B2 的 QQ 部分）
@@ -568,8 +572,10 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `mediaEnabled` | `true` | 入站媒体总开关 | 关：图片/视频/文件只留占位，不下载不落盘 |
 | `mediaInboxDir` | `''` | 视频/文件/图片本地目录 | 空：state 同级 `media/inbox/qq`；推荐 `.state/media/inbox/qq` |
 | `maxImages` / `maxImageBytes` | `3` / `8388608` | 单条图片数量/单张大小 | 超限的图片被跳过并计数；图片走 attachment，不进正文 |
-| `maxVideoBytes` / `maxFileBytes` | `52428800` / `52428800` | 单视频/单文件上限 | 超限降级文字、不落盘 |
-| `mediaRetentionDays` | `7` | 保留天数（当前未自动删） | 只记录口径；清理任务后续加，待用户确认 |
+| `maxVideoBytes` / `maxFileBytes` | `536870912` / `536870912` | 单视频/单文件上限（512MiB） | 超限拒绝/降级文字并给原因；不落盘 |
+| `mediaRetentionDays` | `0` | 保留天数；0=不自动删 | 全部保留/手清；prune 手动/容量告警，不在插件里删 |
+| `mediaSoftLimitBytes` | `2147483648` | 媒体总量软上限（2GiB） | 超过只日志/状态告警，不拒绝、不删除 |
+| `mediaInboxDir` | `''` | 媒体落盘目录 | 显式配置优先；等 paths 的 `ICL_ROOT` 推导落地后默认改用它 |
 | `mediaFetchImpl` | `null` | 测试注入 fetch | 生产不填 |
 | `stickerDir` | `''` | 本地表情库目录 | 空：state 同级 `media/stickers`；只接受单层图片文件，不下载远程 |
 | `maxStickerBytes` | `10485760` | 单张表情大小上限 | 超限拒绝发送 |
