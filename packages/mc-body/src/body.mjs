@@ -10,6 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHeartbeat, createProgressTracker, createRateLimiter } from './recovery.mjs'
+import { buildStructuredSnapshot, captureScreenshot } from './eyes.mjs'
 
 const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
@@ -73,6 +74,11 @@ export function createBody({
   reflexMaxPerMinute = REFLEX_MAX_PER_MINUTE,
   reflexMinIntervalMs = 500,
   alarmDedupeMs = 15_000,
+  // 眼睛：结构化快照零依赖；截图需要 adapter viewer + Edge，按需、限频、用完即关。
+  mediaDir = null,
+  runId = null,
+  eyesPortStart = 3998,
+  eyesMinIntervalMs = 15_000,
   // 退出归因钩子：身体不知道“进程为什么退出”，但把这些可判定的时机交给宿主记录。
   onIdleDisconnect = null,
   onShutdownRequest = null,
@@ -99,6 +105,8 @@ export function createBody({
   let paused = false
   let pausedReason = null
   let activeDo = null
+  let eyesBusy = false
+  let lastEyesAt = 0
   let closed = false
   let started = false
   let pumping = false
@@ -934,6 +942,87 @@ export function createBody({
     return adapter.inspect(String(kind), params)
   }
 
+  // P0：结构化场景快照（零依赖、毫秒级；日常先看它，不要一上来截图）。
+  async function eyesSnapshot(params = {}) {
+    const started = stamp()
+    const radius = Math.max(3, Math.min(16, Number(params.radius) || 8))
+    let adapterSnapshot = null
+    if (typeof adapter.snapshot === 'function' && connectionState !== false) {
+      try { adapterSnapshot = await adapter.snapshot({ radius }) } catch { /* 降级到 status/inspect */ }
+    }
+    let mapInspect = null
+    if (typeof adapter.inspect === 'function') {
+      try { mapInspect = await adapter.inspect('map', { radius }) } catch { /* ignore */ }
+    }
+    const snapshot = buildStructuredSnapshot({
+      status: status(),
+      adapterSnapshot,
+      inspect: { map: mapInspect },
+      task: taskView(current),
+      events: events.slice(-10),
+      radius,
+    })
+    return { ok: true, snapshot, captureMs: stamp() - started }
+  }
+
+  // P1：按需截图（adapter 起 viewer → Edge headless CDP 截图 → 关 viewer / kill Edge 进程树）。
+  async function eyesScreenshot(params = {}) {
+    if (typeof adapter.startScreenshotViewer !== 'function') {
+      throw httpError('body 未配置截图能力（需要 adapter viewer + Edge；见 docs/MC-EYES.md）', 501)
+    }
+    if (eyesBusy) throw httpError('已有截图在进行，稍后再试', 429)
+    const minGap = Math.max(0, Number(eyesMinIntervalMs) || 0)
+    if (lastEyesAt && stamp() - lastEyesAt < minGap) {
+      throw httpError(`截图限频：距上次 ${Math.round((stamp() - lastEyesAt) / 1000)}s；至少 ${Math.round(minGap / 1000)}s 一次（成本高，仅里程碑/告警/明确要求时用）`, 429)
+    }
+    const width = Math.max(640, Math.min(1600, Number(params.width) || 1280))
+    const height = Math.max(360, Math.min(900, Number(params.height) || 720))
+    const waitMs = Math.max(3000, Math.min(10_000, Number(params.waitMs) || 7000))
+    const frames = Math.max(1, Math.min(8, Number(params.frames) || 1))
+    const intervalMs = Math.max(1000, Math.min(5000, Number(params.intervalMs) || 1000))
+    const kind = String(params.kind ?? 'manual').replace(/[^\w.-]/g, '_').slice(0, 40) || 'manual'
+    eyesBusy = true
+    try {
+      const viewer = await adapter.startScreenshotViewer({ portStart: Number(params.portStart) || eyesPortStart })
+      const root = path.resolve(String(mediaDir || path.join(process.cwd(), 'media', 'mc-eyes')))
+      const run = String(runId || process.env.MC_RUN_ID || 'body').replace(/[^\w.-]/g, '_')
+      const ts = new Date().toISOString().replace(/[:.]/g, '-')
+      const outBase = path.join(root, run, `${ts}-${kind}`)
+      const captured = await captureScreenshot({
+        url: `http://127.0.0.1:${viewer.port}/`, outBase, width, height, waitMs, frames, intervalMs,
+        debugPort: Number(params.debugPort) || 9333,
+        profileDir: path.join(root, '.edge-profile'),
+      })
+      const meta = {
+        version: 1,
+        kind: 'screenshot',
+        ts: new Date().toISOString(),
+        runId: run,
+        requestedKind: kind,
+        viewer: { port: viewer.port, version: viewer.version, center: viewer.center },
+        viewport: { width, height },
+        waitMs,
+        frames,
+        intervalMs,
+        captureMs: captured.elapsedMs,
+        sanity: captured.sanity,
+        files: captured.files,
+        position: viewer.center,
+        task: taskView(current),
+        safety: { paused, pausedReason, reflex: reflexView() },
+        note: '按需截图：Edge headless 软件渲染（无 GPU 模型锁）；截完 kill Edge 进程树、关闭 viewer。',
+      }
+      fs.writeFileSync(`${outBase}.json`, JSON.stringify(meta, null, 2), 'utf8')
+      return { ok: true, outBase, files: captured.files, meta, captureMs: captured.elapsedMs }
+    } catch (error) {
+      throw httpError(`截图失败：${String(error?.message ?? error)}`, 500)
+    } finally {
+      lastEyesAt = stamp()
+      eyesBusy = false
+      try { await adapter.stopScreenshotViewer?.() } catch { /* ignore */ }
+    }
+  }
+
   async function doPlan(steps, params = {}) {
     if (!Array.isArray(steps) || !steps.length) throw httpError('do 需要非空 steps', 400)
     // 单飞锁：长 op（mine/goto/dig/place/chest/...）执行期间不接第二个长 plan。
@@ -1075,6 +1164,12 @@ export function createBody({
       paused,
       pausedReason,
       playable: { ok: playableBlockers.length === 0, blockers: playableBlockers },
+      eyes: {
+        structured: true,
+        screenshot: typeof adapter.startScreenshotViewer === 'function',
+        mediaDir: mediaDir ? path.resolve(String(mediaDir)) : null,
+        runId: runId ?? null,
+      },
       safety: {
         paused,
         reason: pausedReason,
@@ -1131,9 +1226,12 @@ export function createBody({
 
   return {
     start, stop, status, eventsSince, createTask, getTask, listTasks, cancelTask, resumeTask,
-    safetyStop, stopAll, resume, ingest, inspect, doPlan, chat, push, watchdogTick, shutdownRequest,
+    safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
+
 
 
 

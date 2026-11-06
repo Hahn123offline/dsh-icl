@@ -3,6 +3,7 @@
 // 行为契约见 docs/MC-LEARNED.md §2.3/2.5；不 import 第三方 dsh-mc-agent 代码。
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
+import { startViewerServer } from './eyes.mjs'
 import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
@@ -227,6 +228,123 @@ export function createMineflayerAdapter({
       spawnSafety,
       pathStats: { ...pathStats },
     }
+  }
+
+  // ---- 眼睛：结构化快照 + 按需截图（docs/MC-EYES.md） --------------------------
+  function snapshot({ radius = 8 } = {}) {
+    const pos = currentPosition()
+    const size = Math.max(3, Math.min(16, Number(radius) || 8))
+    const items = (bot?.inventory?.items?.() ?? []).map((item) => ({
+      name: item.name, count: item.count, slot: item.slot, ...describeItemTool(item.name),
+    }))
+    const hotbar = []
+    const slots = bot?.inventory?.slots ?? []
+    const quickBarSlot = Number(bot?.quickBarSlot) || 0
+    for (let index = 0; index < 9; index += 1) {
+      const item = slots[36 + index]
+      hotbar.push({
+        slot: index + 1,
+        selected: index === quickBarSlot,
+        name: item?.name ?? null,
+        count: item?.count ?? null,
+        toolFor: item ? describeItemTool(item.name).toolFor : null,
+      })
+    }
+    const rows = []
+    const blockCounts = {}
+    let lookingAt = null
+    try {
+      const hit = bot?.blockAtCursor?.(6)
+      if (hit) lookingAt = { name: hit.name, position: { x: hit.position.x, y: hit.position.y, z: hit.position.z } }
+    } catch { /* ignore */ }
+    if (pos) {
+      const feetY = Math.floor(pos.y)
+      for (let dz = -size; dz <= size; dz += 1) {
+        let row = ''
+        for (let dx = -size; dx <= size; dx += 1) {
+          const block = bot?.blockAt?.(new Vec3(Math.floor(pos.x) + dx, feetY, Math.floor(pos.z) + dz))
+          const name = block?.name ?? 'unknown'
+          if (name in blockCounts) blockCounts[name] += 1
+          else blockCounts[name] = 1
+          if (/^(air|cave_air|void_air)$/.test(name)) row += '.'
+          else if (/water|flowing_water/.test(name)) row += '~'
+          else if (/lava|flowing_lava/.test(name)) row += '≈'
+          else row += '#'
+        }
+        rows.push(row)
+      }
+    }
+    const entities = Object.values(bot?.entities ?? {})
+      .filter((entity) => entity && entity !== bot?.entity && entity.position)
+      .map((entity) => ({
+        name: entity.name ?? entity.username ?? entity.type ?? 'entity',
+        username: entity.username ?? null,
+        distance: round1(distanceTo(pos, entity.position)),
+        position: { x: Math.round(entity.position.x), y: Math.round(entity.position.y), z: Math.round(entity.position.z) },
+      }))
+      .sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))
+      .slice(0, 24)
+    return {
+      position: pos,
+      dimension: bot?.game?.dimension ?? null,
+      health: bot?.health ?? null,
+      food: bot?.food ?? null,
+      oxygen: oxygenValue(),
+      submerged: bot?.entity?.isInWater === true,
+      time: timeSummary(),
+      sleeping: bot?.isSleeping === true,
+      held: (() => {
+        const held = bot?.heldItem
+        if (!held) return null
+        const tool = describeItemTool(held.name)
+        return { name: held.name, count: held.count ?? 1, ...tool }
+      })(),
+      inventory: { items, hotbar, emptySlots: bot?.inventory?.emptySlotCount?.() ?? null },
+      equipment: equipmentSummary(),
+      lookingAt,
+      map: rows.length ? rows.join('\n') : null,
+      mapLegend: '#=solid .=air ~=water ≈=lava',
+      nearbyBlocks: Object.fromEntries(Object.entries(blockCounts).sort((a, b) => b[1] - a[1]).slice(0, 16)),
+      entities,
+      nearbyHostiles: nearbyThreats(8),
+      spawnSafety,
+      pathfinder: Boolean(bot?.pathfinder),
+      lastDeath,
+      danger: inspectDanger(),
+    }
+  }
+
+  // 截图用 viewer：每次截图按当前 pose 起一个（可关闭）的 viewer，截完立刻关。
+  let screenshotViewer = null
+  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3 } = {}) {
+    if (!bot?.player) throw new Error('body 未连接，无法截图')
+    if (screenshotViewer) await stopScreenshotViewer()
+    const center = currentPosition()
+    if (!center) throw new Error('拿不到当前位置，无法截图')
+    let lastError = null
+    const start = Math.max(1024, Math.min(65_000, Number(portStart) || 3998))
+    for (let port = start; port < start + 12; port += 1) {
+      try {
+        const viewer = await startViewerServer({
+          viewerRoot: process.env.MC_EYES_VIEWER_ROOT ?? null,
+          world: bot.world, center, version: bot.version, port, viewDistance,
+        })
+        screenshotViewer = viewer
+        return { port: viewer.port, center: viewer.center, version: bot.version }
+      } catch (error) {
+        lastError = error
+        if (!/EADDRINUSE/i.test(String(error?.message))) break
+      }
+    }
+    throw lastError ?? new Error('viewer 启动失败')
+  }
+
+  async function stopScreenshotViewer() {
+    const viewer = screenshotViewer
+    screenshotViewer = null
+    if (!viewer) return false
+    try { await viewer.close() } catch { /* ignore */ }
+    return true
   }
 
   // ---- 环境事实（供“该干什么”判断；缺这些她会两眼一抹黑）----------------------
@@ -2332,8 +2450,9 @@ export function createMineflayerAdapter({
     throw new Error(`unsupported inspect: ${kind}`)
   }
 
-  return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
+  return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
 
 
 

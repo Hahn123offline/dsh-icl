@@ -183,3 +183,37 @@ node packages/mc-body/tools/eyes-poc.mjs --mode bot --host 127.0.0.1 --mc-port 5
 - 视频序列：复用 Edge 实例、低帧率、编码（现有 video 管线）与 album 接口。
 - 与用户客户端 F2 同场景对比（保真差异、方块颜色/光影偏差）。
 - 资源门控：与 lab/E2 的 CPU/内存互斥策略（例如同一时间只允许一个 capture）。
+
+## 10. P0/P1 实现状态与接口（2026-11-06）
+
+### 10.1 P0 结构化快照（已实现，零依赖）
+
+- **body 端点**：`GET /v1/eyes/snapshot?radius=8` → `{ok, snapshot, captureMs}`。
+  - `snapshot` 字段：`position/dimension/health/food/oxygen/time/held/hotbar/inventory{items,counts,emptySlots}/equipment/lookingAt/map(脚下方块图 ±radius)/nearbyBlocks/entities/nearbyHostiles/spawnSafety/task/queue/safety{paused,reflex,lastReflex,alarms}/playable/recentEvents`。
+  - 数据源：adapter 新 `snapshot()`（直接读 bot：方块网格、实体坐标、背包/快捷栏/手持、时间/维度/威胁/安全）＋ body `status()`；adapter 不可用时降级到 status+inspect。暂停/离线也能出基础快照。
+- **成本**：毫秒级、几 KB、无浏览器/GPU；**日常看场景先用它**。
+- 代码：`packages/mc-body/src/eyes.mjs` `buildStructuredSnapshot`；adapter `snapshot()`；测试 `test/eyes.test.mjs` + body 测试。
+
+### 10.2 P1 按需截图（已实现，需可选 viewer + Edge）
+
+- **body 端点**：`POST /v1/eyes/screenshot`
+  ```json
+  { "kind": "milestone|alert|manual|…", "width": 1280, "height": 720,
+    "waitMs": 7000, "frames": 1, "intervalMs": 1000, "portStart": 3998 }
+  ```
+  → `{ok, outBase, files:[{file,bytes,at}], meta, captureMs}`；同名 `.json` meta 落盘。
+- **流程**：ack → adapter `startScreenshotViewer()`（用 `bot.world` + 当前 pose 起 **可关闭** viewer，端口 3998 起自增）→ `captureScreenshot`（Edge headless CDP：导航→等 waitMs→`Page.captureScreenshot`→写 PNG→**kill Edge 进程树**）→ `stopScreenshotViewer()` 关 viewer。任一步失败也清理。
+- **配额/风控**：同一时刻只允许 1 个截图；两次截图最小间隔 `eyesMinIntervalMs=15s`；`frames` 1–8、间隔 ≥1000ms（默认 1 帧，默认关闭）；`waitMs` 3–10s；超限 429，缺 viewer/Edge 501，失败 500 带原因。
+- **存储**：默认 `media/mc-eyes/<runId>/<ts>-<kind>.png|.json`（`--media-dir` / `MC_BODY_MEDIA_DIR`、`--run-id` / `MC_RUN_ID` 可覆盖；`media/` 已 gitignore）。
+- **配置**：`MC_EYES_VIEWER_ROOT`（装 prismarine-viewer 的目录，必需）、`MC_EYES_EDGE`（可选，默认找 Edge）；CLI `--media-dir --run-id --eyes-port`。
+- **成本**：约 7–8s/张；Edge 峰值 ~1.3GB 私有内存（软件渲染，不占 GPU 模型锁）；用完即关。
+- **真产物**：P0/P1 共享代码已用离线世界验证：viewer 起服务 + CDP 截图 **7.1s / 998×483 / 267KB**（`.state/lab/mc-eyes-poc/p1-tool.png`）；工具 `eyes-poc.mjs` 已改为复用同一份 `src/eyes.mjs`。
+- **未验证**：body 端点真服 happy-path（需要 MC 服务器；E2 期间不启动）——E2 结束后用独立开发服跑 `--mode bot` 与 `/v1/eyes/screenshot`。
+
+### 10.3 mc-link 工具面（待 mc-link 接）
+
+- `mcb_snapshot {radius?}` → `GET /v1/eyes/snapshot`（text 摘要 + JSON；描述写"日常看场景先用它，别一上来截图"）。
+- `mcb_eyes {mode:'structured'|'screenshot', kind?, frames?}`：
+  - structured = 同上；
+  - screenshot → `POST /v1/eyes/screenshot`，把 `files[0].file` 作为图片附件给模型（旧宿主 text-only 回退给路径 + meta 摘要）；描述写清成本（~7–8s、Edge ~1.3GB、仅里程碑/告警/明确要求时用）与 quota。
+- mc-link 需对 screenshot 结果做附件/路径双形态；P2 帧序列复用 `frames` 参数（默认 1）。
