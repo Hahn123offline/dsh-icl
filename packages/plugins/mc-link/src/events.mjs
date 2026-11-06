@@ -24,9 +24,9 @@ export const QUIET_EVENTS = Object.freeze([
   // 观测/记账类：body 自己的 watchdog 统计与心跳、寻路/隧道的中间过程，不叫她。
   'heartbeat', 'watchdog', 'watchdog_suppressed', 'task_idempotent_hit', 'ledger_loaded',
   'path_recovered', 'tunnel_clear', 'path_approximate', 'auto_eat', 'dig_fallback', 'craft_no_product',
-  // 宏的信息事件（MC-MACRO §5）：macro_step/macro_blocked 等在 body 台账里可查，不逐条叫醒；
-  // 宏真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
-  'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
+  // 宏/战斗的中间信息事件：macro_step/macro_blocked/combat_done 等在 body 台账里可查，不逐条叫醒；
+  // 真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
+  'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool', 'combat_done',
 ])
 
 /**
@@ -44,7 +44,7 @@ const DEFAULTS = Object.freeze({
     chat: 0, join: 30_000, leave: 30_000, health_drop: 120_000, disconnected: 10_000,
     'connection-lost': 30_000, reconnecting: 60_000, reconnected: 60_000, body_error: 30_000,
     idle_disconnect: 60_000, resume_required: 120_000, quarantine: 300_000,
-    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000,
+    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, auto_defense: 60_000, combat_abort: 30_000,
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
@@ -71,6 +71,9 @@ const REASON_TEXT = Object.freeze({
   manual: '手动停止',
   cleanup: '收尾停止',
   timeout: '超时',
+  'user-stop': '你让它停的（mcb_stop，可随时 resume）',
+  emergency: '紧急规避',
+  threat: '有威胁（自动躲避/防御触发）',
 })
 
 /** 哪些暂停原因真的紧急到可以带 alarm 标签（focus 的"勿扰"也会放行 alarm）。 */
@@ -101,6 +104,10 @@ const TASK_REASON_TEXT = Object.freeze({
   'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
   'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
   'not connected': '身体当时不在线（先 mcb_status，需要就 mcb_join）',
+  'combat: low-health': '战斗低血中断（已自动躲避）：先吃/躲/垫高，或改用 mcb_combat {mode:"flee"}；血回上去再打',
+  'combat: creeper-near': '苦力怕近身（已自动躲避）：先跑/垫高，别贴脸打',
+  'combat: too-many': '敌人太多（已自动躲避）：改用 flee 或 guard，别硬刚',
+  'combat: no-threat': '附近没有威胁了：不用再打',
 })
 
 /** 从 error 字符串（如 "mine: no-target"）里认出原因与下一步。 */
@@ -114,7 +121,7 @@ function reasonHint(raw) {
 
 const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'pickup', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
 /** 任务类型：原语 kind + 宏 kind（body KINDS 的超集；宏契约见 docs/MC-MACRO.md）。 */
-const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
+const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm', 'hunt', 'defend', 'flee', 'guard'])
 /** 宏 kind（重复劳动下沉到 body 脚本，模型只下一条指令/查进度/打断）。 */
 const MACRO_KINDS = Object.freeze(['collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 
@@ -350,6 +357,25 @@ function alarmLine(text, suffix = '') {
         priority: serious ? 'alarm' : 'notice',
         merge: 'safety_stop', alarm: serious,
         text: `[MC] 安全停止：${why}${extra}${d.repeated ? '（重复报警）' : ''}；任务已中断（停任务≠离开世界）；resume 继续，mcb_leave 离开。`,
+      }
+    }
+    case 'auto_defense': {
+      // body 自己在危险时做的有界保命动作（躲避/垫高/退开）：说清"做了什么、为什么"，别让她重复跑一遍。
+      const action = d.action === 'error' ? '躲避失败' : d.action === 'offline' ? '身体离线没法躲' : d.action === 'no-op' ? '没有可执行的规避动作' : '已自动躲避'
+      const why = REASON_TEXT[d.reason] ?? valueText(d.reason ?? d.assessment?.reason, '威胁', 40)
+      return {
+        kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'auto_defense',
+        text: `[MC] 自动躲避：${why} → ${action}（${Math.round(Number(d.durationMs) || 0)}ms${d.timedOut ? '，超时' : ''}${d.error ? `，错误：${valueText(d.error, '', 60)}` : ''}）；body 自己做的保命动作，不用重复跑。`,
+      }
+    }
+    case 'combat_abort': {
+      const why = valueText(d.reason ?? d.assessment?.reason, '未知', 40)
+      const hostiles = Array.isArray(d.hostiles) && d.hostiles.length
+        ? `（${d.hostiles.slice(0, 3).map((row) => `${row.name ?? '?'}${row.distance != null ? ` ${row.distance}m` : ''}`).join('、')}）`
+        : ''
+      return {
+        kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'combat_abort',
+        text: `[MC] 战斗中断：${why}${hostiles}；已先自动躲避，任务随后会报失败——按提示先吃/躲/改用 flee。`,
       }
     }
     case 'spawn_unsafe':

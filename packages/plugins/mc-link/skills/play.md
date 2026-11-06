@@ -23,6 +23,8 @@
   - **长动作一律用 task 形式**；并发单步长动作会被 body 挡回 409（"上一个 do 动作还在执行"）。
 - 单步动作：`dig`/`place`/`use`/`equip`/`toss`/`pickup`/`attack`/`eat`/`face`/`wait`/`craft`/`furnace`/`chest`/`trade`/`move`。
   它们会阻塞到完成（最长约 120 秒）；超时只说明"没及时返回"，先查状态，别原样重试。
+  - **打架优先用战斗宏** `mcb_combat {mode:"hunt|defend|flee|guard"}`（自动选武器/走位/低血中断），别逐次手动 attack；
+    单只补刀用 `mcb_attack {target}`（结果有 hit/伤害/血 before→after/killed；killed 后用 pickup 捡掉落）。详见 `mcb_help combat`。
   - **捡地上掉落物用 `pickup`**：`{"op":"pickup","params":{"radius":8,"max":8}}` → 返回 `picked/items/left`；
     不要用 `goto` 到自己脚下坐标站着等（尸体掉落/挖后掉落都好用）。
   - 坐标两种写法都行：`{"op":"dig","params":{"pos":{"x":12,"y":-60,"z":14}}}` 或 `{"op":"dig","params":{"pos":[12,-60,14]}}`；

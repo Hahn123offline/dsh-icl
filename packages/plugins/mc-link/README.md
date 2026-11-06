@@ -1,6 +1,6 @@
 # mc-link（MC 头脑侧适配器）
 
-CLI 工具面：14 个常驻 `mcb_*` 工具（含 `mcb_snapshot` 结构化快照、`mcb_eyes` 按需截图/PNG 图片附件）+ 按需技能文档；只懂 `mc-body/v1` HTTP，不 import mineflayer。
+CLI 工具面：16 个常驻 `mcb_*` 工具（含 `mcb_snapshot` 结构化快照、`mcb_eyes` 按需截图/PNG 图片附件、`mcb_combat` 战斗宏、`mcb_attack` 单目标攻击）+ 按需技能文档；只懂 `mc-body/v1` HTTP，不 import mineflayer。
 契约见 [`docs/MC-CONTRACT.md`](../../../docs/MC-CONTRACT.md)，验收见 [`docs/MC-ACCEPTANCE.md`](../../../docs/MC-ACCEPTANCE.md)。
 
 ## 文件
