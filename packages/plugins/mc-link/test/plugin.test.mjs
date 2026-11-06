@@ -519,6 +519,59 @@ test('mcb_attack：单目标工具（target 必填，命中/击杀可读）；mc
   }
 })
 
+test('say 去重：同 session 内同文本 60s 不重复发送；不同文本照发（仍走正常路径）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const sayRequests = () => body.state.requests.filter((req) => req.steps?.[0]?.op === 'say').length
+    const text = '重连回来了，16:35 睡觉，先把家收拾一下'
+    const first = await link.tools.mcb_do.execute({ steps: [{ op: 'say', text }] })
+    assert.match(first.text, /\[say\] 已发送/)
+    assert.equal(sayRequests(), 1)
+    const second = await link.tools.mcb_do.execute({ steps: [{ op: 'say', text }] })
+    assert.match(second.text, /\[say\] 刚说过（\d+ 秒前），未重复发送/)
+    assert.equal(sayRequests(), 1, '重复 say 不应再请求 body')
+    // 空白差异也算同一句（规范化后比较）
+    const spaced = await link.tools.mcb_do.execute({ steps: [{ op: 'say', text: `  重连回来了，16:35 睡觉，先把家收拾一下  ` }] })
+    assert.match(spaced.text, /刚说过/)
+    assert.equal(sayRequests(), 1)
+    // 不同文本照发
+    const other = await link.tools.mcb_do.execute({ steps: [{ op: 'say', text: '先去砍树' }] })
+    assert.match(other.text, /\[say\] 已发送/)
+    assert.equal(sayRequests(), 2)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('重复动作提示：连续第 3 次提交完全相同的 steps → 回执前提醒并标 repeated（不拒绝执行）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const steps = () => [{ op: 'look' }]
+    const first = await link.tools.mcb_do.execute({ steps: steps() })
+    const second = await link.tools.mcb_do.execute({ steps: steps() })
+    assert.doesNotMatch(first.text, /重复提醒/)
+    assert.doesNotMatch(second.text, /重复提醒/)
+    assert.notEqual(first.repeated, true)
+    const third = await link.tools.mcb_do.execute({ steps: steps() })
+    assert.match(third.text, /重复提醒：这是连续第 3 次提交完全相同的动作/)
+    assert.match(third.text, /不拒绝执行/)
+    assert.equal(third.repeated, true)
+    assert.equal(third.repeatCount, 3)
+    // 不拒绝执行：动作仍然真的执行了
+    assert.match(third.text, /did:look/)
+    // 换动作后计数重置，不再提醒
+    const changed = await link.tools.mcb_do.execute({ steps: [{ op: 'look' }, { op: 'inventory' }] })
+    assert.doesNotMatch(changed.text, /重复提醒/)
+    assert.notEqual(changed.repeated, true)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('发现性：mcb_do 第一行教"打架→combat/补刀→attack/采集建造→task 宏"；单步重复动作回执提示宏（节流）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
