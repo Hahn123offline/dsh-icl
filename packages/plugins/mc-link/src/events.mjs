@@ -47,6 +47,7 @@ const DEFAULTS = Object.freeze({
     'connection-lost': 30_000, reconnecting: 60_000, reconnected: 60_000, body_error: 30_000,
     idle_disconnect: 60_000, resume_required: 120_000, quarantine: 300_000,
     path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, auto_defense: 60_000, combat_abort: 30_000, home_set: 300_000,
+    task_cancelled_for_defense: 60_000,
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
@@ -88,6 +89,7 @@ function seriousReason(reason) {
 /** 任务结束但没达成时，body 在 error/result.reason 里给的原因，翻成下一步。 */
 const TASK_REASON_TEXT = Object.freeze({
   'no-target': '附近没有目标方块/资源（换 block/item 名或调大 radius）',
+  'collect: no-resources': '附近资源枯竭（扫过范围已没有目标）：先 explore 换个区域/换 item，别原地重试',
   'no-path': '走不过去（mcb_map 看地形，换目标点或先 goto 到开阔处）',
   'dig-failed': '挖不动（可能要更好的工具，或方块被挡住）',
   'no-effect': '挖了但方块没变化（太远或工具不对，换位置/工具）',
@@ -207,6 +209,23 @@ function progressText(result, max = 70) {
 }
 
 /**
+ * shelter 材料诊断（needs-material）：needed/have/deficit + 可用替代 + body suggestion。
+ * suggestion 是 body 直接写给模型的（有替代材料会让她改 material，否则 dig 补 N 块）。
+ */
+function shelterMaterialDetail(result) {
+  if (!result || typeof result !== 'object') return ''
+  const bits = []
+  if (result.material) bits.push(`材料 ${result.material}`)
+  if (result.needed != null) bits.push(`需要 ${result.needed}`)
+  if (result.have != null) bits.push(`现有 ${result.have}`)
+  if (result.deficit != null) bits.push(`缺 ${result.deficit}`)
+  const alts = Array.isArray(result.alternatives) ? result.alternatives.filter((row) => row?.enough).slice(0, 3) : []
+  if (alts.length) bits.push(`可用替代：${alts.map((row) => `${row.material}×${row.have}`).join('、')}`)
+  if (result.suggestion) bits.push(String(result.suggestion).slice(0, 220))
+  return bits.join('；')
+}
+
+/**
  * shelter 的结构验收摘要（给她看"缺哪面/几块"）：summary + walls.missingFaces + roof/door/interior 缺数。
  * body 的 failures[] 是建造过程调试明细，不在这里展示。
  */
@@ -307,7 +326,22 @@ export function taskEventText(type, data = {}, status = null) {
     const why = reasonHint(error)?.hint
     // shelter 失败时把 body 的结构验收摘要/缺哪面直接给她（failures[] 是建造调试明细，不展示）。
     const verifyText = task.kind === 'shelter' || task.result?.verify ? shelterVerifyDetail(task.result?.verify) : ''
-    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${progress}${suffix}`
+    // needs-material：带上 needed/have/deficit/可用替代 + body suggestion（有替代材料就让改 material）。
+    const materialText = /needs-material/.test(error) || (task.kind === 'shelter' && task.result?.deficit != null)
+      ? shelterMaterialDetail(task.result)
+      : ''
+    // 资源枯竭：带上扫过的半径/试过的方块，避免她以为"再多试一次就有"。
+    const dryText = /no-resources/.test(error)
+      ? [
+        task.result?.scannedRadius != null ? `扫到 ${task.result.scannedRadius} 格` : '',
+        Array.isArray(task.result?.triedBlocks) && task.result.triedBlocks.length ? `试过 ${task.result.triedBlocks.slice(0, 4).join('/')}` : '',
+      ].filter(Boolean).join('，')
+      : ''
+    // 其它失败：body 的 suggestion 是直接写给模型的下一步（材料诊断里已含 suggestion 时不重复）。
+    const suggestionText = !materialText && task.result?.suggestion
+      ? `；建议：${cut(String(task.result.suggestion), 180)}`
+      : ''
+    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${dryText ? `；诊断：${dryText}` : ''}${materialText ? `；材料诊断：${materialText}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${suggestionText}${progress}${suffix}`
   }
   if (type === 'task_unknown') {
     return `[MC] 任务超时，结果未知：${label}${progress} — 动作可能已经生效，不能当成失败。先 mcb_status / mcb_inventory 复核，再决定要不要重下同一个任务。${suffix}`
@@ -404,9 +438,20 @@ function alarmLine(text, suffix = '') {
       // body 自己在危险时做的有界保命动作（躲避/垫高/退开）：说清"做了什么、为什么"，别让她重复跑一遍。
       const action = d.action === 'error' ? '躲避失败' : d.action === 'offline' ? '身体离线没法躲' : d.action === 'no-op' ? '没有可执行的规避动作' : '已自动躲避'
       const why = REASON_TEXT[d.reason] ?? valueText(d.reason ?? d.assessment?.reason, '威胁', 40)
+      // 自动躲避会取消当前非战斗任务（15s hold）：说清"是躲避打断的，不是任务自己失败"。
+      const cancelled = d.taskCancelled
+        ? `；已自动躲避并取消当前任务：${valueText(d.taskKind ?? d.taskId, '任务', 30)}（${valueText(d.taskCancelReason ?? 'auto-defense: threat', '威胁', 40)}）——这是自动掩护打断，不是任务自己失败；危险过去可重下`
+        : ''
       return {
         kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'auto_defense',
-        text: `[MC] 自动躲避：${why} → ${action}（${Math.round(Number(d.durationMs) || 0)}ms${d.timedOut ? '，超时' : ''}${d.error ? `，错误：${valueText(d.error, '', 60)}` : ''}）；body 自己做的保命动作，不用重复跑。`,
+        text: `[MC] 自动躲避：${why} → ${action}（${Math.round(Number(d.durationMs) || 0)}ms${d.timedOut ? '，超时' : ''}${d.error ? `，错误：${valueText(d.error, '', 60)}` : ''}）${cancelled}；body 自己做的保命动作，不用重复跑。`,
+      }
+    }
+    case 'task_cancelled_for_defense': {
+      const threats = Array.isArray(d.threats) && d.threats.length ? `（${d.threats.slice(0, 3).join('、')}）` : ''
+      return {
+        kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'task_cancelled_for_defense',
+        text: `[MC] 任务被自动躲避取消：${valueText(d.kind ?? d.taskId, '任务', 30)}${d.taskId ? `（${d.taskId}）` : ''} — ${valueText(d.reason ?? 'auto-defense: threat', '威胁', 40)}${threats}；不是任务失败，危险过去后可重下。`,
       }
     }
     case 'combat_abort': {

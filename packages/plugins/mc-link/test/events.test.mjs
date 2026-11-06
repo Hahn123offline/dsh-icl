@@ -269,6 +269,53 @@ test('宏：shelter done 展示 verify.summary/entryOk/home；失败码按缺面
   assert.match(faces, /缺墙面：south 缺 4\/6/)
 })
 
+test('事件：自动躲避取消任务 / task_cancelled_for_defense 都说"不是任务失败"', () => {
+  const first = collect([{ seq: 1, type: 'auto_defense', data: { reason: 'threat', action: 'backoff', durationMs: 220, taskCancelled: true, taskId: 't-3', taskKind: 'mine', taskCancelReason: 'auto-defense: threat' } }])
+  assert.match(first.signals[0].text, /已自动躲避并取消当前任务：mine（auto-defense: threat）/)
+  assert.match(first.signals[0].text, /不是任务自己失败/)
+  const second = collect([{ seq: 2, type: 'task_cancelled_for_defense', data: { taskId: 't-3', kind: 'mine', reason: 'auto-defense: threat', threats: ['zombie'] } }])
+  assert.match(second.signals[0].text, /任务被自动躲避取消：mine（t-3）/)
+  assert.match(second.signals[0].text, /zombie/)
+  assert.match(second.signals[0].text, /不是任务失败/)
+})
+
+test('失败码：collect: no-resources 提示先 explore/换 item；shelter needs-material 带 needed/have/deficit/替代/suggestion', () => {
+  const dry = taskEventText('task_failed', { task: { id: 't-1', kind: 'collect', error: 'collect: no-resources' } })
+  assert.match(dry, /资源枯竭/)
+  assert.match(dry, /explore/)
+  assert.match(dry, /别原地重试/)
+  const material = taskEventText('task_failed', {
+    task: {
+      id: 't-2', kind: 'shelter', error: 'shelter: needs-material',
+      result: {
+        material: 'oak_planks', needed: 27, have: 12, deficit: 15,
+        alternatives: [{ material: 'dirt', have: 64, enough: true }, { material: 'stone', have: 3, enough: false }],
+        suggestion: '把 material 改成 "dirt" 重试，不用再收集。',
+      },
+    },
+  })
+  assert.match(material, /材料诊断：材料 oak_planks；需要 27；现有 12；缺 15/)
+  assert.match(material, /可用替代：dirt×64/)
+  assert.match(material, /把 material 改成 "dirt" 重试/)
+  // 资源枯竭：带扫描半径/试过的方块 + body suggestion
+  const dryDetail = taskEventText('task_failed', {
+    task: {
+      id: 't-3', kind: 'collect', error: 'collect: no-resources',
+      result: {
+        item: 'oak_log', scannedRadius: 48, triedBlocks: ['oak_log'],
+        suggestion: '附近 48 格内没找到 oak_log；先 explore 去有树/石的地方，别原地连续重试。',
+      },
+    },
+  })
+  assert.match(dryDetail, /诊断：扫到 48 格，试过 oak_log/)
+  assert.match(dryDetail, /建议：附近 48 格内没找到 oak_log/)
+  // 其它失败码：result.suggestion 直接带出（不用她猜下一步）
+  const suggested = taskEventText('task_failed', {
+    task: { id: 't-4', kind: 'mine', error: 'mine: no-path', result: { suggestion: '走近一点再下任务，或调 radius' } },
+  })
+  assert.match(suggested, /建议：走近一点再下任务/)
+})
+
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {
   const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
   assert.match(collected, /宏完成/)

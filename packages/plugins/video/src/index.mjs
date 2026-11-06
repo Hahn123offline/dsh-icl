@@ -17,15 +17,34 @@ import {
   resolveStoryboardCli, runStoryboard, locateInTranscript, extractTextBlock, TC,
 } from './storyboard.mjs'
 import { extractFrames } from './frames.mjs'
-import { iclPaths } from '../../../core/src/icl-paths.mjs'
+import { iclPaths, dshHome } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'video'
 
 const DEFAULT_OVERVIEW_SECONDS = 240
 const MAX_TEXT = 8000
 
+/**
+ * 有没有"可用的转写来源"。
+ *
+ * 为什么要判：storyboard 的 `transcript: auto` 在**没有字幕轨**时会退回它内置的默认 ASR
+ * （SiliconFlow 远程）。本地"眼睛"不应该因为一段普通视频就悄悄把音频发到远程、还多等 5–10 秒。
+ * 所以：只有显式配了 ASR（env / `$DSH_HOME/asr.json` / 插件 config）或视频自带字幕轨时才开 auto，
+ * 否则用 off；`video_locate` 在两者都没有时直接给可操作提示，不去碰远程默认。
+ */
+function detectAsr(config) {
+  if (config.asr === false) return false
+  if (config.asr === true || config.asrBaseUrl) return true
+  if (process.env.DSH_ASR_BASE_URL) return true
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dshHome(), 'asr.json'), 'utf8'))
+    return Boolean(parsed?.baseUrl)
+  } catch { return false }
+}
+
 function configOf(ctx) {
   const config = ctx?.config && typeof ctx.config === 'object' ? ctx.config : {}
+  const asrConfigured = detectAsr(config)
   return {
     // 临时产物目录：显式 > ICL_VIDEO_TMP_DIR > ICL_ROOT/video-tmp（不再落到系统 temp）。
     stateDir: String(config.stateDir ?? iclPaths().videoTmpDir),
@@ -36,6 +55,9 @@ function configOf(ctx) {
     maxFileBytes: Number(config.maxFileBytes) || DEFAULT_MAX_FILE_BYTES,
     overviewSeconds: Number(config.overviewSeconds) || DEFAULT_OVERVIEW_SECONDS,
     maxTextChars: Number(config.maxTextChars) || MAX_TEXT,
+    asrConfigured,
+    // 有 ASR 配置或视频自带字幕轨才让 storyboard 取台词；否则明确关掉。
+    transcriptFor: (info) => (asrConfigured || info?.hasSubtitle ? 'auto' : 'off'),
   }
 }
 
@@ -198,7 +220,8 @@ export function apply(ctx) {
         const run = await runStoryboard({
           input: resolved.path, from: window.from, to: window.to,
           cells: Math.min(16, Math.max(1, Number(cells) || 6)), sheets: 1,
-          detail: 'med', cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'open'),
+          detail: 'med', transcript: cfg.transcriptFor(info),
+          cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'open'),
           maxTextChars: cfg.maxTextChars,
         })
         const block = run.textBlock || extractTextBlock(run.stderr?.includes('<storyboard') ? run.stderr : '', { maxChars: cfg.maxTextChars })
@@ -247,6 +270,7 @@ export function apply(ctx) {
         cells: Math.min(16, Math.max(0, Number(cells) || 0)),
         sheets: Math.min(4, Math.max(1, Number(sheets) || 1)),
         detail: ['low', 'med', 'high'].includes(String(detail)) ? String(detail) : 'med',
+        transcript: cfg.transcriptFor(info),
         textOnly: textOnly === true,
         cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'storyboard'),
         maxTextChars: cfg.maxTextChars,
@@ -286,6 +310,7 @@ export function apply(ctx) {
         sheets: 1, detail: 'high',
         minGap: Number.isFinite(Number(minGap)) ? Number(minGap) : 0.4,
         adaptive: false,
+        transcript: cfg.transcriptFor(info),
         cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'zoom'),
         maxTextChars: cfg.maxTextChars,
       })
@@ -316,9 +341,19 @@ export function apply(ctx) {
       requireCli(cfg)
       const file = checkFile(raw, cfg)
       if (!file.ok) return fail(file.error.code, file.error.message, file.error.next)
+      // 防"悄悄走远程默认 ASR"：没有字幕轨、没有 ASR 配置、也没给 transcriptFile 时，直接给可操作提示。
+      const info = await probeVideo(file.path, { ffprobe: cfg.ffprobe })
+      if (!transcriptFile && !cfg.asrConfigured && !info.hasSubtitle) {
+        return {
+          text: '这个文件没有字幕轨，ICL 也还没配 ASR 转写，定位不了（不会偷偷把音频发到远程服务）。\n'
+            + '下一步：① 在 ICL 侧配 ASR（`video.asrBaseUrl` / `DSH_ASR_BASE_URL`，例如本机 8088 的 whisper-asr）；'
+            + '② 或导出 SRT/JSON 后用 transcriptFile 再调；③ 纯音乐/无对白就按画面看（video_storyboard）。',
+        }
+      }
       const result = await locateInTranscript({
         input: file.path, query, from, to, max: Math.min(20, Math.max(1, Number(max) || 5)),
-        transcriptFile, cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'locate'),
+        transcriptFile, transcript: transcriptFile ? 'auto' : cfg.transcriptFor(info),
+        cli: cfg.cli, workDir: makeWorkDir(cfg.stateDir, 'locate'),
       })
       if (!result.ok) {
         if (result.reason === 'E_NO_TRANSCRIPT') {

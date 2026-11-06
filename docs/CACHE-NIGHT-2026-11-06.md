@@ -136,26 +136,40 @@ night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 
 
 ## 9. layout 审计新基线（2026-11-06）
 
-### 9.1 当前基线（master `c7b590d`，album 已挂载，cloud 5 轮）
+### 9.1 当前基线（master `6d2c518`，cloud 双 preset 审计）
 
-sanctioned cloud lab `cache-layout-album`（`--preset icl-lab --model flash`，57104，5 轮含工具调用）：
+**A. `icl-lab`（默认基线，无 toolAllowlist）** — run `cache-baseline-20261106`（5 轮，含 `album_list`/`video_probe`/`time_status`）：
 
 | 项 | 值 | 判定 |
 |---|---|---|
-| system | 1 次 append / **0 次 replace**、相邻 turn `firstDiff=-1`；**2296 字符 / 5764 字节**；首行 `你是小千。`；无身份/脚手架；`systemHasDynamicFacts=false` | ✅ |
-| 工具数 | **41**（7 个 `album_*` 全在：import/list/search/collage/show/prune/status；本轮第 2 轮实际调用了 `album_list`） | ✅ 预期达成 |
-| toolsChars / toolsHash | **23286 字符 / `6a5eee138aab`** | ✅ 新基准 |
-| facts 布局 | 1 条快照 / 5 轮（0.2/轮）；sections = `[sandbox:policy, approval:policy, icl:facts]` | ✅ |
-| `image/offload` / image block | **0 / 0**（本轮无图片投递） | ✅ |
+| system | 1 次 append / **0 replace**、`firstDiff=-1`；**4195 字符 / 8256 字节**；首行 `你是小千。`；无身份/脚手架；`systemHasDynamicFacts=false` | ✅ |
+| 工具数 | **54** | 新基线 |
+| toolsChars / toolsHash | **39350 字符 / `c1df0e849a9f`** | 新基线 |
+| facts 布局 | 1 条快照 / 5 轮（0.2/轮，537 字符）；sections = `[sandbox:policy, approval:policy, icl:facts]` | ✅ |
+| `image/offload` / image block | 0 / 0 | ✅ |
+
+**B. `icl-mc-lab`（MC 场景，toolAllowlist 生效）** — run `cache-baseline-mc-20261106`（3 轮，尝试 `mcb_snapshot`/`mcb_status`，未连 MC 服）：
+
+| 项 | 值 | 判定 |
+|---|---|---|
+| system | 1 次 append / **0 replace**；**2920 字符 / 6969 字节**；`systemHasDynamicFacts=false` | ✅ |
+| 工具数 | **27**（`mcb_*` 17 个全在：attack/combat/do/eyes/help/inventory/join/lan/leave/look/map/scan/servers/shelter/snapshot/status/stop；其余按 allowlist 收窄） | ✅ 与预期一致 |
+| toolsChars / toolsHash | **21459 字符 / `c91bce1e703b`** | 新基线 |
+| facts 布局 | 1 条快照 / 3 轮（0.33/轮，590 字符）；sections 含 `icl:facts` | ✅ |
+| `image/offload` / image block | 0 / 0（无 body，`mcb_snapshot` 返回未连接） | ✅ |
 
 ### 9.2 指纹演进（历史不回改）
 
-| 阶段 | 工具数 | toolsChars | toolsHash | 说明 |
-|---|---|---|---|---|
-| firstscreen 时代 | 34 | 18910 | `7047e6c4f3e8` | 首屏净化后、memory/recall 改前 |
-| memory/recall D1–D4 后 | 34 | 19760 | `38dfbee1cd9b` | 描述更新；album 未挂载（发现异常） |
-| **album 挂载后（当前）** | **41** | **23286** | **`6a5eee138aab`** | `misc 88570f2` 修复后 |
+| 时间/阶段 | preset | 工具数 | toolsChars | toolsHash | system 字符 | 说明 |
+|---|---|---|---|---|---|---|
+| firstscreen 时代 | icl-lab | 34 | 18910 | `7047e6c4f3e8` | 2296 | 首屏净化后、memory/recall 改前 |
+| memory/recall D1–D4 | icl-lab | 34 | 19760 | `38dfbee1cd9b` | 2300 | 描述更新；album 未挂载（当时异常） |
+| album 挂载 | icl-lab | 41 | 23286 | `6a5eee138aab` | 2296 | `misc 88570f2` |
+| **2026-11-06 16:45（当前）** | **icl-lab** | **54** | **39350** | **`c1df0e849a9f`** | **4195** | video +6、DSH 原生工具（fs/pwsh/persona/todo 等）替换 editor、sim seed MC 4 行 |
+| **2026-11-06 16:45（当前）** | **icl-mc-lab** | **27** | **21459** | **`c91bce1e703b`** | 2920 | `toolAllowlist`（mcb_* 17 + 白名单 ICL）；P1 上下文瘦身生效 |
 
-> `album` 曾进了 `DEFAULT_PLUGINS` 但不在 preset 显式 `plugins:` 列表 → 工具仍是 34（模型只能改用 `list_dir`）。
-> `88570f2` 已修：两个 lab preset 都显式挂 `album`，加 `preset-plugins.test.mjs` 防再犯；**产品 preset 未动**（等用户批）。
-> system 字符数随 run 目录路径长度 ±1–4 字符（cwd 在 system 里），不是布局漂移。
+> **体积上涨说明（非 cache 回归，但要知会）**：icl-lab 的 system 2296→4195 字符、tools 23286→39350 字符，
+> 来自"新挂载的插件"（video 6 工具、DSH 原生 fs/pwsh/persona/todo 工具说明段、sim seed MC 4 行），全部为**静态**内容；
+> 缓存语义不变（1 append/0 replace、无动态事实），但**每请求固定前缀变大了**（tools 多 16KB、system 多约 1.9KB），
+> 冷启动 prefill 会同比增加（云端无引擎日志，**prefill 具体 token 需本地 run 实测**）。若在意固定成本，建议单独审"ICL 会话工具面预算"。
+> `album`/`video` 只加 schema 与工具 description，无 `prompt.section`；`mcb_eyes` 的截图输出只有在真连 body 时才是 image attachment（本轮无 body → 无 image block）。

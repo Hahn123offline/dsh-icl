@@ -141,6 +141,29 @@ test('假 CLI：video_storyboard / video_open / video_locate 的图 + 清单 + �
   await host.disable('video')
 })
 
+test('video_locate：无字幕轨且 ASR 关闭时直接短接（不碰远程默认 ASR、也不启动 CLI）', async (t) => {
+  if (!hasFfmpeg()) {
+    t.skip('本机没有 ffmpeg/ffprobe')
+    return
+  }
+  const root = tempRoot('no-asr')
+  const dir = path.join(root, 'media')
+  fs.mkdirSync(dir)
+  const clip = makeSample(dir) // testsrc + sine：有音轨、无字幕轨
+  const marker = path.join(dir, 'cli-called.txt')
+  const markerCli = path.join(dir, 'marker-cli.mjs')
+  fs.writeFileSync(markerCli, `import fs from 'node:fs'\nfs.writeFileSync(${JSON.stringify(marker)}, '1')\n`, 'utf8')
+  const host = hostWith({ stateDir: root, storyboardCli: markerCli, asr: false })
+  await host.enable('video')
+  const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
+  const out = await tools.video_locate.execute({ path: clip, query: 'hello' })
+  assert.match(out.text, /没有字幕轨/)
+  assert.match(out.text, /不会偷偷/)
+  assert.match(out.text, /transcriptFile/)
+  assert.equal(fs.existsSync(marker), false, '不该启动 storyboard CLI')
+  await host.disable('video')
+})
+
 test('video_frames / video_probe：真实 ffmpeg 样例视频（缺依赖则 skip）', async (t) => {
   if (!hasFfmpeg()) {
     t.skip('本机没有 ffmpeg/ffprobe')

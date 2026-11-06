@@ -3,7 +3,7 @@
 > 状态：**最小实现已落地**（2026-11-06，wt/bili）。工具在 `packages/plugins/video`，桥接层的图片通道在
 > `packages/core/src/dsh-contract.mjs` + `packages/dsh-icl/src/bridge.mjs`。
 > 定位：**本地视频的通用入口**，不依赖 B 站、不依赖 QQ；B 站专用能力仍在 `packages/plugins/bili`。
-> **启用范围**：lab preset 已挂载（`icl-lab`/`icl-mc-lab`）；**产品 preset 待用户批准**（当前只在 lab 可用，desktop 未启用）。
+> **启用范围**：lab preset 已挂载（`icl-lab`/`icl-mc-lab`）；**产品 preset（`icl`）未显式写 `plugins`，按默认装配 `video` 也已生效**（"产品未启用 video"是旧文档）。产品显式启用与工具面预算待用户批准/拍板（见 `docs/PRODUCT-SURFACE.md` / `docs/PRODUCTIZATION-KICKOFF.md`），desktop 尚未重启验证。
 
 ---
 
@@ -173,12 +173,31 @@ node tools/bili-eval.mjs --offline
 - `video_frames` 0.2 s（3 帧拼 1 张）
 - `video_open overview:false` 元数据 0.1 s 级
 
+### 8.1 端到端验收（2026-11-06，本地 8 秒样例：480x270 / H.264 + AAC 语音，108 429 B）
+
+| 工具 | 耗时（ASR 关闭 / `asr:false`） | 耗时（ASR 开启，首次） | 产出 | 附件契约 |
+|---|---|---|---|---|
+| `video_probe` | 62 ms | 62 ms | 文本元数据 | — |
+| `video_open` | **842 ms** | 5 472 ms（首次触发 ASR） | `sheet.png` 101 691 B（1010x624，6 格） | `image+text` |
+| `video_storyboard` | 641 ms | 642 ms（转写已缓存） | `sheet.png` 101 691 B（4 格） | `image+text` |
+| `video_zoom` | 698 ms | 5 733 ms（新窗口重新 ASR） | `sheet.png` 101 116 B（4 格） | `image+text` |
+| `video_frames` | 226 ms | 226 ms | `frames.png` 93 248 B（3 帧拼 1 张） | `image+text` |
+| `video_locate`（ASR） | — | **冷 9.0 s / 热 255 ms** | 文本命中 | — |
+
+附件契约用 `toDshToolDefinition(..., { saveImage })` 在 ICL 层验证：`{text, images:[png]}` → `saveImage` → `render` 得到
+`image, text` 两个 block（四个带图工具全部通过；不经过 QQ）。
+
+**注意**：ASR 开启时 `video_open`/`video_zoom` 的首次调用会带上转写（5–9 s）；纯看画面可用 `video.asr=false`
+或 `video_storyboard` 的 `detail`/窗口控制成本。ASR 关闭时 `video_locate` 若既无字幕轨也无 `transcriptFile`，
+会**直接短接**并提示，不会偷偷走远程默认 ASR（见 §11.2）。
+
 ---
 
 ## 9. 还没做（按优先级）
 
-1. **ASR 配置入口**：设计见 §11（8088 的 `whisper-asr` 可行），但**还没接线**；现在靠字幕轨或 `transcriptFile`，
-   没有字幕的本地视频 `video_locate` 会返回 `E_NO_TRANSCRIPT`。
+1. **ASR 配置入口**：已验证 8088 `whisper-asr` 打通（`video_locate` 冷 9 s / 热 0.25 s，见 §11.2）；
+   插件会检测 `DSH_ASR_BASE_URL` / `$DSH_HOME/asr.json` / `config.asr`，没有配置时 `video_locate` 直接给可操作提示、
+   不会偷偷走远程默认 ASR。尚未做的是"ICL 自持注入 env"（方案 B）；等产品化。
 2. **MC 录屏/截图落盘约定**：接口已按"绝对路径"预留，录制端还没实现。
 3. **album 元数据索引**：见 §7。
 4. **批量/长片**：storyboard CLI 有 `--batch`（按窗口切、写 `-timeline.md`），ICL 工具层暂未暴露；
@@ -265,6 +284,32 @@ node tools/bili-eval.mjs --offline
 
 **未来验收**：`node bin/asr-check.mjs <本地视频> --from 0 --seconds 12` 出中文文本；`video_locate` 能命中；
 关闭 ASR 时明确 `E_NO_TRANSCRIPT`；`video_storyboard transcript:off` 确实不调服务。
+
+### 11.2 接线验证结果（2026-11-06，本地样例 + 8088 `whisper-asr`；**未写桌面配置**）
+
+**前提发现**：本机 `~/.dsh/asr.json` **本来就存在**（2026-10-28 创建，指向 `http://localhost:8088/v1`、`model=whisper-asr`）。
+本轮**没有新建/修改它**；验证走它原有的配置 + 临时 env（`DSH_ASR_*`），符合"不写桌面 asr.json"的约束。
+
+| 验证 | 结果 |
+|---|---|
+| 直接 POST `/v1/audio/transcriptions`（multipart WAV，`model=whisper-asr`，`verbose_json`，`language=en`） | **200**；7.26 s 转完 10.6 s 音频；返回 `{"text":"This is a test video…","language":"en","duration":10.6}`，**无 `segments`** |
+| storyboard CLI（8 s 样例，`--text-only --text`） | `[transcript] asr (whisper-asr)，1 段`；stdout 的 cell 1–4 都带整段台词，耗时 ≈4.7 s |
+| `video_locate`（经 ICL 插件，ASR 开启） | **冷 9 013 ms**（含抽音/分片/推理/扫描）→ **热 255 ms**（storyboard 转写缓存命中），命中文句 |
+| 关闭 ASR（`asr:false`）且无字幕/`transcriptFile` | `video_locate` **直接短接**，提示"不会偷偷把音频发到远程服务"，不启动 CLI（单测覆盖） |
+
+**结论**：OpenAI 方言**打通**，缓存有效（冷 9 s → 热 0.25 s），CPU 推理可用、0 VRAM。
+
+**已知限制（重要）**：
+- 8088 的 whisper 返回**没有 `segments`**（只有整段 text）。storyboard 的契约是"缺 segments 就退化成 1 段覆盖整个请求"，
+  于是 8 s 样例的 4 个 cell 都拿到同一段台词，`video_locate` 只会命中一整个窗口、**没有秒级时间码精度**。
+  高精度定位需要：① 换一个返回 `segments` 的服务（speaches / faster-whisper HTTP 等），或 ② 客户端自己按静音切片
+  （storyboard 在"长请求"时已有分片逻辑，但单请求内不切），或 ③ 用 `transcriptFile`（带 from/to 的 JSON/SRT）。
+- 开启 ASR 时 `video_zoom` 对新窗口会再转写一次（≈5.7 s）；纯看画面建议 `asr:false` 或直接 `video_storyboard`。
+- ASR 是 **CPU**（0 VRAM）；首次调用有模型加载/排队延迟，8088 是共享网关，避免与本地模型实验同一时间窗。
+
+**回退**：不配 ASR（`video.asr=false` / 临时去掉 `DSH_ASR_*` 且不读 `asr.json`）→ 工具仍可看画面，
+`video_locate` 对无字幕视频给可操作提示；不会偷偷上传音频。若 `asr.json` 指向的服务不可达，storyboard 会报
+`asr-failed`，工具返回里会带原文（不会静默）。
 
 ---
 

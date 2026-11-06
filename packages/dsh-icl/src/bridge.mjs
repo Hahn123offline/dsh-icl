@@ -116,7 +116,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     attachments: null,
     attachmentsInjected: false,
     ticking: false,
-    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0 },
+    // 通用重复动作保护：记录同一 session 最近一次工具调用签名与连续次数。
+    // 触发条件：连续 N 次（默认 3）完全相同（name + 规范化 args）→ 通过 delivery 注入一条提示；
+    // 同一 session 60s 内不重复提示（节流）。不写 system/facts，只是 append-only notice。
+    repeat: { sig: null, count: 0, lastNoticeAt: 0 },
+    stats: { delivered: 0, failed: 0, skipped: 0, rawRows: 0, contextInjected: 0, turnEnds: 0, steered: 0, followupFallback: 0, factsInContext: false, factsRefreshes: 0, repeatGuards: 0 },
   }
 
   function report(where, error) {
@@ -595,6 +599,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.injected.clear()
     state.turn = null
     state.factsCache = { turn: null, text: null }
+    state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     // 新会话从空投递队列开始；旧会话/旧 run 留在 host 队列里的消息不能先于第一轮漏进来。
     try { host.services.delivery.clear() } catch { /* ignore */ }
     log({ msg: 'icl.session', id })
@@ -608,6 +613,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.agent = null
     state.turn = null
     state.factsCache = { turn: null, text: null }
+    state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     state.injected.clear()
     // 旧会话的待投递不能漏给下一条会话。
     try { host.services.delivery.clear() } catch { /* ignore */ }
@@ -635,6 +641,73 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return name.startsWith('time_') || name.startsWith('memo') || name.startsWith('lexicon_learn')
   }
 
+  /* ── 通用重复动作保护（用户要求，local3: 87 次同一句 mcb_do say） ───────── */
+
+  /** 规范化 args：对象键排序、数组保序、字符串 trim；用于"完全相同动作"判定。 */
+  function stableNormalize(value, depth = 0) {
+    if (depth > 8) return '[deep]'
+    if (value === null || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map((item) => stableNormalize(item, depth + 1))
+    const out = {}
+    for (const key of Object.keys(value).sort()) out[key] = stableNormalize(value[key], depth + 1)
+    return out
+  }
+
+  function signatureOfToolCall(event) {
+    const name = String(event?.data?.name ?? event?.data?.tool ?? event?.data?.toolName ?? '')
+    if (!name) return null
+    let args = event?.data?.arguments ?? event?.data?.args ?? event?.data?.input ?? null
+    if (args == null) args = {}
+    if (typeof args === 'string') {
+      const trimmed = args.trim()
+      try { args = JSON.parse(trimmed) } catch { args = trimmed }
+    }
+    let argsText = ''
+    try { argsText = JSON.stringify(stableNormalize(args)) } catch { argsText = String(args) }
+    if (argsText.length > 2000) argsText = argsText.slice(0, 2000)
+    return `${name}|${argsText}`
+  }
+
+  function repeatNow() {
+    try {
+      const injected = Number(config.now?.())
+      if (Number.isFinite(injected)) return injected
+    } catch { /* fall through */ }
+    return Date.now()
+  }
+
+  /**
+   * 通用重复动作保护（不只 MC，对所有工具生效）：
+   * 同一 session 连续 N 次完全相同（name + 规范化 args）→ 通过 delivery 注入一条 append-only notice；
+   * 同一 session 60s 内不重复提示（节流）。不改 system/facts，不伪造 user。
+   */
+  function guardRepeatedToolCall(event) {
+    if (config.repeatGuard === false) return
+    const sig = signatureOfToolCall(event)
+    if (!sig) return
+    const after = Math.max(2, Number(config.repeatGuardAfter ?? 3))
+    const throttleMs = Math.max(0, Number(config.repeatGuardThrottleMs ?? 60_000))
+    const now = repeatNow()
+    if (state.repeat.sig === sig) state.repeat.count += 1
+    else state.repeat = { sig, count: 1, lastNoticeAt: state.repeat.lastNoticeAt }
+    if (state.repeat.count < after) return
+    if (state.repeat.lastNoticeAt && now - state.repeat.lastNoticeAt < throttleMs) return
+    state.repeat.lastNoticeAt = now
+    state.stats.repeatGuards += 1
+    const name = sig.slice(0, sig.indexOf('|'))
+    const text = `检测到你连续重复同一动作 ${state.repeat.count} 次（${name}）；如果没有进展，换策略/等待事件/检查目标，不要说同一句。`
+    try {
+      host.services.delivery.push({
+        source: { plugin: 'icl', activity: 'repeat-guard' },
+        content: { text },
+        batchKey: 'icl:repeat-guard',
+      })
+    } catch (error) {
+      report('repeat-guard.push', error)
+    }
+    log({ msg: 'icl.repeat-guard', tool: name, count: state.repeat.count })
+  }
+
   function onEvent(session, event) {
     if (!state.session || String(session?.id) !== String(state.session.id)) return
     // 记当前 turn：facts 快照节流按 turn 刷新（turn/start 是 DSH 每轮第一件事）。
@@ -647,6 +720,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 允许陈旧到轮末（它通常不产生模型消息）；MC 环境事实按 §7.7 豁免。
     if (event?.type === 'tool/result' && isFactsTool(event.data?.name ?? event.data?.tool)) state.factsDirty = true
     appendRaw(session, event)
+    // 通用重复动作保护：所有工具都过，连续 N 次同签名才提示（delivery, append-only）。
+    if (event?.type === 'tool/call') guardRepeatedToolCall(event)
     const type = event?.type
     if (type !== 'turn/end' && type !== 'turn/start') return
     const seq = Number(event.seq)
@@ -775,6 +850,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       pending: host.services.delivery.pendingCount(),
       inflight: host.services.delivery.inflightCount(),
       raw: state.raw.length,
+      repeat: { count: state.repeat.count, tool: state.repeat.sig ? state.repeat.sig.slice(0, state.repeat.sig.indexOf('|')) : null, lastNoticeAt: state.repeat.lastNoticeAt || null },
       signals: host.services.signals.stats(),
       stats: { ...state.stats },
     }
