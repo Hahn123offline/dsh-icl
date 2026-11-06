@@ -193,6 +193,30 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       if (Number.isFinite(date.getTime())) parts.push(`${twoDigit(date.getHours())}:${twoDigit(date.getMinutes())}`)
       const phase = String(status?.phase ?? '')
       if (phase) parts.push(phase === 'awake' ? '醒着' : phase === 'sleeping' ? '睡' : phase === 'paused' ? '暂停' : phase)
+      // 下一安排：让 tail 能替代频繁 time_list/time_status。
+      // time 的 schedule.at 可能是 ISO 字符串（一次性）或 "HH:MM"（daily/weekly）；silent 的（如 dream:nightly）不算。
+      const schedules = Array.isArray(status?.schedules) ? status.schedules.filter((row) => row?.silent !== true) : []
+      const scheduleEpoch = (row) => {
+        const raw = row?.at
+        const numeric = Number(raw)
+        if (Number.isFinite(numeric) && numeric > 0) return numeric
+        if (typeof raw === 'string' && raw.includes('T')) {
+          const parsed = Date.parse(raw)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        if (typeof raw === 'string') {
+          const match = /^(\d{1,2}):(\d{2})$/.exec(raw.trim())
+          if (match) {
+            const date = new Date(at)
+            date.setHours(Number(match[1]), Number(match[2]), 0, 0)
+            if (date.getTime() <= at) date.setDate(date.getDate() + 1)
+            return date.getTime()
+          }
+        }
+        return null
+      }
+      const nextAt = schedules.map(scheduleEpoch).filter((when) => Number.isFinite(when) && when > at).sort((x, y) => x - y)[0]
+      if (Number.isFinite(nextAt)) { const nextDate = new Date(nextAt); if (Number.isFinite(nextDate.getTime())) parts.push(`下一${twoDigit(nextDate.getHours())}:${twoDigit(nextDate.getMinutes())}`) }
       let focus = null
       try { focus = host.services.focus.current() } catch { focus = null }
       if (focus) {

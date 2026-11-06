@@ -1224,7 +1224,7 @@ async function renderTailSetup({ renderTail = { enabled: true, maxPerTurn: 2, ma
       pluginCtx.tools.register({ name: 'tail_image', summary: 'image', parameters: { type: 'object', additionalProperties: false, properties: {} }, async execute() { return { text: 'pic', imagePath: 'C:/tmp/x.png' } } })
       pluginCtx.services.provide('time', {
         now: () => 1_700_000_000_000,
-        status: () => status ?? { phase: 'awake', backlog: 2, goals: [{ id: 'g1' }] },
+        status: () => status ?? { phase: 'awake', backlog: 2, goals: [{ id: 'g1' }], schedules: [{ id: 's1', at: 1_700_000_060_000 }] },
       })
       return () => {}
     },
@@ -1249,6 +1249,7 @@ test('renderTail：动作类工具追加状态行，denylist 状态工具不加'
     assert.match(doOut.text, /醒着/);
     assert.match(doOut.text, /积压2/);
     assert.match(doOut.text, /目标g1/);
+    assert.match(doOut.text, /下一\d\d:\d\d/);
     const statusOut = await tools.get('mcb_status').execute({}, {})
     assert.equal(statusOut.text, 'status-result')
     assert.doesNotMatch(statusOut.text, /〔状态｜/)

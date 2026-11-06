@@ -157,3 +157,7 @@ node tools/render-tail-audit.mjs --run .state/lab/tail-ab-base > .state/lab/tail
 node tools/render-tail-audit.mjs --run .state/lab/tail-ab-on > .state/lab/tail-ab-on/audit.json
 ```
 结果写入 `docs/RENDERTAIL-RESULT.md`（含适用/不适用结论；若收益不明显如实写）。
+
+## 12. A/B 结果（2026-11-07）
+
+见 `docs/RENDERTAIL-RESULT.md`：**非 MC 生活场景收益不明显（状态调用 10→9，-10%；未达 ≥50%），不产品化**；实现保留 lab-only 默认关，等 MC 场景复测（本轮不跑 MC）。
