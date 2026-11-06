@@ -183,3 +183,69 @@ mc-lab 的 `tools/mc-quality.mjs` 现状快照字段（night-1 即由它产出�
 5. ✅ **recall 教学（用户批准）**：sim 3 条触发场景 + recall `when`；eager 计数落 `eager-recall.jsonl`（§3.6）。
 
 > 蓝队补充：`dream-result` 回执（`60d8abe`）会把 dream 失败带进醒来简报；`recordOutcome` 新增兜底：`ok:true` 但 job 没自己写 `run:` 时补 `run:`（`empty:true`），保证三态不因未来新 job 漏记。
+
+---
+
+## 6. 首次实测：E2 11:47 短睡（A 路线，2026-11-06）
+
+> 证据：`C:\DSH\icl-wt\mc-lab\.state\lab\e2-20261106-smoke`（commit 9cc6df6，readOnly；未起 lab）。
+> 触发：dream:nightly 被短睡提前触发；provider = A（8088 qwen35-9b / embed-bge-m3）；`slots.unmatched=[]`、`embedded=true`。
+> lead 给的口径数字（wash 759 行 / events 5 块 / index 4 / degraded 1）在下表逐项核对一致。
+
+### 6.1 结果总表（dream 回执 + 质量快照）
+
+| 项 | 实测 | 判定 |
+|---|---|---|
+| dream | `ok:true`；7 job：wash/events/lexicon/consume/cleanup/index ran，people skipped(no-notes) | ✅ 三态齐全（无缺行/无 fail） |
+| dream-result text | `wash 759 行 / events 5 块 / lexicon 0 条 / consume 0 / cleanup 1 合并 3 改写 / index 4 条 / 分片降级` | ⚠ "分片降级"见 §6.2 |
+| event block | **5 块**；summary p50/p95 = **30/37** 字符；body **97–228** 字符；**无 parts**（未超 1200，符合设计） | ✅ 尺寸合规 |
+| day log | **5 段**（39960/39770/39628/39866/29560 字符），行号 1–759 **连续无缺/无重** | ✅ 分段正确 |
+| mem_vec | 12 行 = 7 note + 5 block（index 4 条后全部可召回元素都有向量） | ✅ 索引覆盖 |
+| recall | **0 次调用**（recall_count 全 0） | 见 §6.3（场景无触发） |
+| eager-recall | **20 次 / 9846 字符**；4 条 distinct note 反复注入（7–11 次/条）；睡眠完成后 0 次（consolidated 过滤生效） | ✅ 通路工作，⚠ 重复/截断见 §6.3 |
+| 醒来简报 | 睡了 3 分钟 / 积压 3 条（mc）/ 记忆整理完成 / "分片降级" / 1 条危险置顶 | ⚠ 文案问题见 §6.4 |
+
+### 6.2 5 块内容质量（逐块）
+
+| # | summary（≤37 字） | body | evidence | 评价 |
+|---|---|---|---|---|
+| 14 | 在树屋里反复调试门锁，最后发现 1x1 内部无法进入，改为在户外挖坑躲夜 | 160 | 8（含 3 条 "MC 身体：已连接"） | ✅ 有意义、第一人称、跨 8min |
+| 15 | 因为饥饿和攻击机制 bug，差点饿死在野外，不得不放弃狩猎 | 205 | 10（含 2 条连接状态） | ✅ 有意义（死锁/饥饿体验） |
+| 16 | 白桦林和橡树采集顺利，存了一大堆木板和原木 | 147 | 9（0 连接噪声） | ✅ 有意义 |
+| 17 | 熔炉安置成功，工作台、箱子和熔炉凑在一起形成了小作坊 | 97 | 4 | ⚠ 与 #18 **重复** |
+| 18 | 熔炉安置成功，凑成小作坊，但系统因同名冲突多次踢我下线，导致状态重置掉血 | 228 | 3 | ⚠ body **包含 #17 全文**（97 字子串）→ 同一经历写了两块 |
+
+**判定**：5 块里 **4 块质量成立**（可读、有出处、带 from/to/tags），**1 对重复（#17/#18）**。
+- 重复根因：events 在**同一 shard 内**对同一经历输出了两块（#17 evidence 559–564；#18 evidence 571/629/630），cleanup 的 1 合并/3 改写**没抓到这对**（summary 不同、body 包含关系）。
+- **修法（第二轮，P1）**：cleanup 增加"正文包含/高相似"合并（规范化 body 后 substring 或 Jaccard ≥0.8），合并时保留 `mergedFrom` 与最全 evidence；或 events 输出后按 (day, body 相似) 去重。测试：fixture 两条 body 包含关系 → 合并成一块且 evidence 并集。
+- evidence 去噪（P2）：#14 有 3/8 条是重复的"MC 身体：已连接"状态行（id 390/422/444）；建议 events 写块时对 evidence 里"重复状态行"只留最近 1 条（正文快照仍保留在 day log，不丢证据能力）。
+
+### 6.3 recall 0 次：是"场景没有问过去"，不是工具/教学失败
+
+- 180 条 `user/message` 中：真实用户指令 **14 条**（全是 MC 任务链/操作指令），其余是 runtime-context(62)/MC 事件(74)/time(17)/eager 注入(13 前 + 7 梦中)。
+- 对 14 条真实指令 + 全部 user 消息做"过去指代"正则（上次/以前/之前/记得/那个事/回忆/曾经/昨天）：**命中 0 条**。
+- `remember` 被实际调用 **7 次**（同插件工具已注册）；eager 注入 20 次说明记忆检索通路在跑；所以 recall=0 **不是工具缺失/教学没部署**（sim 教学已在 system 快照里），而是**本轮 E2 脚本没有"问过去/旧细节"场景**。
+- 教学有效性本轮**不可判**：需要 E2 增加一个显式场景（例如"你还记得昨晚为什么死那么多次吗/上次搭的小屋在哪"），再记录 recall 调用；KPI 改成条件率（"过去指代消息中 recall 调用率"），否则任务驱动型长测永远是 0。
+- 顺带：eager 注入的 4 条 note 有**每条约 7–11 次重复**（同会话未消化前反复注入），且单条在 80 字处**截断到半句**（如"…别在"）。建议（P2）：eager 对同一条记忆做会话内冷却/去重；截断按句读或加"…"。
+
+### 6.4 `degraded:1` 归因：**分段被误标成降级**，不是预算也不是上游错误
+
+- `dream-result meta.degraded=1` 来源是 **wash**：jobWash 返回 `degraded = omittedLines>0 || parts>1`；本轮 wash **parts=5、omittedLines=0** → degraded=true。
+- events：`shards:3, failedShards:0, omittedShards:0, payloadChars:188876` → 没有失败/没有截断。
+- 所以 `分片降级` 是**新分段机制的标签错误**：用户看到"降级"会以为丢数据/失败，实际是"这次原文分成了 5 段"。
+- **修法（第二轮，P1，低风险）**：wash `degraded = omittedLines > 0`（真截断才算降级）；分段单独返回 `segmented: parts`；`emitDreamResult` 文案改为 `分 5 段`（不再叫降级）；E2 质量门把 `degraded` 与 `segmented` 分开统计。
+
+### 6.5 醒来简报的两个小问题（time 侧，P2）
+
+- **截断在半词**：`记忆整理：完成（wash 759 行 / … / cle）` —— time 对 result.text 做 `slice(0,60)`，把 "cleanup" 截成 "cle"；建议按标点/词边界截断或限 120 字。
+- **"分片降级"混入简报**：见 §6.4，修 wash 语义后自然消失；另简报里报警样例出现 `掉血：20 → 17（血18/20…）`（合并/限流后的文本与采样不一致），属 time 的 alarm 合并展示问题，建议单独核对。
+
+### 6.6 第二轮结论
+
+| 结论 | 内容 |
+|---|---|
+| **达成** | 首次真实事件→记忆成块：5 块可读、有 evidence/from-to/tags；day 分段正确；block 尺寸合规；mem_vec 全覆盖；睡眠回执进简报；people 无对象时正确 skip；三态无缺行。 |
+| **需小修（P1）** | ① wash 分段不得标 degraded（改文案/指标）；② cleanup 增加 near-duplicate block 合并（本轮 1 对重复）。 |
+| **可选（P2）** | evidence 去噪（重复连接状态行）；eager 重复/截断；time 简报截断；recall KPI 场景化。 |
+| **不需要** | 分块大小/分段上限/parts 机制本轮未被触发问题（body 97–228，无超长；day 5 段行号连续）；索引通路正常（4/4）。 |
+
