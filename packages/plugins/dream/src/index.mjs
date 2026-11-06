@@ -234,6 +234,19 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * evidence 去噪（P2，首次 E2 实测）：模型常把重复的"MC 身体：已连接/状态行"当证据，
+   * 一块里引用 3 条同样的连接行没有信息量。同类状态行只保留最近 1 条（按 at/顺序取最后）。
+   */
+  function dedupeEvidence(list) {
+    const evidence = Array.isArray(list) ? list : []
+    const noiseRe = /已连接|MC 身体：|MC body|body (?:is )?connected/i
+    const noise = evidence.filter((entry) => noiseRe.test(String(entry?.line ?? '')))
+    if (noise.length <= 1) return evidence
+    const keep = noise.reduce((best, entry) => (Number(entry?.at) || 0) >= (Number(best?.at) || 0) ? entry : best, noise[0])
+    return evidence.filter((entry) => entry !== keep ? !noise.includes(entry) : true)
+  }
+
   function markNotes(notes, now) {
     for (const note of notes) {
       const data = { ...(note.data ?? {}), consolidated: true, consolidatedAt: now }
@@ -493,10 +506,12 @@ export function apply(ctx) {
         now,
       })
     })
-    recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total, parts: segments.length }, now)
+    recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: total, parts: segments.length, segmented: segments.length > 1 }, now)
     return {
       job: 'wash', ok: true, lines: lines.length, totalLines: cleaned.length,
-      omittedLines, chars: total, parts: segments.length, degraded: omittedLines > 0 || segments.length > 1,
+      // 用户批准（2026-11-06，首次 E2 实测后）：分段是正常设计，不算"降级"；只有真截断（omittedLines>0）才是 degraded。
+      omittedLines, chars: total, parts: segments.length, segmented: segments.length,
+      degraded: omittedLines > 0,
     }
   }
 
@@ -574,17 +589,18 @@ export function apply(ctx) {
       // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
       if (!evidence.length && previous) continue
       // 同一 summary 重跑：新证据优先，但旧证据不丢（旧行号/正文快照仍可追）。
-      const mergedEvidence = [...evidence]
+      const mergedEvidence = dedupeEvidence([...evidence])
       for (const old of previous?.data?.evidence ?? []) {
         if (!mergedEvidence.some((e) => e.type === old.type && Number(e.id) === Number(old.id))) mergedEvidence.push(old)
       }
+      const evidenceFinal = dedupeEvidence(mergedEvidence)
       const times = (() => {
         if (dayLines) {
-          return mergedEvidence
+          return evidenceFinal
             .map((e) => Number(e.at) || Number(dayLines.get(Number(e.id))?.at) || 0)
             .filter(Boolean)
         }
-        return mergedEvidence
+        return evidenceFinal
           .map((e) => notes.find((n) => Number(n.id) === Number(e.id)))
           .filter(Boolean)
           .map((n) => Number(n.data?.at ?? n.createdAt ?? 0))
@@ -599,7 +615,7 @@ export function apply(ctx) {
         const part = index + 1
         const key = index === 0 ? baseKey : `${baseKey}:p${part}`
         const previousPart = index === 0 ? previous : memory.query({ namespace: 'event', kind: 'block', key, limit: 1 })[0]
-        const partEvidence = index === 0 ? mergedEvidence : (previousPart?.data?.evidence ?? mergedEvidence)
+        const partEvidence = index === 0 ? evidenceFinal : dedupeEvidence(previousPart?.data?.evidence ?? evidenceFinal)
         const created = memory.put({
           namespace: 'event',
           kind: 'block',
@@ -622,7 +638,7 @@ export function apply(ctx) {
           now,
         })
         if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${bodyChunks[index]}`)
-        if (index === 0 && !mergedEvidence.length) {
+        if (index === 0 && !evidenceFinal.length) {
           raiseQuestion({
             text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
             about: { namespace: 'event', key: baseKey },
@@ -958,6 +974,84 @@ export function apply(ctx) {
     return null
   }
 
+  /** 规范化正文：去空白/标点/大小写，便于判断两条块是不是同一段经历。 */
+  function normalizeBodyText(value) {
+    return String(value ?? '').toLowerCase().replace(/\s+/g, '').replace(/[。！？!?，,；;：:、"'“”‘’（）()【】\[\]…—\-]/g, '')
+  }
+  function bigramJaccard(a, b) {
+    const grams = (text) => { const out = new Set(); for (let i = 0; i < text.length - 1; i += 1) out.add(text.slice(i, i + 2)); return out }
+    const left = grams(a)
+    const right = grams(b)
+    if (!left.size || !right.size) return 0
+    let overlap = 0
+    for (const gram of left) if (right.has(gram)) overlap += 1
+    return overlap / (left.size + right.size - overlap)
+  }
+  function sameExperience(a, b) {
+    const dayA = a?.data?.day
+    const dayB = b?.data?.day
+    if (dayA && dayB && String(dayA) !== String(dayB)) return false
+    return true
+  }
+
+  /**
+   * 确定性近似重复合并（P1，首次 E2 实测）：模型 plan 漏掉的同经历双块。
+   * 判据：同一天/时间重叠 + 规范化 body 包含（≥20 字）或 bigram Jaccard≥0.8。
+   * 保留"正文更全"的块 key；evidence 并集、mergedFrom 记录被吞并的 key；被吞并块标 superseded。
+   */
+  function mergeNearDuplicateBlocks(now) {
+    let merged = 0
+    const pairs = []
+    for (const ns of ['event', 'person', 'slang']) {
+      const blocks = memory.query({ namespace: ns, kind: 'block', limit: 500, order: 'desc' })
+        .filter((row) => row.data?.superseded !== true)
+      const dropped = new Set()
+      for (let i = 0; i < blocks.length; i += 1) {
+        const keeper = blocks[i]
+        if (dropped.has(keeper.id)) continue
+        const keeperBody = normalizeBodyText(keeper.data?.body ?? keeper.text)
+        if (keeperBody.length < 20) continue
+        for (let j = i + 1; j < blocks.length; j += 1) {
+          const other = blocks[j]
+          if (dropped.has(other.id)) continue
+          if (!sameExperience(keeper, other)) continue
+          const otherBody = normalizeBodyText(other.data?.body ?? other.text)
+          if (otherBody.length < 20) continue
+          const contained = keeperBody.includes(otherBody) || otherBody.includes(keeperBody)
+          if (!contained && bigramJaccard(keeperBody, otherBody) < 0.8) continue
+          // 正文更全的一方胜出；若对方更长，则把正文搬到 keeper 上（key 不变，避免 key 引用失效）。
+          const longest = otherBody.length > keeperBody.length ? otherBody : keeperBody
+          const unionEvidence = dedupeEvidence([
+            ...(keeper.data?.evidence ?? []),
+            ...(other.data?.evidence ?? []),
+          ].filter((entry, index, arr) => arr.findIndex((row) => row?.type === entry?.type && Number(row?.id) === Number(entry?.id)) === index))
+          const froms = [Number(keeper.data?.from ?? 0), Number(other.data?.from ?? 0)].filter(Boolean)
+          const tos = [Number(keeper.data?.to ?? 0), Number(other.data?.to ?? 0)].filter(Boolean)
+          memory.put({
+            namespace: ns,
+            kind: 'block',
+            key: keeper.key,
+            text: keeper.text,
+            data: {
+              ...(keeper.data ?? {}),
+              body: String(longest === keeperBody ? (keeper.data?.body ?? '') : (other.data?.body ?? '')).slice(0, maxBlockBody),
+              evidence: unionEvidence,
+              mergedFrom: [...new Set([...(keeper.data?.mergedFrom ?? []), other.key, ...(other.data?.mergedFrom ?? [])])],
+              ...(froms.length ? { from: Math.min(...froms) } : {}),
+              ...(tos.length ? { to: Math.max(...tos) } : {}),
+            },
+            now,
+          })
+          memory.patch(other.id, { data: { ...(other.data ?? {}), superseded: true, supersededBy: keeper.key } })
+          dropped.add(other.id)
+          merged += 1
+          pairs.push(`${other.key}->${keeper.key}`)
+        }
+      }
+    }
+    return { merged, pairs }
+  }
+
   async function jobCleanup({ now, force = false }) {
     const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'cleanup')) return { job: 'cleanup', skipped: 'already-ran' }
@@ -1101,6 +1195,11 @@ export function apply(ctx) {
       rewriteCount += 1
     }
 
+    // 确定性近似重复合并（首次 E2 实测 P1：#17/#18 同经历重复，模型 plan 没抓到）。
+    // 只同一天/时间重叠的块参与；规范化 body 后"包含"或 bigram Jaccard≥0.8 视为同一段经历。
+    const near = mergeNearDuplicateBlocks(now)
+    mergedCount += near.merged
+
     // 纠正处理完后，把它对应的疑问一并关掉（note 就是为这个存在的）。
     const noteSvc = ctx.services.get('note')
     for (const note of pendingResolves) {
@@ -1116,8 +1215,8 @@ export function apply(ctx) {
       if (note) memory.patch(note.id, { data: { ...(note.data ?? {}), consumed: true, consumedAt: now } })
     }
 
-    recordRun(day, 'cleanup', { merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length }, now)
-    return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length }
+    recordRun(day, 'cleanup', { merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged }, now)
+    return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged }
   }
 
   /* ── index：补建向量索引（最后一步）───────────────── */
@@ -1344,18 +1443,24 @@ export function apply(ctx) {
     if (!executed.length && !failed.length) return null // 全 skip：没有真干活，不发假回执
     const degraded = results.some((row) => row.degraded === true)
     const failedShards = results.reduce((n, row) => n + (Number(row.failedShards) || 0), 0)
+    // 分段（segmented>1）是正常设计，不叫"降级"；回执写成"分 N 段"，只有真截断/片失败才说降级。
+    const segmentedJobs = results
+      .filter((row) => Number(row.segmented) > 1)
+      .map((row) => `${row.job} 分 ${Number(row.segmented)} 段`)
     const ok = failed.length === 0
     const parts = [
       ...executed.map((row) => `${row.job} ${jobDetail(row)}`),
       ...failed.map((row) => `${row.job} 失败（${String(row.error ?? 'unknown').slice(0, 80)}）`),
+      ...segmentedJobs,
     ]
-    if (degraded) parts.push(`分片降级${failedShards ? `（${failedShards} 片失败）` : ''}`)
+    if (degraded) parts.push(`降级${failedShards ? `（${failedShards} 片失败）` : ''}`)
     const text = parts.join(' / ')
     const meta = {
       ok,
       jobs: results.map((row) => ({ job: row.job, ok: row.ok !== false, ...(row.skipped ? { skipped: row.skipped } : {}) })),
       degraded,
       failedShards,
+      segmented: results.reduce((n, row) => n + (Number(row.segmented) > 1 ? 1 : 0), 0),
       at: now,
     }
     try {

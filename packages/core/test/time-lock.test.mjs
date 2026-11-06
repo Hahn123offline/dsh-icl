@@ -752,6 +752,27 @@ test('醒来简报：dream 回执（含 degraded/失败分片）与边界超时�
   assert.ok(api.status().lastSleepBrief?.anomalies.some((item) => item.includes('grace')))
 })
 
+test('醒来简报：dream 回执长文本按边界截断（不切半词）', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, sleepGraceSec: 60 } })
+  emitTurnStart(host, 1)
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  virtualNow += 61_000
+  api.tick()
+  const longText = 'wash 759 行 / events 5 块 / lexicon 0 条 / consume 0 条写待办 / cleanup 1 合并 3 改写 / index 4 条 / wash 分 5 段'
+  host.services.signals.emit({
+    from: { plugin: 'dream' }, kind: 'event', tags: ['dream-result'], text: longText,
+    meta: { ok: true, jobs: [], degraded: 0, failedShards: 0, at: virtualNow },
+  })
+  virtualNow += 29 * 60_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /记忆整理：完成/)
+  assert.match(text, /…/, '长文本应带省略号，而不是硬切')
+  assert.doesNotMatch(text, /cle[）)]/, '不能把 cleanup 截成 cle）')
+})
+
 test('醒着收到 dream 失败回执：发一条可读 notice，status 记录 ok=false', async () => {
   const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
   host.services.signals.emit({ from: { plugin: 'dream' }, kind: 'event', tags: ['dream-result'], text: 'wash 失败：raw 文件缺失', meta: { ok: false, jobs: [], degraded: 0, failedShards: 0 } })

@@ -95,6 +95,22 @@ function timeOnly(at, timeZone = null) {
   return `${pad2(p.h)}:${pad2(p.min)}`
 }
 
+/**
+ * 简报/回执里的长文本截断（用户 2026-11-06 实测反馈）：不要切在半词/半句上。
+ * 优先在句子/分隔符边界断，再补省略号；找不到合适边界才硬切。
+ */
+function clipBriefText(value, max = 100) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim()
+  if (text.length <= max) return text
+  const cut = text.slice(0, max)
+  const boundary = Math.max(
+    cut.lastIndexOf('。'), cut.lastIndexOf('；'), cut.lastIndexOf('，'), cut.lastIndexOf('！'), cut.lastIndexOf('？'),
+    cut.lastIndexOf(' / '), cut.lastIndexOf('/'), cut.lastIndexOf(' '),
+  )
+  const head = boundary > Math.floor(max * 0.5) ? cut.slice(0, boundary + 1).trim() : cut.slice(0, max - 1).trimEnd()
+  return `${head}…`
+}
+
 function addDays(fields, delta) {
   const t = new Date(Date.UTC(fields.y, fields.m - 1, fields.d + delta))
   return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() }
@@ -1374,7 +1390,7 @@ export function apply(ctx) {
     let dream = '记忆整理：未触发'
     if (state.lastDreamResult) {
       const result = state.lastDreamResult
-      const detail = String(result.text ?? '').slice(0, 60) || (Number(result.ranJobs) ? `${result.ranJobs} 个任务` : '')
+      const detail = clipBriefText(result.text ?? '', 80) || (Number(result.ranJobs) ? `${result.ranJobs} 个任务` : '')
       const shard = Number(result.degraded) ? `；分片降级${Number(result.failedShards) ? `（${result.failedShards} 片失败）` : ''}` : ''
       dream = `记忆整理：${result.ok ? '完成' : '失败'}${detail ? `（${detail}）` : ''}${shard}`
     } else if (brief.dreamTriggered !== false) {
@@ -2240,7 +2256,7 @@ export function apply(ctx) {
       if (state.phase === 'awake') {
         const detail = text || (ranJobs.length ? `${ranJobs.length} 个任务` : '')
         const shard = degraded ? `；分片降级${failedShards ? `（${failedShards} 片失败）` : ''}` : ''
-        send({ kind: 'notice', text: `记忆整理回执：${ok ? '完成' : '失败'}${detail ? `（${detail.slice(0, 80)}）` : ''}${shard}。`, tags: ['dream', 'dream-result'] })
+        send({ kind: 'notice', text: `记忆整理回执：${ok ? '完成' : '失败'}${detail ? `（${clipBriefText(detail, 80)}）` : ''}${shard}。`, tags: ['dream', 'dream-result'] })
       } else persist()
     } catch (error) { log('warn', 'time.dream-result', { error: String(error?.message ?? error) }) }
   })
