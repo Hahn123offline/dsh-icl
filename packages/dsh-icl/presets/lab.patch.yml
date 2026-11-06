@@ -12,6 +12,32 @@
 # 所以 dsh-icl 的模块必须写成 file:// 绝对 URL。stateDir 也必须每次 run 独立。
 # 直接安装成本 profile bundle 时（plugin manager）这些占位符由安装流程替换，
 # 未替换的模板不可直接安装。
+#
+# ── SANDBOX-PLAN §7 试点（lab-only，不改 desktop profile）────────────────────
+# 整个 lab 进程默认 workspace-write；workspaceRoot 只是"没有会话 cwd 的调用"的兜底，
+# 普通会话仍以 session.header.cwd（lab 用 --workspace 指定）为写边界。
+# permission 的 config 是整体替换，所以三个 preset 必须写全；danger-full-access 保留为回滚路径。
+# workspaceRoot 目录的前置 ACL：icacls C:\DSH\her /grant 'ai_admin:(OI)(CI)F'
+# （缺这条时 ACL runner 会 SetNamedSecurityInfoW failed (Win32 5)，见 SANDBOX-PLAN §2.4）。
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: workspace-write
+    workspaceRoot: 'C:/DSH/her'
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: workspace-write
 - insert:
     - id: dsh-icl-lab-host
       name: '__LAB_ICL_HOST__'
@@ -58,7 +84,8 @@
                 - model-manager
                 - time
                 - dream
-                - editor
+                # editor 已下线（SANDBOX-PLAN §4.2）：它用 node:fs 直写、根是 stateDir，
+                # 在 workspace-write 下能绕过写边界。文件能力改由下面的原生工具提供。
                 - bili
                 - album
                 - video
@@ -67,6 +94,16 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 原生文件/命令工具（SANDBOX-PLAN §4.2）：read/write/edit/read_image + glob/grep + pwsh。
+          # 它们走 ctx.fs / ctx.shell，因此受 workspace-write 与 pwsh-sandbox 约束。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
           # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
           - id: tool-persona
             name: '@deepseek-ai/dsh-persona'
