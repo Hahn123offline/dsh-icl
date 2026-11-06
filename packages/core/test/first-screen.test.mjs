@@ -66,12 +66,19 @@ test('registerPurifyShadows：宿主没有 systemPrompt.section 时全量记失�
   assert.equal(out.failed.length, 1)
 })
 
-test('产品边界：只有 lab preset 开净化，产品 preset 默认不开', () => {
+test('产品边界：lab 与产品 A1 都开 4 段净化，产品不得多 shadow icl:facts/icl:core', () => {
   const lab = fs.readFileSync(path.join(ROOT, 'packages/dsh-icl/presets/lab.patch.yml'), 'utf8')
   const prod = fs.readFileSync(path.join(ROOT, 'packages/dsh-icl/presets/icl.patch.yml'), 'utf8')
   assert.match(lab, /purifySections:/, 'lab preset 应显式开净化')
   assert.match(lab, /'ui:deliverable-file-references'/)
-  assert.doesNotMatch(prod, /purifySections:/, '产品 preset 不得默认开净化（产品化需用户批准）')
+  assert.match(prod, /purifySections:/, '产品 A1 应显式开 4 段净化')
+  assert.match(prod, /'harness:identity'/)
+  assert.match(prod, /'ui:deliverable-file-references'/)
+  assert.match(prod, /'harness:source'/)
+  assert.match(prod, /'app:web-surface'/)
+  // facts 仍走 runtime-context，不能把 icl:facts / icl:core 也 shadow 掉。
+  assert.doesNotMatch(prod, /purifySections:[\s\S]{0,400}icl:facts/, '不得 shadow icl:facts')
+  assert.doesNotMatch(prod, /purifySections:[\s\S]{0,400}icl:core/, '不得 shadow icl:core')
 })
 
 test('插件层：preset ctx 能注册影子；失败的段退到 agent.ctx 重试（stale 路径不静默）', async () => {

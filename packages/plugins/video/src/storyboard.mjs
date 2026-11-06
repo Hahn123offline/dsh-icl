@@ -124,9 +124,9 @@ export async function runStoryboard({
 }
 
 /** 只读文本定位：不渲染图，仍然走同一条 CLI（复用已有转写缓存）。 */
-export async function locateInTranscript({ input, query, from = 0, to = 0, max = 5, transcriptFile = null, cli, workDir, timeoutMs = 15 * 60 * 1000 }) {
+export async function locateInTranscript({ input, query, from = 0, to = 0, max = 5, transcriptFile = null, transcript = 'auto', cli, workDir, timeoutMs = 15 * 60 * 1000 }) {
   const { textBlock } = await runStoryboard({
-    input, from, to, cells: 1, detail: 'high', transcriptFile, textOnly: true,
+    input, from, to, cells: 1, detail: 'high', transcriptFile, transcript, textOnly: true,
     cli, workDir, timeoutMs, maxTextChars: 60_000,
   })
   const q = String(query ?? '').trim()

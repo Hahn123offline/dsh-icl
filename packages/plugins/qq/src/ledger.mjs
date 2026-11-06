@@ -96,6 +96,18 @@ function memoryLedger() {
       }
       return count
     },
+    /** 手动标记已读：只推进水位（不发送、不标记 replied、不碰投递）。 */
+    markRead(activity, { throughSeq = null, at = Date.now() } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return { attendedSeq: 0, lastSeq: 0, advanced: 0 }
+      const lastSeq = row.nextSeq - 1
+      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : lastSeq
+      const through = Math.max(0, Math.min(lastSeq, requested))
+      if (through <= row.attendedSeq) return { attendedSeq: row.attendedSeq, lastSeq, advanced: 0 }
+      const advanced = through - row.attendedSeq
+      row.attendedSeq = through
+      return { attendedSeq: row.attendedSeq, lastSeq, advanced }
+    },
     replyState(activity, { messageId = null } = {}) {
       const row = activities.get(String(activity))
       if (!row) return messageId == null ? { lastSeq: 0, lastRepliedSeq: 0, lastRepliedAt: null, unreplied: 0 } : { found: false, replied: false }
@@ -321,6 +333,18 @@ function sqliteLedger(file, log) {  let db
       const through = Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : (Number(known?.next_seq ?? 1) - 1)
       const result = stMarkReplied.run(at, key, through)
       return Number(result?.changes) || 0
+    },
+    markRead(activity, { throughSeq = null, at = Date.now() } = {}) {
+      const key = String(activity)
+      const known = stLast.get(key)
+      if (!known) return { attendedSeq: 0, lastSeq: 0, advanced: 0 }
+      const lastSeq = Number(known.next_seq) - 1
+      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : lastSeq
+      const through = Math.max(0, Math.min(lastSeq, requested))
+      const before = Number(known.attended_seq) || 0
+      if (through <= before) return { attendedSeq: before, lastSeq, advanced: 0 }
+      stBumpAttended.run(through, at, key)
+      return { attendedSeq: through, lastSeq, advanced: through - before }
     },
     replyState(activity, { messageId = null } = {}) {
       const key = String(activity)

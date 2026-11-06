@@ -46,6 +46,14 @@ test('账本：messages/unread/markReplied/replyState（SQLite + 重启）', () 
     assert.equal(agg.lastRepliedSeq, 1)
     assert.equal(agg.unreplied, 1)
     assert.equal(ledger.lastKnown('qq:private:10001').lastSeq, 2)
+    // 手动已读：只推进水位；夹到 lastSeq；不改 replied
+    const read1 = ledger.markRead('qq:private:10001', { throughSeq: 1, at: 5000 })
+    assert.equal(read1.attendedSeq, 1)
+    assert.equal(read1.advanced, 1)
+    assert.equal(ledger.unread('qq:private:10001').messages.length, 1)
+    const read2 = ledger.markRead('qq:private:10001', { throughSeq: 99, at: 6000 })
+    assert.equal(read2.attendedSeq, 2, '超过 lastSeq 夹住')
+    assert.equal(ledger.replyState('qq:private:10001', { messageId: 'm2' }).replied, false, '已读不等于已回')
     ledger.close()
 
     ledger = createLedger({ file })
@@ -145,6 +153,22 @@ test('引用边界：不在账本里的 id / 多气泡带引用 都拒绝且零�
     assert.equal(multi.refused, true)
     assert.match(multi.text, /引用回复只支持单条/)
     assert.equal(env.fake.sendActions().length, 0)
+  } finally { await env.cleanup() }
+})
+
+test('qq_mark_read：只推进本地水位（无网络/不自动回/不改已回）', async () => {
+  const env = await setup()
+  try {
+    env.fake.privateMessage({ from: OWNER, name: '主人', text: '未读之一', messageId: 9601 })
+    await waitFor(() => env.qq.status().ledger.messages >= 1)
+    const framesBefore = env.fake.sendActions().length
+    const read = await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
+    assert.match(read.text, /水位已经是 #1|已把私聊/)
+    assert.equal(env.fake.sendActions().length, framesBefore, 'mark_read 不发任何 QQ 消息')
+    const replied = await env.tool('qq_replied').execute({ peer: OWNER, messageId: '9601' })
+    assert.match(replied.text, /还没回过/, '已读不等于已回')
+    const unread = await env.tool('qq_unread').execute({ peer: OWNER })
+    assert.match(unread.text, /没有水位之后的未读|上次水位 #1/)
   } finally { await env.cleanup() }
 })
 

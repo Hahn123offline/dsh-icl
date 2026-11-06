@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "collect-resource-local3-t1",
+  "description": "local3 recorded collect oak_log success；用于核对 L1 taskAssertions/eventAssertions（成功路径）",
+  "setup": {
+    "position": {
+      "x": 10.44,
+      "y": 72,
+      "z": -54.5
+    },
+    "health": 20,
+    "food": 20,
+    "inventory": {},
+    "inventoryPolicy": "preserve",
+    "timeOfDay": null,
+    "weather": null,
+    "difficulty": null,
+    "note": "position from spawn event; exact inventory not recorded"
+  },
+  "taskSequence": [
+    {
+      "id": "t-1",
+      "kind": "collect",
+      "params": {
+        "item": "oak_log",
+        "count": 8,
+        "radius": 24
+      }
+    }
+  ],
+  "threats": [],
+  "stopRules": {
+    "maxDeaths": 1,
+    "maxRepeatToolCalls": 2,
+    "maxSayPerHour": 2,
+    "maxShelterFailStreak": 2,
+    "maxPathStuck": 5
+  },
+  "acceptance": {
+    "taskId": "t-1",
+    "terminal": "done",
+    "result.collected": 8,
+    "result.net": 8
+  }
+}

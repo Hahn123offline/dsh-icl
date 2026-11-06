@@ -167,6 +167,15 @@ export function apply(ctx) {
   const collageMax = Math.min(24, Math.max(1, Number(ctx.config.collageMax ?? 16)))
   const maxImportPerCall = Math.min(32, Math.max(1, Number(ctx.config.maxImportPerCall ?? 32)))
   const python = String(ctx.config.python ?? process.env.ALBUM_PYTHON ?? 'python')
+  // 二阶段：图片记忆（CLIP 512d，CPU；可由 config 关闭/延迟批处理）。不把向量写进 system/facts。
+  const embedEnabled = ctx.config.embedEnabled !== false
+  const embedDefer = ctx.config.embedDefer === true
+  const embedSlotId = String(ctx.config.embedSlot ?? 'image-embed')
+  const embedDim = Math.max(64, Number(ctx.config.embedDim ?? 512))
+  const embedBatchMax = Math.min(32, Math.max(1, Number(ctx.config.embedBatchMax ?? 8)))
+  const captionConfig = ctx.config.caption && typeof ctx.config.caption === 'object' ? { ...ctx.config.caption } : {}
+  const captionPrompt = String(ctx.config.captionPrompt ?? '用一句中文描述这张图片的内容和氛围（30 字以内）。')
+  const captionMax = Math.min(8, Math.max(1, Number(ctx.config.captionMax ?? 3)))
 
   fs.mkdirSync(root, { recursive: true })
   fs.mkdirSync(collagesDir, { recursive: true })
@@ -199,6 +208,14 @@ export function apply(ctx) {
     );
     CREATE INDEX IF NOT EXISTS idx_items_library ON items(library, deleted_at, imported_at);
     CREATE INDEX IF NOT EXISTS idx_items_source ON items(source);
+    CREATE TABLE IF NOT EXISTS item_vectors (
+      item_id INTEGER PRIMARY KEY,
+      model TEXT,
+      dim INTEGER NOT NULL,
+      vec BLOB NOT NULL,
+      source TEXT,
+      updated_at INTEGER NOT NULL
+    );
   `)
   // 旧库迁移：items 没有 private 列时补上（默认 0=普通相册）
   try {
@@ -214,6 +231,11 @@ export function apply(ctx) {
     touchDeleted: db.prepare('UPDATE items SET deleted_at = ? WHERE id = ?'),
     total: db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM items WHERE deleted_at IS NULL'),
     all: db.prepare('SELECT * FROM items WHERE deleted_at IS NULL ORDER BY imported_at DESC, id DESC'),
+    setCaption: db.prepare('UPDATE items SET caption = ? WHERE id = ?'),
+    vecById: db.prepare('SELECT * FROM item_vectors WHERE item_id = ?'),
+    vecPut: db.prepare('INSERT INTO item_vectors (item_id, model, dim, vec, source, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, vec = excluded.vec, source = excluded.source, updated_at = excluded.updated_at'),
+    vecCount: db.prepare('SELECT COUNT(*) AS n FROM item_vectors'),
+    vecDimCount: db.prepare('SELECT dim, COUNT(*) AS n FROM item_vectors GROUP BY dim'),
   }
 
   const absOf = (row) => path.resolve(root, String(row.path))
@@ -228,6 +250,105 @@ export function apply(ctx) {
   const describe = (query, row) => {
     const needle = String(query).toLowerCase()
     return [row.caption, row.tags, row.source, row.origin, row.path].some((v) => String(v ?? '').toLowerCase().includes(needle))
+  }
+
+  /* ── 图片记忆/语义检索（二阶段，CLIP 512d CPU） ─────────────── */
+
+  const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' }
+  const providerForEmbed = () => { try { return ctx.slots.resolve(embedSlotId) } catch { return null } }
+  const embedAvailable = () => Boolean(providerForEmbed())
+
+  function imageDataUrl(file, ext = '') {
+    const mime = MIME[String(ext).toLowerCase()] ?? 'application/octet-stream'
+    return `data:${mime};base64,${fs.readFileSync(file).toString('base64')}`
+  }
+  function toF32(vec) {
+    const f32 = Float32Array.from(vec)
+    return { dim: f32.length, buf: new Uint8Array(f32.buffer) }
+  }
+  function fromF32(blob) {
+    const view = new Uint8Array(blob)
+    return Float32Array.from(new Float32Array(view.buffer, view.byteOffset, Math.floor(view.byteLength / 4)))
+  }
+  function cosine(a, b) {
+    let dot = 0; let na = 0; let nb = 0
+    const n = Math.min(a.length, b.length)
+    for (let i = 0; i < n; i += 1) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+    if (!na || !nb) return 0
+    return dot / Math.sqrt(na * nb)
+  }
+
+  /** 对 512d 图文空间做一次嵌入；维度断言，不一致直接报可操作错误。 */
+  async function embedInput(input) {
+    const provider = providerForEmbed()
+    if (!provider) throw new Error('没有接入图文嵌入服务（8088 clip-zh，512d）；先配 clip-zh provider 或关 embedEnabled')
+    const out = await ctx.slots.call(embedSlotId, { input: String(input) })
+    const vec = Array.isArray(out?.[0]) ? out[0] : (out?.embedding ?? out?.vectors?.[0] ?? null)
+    if (!Array.isArray(vec) || !vec.length) throw new Error('嵌入服务返回空向量')
+    if (vec.length !== embedDim) throw new Error(`嵌入维度不匹配（期望 ${embedDim}，实际 ${vec.length}）；图片记忆只接受 512d CLIP 图文空间`)
+    return { vec, model: String(provider.provider ?? provider.id ?? provider.model ?? 'clip') }
+  }
+
+  function saveVector(row, vec, model, source = 'image') {
+    const { dim, buf } = toF32(vec)
+    q.vecPut.run(row.id, model, dim, buf, source, ctx.now())
+  }
+
+  async function embedRow(row, { force = false, source = 'image' } = {}) {
+    if (!embedEnabled || row.kind !== 'image') return false
+    if (!force && q.vecById.get(row.id)) return true
+    const { vec, model } = await embedInput(imageDataUrl(absOf(row), row.ext))
+    saveVector(row, vec, model, source)
+    return true
+  }
+
+  function vectorFor(row) {
+    const rec = q.vecById.get(row.id)
+    if (!rec) return null
+    if (Number(rec.dim) !== embedDim) return null
+    return fromF32(rec.vec)
+  }
+
+  function filterRows({ library = null, kind = null, tags = null, tag = null, source = null, since = null, until = null, includePrivate = false, allowPrivate = false } = {}) {
+    let rows = q.all.all()
+    const canSeePrivate = Boolean(includePrivate && allowPrivate)
+    if (!canSeePrivate) rows = rows.filter((row) => !Number(row.private))
+    if (library) rows = rows.filter((row) => row.library === safeLibrary(library))
+    if (kind) rows = rows.filter((row) => row.kind === String(kind))
+    if (source) rows = rows.filter((row) => String(row.source ?? '') === String(source))
+    if (tag) rows = rows.filter((row) => tagList(row.tags).includes(String(tag).toLowerCase()))
+    const wanted = (Array.isArray(tags) ? tags : []).flatMap((item) => tagList(item))
+    if (wanted.length) rows = rows.filter((row) => wanted.every((want) => tagList(row.tags).includes(want)))
+    if (since) rows = rows.filter((row) => Number(row.imported_at) >= Number(since))
+    if (until) rows = rows.filter((row) => Number(row.imported_at) <= Number(until))
+    return rows
+  }
+
+  async function semanticSearch({ query = '', image = null, rows, limit = 10 }) {
+    let input
+    let label
+    if (image) {
+      const file = path.resolve(String(image))
+      if (!fs.existsSync(file)) throw new Error(`图片检索需要本地存在的文件：${file}`)
+      input = imageDataUrl(file, path.extname(file).toLowerCase())
+      label = '图片'
+    } else if (query) {
+      input = query
+      label = '文字'
+    } else {
+      throw new Error('要搜什么？给 query 文字或 image 本地路径。')
+    }
+    if (!embedAvailable()) return { ok: false, reason: 'no-provider', label }
+    const { vec } = await embedInput(input)
+    const scored = []
+    for (const row of rows) {
+      const other = vectorFor(row)
+      if (!other) continue
+      scored.push({ row, score: cosine(vec, other) })
+    }
+    if (!scored.length) return { ok: false, reason: 'no-vectors', label }
+    scored.sort((a, b) => b.score - a.score)
+    return { ok: true, label, results: scored.slice(0, Math.min(200, Math.max(1, Number(limit) || 10))) }
   }
 
   /** 导入单个文件；内部做去重/落盘/元数据。 */
@@ -247,7 +368,12 @@ export function apply(ctx) {
       // 重复导入：复用同一件；允许补 caption/tags/source/origin。
       q.updateMeta.run(library ?? null, source ?? null, origin ? JSON.stringify(origin) : null, caption ?? null, tags ? JSON.stringify(tagList(tags)) : null, existing.id)
       const row = q.byId.get(existing.id)
-      return { ok: true, deduped: true, row }
+      let embedding = false
+      let embedError = null
+      if (embedEnabled && !embedDefer && row.kind === 'image' && !q.vecById.get(row.id) && embedAvailable()) {
+        try { embedding = await embedRow(row) } catch (error) { embedError = String(error?.message ?? error) }
+      }
+      return { ok: true, deduped: true, row, embedding, embedError }
     }
     const head = fs.readFileSync(file, { encoding: null, flag: 'r' }).subarray(0, Math.min(64 * 1024, st.size))
     const size = kind === 'image' ? readImageSize(head, ext) : null
@@ -266,7 +392,13 @@ export function apply(ctx) {
       String(source ?? 'manual'), origin ? JSON.stringify(origin) : null, caption ? String(caption).slice(0, 500) : null,
       tags ? JSON.stringify(tagList(tags)) : null, pinned ? 1 : 0, createdAt ? Number(createdAt) : null, now, isPrivate ? 1 : 0)
     const row = q.byId.get(Number(info.lastInsertRowid))
-    return { ok: true, deduped: false, row }
+    // 二阶段：图片入库时生成 CLIP 512d 向量（可关/可延迟批处理；失败不影响入库）。
+    let embedding = false
+    let embedError = null
+    if (embedEnabled && !embedDefer && row.kind === 'image' && embedAvailable()) {
+      try { embedding = await embedRow(row) } catch (error) { embedError = String(error?.message ?? error) }
+    }
+    return { ok: true, deduped: false, row, embedding, embedError }
   }
 
   function queryRows({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includePrivate = false, allowPrivate = false, includeDeleted = false } = {}) {
@@ -377,8 +509,9 @@ export function apply(ctx) {
       const lines = []
       for (const file of list) {
         const out = await importFile({ path: file, library, source, caption, tags, private: Boolean(isPrivate) })
+        const vectorNote = out.ok && out.embedding ? '（向量✓）' : (out.ok && out.embedError ? `（向量未建：${out.embedError.slice(0, 80)}）` : '')
         lines.push(out.ok
-          ? `#${out.row.id} ${out.deduped ? '已在相册里（去重命中）' : '入库'} — ${metaLine(out.row)}`
+          ? `#${out.row.id} ${out.deduped ? '已在相册里（去重命中）' : '入库'} — ${metaLine(out.row)}${vectorNote}`
           : `失败（${file}）：${out.error}`)
       }
       return { text: lines.join('\n') }
@@ -416,28 +549,52 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'album_search',
-    summary: 'Search your album by description, tags, source or file name.',
-    when: ['someone mentions a picture/clip and you need to find it'],
+    summary: 'Semantic/search your album by text or a local image (CLIP 512d), with tag/time/private filters.',
+    when: ['someone mentions a picture/clip and you need to find it', 'you remember the content but not the file name'],
     avoid: ['exact ids - use album_show'],
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['query'],
       properties: {
-        query: { type: 'string' },
-        limit: { type: 'number', description: 'Default 10, max 50.' },
+        query: { type: 'string', description: 'Text description (Chinese works: CLIP zh text space).' },
+        image: { type: 'string', description: 'Local image path for image-to-image search (alternative to query).' },
+        library: { type: 'string' },
+        kind: { type: 'string', enum: ['image', 'video'] },
+        tag: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'All of these tags.' },
+        source: { type: 'string' },
+        since: { type: 'number' },
+        until: { type: 'number' },
+        limit: { type: 'number', description: 'TopK, default 10, max 50.' },
+        semantic: { type: 'boolean', description: 'Try CLIP semantic search first (default true; false = text/tags only).' },
         includePrivate: { type: 'boolean', description: 'Search the private album too (needs allowPrivate:true).' },
         allowPrivate: { type: 'boolean', description: 'Explicitly allow touching the private album.' },
       },
     },
-    execute({ query = '', limit = 10, includePrivate = false, allowPrivate = false } = {}) {
+    async execute({ query = '', image = null, library = null, kind = null, tag = null, tags = null, source = null, since = null, until = null, limit = 10, semantic = true, includePrivate = false, allowPrivate = false } = {}) {
       const needle = String(query ?? '').trim()
       const { n } = q.total.get()
-      if (!needle) return { text: n === 0 ? '相册还是空的。' : `要搜什么？相册共 ${n} 件。` }
-      const canSeePrivate = Boolean(includePrivate && allowPrivate)
-      const rows = q.all.all().filter((row) => (canSeePrivate || !Number(row.private)) && describe(needle, row)).slice(0, Math.min(50, Math.max(1, Number(limit) || 10)))
-      if (!rows.length) return { text: `相册里没有匹配的（共 ${n} 件，关键词「${needle.slice(0, 40)}」）。换个说法、去掉标签/来源限制，或者先 album_list 看看？` }
-      return { text: `找到 ${rows.length} 件：\n${rows.map(metaLine).join('\n')}` }
+      if (!needle && !image) return { text: n === 0 ? '相册还是空的。' : `要搜什么？给 query 文字或 image 本地路径（相册共 ${n} 件）。` }
+      const rows = filterRows({ library, kind, tag, tags, source, since, until, includePrivate, allowPrivate })
+      const topK = Math.min(50, Math.max(1, Number(limit) || 10))
+      let semanticOut = null
+      let semanticError = null
+      if (semantic !== false) {
+        try { semanticOut = await semanticSearch({ query: needle, image, rows, limit: topK }) } catch (error) { semanticError = String(error?.message ?? error) }
+      }
+      if (semanticOut?.ok && semanticOut.results.length) {
+        const lines = semanticOut.results.map(({ row, score }) => `${metaLine(row)}（相似度 ${score.toFixed(3)}）`)
+        return { text: `语义检索（${semanticOut.label}，top ${semanticOut.results.length}）：\n${lines.join('\n')}` }
+      }
+      const reason = semanticError
+        ? `语义检索暂不可用：${semanticError.slice(0, 160)}；`
+        : semanticOut?.reason === 'no-provider' ? '语义检索未接入（没有 clip-zh 图文嵌入，512d）；'
+          : semanticOut?.reason === 'no-vectors' ? '还没有图片向量（先 album_reindex）；'
+            : ''
+      if (!needle) return { text: `${reason}图片检索需要嵌入服务或已有向量；可以先 album_reindex，或改用 query 文字。` }
+      const lexical = rows.filter((row) => describe(needle, row)).slice(0, topK)
+      if (!lexical.length) return { text: `${reason}相册里没有匹配的（共 ${n} 件，关键词「${needle.slice(0, 40)}」）。换个说法、去掉标签/来源限制，或者先 album_list 看看？` }
+      return { text: `${reason}按文字/标签找到 ${lexical.length} 件：\n${lexical.map(metaLine).join('\n')}` }
     },
   })
 
@@ -517,11 +674,95 @@ export function apply(ctx) {
       const sources = [...new Set(rows.map((row) => row.source).filter(Boolean))]
       const images = rows.filter((row) => row.kind === 'image').length
       const pinned = rows.filter((row) => row.pinned).length
+      const vec = q.vecCount.get().n
+      const dims = q.vecDimCount.all().map((row) => `${row.dim}d×${row.n}`).join(', ')
+      const embedLine = embedEnabled
+        ? (embedAvailable() ? `向量：${vec}/${images} 张图片（${dims || `${embedDim}d`}，clip-zh CPU，可关/延迟）` : `向量：未接入（需要 clip-zh 512d 嵌入服务；当前 ${vec}/${images} 张有向量）`)
+        : '向量：已关闭（embedEnabled:false）'
       return {
         text: `相册：${n} 件（图片 ${images} / 视频 ${n - images}，置顶 ${pinned}），共 ${fmtSize(b)}；`
           + `告警阈值 ${fmtSize(warnBytes)}（只提示，不自动删；保留策略 ${retentionDays === 0 ? '关闭（全部保留，手清）' : `${retentionDays} 天`}）；库：${libs.join(', ') || '（空）'}；来源：${sources.join(', ') || '（空）'}；`
-          + `位置：${root}${warn}`,
+          + `${embedLine}；位置：${root}${warn}`,
       }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'album_reindex',
+    summary: 'Build/refresh image embeddings (CLIP 512d, CPU) for album images. Safe to rerun.',
+    when: ['semantic image search says there are no vectors', 'you imported images with embedDefer or before the embedding provider was configured'],
+    avoid: ['videos - only images get CLIP vectors'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ids: { type: 'array', items: { type: 'number' }, description: 'Only these item ids (default: all images).' },
+        limit: { type: 'number', description: 'Batch size, default 8, max 32.' },
+        force: { type: 'boolean', description: 'Re-embed even if a vector already exists.' },
+        includePrivate: { type: 'boolean', description: 'Include private-album images (needs allowPrivate:true).' },
+        allowPrivate: { type: 'boolean', description: 'Explicitly allow touching the private album.' },
+      },
+    },
+    async execute({ ids = null, limit = embedBatchMax, force = false, includePrivate = false, allowPrivate = false } = {}) {
+      if (!embedEnabled) return { text: '图片向量已关闭（embedEnabled:false）；需要时先打开配置。' }
+      if (!embedAvailable()) return { text: '没有接入图文嵌入服务（8088 clip-zh，512d）；先配置 clip-zh provider，再 album_reindex。' }
+      const wantIds = Array.isArray(ids) ? ids.map(Number).filter(Number.isFinite) : null
+      let rows = wantIds
+        ? wantIds.map((id) => q.byId.get(id)).filter(Boolean).filter((row) => row.kind === 'image')
+        : filterRows({ kind: 'image', includePrivate, allowPrivate })
+      rows = rows.slice(0, Math.min(32, Math.max(1, Number(limit) || embedBatchMax)))
+      let built = 0
+      const failures = []
+      for (const row of rows) {
+        if (Number(row.private) && !(includePrivate && allowPrivate)) continue
+        try { await embedRow(row, { force: Boolean(force) }); built += 1 } catch (error) { failures.push(`#${row.id}:${String(error?.message ?? error).slice(0, 100)}`) }
+      }
+      const images = q.all.all().filter((row) => row.kind === 'image').length
+      const vec = q.vecCount.get().n
+      const lines = [`已建/刷新 ${built} 条（失败 ${failures.length}）；向量覆盖 ${vec}/${images} 张图片。`]
+      if (failures.length) lines.push(...failures.slice(0, 8))
+      return { text: lines.join('\n') }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'album_caption',
+    summary: 'Manually caption album images with the local vision model (one Chinese sentence); no auto-run.',
+    when: ['you want a picture to be findable by description', 'the user asks what a picture looks like'],
+    avoid: ['batch-captioning everything - it uses the local GPU serially'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ids: { type: 'array', items: { type: 'number' }, description: 'Specific image ids (default: images without caption).' },
+        limit: { type: 'number', description: `Max images this call, default ${captionMax}, max 8.` },
+        force: { type: 'boolean', description: 'Recaption even if a caption exists.' },
+        includePrivate: { type: 'boolean' },
+        allowPrivate: { type: 'boolean' },
+      },
+    },
+    async execute({ ids = null, limit = captionMax, force = false, includePrivate = false, allowPrivate = false } = {}) {
+      const vision = ctx.services.vision
+      if (!vision?.describe) return { text: '没有可用的视觉模型服务；先用 caption/tags 手动写描述。' }
+      const wantIds = Array.isArray(ids) ? ids.map(Number).filter(Number.isFinite) : null
+      let rows = wantIds
+        ? wantIds.map((id) => q.byId.get(id)).filter(Boolean).filter((row) => row.kind === 'image')
+        : filterRows({ kind: 'image', includePrivate, allowPrivate })
+      rows = rows.slice(0, Math.min(8, Math.max(1, Number(limit) || captionMax)))
+      const lines = []
+      for (const row of rows) {
+        if (Number(row.private) && !(includePrivate && allowPrivate)) continue
+        if (!force && row.caption) { lines.push(`#${row.id} 已有描述，跳过（force:true 可重写）`); continue }
+        try {
+          const caption = await vision.describe({ path: absOf(row), config: captionConfig, prompt: captionPrompt, maxTokens: 160, timeoutMs: Number(ctx.config.captionTimeoutMs ?? 120_000) })
+          if (!caption) { lines.push(`#${row.id} 视觉模型没返回描述`); continue }
+          q.setCaption.run(String(caption).slice(0, 500), row.id)
+          lines.push(`#${row.id} 描述：${String(caption).slice(0, 200)}`)
+        } catch (error) {
+          lines.push(`#${row.id} 失败：${String(error?.message ?? error).slice(0, 140)}`)
+        }
+      }
+      return { text: lines.length ? lines.join('\n') : '没有可处理的图片。' }
     },
   })
 
@@ -531,6 +772,13 @@ export function apply(ctx) {
     importFile,
     list: (opts = {}) => queryRows(opts).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, caption: row.caption, tags: tagList(row.tags), importedAt: row.imported_at })),
     search: (query, opts = {}) => q.all.all().filter((row) => (opts.includePrivate ? true : !Number(row.private)) && describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
+    semanticSearch: async (query, opts = {}) => {
+      const rows = filterRows({ includePrivate: Boolean(opts.includePrivate), allowPrivate: Boolean(opts.allowPrivate) })
+      const out = await semanticSearch({ query, image: opts.image ?? null, rows, limit: Number(opts.limit) || 10 })
+      return out.ok ? out.results.map(({ row, score }) => ({ id: row.id, path: displayPath(row), caption: row.caption, score })) : { ok: false, reason: out.reason }
+    },
+    reindex: (opts = {}) => ({ images: q.all.all().filter((row) => row.kind === 'image').length, vectors: q.vecCount.get().n, dims: q.vecDimCount.all() }),
+    vectors: () => ({ enabled: embedEnabled, available: embedAvailable(), count: q.vecCount.get().n, dims: q.vecDimCount.all() }),
     prune: (opts = {}) => pruneNow(opts),
     status: () => ({ count: Number(q.total.get().n), bytes: Number(q.total.get().b), root, dbFile }),
   })

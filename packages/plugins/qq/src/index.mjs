@@ -30,6 +30,7 @@ import { expandForwardIds } from './forward.mjs'
 import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
+import { createWakePlanner } from './wake.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'qq'
@@ -118,8 +119,25 @@ const DEFAULTS = Object.freeze({
   mediaSoftLimitBytes: MEDIA_DEFAULTS.softLimitBytes,
   // 表情包本地库（只读列表/发送本地文件；不下载远程、不执行文件）
   stickerDir: '',
+  stickerLibraryFile: '',
   maxStickerBytes: 10 * 1024 * 1024,
   stickerListLimit: 100,
+  // 唤醒矩阵（只生成 signal，不投递；time/focus 仍决定）：
+  wakeEnabled: true,
+  wakeTickMs: 5000,
+  replyCheckEnabled: true,
+  replyCheckDelayMs: 30_000,
+  proactiveEnabled: false,
+  proactiveMinMs: 30 * 60_000,
+  proactiveMaxMs: 90 * 60_000,
+  proactiveIdleMs: 15 * 60_000,
+  proactiveProbability: 0.3,
+  proactiveCooldownMs: 30 * 60_000,
+  nudgeEnabled: true,
+  nudgeSoftMs: 10 * 60_000,
+  nudgeCooldownMs: 10 * 60_000,
+  nudgeMaxPerHour: 6,
+  wakeMaxPerHour: 12,
   // 人类化出站（P0-3）：多气泡 + 节奏 + markdown + 长文切分
   burstEnabled: true,
   burstMaxMessages: 8,
@@ -161,16 +179,22 @@ export function normalizeQqConfig(input = {}) {
   cfg.replyResolveEnabled = cfg.replyResolveEnabled !== false
   cfg.forwardExpandEnabled = cfg.forwardExpandEnabled !== false
   cfg.senderEnvelope = cfg.senderEnvelope !== false
+  cfg.wakeEnabled = cfg.wakeEnabled !== false
+  cfg.replyCheckEnabled = cfg.replyCheckEnabled !== false
+  cfg.proactiveEnabled = cfg.proactiveEnabled === true
+  cfg.nudgeEnabled = cfg.nudgeEnabled !== false
   cfg.mediaEnabled = cfg.mediaEnabled !== false
   cfg.mediaFetchImpl = typeof input.mediaFetchImpl === 'function' ? input.mediaFetchImpl : null
   cfg.mediaInboxDir = String(cfg.mediaInboxDir ?? '')
   cfg.stickerDir = String(cfg.stickerDir ?? '')
+  cfg.stickerLibraryFile = String(cfg.stickerLibraryFile ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
   cfg.gapMode = ['auto', 'fixed', 'typing', 'byLength'].includes(String(cfg.gapMode)) ? String(cfg.gapMode) : 'auto'
+  cfg.proactiveProbability = Math.max(0, Math.min(1, Number(cfg.proactiveProbability) || 0))
   cfg.sleepImpl = typeof input.sleepImpl === 'function' ? input.sleepImpl : null
   cfg.randomImpl = typeof input.randomImpl === 'function' ? input.randomImpl : null
   cfg.url = String(cfg.url ?? '')
@@ -271,6 +295,8 @@ export async function apply(ctx) {
   let http = null
   let backfill = null
   let replyResolver = null
+  let wakePlanner = null
+  let wakeTimer = null
   const gap = {
     reconnects: 0,
     lastDowntimeMs: null,
@@ -409,6 +435,7 @@ export async function apply(ctx) {
             if (target?.found) through = Math.max(through, Number(target.seq) || 0)
           }
           if (through > 0) ledger.markReplied(activity, { throughSeq: through, at })
+          noteWakeOutbound(activity)
         },
       })
       ctx.log({ msg: 'qq.send.enabled', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate, audit: cfg.auditFile || null })
@@ -459,6 +486,71 @@ export async function apply(ctx) {
       record({ kind: 'retry-dropped', id: dropped?.signal?.id ?? null, reason: 'queue-full' })
     }
     retry.push({ signal, reason: String(reason ?? ''), attempts: 0, nextAt: now() + 500 })
+  }
+
+  function peerLabelOf(activity) {
+    const peer = ledgerPeerOf(activity)
+    if (!peer) return 'QQ私聊'
+    return cfg.ownerQQ != null && String(peer) === String(cfg.ownerQQ) ? `主人（${peer}）` : `QQ ${peer}`
+  }
+
+  /** 唤醒矩阵的提醒只生成 signal（给 time 决定投递），不直接碰 delivery/focus。 */
+  function emitWake(emission) {
+    if (!emission?.activity) return false
+    const peer = peerLabelOf(emission.activity)
+    let text
+    if (emission.kind === 'replyCheck') {
+      text = `[QQ主动检查] 你刚回过 ${peer} 的私聊，过了一小会儿了；看看有没有新回复。（这不是对方刚发来的消息）`
+    } else if (emission.kind === 'proactive') {
+      const minutes = Math.max(1, Math.round((Number(emission.idleMs) || 0) / 60000))
+      text = `[QQ主动提醒] 你和 ${peer} 的私聊已经安静约 ${minutes} 分钟，可以考虑主动开个话题或分享点什么。（这不是对方发来的消息；要不要现在打扰由 time/focus 决定）`
+    } else if (emission.kind === 'nudge') {
+      text = `[QQ积压提醒] ${peer} 那边还有 ${emission.unread ?? '几'} 条账本里的未处理消息（水位之后）；这是提醒，不是新推送。可以 qq_unread 看，处理完用 qq_mark_read 推进水位。`
+    } else {
+      return false
+    }
+    const signal = {
+      id: emission.id,
+      from: { plugin: 'qq', activity: emission.activity },
+      kind: 'notice',
+      to: 'model',
+      text,
+      focus: emission.activity,
+      tags: emission.tags,
+      createdAt: emission.at,
+      expiresAt: emission.at + cfg.signalTtlMs,
+      meta: { qq: { wake: { kind: emission.kind, reason: emission.reason ?? null, unread: emission.unread ?? null } } },
+    }
+    try {
+      const out = ctx.signals.offer(signal)
+      if (out?.accepted) { stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1; return true }
+      if (out?.blocked) { stats.wakeBlocked = (stats.wakeBlocked ?? 0) + 1; return false }
+      if (out?.deduped) { stats.wakeDeduped = (stats.wakeDeduped ?? 0) + 1; return false }
+      if (out?.expired) { stats.wakeExpired = (stats.wakeExpired ?? 0) + 1; return false }
+      return false
+    } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.wake.offer-fail', error: String(error?.message ?? error) })
+      return false
+    }
+  }
+
+  function pollWake() {
+    if (!wakePlanner || disposed) return
+    let emissions = []
+    try { emissions = wakePlanner.poll() } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.wake.poll-fail', error: String(error?.message ?? error) })
+      return
+    }
+    for (const emission of emissions) emitWake(emission)
+  }
+
+  /** 入站消息到达：取消未发出的回复检查，并重排主动机会。 */
+  function noteWakeInbound(activity) {
+    try { wakePlanner?.noteInbound(activity) } catch { /* 唤醒矩阵坏了不影响入站 */ }
+  }
+
+  function noteWakeOutbound(activity) {
+    try { wakePlanner?.noteOutbound(activity) } catch { /* 唤醒矩阵坏了不影响出站 */ }
   }
 
   function offer(signal) {
@@ -740,6 +832,7 @@ export async function apply(ctx) {
     }
     const signal = decision.signal
     applySenderEnvelope(signal, decision)
+    noteWakeInbound(signal.from.activity)
     const inboundMedia = event.__qqMedia
     if (inboundMedia) {
       if (inboundMedia.images?.length) signal.images = inboundMedia.images
@@ -875,7 +968,8 @@ export async function apply(ctx) {
     cfg.stickerDir = cfg.stickerDir
       ? resolvePath(cfg.stickerDir)
       : (anchor ? path.join(path.dirname(path.dirname(mediaDir)), 'stickers') : iclPaths().stickersDir)
-    ctx.log({ msg: 'qq.stickers.ready', dir: cfg.stickerDir, maxBytes: cfg.maxStickerBytes, listLimit: cfg.stickerListLimit })
+    cfg.stickerLibraryFile = cfg.stickerLibraryFile ? resolvePath(cfg.stickerLibraryFile) : path.join(cfg.stickerDir, 'library.json')
+    ctx.log({ msg: 'qq.stickers.ready', dir: cfg.stickerDir, libraryFile: cfg.stickerLibraryFile, maxBytes: cfg.maxStickerBytes, listLimit: cfg.stickerListLimit })
     ledger = createLedger({ file: ledgerFile || null, log: (entry) => ctx.log({ plugin: 'qq', ...entry }) })
     http = createOneBotHttp({
       endpointUrl: cfg.httpUrl || endpoint.httpUrl || '',
@@ -901,6 +995,32 @@ export async function apply(ctx) {
       ttlMs: cfg.replyResolveTtlMs,
       log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
     })
+    if (cfg.wakeEnabled) {
+      wakePlanner = createWakePlanner({
+        now,
+        config: {
+          replyCheckEnabled: cfg.replyCheckEnabled,
+          replyCheckDelayMs: cfg.replyCheckDelayMs,
+          proactiveEnabled: cfg.proactiveEnabled,
+          proactiveMinMs: cfg.proactiveMinMs,
+          proactiveMaxMs: cfg.proactiveMaxMs,
+          proactiveIdleMs: cfg.proactiveIdleMs,
+          proactiveProbability: cfg.proactiveProbability,
+          proactiveCooldownMs: cfg.proactiveCooldownMs,
+          nudgeEnabled: cfg.nudgeEnabled,
+          nudgeSoftMs: cfg.nudgeSoftMs,
+          nudgeCooldownMs: cfg.nudgeCooldownMs,
+          nudgeMaxPerHour: cfg.nudgeMaxPerHour,
+          maxWakePerHour: cfg.maxWakePerHour,
+        },
+        unreadCount: (activity) => {
+          try { return ledger?.unread(activity, { limit: 100 }).messages.length ?? 0 } catch { return 0 }
+        },
+      })
+      wakeTimer = setInterval(pollWake, Math.max(250, Number(cfg.wakeTickMs) || 5000))
+      if (typeof wakeTimer.unref === 'function') wakeTimer.unref()
+      ctx.log({ msg: 'qq.wake.ready', tickMs: cfg.wakeTickMs, replyCheck: cfg.replyCheckEnabled, proactive: cfg.proactiveEnabled, nudge: cfg.nudgeEnabled, maxPerHour: cfg.wakeMaxPerHour })
+    }
     ctx.log({
       msg: 'qq.ledger.ready',
       mode: ledger.stats().mode,
@@ -951,6 +1071,7 @@ export async function apply(ctx) {
       groupPolicy: 'ignore',
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
+      wake: wakePlanner?.status() ?? null,
       ledger: ledger?.stats() ?? { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0 },
       http: { ok: Boolean(http?.ok), endpointUrl: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
       media: {
@@ -994,6 +1115,10 @@ export async function apply(ctx) {
       const media = s.media ?? {}
       if (media.enabled) {
         lines.push(`媒体：已存 ${media.saved ?? 0} 条 / ${formatBytes(media.bytes ?? 0)}（软上限 ${formatBytes(media.softLimitBytes ?? 0)}${media.overSoftLimit ? '，已超限只告警不删' : ''}）；失败 ${media.failed ?? 0}；目录：${media.dir}；保留：${media.retentionDays > 0 ? `${media.retentionDays} 天（未自动删）` : '全部保留/手清'}；不自动进 album`)
+      const wake = s.wake
+      if (wake?.config) {
+        lines.push(`唤醒矩阵：回复检查 ${wake.config.replyCheckEnabled ? '开' : '关'}、主动机会 ${wake.config.proactiveEnabled ? '开' : '关'}、积压提醒 ${wake.config.nudgeEnabled ? '开' : '关'}；已发提醒 ${wake.emitted ?? 0}（本小时 ${wake.wakeLastHour ?? 0}/${wake.config.maxWakePerHour}，预算跳过 ${wake.skippedBudget ?? 0}）——都只生成 signal，由 time/focus 决定投递`)
+      }
       }
     }
     const g = s.gate
@@ -1191,6 +1316,35 @@ export async function apply(ctx) {
     },
   })
 
+  ctx.tools.register({
+    name: 'qq_mark_read',
+    summary: '手动把 QQ 私聊账本水位推进到某条（只动本地水位；不发消息、不自动回复、不标记"已回"）。用 qq_unread 看未读口径。',
+    when: ['你已经看过/处理了这些私聊，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
+    avoid: ['以为它会回复对方（不会发任何消息）', '把它当发送回执（用 qq_status 看 send.recent）', '群消息（群不接）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        throughSeq: { type: 'number', description: '推进到这个 seq（不填=最后一条）；超过最后一条会被夹到 lastSeq。' },
+      },
+    },
+    async execute({ peer, throughSeq } = {}) {
+      if (!ledger) return { text: '账本未启用，无法标记。' }
+      const targetPeer = resolveLedgerPeer(peer)
+      if (!targetPeer) return { text: '没有可标记的 QQ 私聊记录。' }
+      const activity = ledgerActivityFor(targetPeer)
+      const before = ledger.lastKnown(activity)
+      if (!before) return { text: `私聊 ${targetPeer} 还没有账本记录。` }
+      const result = ledger.markRead(activity, { throughSeq: throughSeq == null ? null : Number(throughSeq), at: now() })
+      const afterUnread = ledger.unread(activity, { limit: 100 }).messages.length
+      const clamped = throughSeq != null && Number(throughSeq) > result.lastSeq
+      const text = result.advanced > 0
+        ? `已把私聊 ${targetPeer} 的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}），剩余未读 ${afterUnread} 条${clamped ? `；请求的 seq 超过最后一条 #${result.lastSeq}，已夹住` : ''}。只改了本地水位，没有发消息，也没有标记已回。`
+        : `私聊 ${targetPeer} 的水位已经是 #${result.attendedSeq}（最后 #${result.lastSeq}），没有再推进；剩余未读 ${afterUnread} 条。`
+      return { text }
+    },
+  })
+
   // 给 driver / 测试读的共享能力（不暴露给模型）
   let offShared = null
   try {
@@ -1227,6 +1381,8 @@ export async function apply(ctx) {
     disposed = true
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
+    if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null }
+    wakePlanner = null
     try { sendHandle?.dispose() } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.send.dispose', error: String(error?.message ?? error) })
     }

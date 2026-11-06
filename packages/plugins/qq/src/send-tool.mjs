@@ -23,6 +23,7 @@ import {
 } from './outbound.mjs'
 import { BURST, delay, mdToPlain, planBurst, splitLongText } from './humanize.mjs'
 import { acceptImageBuffer } from './media.mjs'
+import { loadStickerLibrary, mergeStickerEntries, noteSticker, queryStickerEntries, recordStickerUse, saveStickerLibrary } from './sticker-store.mjs'
 
 function hash(text) {
   return createHash('sha256').update(String(text), 'utf8').digest('hex').slice(0, 16)
@@ -108,26 +109,38 @@ export async function registerSendTool({
 
   // ── 表情包（本地库；不下载远程、不执行任何文件） ─────────────────────────
   const stickerDir = cfg.stickerDir ? path.resolve(cfg.stickerDir) : ''
+  const stickerLibraryFile = cfg.stickerLibraryFile
+    ? path.resolve(cfg.stickerLibraryFile)
+    : (stickerDir ? path.join(stickerDir, 'library.json') : '')
   const maxStickerBytes = Math.max(1024, Math.min(20 * 1024 * 1024, Number(cfg.maxStickerBytes) || 10 * 1024 * 1024))
   const stickerListLimit = Math.max(1, Math.min(200, Number(cfg.stickerListLimit) || 100))
   const STICKER_EXT = /\.(png|jpe?g|gif|webp)$/i
 
-  function listStickers(query = '') {
+  function loadLibrary() {
+    return loadStickerLibrary(stickerLibraryFile)
+  }
+
+  function stickerFiles() {
     if (!stickerDir) return []
     let entries
     try { entries = fs.readdirSync(stickerDir, { withFileTypes: true }) } catch { return [] }
-    const q = String(query ?? '').trim().toLowerCase()
     const out = []
     for (const entry of entries) {
       if (!entry.isFile() || !STICKER_EXT.test(entry.name)) continue
-      if (q && !entry.name.toLowerCase().includes(q)) continue
       try {
         const st = fs.lstatSync(path.join(stickerDir, entry.name))
         if (!st.isFile() || st.isSymbolicLink()) continue
         out.push({ id: entry.name, bytes: st.size })
       } catch { /* 单个文件坏不影响列表 */ }
     }
-    return out.sort((a, b) => a.id.localeCompare(b.id)).slice(0, stickerListLimit)
+    return out
+  }
+
+  function listStickers({ query = '', sort = 'name' } = {}) {
+    if (!stickerDir) return []
+    const library = loadLibrary()
+    const merged = mergeStickerEntries(stickerFiles(), library.error ? { entries: {} } : library)
+    return queryStickerEntries(merged, { query, sort }).slice(0, stickerListLimit)
   }
 
   /** 只接受"本地库里的单层文件名"；符号链接/目录/路径穿越一律拒绝。 */
@@ -383,7 +396,15 @@ export async function registerSendTool({
       messageId: result.messageId ?? null, messageIds: result.messageId ? [result.messageId] : [],
       sent: result.ok ? 1 : 0, total: 1, ms, chars: 0, error: result.error ?? null,
     }
-    if (result.ok) return { text: `已发出去（表情 ${sticker.id}，messageId=${result.messageId}，${ms}ms）。`, outcome: 'ok', messageId: result.messageId ?? null }
+    if (result.ok) {
+      try {
+        const library = loadLibrary()
+        if (!library.error) saveStickerLibrary(stickerLibraryFile, recordStickerUse(library, sticker.id, { at: now(), context: `sent to ${peer}` }))
+      } catch (error) {
+        ctx.log({ level: 'warn', msg: 'qq.sticker.library-use', error: String(error?.message ?? error) })
+      }
+      return { text: `已发出去（表情 ${sticker.id}，messageId=${result.messageId}，${ms}ms）。`, outcome: 'ok', messageId: result.messageId ?? null }
+    }
     const reason = result.error ?? '未知原因'
     const label = outcome === 'unknown' ? `结果未知（${reason}）` : reason
     return { text: `没发出去：${label}。表情未发送（不自动重试）。`, outcome, error: reason }
@@ -391,22 +412,65 @@ export async function registerSendTool({
 
   ctx.tools.register({
     name: 'qq_stickers',
-    summary: '列出本地 QQ 表情包库（只读）：只看文件名/大小，不下载远程、不执行任何文件。发送用 qq_send_sticker。',
-    when: ['想挑一个本地表情发给对方', '确认本地表情库里有哪些文件'],
-    avoid: ['以为这里能收藏网络表情（当前只支持本地库）', '把表情当图片消息发送（用 qq_send_sticker）'],
+    summary: '列出本地 QQ 表情包库（只读）：本地文件 + 知识库标签/描述/来源/使用次数；不下载远程、不执行文件。发送用 qq_send_sticker，备注用 qq_sticker_note。',
+    when: ['想挑一个本地表情发给对方', '按标签/描述查本地表情', '确认本地表情库里有哪些文件'],
+    avoid: ['以为这里能收藏网络表情（只支持本地库）', '把表情当图片消息发送（用 qq_send_sticker）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        query: { type: 'string', description: '按文件名过滤（不填列全部）。' },
+        query: { type: 'string', description: '按文件名/标签/描述过滤（不填列全部）。' },
+        sort: { type: 'string', description: '排序：name（默认）| recent（最近用过/改过）| used（使用次数）。' },
         limit: { type: 'number', description: '最多返回几个（默认 30，上限 100）。' },
       },
     },
-    async execute({ query, limit } = {}) {
-      const list = listStickers(query).slice(0, Math.max(1, Math.min(100, Number(limit) || 30)))
+    async execute({ query, sort, limit } = {}) {
       if (!stickerDir) return { text: '表情包库未配置（stickerDir 为空）；把 png/jpeg/gif/webp 放进目录后再用。' }
+      const library = loadLibrary()
+      const list = listStickers({ query, sort }).slice(0, Math.max(1, Math.min(100, Number(limit) || 30)))
       if (!list.length) return { text: `表情包库是空的：${stickerDir}（只接受 png/jpeg/gif/webp 普通文件）。` }
+      const lines = list.map((item) => {
+        const meta = [
+          item.description ? `描述：${item.description}` : null,
+          item.tags?.length ? `标签：${item.tags.join('、')}` : null,
+          `来源：${item.source}`, `用过 ${item.useCount} 次`,
+        ].filter(Boolean).join('；')
+        return `- ${item.id}（${(item.bytes / 1024).toFixed(1)}KB；${meta}）`
+      })
       return {
-        text: `本地表情包（${list.length} 个，来自 ${stickerDir}）：\n${list.map((item) => `- ${item.id}（${(item.bytes / 1024).toFixed(1)}KB）`).join('\n')}\n用 qq_send_sticker {id:"文件名"} 发送。`,
+        text: `本地表情包（${list.length} 个，来自 ${stickerDir}${library.error ? `；知识库读取失败：${library.error}（本次只读）` : ''}）：\n${lines.join('\n')}\n用 qq_send_sticker {id:"文件名"} 发送；qq_sticker_note 可补标签/描述。`,
+      }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_sticker_note',
+    summary: '给本地表情包补标签/描述/来源（只写本地 library.json；不下载、不上传、不改图片文件）。',
+    when: ['你给某个本地表情想记一个含义/使用场景', '想按标签在 qq_stickers 里找到它'],
+    avoid: ['给不存在的/库外文件写备注', '以为它会收藏网络表情（不会下载）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: '表情文件名（单层，必须在 stickerDir 里存在）。' },
+        tags: { type: 'array', items: { type: 'string' }, description: '短标签（最多 10 个，每个 ≤24 字）。' },
+        description: { type: 'string', description: '一句话描述它表达什么/什么时候用（≤200 字）。' },
+        source: { type: 'string', description: '来源标记：manual（默认）| inbound | ai | unknown。' },
+      },
+      required: ['id'],
+    },
+    async execute({ id, tags, description, source } = {}) {
+      if (!stickerDir) return { text: '表情包库未配置（stickerDir 为空）。' }
+      const safe = String(id ?? '').trim()
+      const exists = stickerFiles().some((file) => file.id === safe)
+      if (!exists) return { text: `表情库里没有这个本地文件：${safe}（只接受 stickerDir 下的单层图片）。` }
+      const library = loadLibrary()
+      if (library.error) return { text: `表情知识库读取失败，拒绝写回以免覆盖：${library.error}` }
+      try {
+        const updated = noteSticker(library, safe, { tags, description, source }, { now: now() })
+        saveStickerLibrary(stickerLibraryFile, updated)
+        const entry = updated.entries[safe]
+        return { text: `已记下表情 ${safe}：描述=${entry.description || '（空）'}；标签=${entry.tags.length ? entry.tags.join('、') : '（无）'}；来源=${entry.source}。只写本地 library.json。` }
+      } catch (error) {
+        return { text: `写表情知识库失败：${String(error?.message ?? error)}` }
       }
     },
   })
@@ -444,7 +508,7 @@ export async function registerSendTool({
         perTurn: { limit: maxPerTurn, sent: state.turnSent },
         limits: { minIntervalMs, maxPerMinute, maxPerHour, sameTextWindowMs, burstMaxMessages, maxMessageChars, gapMode },
         burst: { enabled: burstEnabled, maxMessages: burstMaxMessages, maxChars: maxMessageChars },
-        stickers: { dir: stickerDir || null, maxBytes: maxStickerBytes, listLimit: stickerListLimit },
+        stickers: { dir: stickerDir || null, libraryFile: stickerLibraryFile || null, maxBytes: maxStickerBytes, listLimit: stickerListLimit },
         counts: { ...state.counts },
         recent: state.recent ? { ...state.recent } : null,
         transport,

@@ -119,3 +119,51 @@ test('qq_send_sticker：非 owner/白名单目标拒绝；每轮上限与 qq_sen
     assert.equal(env.fake.sendActions().length, 2)
   } finally { await env.cleanup() }
 })
+
+test('qq_sticker_note + 知识库：tags/描述/来源写本地 library.json；列表可查询排序', async () => {
+  const env = await setup()
+  try {
+    const note = await env.tool('qq_sticker_note').execute({
+      id: 'smile.png', tags: ['开心', '打招呼'], description: '开心地打招呼', source: 'manual',
+    })
+    assert.match(note.text, /已记下表情/)
+    const libraryFile = path.join(env.stickerDir, 'library.json')
+    const library = JSON.parse(fs.readFileSync(libraryFile, 'utf8'))
+    assert.deepEqual(library.entries['smile.png'].tags, ['开心', '打招呼'])
+    assert.equal(library.entries['smile.png'].description, '开心地打招呼')
+    assert.equal(library.entries['smile.png'].source, 'manual')
+
+    const byTag = await env.tool('qq_stickers').execute({ query: '开心' })
+    assert.match(byTag.text, /smile\.png/)
+    assert.doesNotMatch(byTag.text, /big\.png/)
+    const byDesc = await env.tool('qq_stickers').execute({ query: '打招呼' })
+    assert.match(byDesc.text, /smile\.png/)
+
+    // 发送后使用次数 +1，sort=used 排在前面
+    await env.tool('qq_send_sticker').execute({ id: 'smile.png' })
+    const after = JSON.parse(fs.readFileSync(libraryFile, 'utf8'))
+    assert.equal(after.entries['smile.png'].useCount, 1)
+    assert.ok(after.entries['smile.png'].lastUsedAt > 0)
+    const used = await env.tool('qq_stickers').execute({ sort: 'used' })
+    assert.match(used.text, /用过 1 次/)
+    assert.match(used.text.split('\n')[1] ?? '', /smile\.png/, '使用次数排序第一')
+  } finally { await env.cleanup() }
+})
+
+test('qq_sticker_note：不存在/库外文件拒绝；知识库损坏时只读不写以免覆盖', async () => {
+  const env = await setup()
+  try {
+    const missing = await env.tool('qq_sticker_note').execute({ id: 'nope.png', tags: ['x'] })
+    assert.match(missing.text, /没有这个本地文件/)
+    const outside = await env.tool('qq_sticker_note').execute({ id: '../evil.png', tags: ['x'] })
+    assert.match(outside.text, /没有这个本地文件/)
+
+    fs.writeFileSync(path.join(env.stickerDir, 'library.json'), '{not json', 'utf8')
+    const list = await env.tool('qq_stickers').execute({})
+    assert.match(list.text, /知识库读取失败/)
+    assert.match(list.text, /smile\.png/)
+    const note = await env.tool('qq_sticker_note').execute({ id: 'smile.png', tags: ['x'] })
+    assert.match(note.text, /拒绝写回/)
+    assert.equal(fs.readFileSync(path.join(env.stickerDir, 'library.json'), 'utf8'), '{not json')
+  } finally { await env.cleanup() }
+})

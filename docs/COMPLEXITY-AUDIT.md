@@ -190,5 +190,5 @@ $run = "C:\DSH\icl-wt\mc-lab\.state\lab\e2-20261106-smoke"
 | system/facts 布局 | 1 append/0 replace | 两者均 1 append/0 replace、`systemHasDynamicFacts=false`、同 run hash 不抖 | ✅ 红线未破 |
 | system 静态体积 | icl-lab 2,296 字符 | icl-lab **4,195 字符**（新插件/原生工具说明/sim seed） | ⚠ 固定前缀成本上涨，非 cache 回归；进了 lead 审计清单 |
 
-**未做（需 lab 验证）**：DSH 自带 runtime-context 样板（file policy/approval，约 260 字符/快照）能否用 `includeRuntimeContext:false` 去掉，同时让 `icl:facts` 以 `required:true` 存活——DSH 0.2 的 required 语义未在本机可验，先不动；若 cache 在 S2 确认可安全关闭，可再省 ~14k 字符。
-**与 cache 对表**：allowlist 只影响 `icl-mc-lab`（cache 的 sanctioned run 是 icl-lab，41 工具基线不变）；facts dirty 收窄只影响有 MC 事件的 run；两项都不改 system 文本与 facts 内容语义。
+**DSH 样板优化：已关闭（cache 只读评估，2026-11-06）**。本机 DSH 0.2 的 `includeRuntimeContext:false` 是**全局 suppress**（`assemble()` 把 contexts 整体置空），`icl:facts` 会一起消失；context 注册项**没有** `required`/per-context 豁免机制。实测样板 ≈**514 字符/快照**（sandbox:policy 271 + approval:policy 153，`icl:facts` 本体只有 23–73，包装 ~90）；E2 类长跑累计 ~14k 字符（27 条×514），**不是每请求**。结论：**hold**，不再走"只去样板保 facts"这条路。唯一替代是抑制 runtime-context、把 facts 改走 `agent/pre-step` 的 `<icl-context>`（append-only），通道/GUI 语义变化需 S2 lab 单独验证；cache 已记 `CACHE-MODEL §7.10`。
+**与 cache 对表**：allowlist 只影响 `icl-mc-lab`（cache 的 sanctioned run 是 icl-lab，41 工具基线不变）；facts dirty 收窄只影响有 MC 事件的 run；两项都不改 system 文本与 facts 内容语义。实测基线：icl-mc-lab 27 工具/21,459 字符/`c91bce1e703b`、icl-lab 54/39,350/`c1df0e849a9f`、facts 0.2/0.33 条/轮。

@@ -168,6 +168,45 @@ test('图片下载失败：消息不丢、正文降级为提示，不伪造 atta
   } finally { await env.cleanup() }
 })
 
+test('离线契约：本地 PNG/MP4 样例文件读字节 → 落盘/index 完整，无 .part 残留', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-media-offline-'))
+  const sampleDir = path.join(dir, 'samples')
+  const mediaDir = path.join(dir, 'media')
+  fs.mkdirSync(sampleDir, { recursive: true })
+  try {
+    const pngFile = path.join(sampleDir, '样例 图片.png')
+    const mp4File = path.join(sampleDir, '样例 视频.mp4')
+    fs.writeFileSync(pngFile, PNG)
+    fs.writeFileSync(mp4File, MP4)
+    const image = saveInboxMedia({
+      dir: mediaDir, kind: 'image', buffer: fs.readFileSync(pngFile), mimeType: 'image/png',
+      at: Date.now(), messageId: 9901, peerId: OWNER, sender: '主人', index: 1, originalName: '样例 图片.png',
+    })
+    const video = saveInboxMedia({
+      dir: mediaDir, kind: 'video', buffer: fs.readFileSync(mp4File), mimeType: 'video/mp4',
+      at: Date.now(), messageId: 9902, peerId: OWNER, sender: '主人', index: 1, originalName: '样例 视频.mp4',
+    })
+    for (const saved of [image, video]) {
+      assert.equal(fs.existsSync(saved.path), true)
+      assert.equal(fs.statSync(saved.path).size, saved.bytes)
+      assert.match(saved.path, /990[12]-/)
+    }
+    const rows = fs.readFileSync(path.join(mediaDir, 'index.jsonl'), 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l))
+    assert.equal(rows.length, 2)
+    assert.deepEqual(rows.map((r) => r.kind).sort(), ['image', 'video'])
+    const leftovers = []
+    const walk = (current) => {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const file = path.join(current, entry.name)
+        if (entry.isDirectory()) walk(file)
+        else if (entry.name.includes('.part-')) leftovers.push(file)
+      }
+    }
+    walk(mediaDir)
+    assert.deepEqual(leftovers, [])
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('媒体策略默认：不自动删/不自动 album/单文件 512MiB/总量软告警', async () => {
   const logs = []
   const env = await setup({ logs })
