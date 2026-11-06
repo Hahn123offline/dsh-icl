@@ -264,23 +264,26 @@ test('body：心跳在长时间无事件时触发', async () => {
   await body.stop()
 })
 
-test('body：idle 与 danger 配额分开，suppressed 有统计且不静默', async () => {
+test('body：danger 告警穿透配额（alarm+pierce），idle 心跳仍受限流但可统计', async () => {
   const adapter = fakeAdapter()
   const { body } = await startedBody({
     adapter, watchdogMs: 10, lowHealth: 10, dangerAlertPerMinute: 2, idleAlertPerMinute: 1, heartbeatMs: 10, alertWindowMs: 60_000,
   })
   adapter.state.health = 5
-  await waitFor(() => {
-    const stats = body.status().watchdog
-    return stats.suppressed >= 3 && stats.suppressedBy['low-health'] >= 2 && stats.suppressedBy.heartbeat >= 1
-  }, 3000, 'suppressed stats')
+  // danger 告警不能因为 2 次/分配额被静默：第一条以 alarm/pierce 投递，后续去重记账（alarm_suppressed），窗口后补投。
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'watchdog' && e.data?.kind === 'low-health'), 3000, 'danger alarm delivered')
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'alarm_suppressed'), 3000, 'alarm suppressed recorded')
+  const events = body.eventsSince(0).events
+  const alarm = events.find((e) => e.type === 'watchdog' && e.data?.kind === 'low-health')
+  assert.equal(alarm.data.priority, 'alarm')
+  assert.equal(alarm.data.pierce, true)
+  assert.ok(events.some((e) => e.type === 'alarm_suppressed' && e.data?.type === 'watchdog'))
   const stats = body.status().watchdog
   assert.equal(stats.limits.danger, 2)
   assert.equal(stats.limits.idle, 1)
-  assert.ok(stats.fired >= 1)
-  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'watchdog_suppressed'))
-  // danger 配额耗尽没有把 idle 心跳全部压死
-  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'heartbeat'))
+  // idle 心跳仍受 idle 配额限制，但至少有 1 条（danger 告警不把 idle 全压死）
+  const heartbeats = events.filter((e) => e.type === 'heartbeat').length
+  assert.ok(heartbeats >= 1)
   await body.stop()
 })
 
@@ -563,3 +566,104 @@ test('do：长 op 单飞锁（并发第二个 409，查询类不受限）', asyn
   // 前一个结束后，新长 op 可以执行
   await assert.doesNotReject(() => body.doPlan([{ op: 'dig', params: { pos: { x: 0, y: 64, z: 0 } } }]))
 })
+
+test('body：暂停中安全反射继续（低血自动规避，有界 ≤2 次/分，不自动 resume）', async () => {
+  const adapter = fakeAdapter()
+  const calls = []
+  adapter.emergency = async (reason) => { calls.push(reason); return { ok: true, action: 'flee-threat', reason } }
+  let clock = 1_000_000
+  const { body } = await startedBody({
+    adapter, now: () => clock, watchdogMs: 60_000,
+    lowHealth: 10, reflexMaxPerMinute: 2, reflexMaxDurationMs: 200, alarmDedupeMs: 1000,
+  })
+  body.safetyStop('manual')
+  assert.equal(body.status().paused, true)
+  adapter.state.health = 4
+  body.watchdogTick(clock)
+  await waitFor(() => body.eventsSince(0).events.filter((e) => e.type === 'reflex').length >= 1, 1500, 'first reflex event')
+  clock += 1000
+  body.watchdogTick(clock)
+  await waitFor(() => body.eventsSince(0).events.filter((e) => e.type === 'reflex').length >= 2, 1500, 'second reflex event')
+  clock += 1000
+  body.watchdogTick(clock)
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'reflex_suppressed'), 1500, 'reflex rate limited')
+  const state = body.status()
+  assert.equal(state.safety.reflex.enabled, true)
+  assert.ok(state.safety.reflex.count >= 1)
+  assert.ok(state.safety.lastReflex && state.safety.lastReflex.reason === 'low-health')
+  assert.equal(state.paused, true, '反射不应自动 resume')
+  assert.ok(calls.length >= 2)
+  await body.stop()
+})
+
+test('body：暂停中 alarm 穿透（death/spawn_unsafe/kicked 带 priority+pierce）', async () => {
+  const { body } = await startedBody({ watchdogMs: 60_000 })
+  body.safetyStop('manual')
+  body.ingest('death', { position: { x: 0, y: 64, z: 0 } })
+  body.ingest('spawn_unsafe', { position: { x: 0, y: 64, z: 0 }, threats: [] })
+  body.ingest('kicked', { reason: 'test-kick' })
+  const events = body.eventsSince(0).events
+  for (const type of ['death', 'safety_stop', 'kicked', 'spawn_unsafe']) {
+    const event = events.find((entry) => entry.type === type)
+    assert.ok(event, `missing ${type}`)
+    assert.equal(event.data.priority, 'alarm', `${type} priority`)
+    assert.equal(event.data.pierce, true, `${type} pierce`)
+  }
+  await body.stop()
+})
+
+test('body：alarm 被去重后窗口到点补投（不静默）', async () => {
+  let clock = 2_000_000
+  const { body } = await startedBody({ watchdogMs: 60_000, now: () => clock, alarmDedupeMs: 1000 })
+  body.safetyStop('manual')
+  body.ingest('spawn_unsafe', { position: { x: 0, y: 64, z: 0 } })
+  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'alarm_suppressed'))
+  clock += 2000
+  body.watchdogTick(clock)
+  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'safety_stop' && e.data?.redelivered === true), 1500, 'alarm redelivered')
+  assert.ok(body.status().safety.alarms.redelivered >= 1)
+  await body.stop()
+})
+
+test('body：mcb_stop 暂停中可调用（任务/身体分开报告），resume 后可继续下任务', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  const hung = body.createTask({ kind: 'mine', params: { hang: true } })
+  const queued = body.createTask({ kind: 'mine', params: { count: 1 } })
+  await waitFor(() => body.getTask(hung.id)?.state === 'running', 2000, 'running')
+  const out = await body.doPlan([{ op: 'stop' }])
+  const report = out.results[0].result
+  assert.equal(report.paused, true)
+  assert.equal(report.pausedReason, 'user-stop')
+  assert.ok(report.task.note.includes('任务已停'))
+  assert.ok(Array.isArray(report.task.cancelled) && report.task.cancelled.length >= 1)
+  assert.equal(report.body.online, true)
+  assert.ok(report.body.note.includes('身体仍在世界'))
+  assert.equal(report.reflex.enabled, true)
+  await waitFor(() => body.getTask(queued.id)?.state === 'cancelled', 1000, 'queued cancelled by stop')
+  // 暂停中写动作仍拒；stop 之后 resume 能恢复干活
+  await assert.rejects(() => body.doPlan([{ op: 'move', x: 1, y: 64, z: 1 }]), /暂停/)
+  assert.throws(() => body.createTask({ kind: 'mine', params: { count: 1 } }), /暂停/)
+  body.resume()
+  const next = body.createTask({ kind: 'mine', params: { count: 1 } })
+  await waitFor(() => body.getTask(next.id)?.state === 'done', 2000, 'task done after resume')
+  await body.stop()
+})
+
+test('body：status 暴露 playable 布尔与 spawn 日志（E6/E7）', async () => {
+  const { body } = await startedBody({ watchdogMs: 60_000 })
+  const status = body.status()
+  assert.ok(status.playable && typeof status.playable.ok === 'boolean')
+  assert.ok(Array.isArray(status.playable.blockers))
+  body.ingest('spawn', { position: { x: 1, y: 64, z: 2 }, dimension: 'overworld', source: 'connect' })
+  body.ingest('spawn_safe', { position: { x: 1, y: 64, z: 2 }, feet: 'grass_block', head: 'air', below: 'dirt', threats: [] })
+  const spawnLog = body.status().spawnLog
+  assert.ok(spawnLog.length >= 1)
+  const last = spawnLog.at(-1)
+  assert.equal(last.position.x, 1)
+  assert.equal(last.dimension, 'overworld')
+  assert.equal(last.safe, true)
+  await body.stop()
+})
+
+

@@ -103,3 +103,27 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 - 回归证据（空手/dirt 挖 stone 必须立即失败，不走路不重试）：`packages/mc-body/src/tools.mjs` 规则 + `test/tools.test.mjs` 单测 + 真服 smoke `C:/DSH/icl/.state/lab/mc-body-soak/tool-smoke2/`；报错含 `needsTool/suggestCraft` 与 3 步链（详见 §装备与工具）。
 - `equip` 真服回执：`{selectedSlot, held, toolFor}`（54839 smoke）；night-1 里她尚未调用 equip（手持已对）——待她下次换手补 seq。
 - 已知遗留（非本功能）：同一长 `mcb_do`（mine）连发会触发 mc-link 120s 超时/`tool call aborted`（seq 376/378），body 后续会加 doPlan 单飞锁。
+
+### 暂停语义（方案 B + danger pierce，2026-11-06 用户拍板）
+
+用户原话：“将游戏在线时的危险作为穿透消息唤醒会话并自动规避危险，模型能选择暂停去干别的，但是一出事一定会被通知。”
+
+- **暂停 = 停任务/停控制，但世界继续**：`paused=true` 只是不接新任务、中断当前任务；身体仍在世界（会掉落/受伤/被推）。
+- **安全反射继续（方案 B）**：暂停期 watchdog 仍检测低血/危险方块/近身怪/水下低氧，并直接调用 `adapter.emergency` 做有界保命（默认 ≤10s/次、≤2 次/分；测试可调 `reflexMaxDurationMs/reflexMaxPerMinute/reflexEnabled`）；反射不生成新目标、不自动 resume。
+  - 事件 `reflex {reason, danger, action, durationMs, timedOut, windowCount}`；被限频时 `reflex_suppressed`；`status.safety.reflex`/`lastReflex` 暴露是否开启与最近一次自动规避。
+- **危险一定穿透**：`safety_stop/death/spawn_unsafe/kicked/reconnect_exhausted/quarantine/idle_disconnect/emergency/reflex` 事件带 `priority:"alarm"` + `pierce:true`；危险 watchdog 告警（`watchdog` + severity=danger，如 low-health/danger-block/low-oxygen/stuck）也带 pierce，不受 danger 配额静默。
+  - 15s 去重（`alarmDedupeMs`）：被去重时记 `alarm_suppressed`（含 redeliverInMs），窗口到点由 watchdogTick **补投**（`redelivered:true`），`status.safety.alarms` 有 delivered/suppressed/redelivered/pending 计数。
+  - 暂停中发生更严重事件（death/quarantine/spawn-unsafe/danger-block/low-oxygen/stuck/health-drop/connection-stale/low-health）即使不改变 paused 状态也 pushAlarm。静音策略由 mc-link 决定（time 侧默认连 alarm 一起拦是用户拍板；body 只保证事件可穿透，不假设一定穿）。
+- **`mcb_stop` 对应 body 行为**：`POST /v1/safety/stop` 或 `{"op":"stop"}` → **cancel 当前+队列任务、进入暂停（reason `user-stop`）、保持反射、返回分开的回执**：
+  - `task: {cancelled:[...], note:"任务已停（取消 N 个）"}`；
+  - `body: {online, position, health, food, note:"身体仍在世界…安全反射保持开启" / "身体不在世界…"}`；
+  - `reflex`/`safety`（alarm/pierce 标记）。暂停中可直接调用 stop，不需要先 resume；stop 属于安全 op（不受单飞锁/暂停写动作限制）。
+- **恢复**：`/v1/safety/resume`（或 `{"op":"resume"}`）解暂停后可继续下任务；被 stop 取消的任务需要重新下；断线 `paused` 的任务在 body resume 后用任务级 `resume` 显式继续。
+- **E6/E7**：`status.playable {ok, blockers}`（join 后可玩布尔：offline/paused/spawn-unsafe/reconnecting/dead）；`status.spawnLog`（最近 10 次 spawn：位置/维度/来源/安全判定细节）。
+
+### 与 time / mc-link 的接口对齐（2026-11-06，time `fd81f56` 语义）
+
+- **mcb_stop** → body `pausedReason="user-stop"` 且返回任务/身体分开的回执；mc-link 负责调 `time.setPausedMode({active:true,reason:'mcb_stop',source:'mc-link'})` 和恢复 `{active:false}`；body 不改 time 协议，只是“任务停止、世界继续”。
+- **alarm 穿透**：body 只保证事件带 `priority:"alarm"`+`pierce:true` 且不因 pause 而丢（去重记账+窗口补投），并在 `status.safety.alarms` 记 delivered/suppressed/redelivered/pending；**是否被静音/睡眠拦截由 mc-link/time 决定**（time 默认连 alarm 一起拦：body 不假设“静音里 alarm 一定穿”；上层若拦了，用 body 的 alarm_suppressed/redelivered 计数对账）。
+- **睡眠期**：body 的 safety_stop 照旧独立执行（不等模型）；alarm 事件在 mc-link/time 侧进 `priority:'alarm'` 积压，醒来简报第一条呈现。
+- **E6/E7**：`status.playable {ok,blockers}` 给 mc-link join 后可玩判断；`status.spawnLog` 给 spawn 排查。

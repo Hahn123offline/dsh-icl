@@ -227,3 +227,10 @@ ICL 集成测试：
 - **动作前置判定**：mine/dig 前检查方块所需工具；手持不合适但背包有更合适 → 自动换上（`autoTool:true` 事件/结果标注）；**没有/等级不足 → 立即 failed，result 带 needsTool/suggestCraft/held/block/requiredTier 与可执行步骤，禁止原地重试**（真服回归：空手/dirt 挖 stone → 立即失败 + “先 craft wooden_pickaxe…”）。
 - **兜底边界**：只有战斗/低血/危险/掉落等自动反应由 body 切武器/食物；普通采集不替模型做目标决策。`autoTool:false` 可让模型完全自管。
 - 真服证据：night-1 deploy 后 seq 390/391（inventory 新格式）、370/372（mine 用已有镐成功、net 10）；空手拦截图见 `.state/lab/mc-body-soak/tool-smoke2/`。
+
+### 暂停/危险穿透（v1.2，2026-11-06 用户拍板方案 B）
+
+- `paused` = 停任务/停控制，世界继续；暂停期安全反射继续（低血/危险方块/近身怪/低氧），有界（≤10s/次、≤2 次/分），不生成新任务、不自动 resume。
+- alarm 事件（safety_stop/death/spawn_unsafe/kicked/reconnect_exhausted/quarantine/emergency/reflex；危险 watchdog）带 `priority:"alarm"`+`pierce:true`，穿透 pause/focus（是否被静音由上层决定）；15s 去重，被拦记 `alarm_suppressed` 并在窗口后补投（`redelivered:true`）。
+- `/v1/safety/stop` 与 `{"op":"stop"}` = mcb_stop：cancel+暂停+反射+回执（任务/身体分开：任务已停 vs 身体仍在世界/不在世界）；暂停中可直接调用，无需先 resume。
+- `status` 新增 `playable {ok,blockers}`（E6）、`spawnLog`（E7）、`safety.reflex/lastReflex/alarms/bodyOnline`；暂停文案明确“任务停止、世界继续、危险会穿透”。

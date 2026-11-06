@@ -14,9 +14,16 @@ import { createHeartbeat, createProgressTracker, createRateLimiter } from './rec
 const KINDS = new Set(['mine', 'goto', 'patrol', 'explore', 'follow', 'chat', 'routine', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'unknown'])
 const MOVEMENT_KINDS = new Set(['goto', 'patrol', 'explore', 'follow'])
-// 暂停时仍然允许的 op：感知/查询/恢复，以及**取消任务**（取消是纯安全动作，不应被拒）。
+// 暂停时仍然允许的 op：感知/查询/恢复/取消/停止，以及**停止**（cancel+反射+报告，不需要先 resume）。
 // 写动作（move/dig/place/task…）一律拒绝。
-const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'say', 'wait'])
+const SAFE_WHILE_PAUSED = new Set(['look', 'inventory', 'scan', 'map', 'events', 'tasks', 'resume', 'cancel', 'stop', 'say', 'wait'])
+// alarm 级事件：必须能穿透 pause/focus 把会话叫醒（mc-link 不拦；body 这里打 priority/pierce 标记）。
+const ALARM_TYPES = new Set(['safety_stop', 'death', 'spawn_unsafe', 'kicked', 'reconnect_exhausted', 'quarantine', 'idle_disconnect', 'emergency', 'reflex'])
+// 暂停时的“安全反射”：不停世界，继续有界保命动作；防止脚本暂停 = 站桩挨打。
+const REFLEX_MAX_DURATION_MS = 10_000
+const REFLEX_MAX_PER_MINUTE = 2
+// 暂停中仍必须穿透的“更严重事件”（不改变已暂停状态，但 alarm 一定要到）。
+const ALARM_WHILE_PAUSED = new Set(['death', 'quarantine', 'spawn-unsafe', 'danger-block', 'low-oxygen', 'stuck', 'health-drop', 'connection-stale', 'low-health'])
 
 function abortError(message = 'aborted') {
   const error = new Error(message)
@@ -60,6 +67,12 @@ export function createBody({
   chatRateMs = 1000,
   lowHealth = 10,
   pausedDisconnectMs = 120_000,
+  // 暂停期安全反射（方案 B）：暂停只停任务/控制，不停物理世界；反射有界（默认 ≤10s/次、≤2 次/分）。
+  reflexEnabled = true,
+  reflexMaxDurationMs = REFLEX_MAX_DURATION_MS,
+  reflexMaxPerMinute = REFLEX_MAX_PER_MINUTE,
+  reflexMinIntervalMs = 500,
+  alarmDedupeMs = 15_000,
   // 退出归因钩子：身体不知道“进程为什么退出”，但把这些可判定的时机交给宿主记录。
   onIdleDisconnect = null,
   onShutdownRequest = null,
@@ -102,6 +115,16 @@ export function createBody({
   let offlineReason = null
   let movementTaskId = null
   const suppressedNotified = {}
+  const spawnLog = []
+  const reflexState = {
+    times: [], count: 0, active: false, lastAt: null, lastReason: null, lastAction: null,
+    lastDurationMs: null, lastTimedOut: false, lastEventSeq: null, lastSuppressedAt: null,
+  }
+  const alarmState = {
+    delivered: new Map(), pending: new Map(),
+    deliveredCount: 0, suppressedCount: 0, redeliveredCount: 0, lastAt: null,
+  }
+  let lastSafetyStopAt = null
 
   function stamp() { return now() }
 
@@ -143,7 +166,8 @@ export function createBody({
 
   function push(type, data = {}) {
     seq += 1
-    const event = { seq, at: stamp(), type, data }
+    const payload = ALARM_TYPES.has(type) ? { ...data, priority: 'alarm', pierce: true } : data
+    const event = { seq, at: stamp(), type, data: payload }
     events.push(event)
     while (events.length > eventLimit) events.shift()
     if (type !== 'heartbeat') lastPulseAt = event.at
@@ -154,6 +178,47 @@ export function createBody({
       } catch { /* 日志失败不影响身体 */ }
     }
     return event
+  }
+
+  // alarm 投递：穿透 pause/focus（priority/pierce 标记），带 15s 去重；被去重拦截时记账并补投一次。
+  function alarmKey(type, data = {}) {
+    return `${type}:${String(data?.reason ?? data?.kind ?? '')}`
+  }
+
+  function pushAlarm(type, data = {}, { retry = false } = {}) {
+    const key = alarmKey(type, data)
+    const at = stamp()
+    const last = alarmState.delivered.get(key)
+    if (last != null && at - last < alarmDedupeMs) {
+      alarmState.suppressedCount += 1
+      const entry = alarmState.pending.get(key) ?? { type, data, attempts: 0, firstAt: at, lastAt: at }
+      entry.attempts += 1
+      entry.lastAt = at
+      alarmState.pending.set(key, entry)
+      push('alarm_suppressed', {
+        type, key, reason: 'dedupe', windowMs: alarmDedupeMs,
+        attempts: entry.attempts, redeliverInMs: Math.max(0, alarmDedupeMs - (at - last)),
+      })
+      return null
+    }
+    alarmState.delivered.set(key, at)
+    alarmState.deliveredCount += 1
+    alarmState.lastAt = at
+    if (alarmState.pending.has(key)) { alarmState.pending.delete(key); alarmState.redeliveredCount += 1 }
+    // 不管事件类型是什么，alarm 投递都显式带 priority/pierce，mc-link 据此穿透 pause/focus。
+    return push(type, { ...data, priority: 'alarm', pierce: true, ...(retry ? { redelivered: true } : {}) })
+  }
+
+  function retryPendingAlarms(at) {
+    if (!alarmState.pending.size) return 0
+    let retried = 0
+    for (const [key, entry] of [...alarmState.pending.entries()]) {
+      if (at - entry.lastAt < alarmDedupeMs) continue
+      // 不先删 pending：交给 pushAlarm 删并计 redelivered（否则补投计数会丢）。
+      const event = pushAlarm(entry.type, { ...entry.data, redeliveryOf: key }, { retry: true })
+      if (event) retried += 1
+    }
+    return retried
   }
 
   function taskView(task) {
@@ -378,22 +443,29 @@ export function createBody({
 
   function safetyStop(reason = 'safety') {
     const next = String(reason)
+    lastSafetyStopAt = stamp()
     if (paused) {
-      // 已经停了就别每 500ms 再发一条 safety_stop；只有更严重的 death/quarantine 更新原因。
+      // 已经停了就别每 500ms 再发一条 safety_stop；但更严重的事件必须穿透报警。
       if (next === 'death' || next === 'quarantine') {
         if (next === 'death' && pausedReason !== 'death' && pausedReason !== 'quarantine') {
           pausedReason = next
-          push('safety_stop', { reason: pausedReason })
+          pushAlarm('safety_stop', { reason: pausedReason })
         } else if (next === 'quarantine' && pausedReason !== 'quarantine') {
           pausedReason = next
-          push('safety_stop', { reason: pausedReason })
+          pushAlarm('safety_stop', { reason: pausedReason })
+        } else {
+          // 同一原因重复：不改变状态，但保证 alarm 可见（去重后仍会记账/补投）。
+          pushAlarm('safety_stop', { reason: next, repeated: true })
         }
+      } else if (ALARM_WHILE_PAUSED.has(next)) {
+        // 暂停中又发生危险（spawn_unsafe/danger-block/low-oxygen…）：状态不变，alarm 必须到。
+        pushAlarm('safety_stop', { reason: pausedReason, event: next, repeated: next === pausedReason })
       }
-      return { paused, reason: pausedReason }
+      return { paused, reason: pausedReason, bodyOnline: connectionState !== false, reflex: reflexView() }
     }
     paused = true
     pausedReason = next
-    push('safety_stop', { reason: pausedReason })
+    pushAlarm('safety_stop', { reason: pausedReason })
     // 已排队但没跑的任务也不该在恢复后自动冲向同一个危险点。
     for (const task of queue.splice(0)) {
       if (!TERMINAL.has(task.state)) {
@@ -418,7 +490,54 @@ export function createBody({
       }, Number(pausedDisconnectMs))
       if (typeof pausedTimer.unref === 'function') pausedTimer.unref()
     }
-    return { paused, reason: pausedReason }
+    return { paused, reason: pausedReason, bodyOnline: connectionState !== false, reflex: reflexView() }
+  }
+
+  // mcb_stop：cancel + 反射 + 报告（不需要先 resume）；任务与身体状态分开说清。
+  function stopAll(reason = 'user-stop') {
+    const stopReason = String(reason || 'user-stop')
+    const cancelled = []
+    for (const task of queue.splice(0)) {
+      if (TERMINAL.has(task.state)) continue
+      clearTaskTimers(task)
+      task.cancelReason = stopReason
+      setTask(task, 'cancelled', { error: stopReason })
+      cancelled.push({ id: task.id, kind: task.kind, state: 'cancelled' })
+    }
+    if (current && !TERMINAL.has(current.state)) {
+      cancelled.push({ id: current.id, kind: current.kind, state: 'cancelling' })
+      current.cancelReason = stopReason
+      current.controller?.abort(abortError(stopReason))
+    }
+    // stop 是一种暂停：停任务/停控制，但安全反射继续（方案 B）。
+    if (!paused) safetyStop(stopReason)
+    else if (pausedReason !== stopReason) {
+      pausedReason = stopReason
+      pushAlarm('safety_stop', { reason: pausedReason, via: 'mcb_stop' })
+    }
+    const adapterState = adapterStatus()
+    const connected = adapterState.connected === undefined ? connectionState !== false : Boolean(adapterState.connected)
+    const bodyOnline = connected === true
+    return {
+      ok: true,
+      paused: true,
+      pausedReason,
+      task: {
+        cancelled,
+        note: cancelled.length ? `任务已停（取消 ${cancelled.length} 个）` : '任务已停（没有在跑/排队的任务）',
+      },
+      body: {
+        online: bodyOnline,
+        position: adapterState.position ?? null,
+        health: adapterState.health ?? null,
+        food: adapterState.food ?? null,
+        note: bodyOnline
+          ? '身体仍在世界（会掉落/受伤/被推）；安全反射保持开启，可 cancel/tasks/look 等安全 op，resume 后再下任务'
+          : '身体不在世界（离线/已退出）；恢复需先让 body 上线',
+      },
+      reflex: reflexView(),
+      safety: { reason: pausedReason, alarm: true, priority: 'alarm', pierce: true },
+    }
   }
 
   function resume({ force = false } = {}) {
@@ -497,18 +616,24 @@ export function createBody({
     watchdogStats.alerts += 1
     watchdogStats.lastAlertAt = at
     const payload = { severity, kind, at, ...data }
-    const admitted = rate.admit(severity, kind)
-    if (admitted) {
-      push('watchdog', payload)
+    if (severity === 'danger') {
+      // 危险告警必须穿透：不走配额（只做 15s 去重），被去重也记账并在窗口后补投。
+      pushAlarm('watchdog', { ...payload, reason: kind })
     } else {
-      // 限流只压“重复提醒”的注入，绝不压安全动作；同时不能静默：每次窗口报一次抑制统计。
-      const last = suppressedNotified[kind] ?? 0
-      if (at - last >= alertWindowMs) {
-        suppressedNotified[kind] = at
-        push('watchdog_suppressed', { kind, suppressed: rate.stats().suppressed, windowMs: alertWindowMs })
+      const admitted = rate.admit(severity, kind)
+      if (admitted) {
+        push('watchdog', payload)
+      } else {
+        // 限流只压“重复提醒”的注入，绝不压安全动作；同时不能静默：每次窗口报一次抑制统计。
+        const last = suppressedNotified[kind] ?? 0
+        if (at - last >= alertWindowMs) {
+          suppressedNotified[kind] = at
+          push('watchdog_suppressed', { kind, suppressed: rate.stats().suppressed, windowMs: alertWindowMs })
+        }
       }
     }
     if (action) {
+      // 安全动作不受 pause/限流影响：暂停时 reflex 也会独立跑（见 checkReflex）。
       try { action(payload) } catch (error) { push('body_error', { message: `watchdog-action: ${error?.message ?? error}` }) }
     }
     return payload
@@ -590,6 +715,90 @@ export function createBody({
     movement.reset()
   }
 
+  function reflexView() {
+    return {
+      enabled: Boolean(reflexEnabled),
+      active: reflexState.active,
+      count: reflexState.count,
+      times: reflexState.times.length,
+      maxPerMinute: reflexMaxPerMinute,
+      maxDurationMs: reflexMaxDurationMs,
+      lastAt: reflexState.lastAt,
+      lastReason: reflexState.lastReason,
+      lastAction: reflexState.lastAction,
+      lastDurationMs: reflexState.lastDurationMs,
+      lastTimedOut: reflexState.lastTimedOut,
+      lastEventSeq: reflexState.lastEventSeq,
+      suppressedCount: reflexState.suppressedCount ?? 0,
+    }
+  }
+
+  // 暂停中判断“现在是否危险到需要反射”：低血/危险方块/近身怪/水下低氧。
+  function reflexDanger(status) {
+    const health = Number(status?.health)
+    if (Number.isFinite(health) && health > 0 && health <= lowHealth) return { reason: 'low-health', health }
+    const blocks = Array.isArray(status?.danger?.blocks) ? status.danger.blocks : []
+    if (blocks.length) return { reason: 'danger-block', blocks: blocks.slice(0, 3) }
+    const hostiles = Array.isArray(status?.nearbyHostiles) ? status.nearbyHostiles : []
+    const threat = hostiles.find((entry) => Number(entry?.distance) <= 6)
+    if (threat) return { reason: 'threat-near', threat: threat.name ?? 'hostile', distance: threat.distance }
+    if (status?.submerged === true && Number(status?.oxygen) <= 5) return { reason: 'low-oxygen', oxygen: Number(status.oxygen) }
+    return null
+  }
+
+  // 方案 B：暂停只停任务/控制，不停安全反射；有界（≤10s/次、≤2 次/分），不生成新目标。
+  function checkReflex(status, at) {
+    if (!reflexEnabled || !paused || closed) return null
+    if (connectionState === false) return null
+    if (reflexState.active) return null
+    const danger = reflexDanger(status)
+    if (!danger) return null
+    reflexState.times = reflexState.times.filter((time) => at - time < 60_000)
+    if (reflexState.times.length >= reflexMaxPerMinute) {
+      if (!reflexState.lastSuppressedAt || at - reflexState.lastSuppressedAt >= alertWindowMs) {
+        reflexState.lastSuppressedAt = at
+        reflexState.suppressedCount = (reflexState.suppressedCount ?? 0) + 1
+        push('reflex_suppressed', { reason: danger.reason, count: reflexState.times.length, windowMs: 60_000, maxPerMinute: reflexMaxPerMinute })
+      }
+      return null
+    }
+    reflexState.times.push(at)
+    reflexState.count = reflexState.times.length
+    reflexState.active = true
+    reflexState.lastAt = at
+    reflexState.lastReason = danger.reason
+    const started = stamp()
+    const emergencyFn = typeof adapter.emergency === 'function' ? adapter.emergency : null
+    if (!emergencyFn) { reflexState.active = false; return null }
+    let timer = null
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), Math.max(500, Number(reflexMaxDurationMs) || REFLEX_MAX_DURATION_MS))
+      if (typeof timer.unref === 'function') timer.unref()
+    })
+    Promise.race([
+      Promise.resolve().then(() => emergencyFn(danger.reason)).catch((error) => ({ error: String(error?.message ?? error) })),
+      timeout,
+    ]).then((result) => {
+      if (timer) clearTimeout(timer)
+      const durationMs = stamp() - started
+      reflexState.active = false
+      reflexState.lastDurationMs = durationMs
+      reflexState.lastTimedOut = result?.timedOut === true
+      reflexState.lastAction = result?.action ?? (result?.error ? 'error' : (result?.ok === false ? 'offline' : 'no-op'))
+      const event = push('reflex', {
+        reason: danger.reason,
+        danger,
+        action: reflexState.lastAction,
+        durationMs,
+        timedOut: reflexState.lastTimedOut,
+        windowCount: reflexState.times.length,
+        error: result?.error ?? null,
+      })
+      reflexState.lastEventSeq = event.seq
+    }).catch(() => { reflexState.active = false })
+    return danger
+  }
+
   function watchdogTick(at = stamp()) {
     if (closed) return { ticks: watchdogStats.ticks }
     watchdogStats.ticks += 1
@@ -606,6 +815,9 @@ export function createBody({
     checkDangerBlocks(status)
     checkConnectionStale(status)
     checkMovementStall(status, at)
+    // 暂停期的安全反射（方案 B）与 alarm 补投：pause 不冻结保命动作，也不静默危险。
+    checkReflex(status, at)
+    retryPendingAlarms(at)
     if (heartbeat.due(at)) {
       const payload = {
         at,
@@ -669,9 +881,25 @@ export function createBody({
     if (kind === 'reconnect_exhausted') return handleReconnectExhausted(data)
     const event = push(kind, data)
     if (kind === 'spawn') {
+      // E7：spawn 日志（位置/维度/来源），排查“出生点在哪、是否安全、重连了几次”。
+      spawnLog.push({
+        at: stamp(),
+        position: data.position ?? null,
+        dimension: data.dimension ?? null,
+        source: data.source ?? null,
+        safe: data.safe ?? null,
+      })
+      while (spawnLog.length > 20) spawnLog.shift()
       // 首次连接/重连后的第一次 spawn：状态栏不许假在线，也不许假离线。
       if (connectionState === false) handleReconnected({ source: 'spawn' })
       else { connectionState = true; everOnline = true; offlineEpisode = false; offlineReason = null }
+    } else if (kind === 'spawn_safe' || kind === 'spawn_unsafe') {
+      const last = spawnLog.at(-1)
+      if (last) {
+        last.safe = kind === 'spawn_safe'
+        last.safety = { position: data.position ?? last.position, feet: data.feet ?? null, head: data.head ?? null, below: data.below ?? null, threats: Array.isArray(data.threats) ? data.threats.slice(0, 4) : null, dangerBlocks: Array.isArray(data.dangerBlocks) ? data.dangerBlocks.slice(0, 4) : null }
+      }
+      if (kind === 'spawn_unsafe') safetyStop('spawn-unsafe')
     } else if (kind === 'health') {
       checkHealth(data.health, data.food)
     } else if (kind === 'death') {
@@ -701,7 +929,7 @@ export function createBody({
     if (!Array.isArray(steps) || !steps.length) throw httpError('do 需要非空 steps', 400)
     // 单飞锁：长 op（mine/goto/dig/place/chest/...）执行期间不接第二个长 plan。
     // 背景：mc-link 120s 超时后仍会再发，旧 body 无互斥 → 两个长 op 并发争 pathfinder/dig。
-    const NONBLOCKING = new Set(['task', 'cancel', 'resume', 'events', 'tasks', 'say', 'look', 'inventory', 'scan', 'map'])
+    const NONBLOCKING = new Set(['task', 'cancel', 'stop', 'resume', 'events', 'tasks', 'say', 'look', 'inventory', 'scan', 'map'])
     const heavy = steps.some((step) => !NONBLOCKING.has(String(step?.op ?? '')))
     if (heavy && activeDo) {
       throw httpError(`上一个 do 动作还在执行（${activeDo.ops.join('/')}，已 ${Math.round((stamp() - activeDo.at) / 1000)}s）；先 mcb_status / tasks 查状态，长任务请用 {"op":"task"} 提交；不要并发发长动作`, 409)
@@ -721,6 +949,11 @@ export function createBody({
           if (!kind) throw httpError('task op 需要 kind（如 kind:"mine"）', 400)
           const task = createTask({ ...step, kind, params: taskParams })
           return { ok: true, results, task }
+        }
+        if (op === 'stop') {
+          // mcb_stop 的 body 行为：cancel+反射+报告；暂停中也可直接调用，不需要先 resume。
+          results.push({ index, op, result: stopAll(step.reason ?? step.params?.reason ?? 'user-stop') })
+          continue
         }
         if (op === 'cancel') { results.push({ index, op, result: cancelTask(step.taskId, step.reason) }); continue }
         if (op === 'resume') {
@@ -815,6 +1048,14 @@ export function createBody({
     if (connectionState === false) connected = false
     else if (adapterState.connected === undefined) connected = connectionState
     else connected = Boolean(adapterState.connected)
+    // E6：join 之后“现在能不能玩”的布尔 + 阻塞原因（给 mc-link 直接展示/判断）。
+    const playableBlockers = []
+    if (connected !== true) playableBlockers.push('offline')
+    if (paused) playableBlockers.push(`paused:${pausedReason ?? 'safety'}`)
+    if (adapterState?.spawnSafety?.unsafe) playableBlockers.push('spawn-unsafe')
+    if (adapterState?.reconnecting) playableBlockers.push('reconnecting')
+    if (Number(adapterState?.health) <= 0) playableBlockers.push('dead')
+    const reflex = reflexView()
     return {
       ok: true,
       version: 'mc-body/v1',
@@ -824,20 +1065,40 @@ export function createBody({
       online: connected,
       paused,
       pausedReason,
+      playable: { ok: playableBlockers.length === 0, blockers: playableBlockers },
       safety: {
         paused,
         reason: pausedReason,
         offline: connected === false,
         offlineReason,
         everOnline,
-        // 说清语义：paused 不是“冻结世界”，只是不接任务/中断当前任务。
+        bodyOnline: connected === true,
+        // 说清语义：paused 不是“冻结世界”，只是不接任务/中断当前任务；方案 B：反射继续。
         note: paused
-          ? 'paused = 停止接任务并中断当前任务；物理世界仍在（会掉落/受伤/被推），可 cancel/tasks/look 等安全 op，恢复用 /v1/safety/resume；暂停超时会 idle_disconnect'
+          ? `paused = 停任务/停控制，但身体仍在世界（会掉落/受伤/被推）；安全反射${reflexEnabled ? '开启' : '关闭'}（≤${reflexMaxDurationMs / 1000}s/次、≤${reflexMaxPerMinute} 次/分），可 cancel/tasks/look/stop 等安全 op；恢复用 /v1/safety/resume，暂停超时会 idle_disconnect`
           : null,
+        reflex,
+        lastReflex: reflexState.lastAt ? {
+          at: reflexState.lastAt,
+          reason: reflexState.lastReason,
+          action: reflexState.lastAction,
+          durationMs: reflexState.lastDurationMs,
+          timedOut: reflexState.lastTimedOut,
+          eventSeq: reflexState.lastEventSeq,
+        } : null,
+        alarms: {
+          delivered: alarmState.deliveredCount,
+          suppressed: alarmState.suppressedCount,
+          redelivered: alarmState.redeliveredCount,
+          pending: alarmState.pending.size,
+          lastAt: alarmState.lastAt,
+        },
+        lastSafetyStopAt,
       },
       task: taskView(current),
       queue: queue.map(taskView),
       pausedTasks: [...tasks.values()].filter((task) => task.state === 'paused').map(taskView),
+      spawnLog: spawnLog.slice(-10),
       eventsSeq: seq,
       reconnect: adapterState.reconnect ?? null,
       watchdog: watchdogSummary(),
@@ -861,7 +1122,9 @@ export function createBody({
 
   return {
     start, stop, status, eventsSince, createTask, getTask, listTasks, cancelTask, resumeTask,
-    safetyStop, resume, ingest, inspect, doPlan, chat, push, watchdogTick, shutdownRequest,
+    safetyStop, stopAll, resume, ingest, inspect, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
 
