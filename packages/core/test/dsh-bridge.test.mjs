@@ -14,7 +14,7 @@ import {
 import { createDshBridge } from '../../dsh-icl/src/bridge.mjs'
 import { createIclPlugin } from '../../dsh-icl/src/plugin.mjs'
 import { bootstrapHost } from '../../dsh-icl/src/bootstrap.mjs'
-import { DEFAULT_PLUGINS, normalizeConfig } from '../../dsh-icl/src/config.mjs'
+import { DEFAULT_PLUGINS, normalizeConfig, matchToolAllowlist } from '../../dsh-icl/src/config.mjs'
 import * as memory from '../../plugins/memory/src/index.mjs'
 import * as recall from '../../plugins/recall/src/index.mjs'
 import * as note from '../../plugins/note/src/index.mjs'
@@ -999,4 +999,82 @@ test('装配：默认插件清单全部启用，且工具面齐全', async () =>
     assert.ok(names.includes(name), `缺少工具 ${name}`)
   }
   for (const id of [...out.enabled].reverse()) { try { host.disable(id) } catch { /* ignore */ } }
+})
+
+test('工具白名单：MC 场景只注册名单内工具（支持 mcb_* 前缀）', async () => {
+  const root = tempRoot('allowlist')
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(
+    { id: 'fake-tools', version: '0.0.1', entry: './x.mjs', tools: ['mcb_do', 'mcb_status', 'album_list', 'time_status'] },
+    {
+      apply(pluginCtx) {
+        for (const name of ['mcb_do', 'mcb_status', 'album_list', 'time_status']) {
+          pluginCtx.tools.register({ name, summary: 'x', parameters: { type: 'object', properties: {} }, async execute() { return 'ok' } })
+        }
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-tools')
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), toolAllowlist: ['mcb_*', 'time_status'] } })
+  bridge.start()
+  try {
+    assert.deepEqual([...ctx.tools_.keys()].sort(), ['mcb_do', 'mcb_status', 'time_status'])
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('matchToolAllowlist：空=全量；精确/前缀/通配', () => {
+  assert.equal(matchToolAllowlist('album_list', []), true)
+  assert.equal(matchToolAllowlist('mcb_do', ['mcb_*']), true)
+  assert.equal(matchToolAllowlist('mcb_do', ['mcb_status']), false)
+  assert.equal(matchToolAllowlist('time_status', ['time_*', 'mcb_*']), true)
+  assert.equal(matchToolAllowlist('anything', ['*']), true)
+})
+
+test('facts dirty：MC 事件不让快照变化，time 事件才刷新（≤1 条/轮的前提）', async () => {
+  const root = tempRoot('facts-dirty')
+  const host = createHost({ log: () => {} })
+  let counter = 0
+  host.registerPlugin(
+    { id: 'fake-facts', version: '0.0.1', entry: './x.mjs', tools: [] },
+    {
+      apply(pluginCtx) {
+        pluginCtx.prompt.section({ name: 'fake-facts', order: 880, text: () => `时间：${counter}` })
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-facts')
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  try {
+    const session = fakeSession('s1')
+    bridge.bindSession(session)
+    bridge.bindAgent(fakeAgent(session))
+    bridge.onEvent(session, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+    const facts = ctx.contexts_.get('icl:facts')
+    assert.ok(facts, '应注册 facts context')
+    const first = facts.text({})
+    const refresh1 = bridge.status().stats.factsRefreshes
+    counter = 1
+    host.services.delivery.push({ source: { plugin: 'mc' }, content: { text: '[MC] 掉血：20 → 19' } })
+    await bridge.tick()
+    const afterMc = facts.text({})
+    counter = 2
+    host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '[时间] 下一个安排变了' } })
+    await bridge.tick()
+    const afterTime = facts.text({})
+    const refresh2 = bridge.status().stats.factsRefreshes
+    assert.equal(afterMc, first, 'MC 事件不应改变 facts 快照（允许整轮陈旧，以 mcb_status 为准）')
+    assert.notEqual(afterTime, afterMc, 'time 事件应让 facts 刷新')
+    assert.equal(refresh2, refresh1 + 1, '只应多刷新一次')
+  } finally {
+    bridge.dispose()
+  }
 })

@@ -15,6 +15,27 @@ function readText(file, fallback = '') {
   try { return fs.readFileSync(file, 'utf8') } catch { return fallback }
 }
 
+/**
+ * 工具白名单匹配（MC 场景收敛工具面用）：
+ *   · 精确名：`mcb_status` / `time_status`
+ *   · 前缀通配：`mcb_*`（只允许末尾一个 `*`）
+ *   · 空/null = 不过滤（默认全量）
+ * 只影响 bridge 向 DSH 注册哪些 ICL 工具；DSH 原生工具（tool-todo 等）不在此列。
+ */
+export function matchToolAllowlist(name, allowlist = []) {
+  const tool = String(name ?? '')
+  if (!Array.isArray(allowlist) || allowlist.length === 0) return true
+  for (const raw of allowlist) {
+    const pattern = String(raw ?? '').trim()
+    if (!pattern) continue
+    if (pattern === '*') return true
+    if (pattern.endsWith('*')) {
+      if (tool.startsWith(pattern.slice(0, -1))) return true
+    } else if (tool === pattern) return true
+  }
+  return false
+}
+
 function readProviders(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -76,6 +97,18 @@ export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = 
     sessionId: raw.sessionId == null ? null : String(raw.sessionId),
     mcBaseUrl: raw.mcBaseUrl == null ? null : String(raw.mcBaseUrl),
     plugins: Array.isArray(raw.plugins) ? raw.plugins.map(String) : [...DEFAULT_PLUGINS],
+    /**
+     * MC 场景工具白名单（P1 复杂度收敛，用户/lead 批准）：只注册名单内的 ICL 工具。
+     * 支持精确名与 `mcb_*` 前缀；空数组 = 全量（产品默认，不改产品）。
+     * 只影响 DSH 注册面，不改变 host.surface/插件本身。
+     */
+    toolAllowlist: Array.isArray(raw.toolAllowlist) ? raw.toolAllowlist.map(String) : [],
+    /**
+     * 哪些插件投递的消息会触发 facts 快照 dirty（默认 time/focus：时间/focus 变化必须下一步可见）。
+     * MC 环境事实按 CACHE-MODEL §7.7 豁免（允许整轮陈旧，以 mcb_status 为准）；
+     * E2 实测每轮 2.5 条 runtime-context/91k 字符主要来自把每条 MC 事件都当 dirty——收窄后应回到 ≤1 条/轮。
+     */
+    factsDirtyPlugins: Array.isArray(raw.factsDirtyPlugins) ? raw.factsDirtyPlugins.map(String) : ['time', 'focus'],
     /** 按插件 id 覆盖 configFor 的默认值（部署相关，不写进代码）。 */
     pluginConfig: raw.pluginConfig && typeof raw.pluginConfig === 'object' ? { ...raw.pluginConfig } : {},
     tickMs: Math.max(0, Number(raw.tickMs ?? 500)),

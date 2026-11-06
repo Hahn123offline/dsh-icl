@@ -52,3 +52,13 @@ test('产品 preset 允许暂缓的插件有明确白名单（album/video 等用
   assert.match(videoDoc, /产品 preset/, 'VIDEO-EYES.md 要写清产品 preset 状态')
   assert.match(videoDoc, /待(用户)?批准/, 'VIDEO-EYES.md 要写清 video 产品化等批准')
 })
+
+test('MC lab preset 配了工具白名单（复杂度收敛），产品 preset 未配', () => {
+  const lab = read('packages/dsh-icl/presets/lab.patch.yml')
+  const prod = read('packages/dsh-icl/presets/icl.patch.yml')
+  assert.match(lab, /toolAllowlist:/, 'icl-mc-lab 应有 toolAllowlist')
+  assert.match(lab, /'mcb_\*'/, '白名单应含 mcb_*')
+  assert.match(lab, /time_status/, '白名单应含 time_status')
+  assert.match(lab, /remember/, '白名单应含 remember/recall')
+  assert.doesNotMatch(prod, /toolAllowlist:/, '产品 preset 不得带 lab 专用白名单')
+})

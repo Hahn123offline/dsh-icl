@@ -167,3 +167,28 @@ $run = "C:\DSH\icl-wt\mc-lab\.state\lab\e2-20261106-smoke"
 ```
 
 > 附：本审计**不改代码**；建议的 P0 里 attack / pause 属 mc-body/mc-link owner，工具子集/steer/上下文属 mc-lab 与我（dsh-icl/bridge）可做；`recall=0` 结论与 `MEMORY-BLOCK-QUALITY §6.3` 一致（场景未触发）。
+
+## 7. P1/P2 落地（dsh-icl/bridge/lab tooling，2026-11-06）
+
+> 目标：削 runtime-context 重复与工具面；**不改静态 system/facts 契约**（`icl:core`/`icl:facts` 布局、order 850 不变；产品默认不变）。
+
+| # | 改动 | 位置 | 预期/实测（本地可算） |
+|---|---|---|---|
+| 1 | **facts dirty 收窄**：只有 `factsDirtyPlugins`（默认 `time/focus`）来源的投递才让 facts 快照 dirty；MC 事件不再每次触发新快照（CACHE-MODEL §7.7 豁免） | `packages/dsh-icl/src/bridge.mjs` tick；`config.mjs` 新增 `factsDirtyPlugins` | E2 S1：134 条/91k 字符（2.5 条/轮）→ 预计 **~54–60 条/41k**（≈1 条/轮）；总投递 130k→**~80k** |
+| 2 | **MC 场景工具白名单**：bridge `syncTools` 按 `toolAllowlist`（精确名/`前缀*`）过滤；只在 `icl-mc-lab` preset 配（产品 preset 不配） | `bridge.mjs` + `config.mjs`(`matchToolAllowlist`) + `presets/lab.patch.yml` | 本地装配：ICL 工具 **50→23**、schema **30,088→16,865 字符（-13.2k）**；lab 总工具预计 **48→32**（23 ICL+8 原生+todo 1） |
+| 3 | **lab 可调 reasoningEffort**：`selectModel` 支持可选 `reasoningEffort`；`lab.mjs up --reasoning-effort medium` 生效并写入 run meta（产品默认不动） | `tools/lab-lib.mjs`、`tools/lab.mjs` | S2 可直接 A/B；本轮不预设默认值 |
+
+**白名单内容**（`icl-mc-lab`）：`mcb_*`、`time_status`、`time_arrange`、`remember`、`recall`、`forget`、`memo`、`memo_append`、`memo_commit`、`memos`。
+**测试**：`dsh-bridge.test` +3（allowlist 精确/前缀/通配、bridge 只注册白名单、facts dirty 只由 time 触发）；`preset-plugins.test` +1（MC lab 有白名单、产品没有）；除已知 hang 的 `mc-link.test` 外 **670/670**。
+
+**S2 可核对的预期**（对照 S1）：
+| 指标 | S1 | S2 预期 |
+|---|---|---|
+| runtime-context 条数 / 字符 | 134 / 90,977 | ~54–60 / ~41k |
+| 投递消息总字符 | 130,253 | ~80k |
+| MC lab 工具数 / ICL schema 字符 | 48 / 30,088 | 32 / 16,865 |
+| facts 快照频率 | 2.5/轮 | ≤1.1/轮 |
+| system/facts 布局 | 1 append/0 replace | 不变（cache 复核） |
+
+**未做（需 lab 验证）**：DSH 自带 runtime-context 样板（file policy/approval，约 260 字符/快照）能否用 `includeRuntimeContext:false` 去掉，同时让 `icl:facts` 以 `required:true` 存活——DSH 0.2 的 required 语义未在本机可验，先不动；若 cache 在 S2 确认可安全关闭，可再省 ~14k 字符。
+**与 cache 对表**：allowlist 只影响 `icl-mc-lab`（cache 的 sanctioned run 是 icl-lab，41 工具基线不变）；facts dirty 收窄只影响有 MC 事件的 run；两项都不改 system 文本与 facts 内容语义。

@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { TEXT_OUTPUT_SCHEMA, toDshToolDefinition, toDshPromptSection, toDshUserMessage } from '../../core/src/dsh-contract.mjs'
+import { matchToolAllowlist } from './config.mjs'
 
 const RAW_ID = 'dsh-session'
 const CTX_PREFIX = 'icl-ctx-'
@@ -150,6 +151,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   function syncTools() {
     const want = new Map(host.services.surface.list().map((def) => [def.name, def]))
+    // MC 场景工具白名单（preset 配置）：只注册名单内的 ICL 工具；空数组=全量（产品默认）。
+    if (Array.isArray(config.toolAllowlist) && config.toolAllowlist.length) {
+      for (const name of [...want.keys()]) if (!matchToolAllowlist(name, config.toolAllowlist)) want.delete(name)
+    }
     const added = []
     const removed = []
     for (const [name, entry] of [...state.tools]) {
@@ -550,7 +555,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
           }
           host.services.delivery.ack(batch.id)
           state.stats.delivered += 1
-          state.factsDirty = true // 事件类事实（time/focus 通知）→ 下一步刷新快照
+          // 只有"会改变 facts 文本"的事件源才标 dirty（默认 time/focus）。
+          // MC 事件（掉血/走路/任务进度）不改变 facts 语义——MC 环境事实按 CACHE-MODEL §7.7 允许整轮陈旧，
+          // 以 mcb_status 为准；E2 实测把每条 MC 事件都当 dirty 会每轮追加 2.5 条 ~700 字符的 runtime-context。
+          const dirtyPlugins = Array.isArray(config.factsDirtyPlugins) && config.factsDirtyPlugins.length ? config.factsDirtyPlugins : ['time', 'focus']
+          // drain 出来的 batch 没有顶层 source；来源在 entries[].source（同一 batch 按 plugin 分组）。
+          const sourcePlugin = String(batch.source?.plugin ?? batch.entries?.[0]?.source?.plugin ?? batch.entries?.[0]?.source?.id ?? '')
+          if (dirtyPlugins.includes('*') || dirtyPlugins.includes(sourcePlugin)) state.factsDirty = true
           sent += 1
         } catch (error) {
           host.services.delivery.nack(batch.id, error?.message ?? error)
