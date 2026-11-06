@@ -95,7 +95,7 @@ function snapshot() {
   const noteRows = rows.filter((row) => String(row.namespace) === 'event' && String(row.kind) === 'note')
   // dream-run 指标（三态：run:/fail:/skip: 行；见 MEMORY-BLOCK-QUALITY §3.0/§4）
   const dreamRows = rows.filter((row) => row.namespace === 'dream-run' && row.kind === 'run')
-  const dream = { runs: 0, jobs: {}, failures: 0, days: {}, failRows: [], skipRows: [] }
+  const dream = { runs: 0, jobs: {}, failures: 0, days: {}, failRows: [], skipRows: [], segmented: {}, degradedJobs: [] }
   for (const row of dreamRows) {
     const key = String(row.key ?? '')
     const job = /:(\w+)$/.exec(key)?.[1] ?? key
@@ -106,6 +106,12 @@ function snapshot() {
     dream.jobs[job][state] += 1
     if (state === 'failed') { dream.failures += 1; dream.jobs[job].errors.push(String(data.error ?? 'unknown').slice(0, 160)); dream.failRows.push({ job, at: new Date(Number(row.created_at)).toISOString(), error: String(data.error ?? '') }) }
     if (state === 'skipped') { dream.jobs[job].reasons.push(String(data.skipped ?? 'unknown')); dream.skipRows.push({ job, at: new Date(Number(row.created_at)).toISOString(), skipped: String(data.skipped ?? '') }) }
+    // segmented 与 degraded 分开（MISC §6 / lead 拍板）：day log 分段（parts>1）是预期行为，
+    // 不算 degraded；只有真截断（omittedLines>0 或 data.degraded=true）才记 degraded。
+    const segments = Number(data.parts ?? data.segments ?? 0)
+    if (segments > 1) dream.segmented[job] = segments
+    const truncated = Number(data.omittedLines ?? 0) > 0
+    if (data.degraded === true || truncated) dream.degradedJobs.push({ job, reason: truncated ? 'omitted-lines' : 'degraded-flag' })
     if (state === 'ran') { dream.runs += 1; dream.days[job] = data }
   }
   // consume 归"备忘回收"，不计入成块
@@ -156,6 +162,12 @@ function snapshot() {
   }
   const eagerEvents = events.filter((event) => JSON.stringify(event.data ?? {}).includes('<icl-context>'))
   const eagerChars = eagerEvents.reduce((sum, event) => sum + JSON.stringify(event.data ?? {}).length, 0)
+  // 工具面快照（misc/lead 建议）：首个 request/header 的 tools 数量 + 名字 hash；没有则不写。
+  const headerEvent = events.find((event) => event.type === 'request/header')
+  const toolNames = Array.isArray(headerEvent?.data?.header?.tools) ? headerEvent.data.header.tools.map((tool) => String(tool?.name ?? '')).filter(Boolean) : []
+  const tools = toolNames.length
+    ? { count: toolNames.length, hash: sha1(toolNames.slice().sort().join('\n')), hasMcbStop: toolNames.includes('mcb_stop'), hasRemember: toolNames.includes('remember'), hasRecall: toolNames.includes('recall'), album: toolNames.filter((name) => name.startsWith('album_')).length }
+    : null
   // latency：remember 调用 → 之后首个 memory 行 created_at（ms）；dream consume → 之后首个非 dream-run 行
   const latencies = []
   for (const call of rememberCalls) {
@@ -202,10 +214,11 @@ function snapshot() {
       rawMaterial: { items: rawRows.length, chars: rawRows.reduce((sum, row) => sum + String(row.text ?? '').length, 0) },
       pendingNotes: noteRows.length,
     },
-    dream: { runs: dream.runs, jobs: dream.jobs, failures: dream.failures, days: dream.days, dayLogRows: dayLog.length, failRows: dream.failRows, skipRows: dream.skipRows, memoRecycle, expectedJobs: dream.expectedJobs, missing: dream.missing },
+    dream: { runs: dream.runs, jobs: dream.jobs, failures: dream.failures, days: dream.days, dayLogRows: dayLog.length, failRows: dream.failRows, skipRows: dream.skipRows, memoRecycle, expectedJobs: dream.expectedJobs, missing: dream.missing, segmented: dream.segmented, degradedJobs: dream.degradedJobs },
     slots,
     recall: { calls: recallCalls.length, empty: emptyRecall, emptyRate: recallEmptyRate, avgResultChars: recallCalls.length ? Math.round(recallChars / recallCalls.length) : null, noiseHits, remember: rememberCalls.length, forget: forgetCalls.length, samples: recallSamples },
-    eager: { injections: eagerEvents.length, chars: eagerChars },
+    eager: { injections: eagerEvents.length, chars: eagerChars, note: '累计快照（含 dream 进行中的注入；睡眠完成后为当前值）' },
+    tools,
     latency: { samples: latencies.length, p50: percentile(latencies, 50), p95: percentile(latencies, 95) },
     events: { total: events.length, bodyRows: bodyRows.length, memoryEventBlocks: blockRows.filter((row) => String(row.namespace) === 'event').length, memoryEventNotes: noteRows.length, dupSeq },
     anomalies,
@@ -219,13 +232,16 @@ function renderReport(snap) {
   lines.push(`| 原料 day/log（不计入块大小） | ${snap.mem.rawMaterial.items} 条 / ${snap.mem.rawMaterial.chars} 字符 |`)
   lines.push(`| dream job 三态 ran/skipped/failed | ${JSON.stringify(snap.dream.jobs)} |`)
   lines.push(`| dream failures / fail 行 / skip 行 | ${snap.dream.failures} / ${snap.dream.failRows.length} / ${snap.dream.skipRows.length} |`)
+  lines.push(`| dream segmented（parts>1，非 degraded） | ${JSON.stringify(snap.dream.segmented ?? {})} |`)
+  lines.push(`| dream degraded（真截断/显式 degraded） | ${JSON.stringify(snap.dream.degradedJobs ?? [])} |`)
   lines.push(`| dream 缺行（既无 ran 也无 skip/fail） | ${JSON.stringify(snap.dream.missing ?? [])} |`)
   lines.push(`| 备忘回收 consume（不计块） | written=${snap.dream.memoRecycle.written} archived=${snap.dream.memoRecycle.archived} |`)
   lines.push(`| 槽健康 slots.unmatched / embedded | ${JSON.stringify(snap.slots.unmatched)} / ${snap.slots.embedded ?? 'n/a'}（${snap.slots.source}） |`)
   lines.push(`| recall 调用/空结果率 | ${snap.recall.calls} / ${snap.recall.emptyRate ?? 'n/a'} |`)
   lines.push(`| recall 平均字符 / 噪声命中 | ${snap.recall.avgResultChars ?? 'n/a'} / ${snap.recall.noiseHits} |`)
   lines.push(`| remember / forget | ${snap.recall.remember} / ${snap.recall.forget} |`)
-  lines.push(`| eager-recall 注入 | ${snap.eager.injections} 次 / ${snap.eager.chars} 字符 |`)
+  lines.push(`| eager-recall 注入（累计快照） | ${snap.eager.injections} 次 / ${snap.eager.chars} 字符 |`)
+  lines.push(`| 工具面 tools（首请求） | count=${snap.tools?.count ?? 'n/a'} hash=${snap.tools?.hash ?? 'n/a'} · mcb_stop=${snap.tools?.hasMcbStop ?? 'n/a'} · remember=${snap.tools?.hasRemember ?? 'n/a'} · album=${snap.tools?.album ?? 'n/a'} |`)
   lines.push(`| 记忆重复率 | ${snap.mem.dupRate ?? 'n/a'}（${snap.mem.dupRows} 行） |`)
   lines.push(`| 事件→记忆延迟 p50/p95 | ${snap.latency.p50 ?? 'n/a'}ms / ${snap.latency.p95 ?? 'n/a'}ms（样本 ${snap.latency.samples}） |`)
   lines.push(`| 事件 total/body/event block/event note/dupSeq | ${snap.events.total}/${snap.events.bodyRows}/${snap.events.memoryEventBlocks}/${snap.events.memoryEventNotes}/${snap.events.dupSeq} |`)
