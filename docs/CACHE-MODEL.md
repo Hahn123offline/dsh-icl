@@ -572,6 +572,17 @@ node tools/cache-probe.mjs diff --run cache-bf2
    - **自检**：事件流里 grep `image/offload`（有 → 该点之后一次 prefill 变大属预期）；`tools/cache-longrun.mjs --events`
      输出里可加该计数（下期补）。
 
+10. **DSH runtime-context 整体抑制（`includeRuntimeContext:false`）的可行性（只读结论，2026-11-06）**：
+    有提议用 DSH 配置 `includeRuntimeContext:false` 去掉 file policy/approval 样板、只留 `icl:facts`。**结论：本机 DSH 0.2 不可行**——
+    `dsh-system-prompt` 只有**全局** `suppressRuntimeContext()`：一旦 `includeRuntimeContext:false`，`assemble()` 把 `contexts` 置空，
+    `icl:facts` 会一起消失；context 注册项里**没有** `required`/per-context 豁免机制（lib `dsh-system-prompt/lib/index.js:313–360`）。
+    - **实测样板大小**（sanctioned cloud 基线快照）：icl-lab 快照 537 字符 = sandbox 271 + approval 153 + `icl:facts` 23 + DSH 包装 ≈90；
+      icl-mc-lab 590 = 274 + 153 + 73 + 包装。即 **DSH 样板 ≈514 字符/快照（≈170 tok）**，facts 本体只有 23–73 字符。
+    - **量级**：省的是"每条快照的样板 + 历史里累积的旧快照"；E2 类长跑 ~27 条快照 ≈ **累计 ~14k 字符**（misc 的估算成立），但不是"每请求省 14k"。
+    - **要想既留 facts 又去样板**，唯一可行路径是：抑制 DSH runtime-context，把 facts 改走 ICL `agent/pre-step` 的 `<icl-context>`（`plugin:icl`，append-only），
+      预计每次事实变化省 ~480 字符，但会改变 facts 的通道/GUI 呈现（从 runtime 快照变成插件通知），需要 S2 lab 验证。
+    - **当前决定**：hold（misc/lead 冻结期不动 bridge facts 布局）；若产品化要省这 ~14k 字符/长夜，再按上面路径开 S2 实验。
+
 ## 8. 事实层字节基线（与 misc/lead 对表）
 
 | 项 | 数值 | 来源 |
