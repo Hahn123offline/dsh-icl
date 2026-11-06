@@ -129,3 +129,29 @@ node tools/mc-quality.mjs --run e2-<date> --interval 60
   6. latency 指标：turn-gap p50/p95/max + 来源分类（awake-tick/supervisor/external/idle）；wait/tasks 次数；工具耗时 p50/p95 + >60s 告警。
 - **gate**：起跑前写 `.state/lab/E2-GATE.json`（phase=`soak`，userNotifiedAt=通知时间，approvedBy=`user-standing-approval-2026-11-06`）；起跑即刻发 lead `started`（含 54838 地址），由 lead 转用户。
 - **资源**：54838（survival）+ lab 57101 + body 54902；结束停服/关 lab/释放锁；coder390 保持不动（S2 主模型 cloud，dream 才短暂用 8088）。
+
+## 10. MC 长跑检测机制（冻结后设计，不跑测试）
+
+> 2026-11-06 用户决定暂停 MC 长跑；先固化验收清单/指标，再恢复。参考项目：Voyager（技能库/自动课程）、MineAnyBuild（分层建造/蓝图）、APT（蓝图规划/长程任务）、Mindcraft（agent 架构/工具接口）。
+
+### 10.1 验收清单（先固定，不看实现）
+- **生存**：deaths/hour ≤ 阈值（建议 ≤2/h；连续 3 起同因死亡 = FAIL）；夜间/低血必须进入庇护所或封洞；auto_defense 必须 cancel 非 combat 任务并有事件。
+- **建造**：3x3 庇护所任务完成率 ≥80%；attempts/completion ≤2；必须产出 verify/entryOk/home_set；失败必须报缺哪一面/缺多少材料。
+- **任务效率**：task_success_rate；path_stuck/task ≤1；repeat-identical-tool-call 连续 ≤2；单任务重试 ≤2。
+- **对话**：MC 聊天消息/小时 ≤ 阈值（建议 ≤6/h）；同一 say 文本/小时 ≤2；同一句重复 3 次 = FAIL（进度播报式刷屏）。
+- **延迟**：本地 step p95 记录实测（不追 cloud ≤3s）；turn-gap p95（immediate 模式 ≤2s，不含退避）；tool→assistant p95 ≤2s。
+- **记忆/睡眠**：dream 7 job 三态、recall 场景命中、wake briefing 完整；shelter/home 坐标写入记忆。
+
+### 10.2 长跑机制（先设计，后实现）
+1. **重复动作熔断（supervisor 侧）**：连续 N 次相同 tool+args → 强制换策略/停任务；按"单位时间相同调用数"而不是单 turn 错误计数。
+2. **聊天出口去重**：同一 say 文本 TTL 冷却（如 10min 内同句最多 1 次）；刷屏时抑制并记 anomaly，不阻断任务。
+3. **庇护所/材料诊断闭环**：needs-material 后模型必须消费 deficit/alternatives；否则 supervisor 注入一次"先 dig 土再 shelter"并冷却。
+4. **事件驱动而非轮询**：保留 immediate tick 但加 adaptive：有活跃 task/最近工具调用时 1s，空闲 30s。
+5. **验收驱动 agent**：每个场景（shelter/combat/recall）带机器可验 acceptance（verify/entryOk/home、任务终态字段），不靠模型自述。
+6. **外部研究计划（1–2 天调研）**：Voyager 技能库/课程、MineAnyBuild 分层蓝图、APT 长程规划、Mindcraft agent 架构；产出对照表：技能表示/验收/失败恢复/长跑监控。
+
+### 10.3 研究问题
+- 技能库如何表示/检索/组合（Voyager）→ 映射到 mcb_do 宏 + shelter/combat task；
+- 分层建造如何做结构验收（MineAnyBuild）→ 映射到 mc-body building verify；
+- 长程任务如何分解与恢复（APT）→ 映射到 goal/时间安排/记忆；
+- agent 架构如何避免工具循环（Mindcraft）→ 重复熔断/冷却。

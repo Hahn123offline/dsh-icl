@@ -175,20 +175,20 @@ $run = "C:\DSH\icl-wt\mc-lab\.state\lab\e2-20261106-smoke"
 | # | 改动 | 位置 | 预期/实测（本地可算） |
 |---|---|---|---|
 | 1 | **facts dirty 收窄**：只有 `factsDirtyPlugins`（默认 `time/focus`）来源的投递才让 facts 快照 dirty；MC 事件不再每次触发新快照（CACHE-MODEL §7.7 豁免） | `packages/dsh-icl/src/bridge.mjs` tick；`config.mjs` 新增 `factsDirtyPlugins` | E2 S1：134 条/91k 字符（2.5 条/轮）→ 预计 **~54–60 条/41k**（≈1 条/轮）；总投递 130k→**~80k** |
-| 2 | **MC 场景工具白名单**：bridge `syncTools` 按 `toolAllowlist`（精确名/`前缀*`）过滤；只在 `icl-mc-lab` preset 配（产品 preset 不配） | `bridge.mjs` + `config.mjs`(`matchToolAllowlist`) + `presets/lab.patch.yml` | 本地装配：ICL 工具 **50→23**、schema **30,088→16,865 字符（-13.2k）**；lab 总工具预计 **48→32**（23 ICL+8 原生+todo 1） |
+| 2 | **MC 场景工具白名单**：bridge `syncTools` 按 `toolAllowlist`（精确名/`前缀*`）过滤；只在 `icl-mc-lab` preset 配（产品 preset 不配） | `bridge.mjs` + `config.mjs`(`matchToolAllowlist`) + `presets/lab.patch.yml` | 本地装配：ICL 工具 **50→23**、schema **30,088→16,865 字符（-13.2k）**。**cache sanctioned 实测（master `6d2c518`）**：icl-mc-lab **27 工具 / 21,459 字符 / `c91bce1e703b`**（`mcb_*` 17 个全在，含 snapshot/eyes）；icl-lab 无白名单 **54 / 39,350 / `c1df0e849a9f`**（新增 video 6 工具 + 原生工具段 + sim seed，静态上涨） |
 | 3 | **lab 可调 reasoningEffort**：`selectModel` 支持可选 `reasoningEffort`；`lab.mjs up --reasoning-effort medium` 生效并写入 run meta（产品默认不动） | `tools/lab-lib.mjs`、`tools/lab.mjs` | S2 可直接 A/B；本轮不预设默认值 |
 
 **白名单内容**（`icl-mc-lab`）：`mcb_*`、`time_status`、`time_arrange`、`remember`、`recall`、`forget`、`memo`、`memo_append`、`memo_commit`、`memos`。
-**测试**：`dsh-bridge.test` +3（allowlist 精确/前缀/通配、bridge 只注册白名单、facts dirty 只由 time 触发）；`preset-plugins.test` +1（MC lab 有白名单、产品没有）；除已知 hang 的 `mc-link.test` 外 **670/670**。
+**测试**：`dsh-bridge.test` +3（allowlist 精确/前缀/通配、bridge 只注册白名单、facts dirty 只由 time 触发）；`preset-plugins.test` +1（MC lab 有白名单、产品没有）。
 
-**S2 可核对的预期**（对照 S1）：
-| 指标 | S1 | S2 预期 |
-|---|---|---|
-| runtime-context 条数 / 字符 | 134 / 90,977 | ~54–60 / ~41k |
-| 投递消息总字符 | 130,253 | ~80k |
-| MC lab 工具数 / ICL schema 字符 | 48 / 30,088 | 32 / 16,865 |
-| facts 快照频率 | 2.5/轮 | ≤1.1/轮 |
-| system/facts 布局 | 1 append/0 replace | 不变（cache 复核） |
+**S1 → 实测（cache `6d2c518` sanctioned 双 preset）**：
+| 指标 | S1 | 实测 | 判定 |
+|---|---|---|---|
+| icl-mc-lab 工具数 / 字符 / hash | 48 / 30,088 / — | **27 / 21,459 / `c91bce1e703b`** | ✅ 白名单生效（mcb_* 17 含 snapshot/eyes；无 MC 服时未连接、无 image block） |
+| icl-lab 工具数 / 字符 / hash | 41 / 23,286 / `6a5eee138aab` | **54 / 39,350 / `c1df0e849a9f`** | ⚠ 白名单不作用于 icl-lab；静态体积上涨来自新挂载插件/video/原生工具段/sim seed，cache 已记 `CACHE-NIGHT §9.1/§9.2`，待 lead 单审"工具面预算" |
+| facts 快照频率 | 2.5/轮 | icl-lab **0.2/轮**、icl-mc-lab **0.33/轮** | ✅ `factsDirtyPlugins=['time','focus']` 生效；sections 仍含 `icl:facts` |
+| system/facts 布局 | 1 append/0 replace | 两者均 1 append/0 replace、`systemHasDynamicFacts=false`、同 run hash 不抖 | ✅ 红线未破 |
+| system 静态体积 | icl-lab 2,296 字符 | icl-lab **4,195 字符**（新插件/原生工具说明/sim seed） | ⚠ 固定前缀成本上涨，非 cache 回归；进了 lead 审计清单 |
 
 **未做（需 lab 验证）**：DSH 自带 runtime-context 样板（file policy/approval，约 260 字符/快照）能否用 `includeRuntimeContext:false` 去掉，同时让 `icl:facts` 以 `required:true` 存活——DSH 0.2 的 required 语义未在本机可验，先不动；若 cache 在 S2 确认可安全关闭，可再省 ~14k 字符。
 **与 cache 对表**：allowlist 只影响 `icl-mc-lab`（cache 的 sanctioned run 是 icl-lab，41 工具基线不变）；facts dirty 收窄只影响有 MC 事件的 run；两项都不改 system 文本与 facts 内容语义。
