@@ -15,6 +15,7 @@ import { closest as closestIn } from './closest.mjs'
 import { EXIT_REASON_TEXT, exitReasonText, sameReasonAdvice } from './exit.mjs'
 import { createBodySupervisor, describeExit } from './lifecycle.mjs'
 import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT } from './events.mjs'
+import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'mc-link'
 
@@ -35,6 +36,8 @@ const SKILLS = [
   { id: 'macro', title: '宏操作总览', when: () => false, summary: '8 个宏、参数、失败码、别逐方块' },
   { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
   { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
+  { id: 'combat', title: '战斗/逃跑/自动躲避', when: () => false, summary: '打/跑/守、低血中断与恢复宽限' },
+  { id: 'eyes', title: '眼睛：快照/截图', when: () => false, summary: '先 snapshot 后 screenshot；成本/quota/失败处理' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
   { id: 'endgame', title: '通关参考', when: () => false, summary: '长期主线' },
 ]
@@ -68,7 +71,7 @@ export function apply(ctx) {
   const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
   // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
   // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
-  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : path.join(iclPaths().stateDir, 'mc-live'))))
   const bodyEntry = String(raw.bodyEntry ?? process.env.ICL_MC_BODY_ENTRY ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)
@@ -718,6 +721,46 @@ export function apply(ctx) {
     return Number.isFinite(number) ? String(Math.round(number)) : '?'
   }
 
+  /** 结构化快照（/v1/eyes/snapshot）→ 紧凑可读文本 + JSON 尾巴。 */
+  function renderSnapshotText(body = {}) {
+    const snapshot = body?.snapshot ?? {}
+    const inventory = snapshot.inventory ?? {}
+    const counts = inventory.counts && typeof inventory.counts === 'object' ? inventory.counts : null
+    const topItems = counts
+      ? Object.entries(counts).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 8).map(([name, count]) => `${name}×${count}`).join('、')
+      : null
+    const held = snapshot.held ? `${snapshot.held.name ?? '?'}${snapshot.held.count != null ? `×${snapshot.held.count}` : ''}${snapshot.held.toolFor ? `（${snapshot.held.toolFor}）` : ''}` : '空'
+    const hotbar = Array.isArray(snapshot.hotbar) ? snapshot.hotbar.filter((slot) => slot?.name).map((slot) => `${slot.slot}:${slot.name}${slot.selected ? '★' : ''}`).slice(0, 9).join(' ') : ''
+    const entities = Array.isArray(snapshot.entities) ? snapshot.entities.slice(0, 8).map((row) => `${row.name ?? row.type ?? '?'}（${row.distance != null ? `${row.distance}m` : '?'}${row.position ? ` @ ${fmtPosition(row.position)}` : ''}）`).join('、') : ''
+    const hostiles = Array.isArray(snapshot.nearbyHostiles) ? (snapshot.nearbyHostiles.length ? snapshot.nearbyHostiles.slice(0, 6).map((row) => `${row.name ?? row.type ?? '?'}${row.distance != null ? `(${row.distance}m)` : ''}`).join('、') : '无') : (snapshot.nearbyHostiles ? JSON.stringify(snapshot.nearbyHostiles) : '无')
+    const time = snapshot.time && typeof snapshot.time === 'object' ? (snapshot.time.label ?? snapshot.time.clock ?? JSON.stringify(snapshot.time)) : (snapshot.time ?? '?')
+    const map = snapshot.map ? String(snapshot.map).slice(0, 1200) : '（无脚下方块图）'
+    const playable = snapshot.playable ? `可玩：${snapshot.playable.ok ? '是' : `否（${(snapshot.playable.blockers ?? []).join('、')}）`}` : null
+    const safety = snapshot.safety ?? {}
+    const safetyBits = [safety.paused ? `暂停中（${REASON_TEXT[safety.pausedReason] ?? safety.pausedReason ?? '安全'}）` : '未暂停']
+    if (safety.reflex) safetyBits.push(`反射${safety.reflex.enabled ? '开' : '关'}${safety.reflex.active ? '/进行中' : ''}`)
+    if (safety.alarms) safetyBits.push(`alarm 送达${safety.alarms.delivered ?? 0}/去重${safety.alarms.suppressed ?? 0}`)
+    const queue = Array.isArray(snapshot.queue) && snapshot.queue.length ? `；队列 ${snapshot.queue.map((row) => `${row.kind ?? ''} ${row.state ?? ''}`.trim()).join('、')}` : ''
+    const task = snapshot.task ? `任务：${snapshot.task.kind ?? ''} ${snapshot.task.state ?? ''}${queue}` : `任务：空闲${queue}`
+    const events = Array.isArray(snapshot.recentEvents) && snapshot.recentEvents.length ? `最近事件：${snapshot.recentEvents.slice(-5).map((row) => `#${row.seq} ${row.type}`).join(' / ')}` : '最近事件：无'
+    const lines = [
+      `场景快照（${body?.captureMs ?? '?'}ms；radius ${snapshot.radius ?? '?'}）：${snapshot.position ? fmtPosition(snapshot.position) : '未知'} · ${snapshot.dimension ?? '?'} · 时间 ${time}`,
+      `生命/饥饿/氧气：${fmtVital(snapshot.health)}/20，${fmtVital(snapshot.food)}/20，${snapshot.oxygen == null ? '?' : fmtVital(snapshot.oxygen)}${snapshot.sleeping ? '；正在睡' : ''}`,
+      `手持：${held}${hotbar ? `；快捷栏 ${hotbar}` : ''}`,
+      `背包：${inventory.used ?? '?'} 格${inventory.emptySlots != null ? `（空 ${inventory.emptySlots}）` : ''}${topItems ? `；${topItems}` : ''}`,
+      `脚下方块图：\n${map}`,
+      ...(snapshot.nearbyBlocks ? [`附近方块：${JSON.stringify(snapshot.nearbyBlocks).slice(0, 220)}`] : []),
+      ...(entities ? [`实体：${entities}`] : []),
+      `敌对：${hostiles}`,
+      `${task}${playable ? `；${playable}` : ''}`,
+      `安全：${safetyBits.join('；')}`,
+      events,
+    ]
+    const json = JSON.stringify(snapshot)
+    lines.push(`JSON（${json.length} 字）：${json.length > 3500 ? `${json.slice(0, 3500)}…（截断，完整在 body /v1/eyes/snapshot）` : json}`)
+    return lines.join('\n')
+  }
+
   /** body 的 look 文本里有原始小数（health 17.8333…）：用同一取整口径重写成"18/18/0"。 */
   function normalizeLookText(text, data = {}) {
     const lines = String(text ?? '').split('\n')
@@ -808,11 +851,39 @@ export function apply(ctx) {
       return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复'}`
     }
     if (op === 'cancel') return `[cancel] ${result?.id ?? row?.taskId ?? '?'} ${result?.state ?? ''}`.trim()
+    if (op === 'attack') {
+      // body 新字段：attacked/id/hit/killed/damage/healthBefore/healthAfter；真实受伤才 hit:true。
+      const target = result?.target && typeof result.target === 'object' ? result.target : null
+      const name = target?.name ?? result?.targetName ?? result?.attacked ?? (typeof result?.target === 'string' ? result.target : '目标')
+      const hit = result?.hit ?? result?.hitResult ?? result?.landed
+      const killed = result?.killed === true
+      const damage = result?.damage ?? result?.dealtDamage ?? result?.dealt
+      const before = result?.healthBefore ?? null
+      const after = result?.healthAfter ?? result?.targetHealth ?? result?.health ?? target?.health
+      const hp = before != null && after != null ? `（血 ${before}→${after}）` : after != null ? `，目标剩余 ${after} 血` : ''
+      if (hit === false || (result?.reason && damage == null && after == null)) {
+        return `[attack] 没打中 ${name}（${result?.reason ?? '目标已死/太远/被挡住'}）；先靠近/换目标，别原样重试。`
+      }
+      if (killed) {
+        return `[attack] 打死 ${name}${damage != null ? `（最后一击 ${damage} 伤害${before != null ? `，血 ${before}→0` : ''}）` : ''}；用 pickup 捡掉落。`
+      }
+      if (hit === true || damage != null || after != null) {
+        return `[attack] 命中 ${name}${damage != null ? `，造成 ${damage} 伤害` : ''}${hp}`
+      }
+      return `[attack] 打了 ${name}，但 body 没返回命中/伤害/目标血量——**无法确认命中**（不要当成打赢）；先 mcb_look 看目标还在不在，或等 body 升级返回字段。`
+    }
     if (op === 'pickup') {
       const picked = result?.picked ?? 0
       const names = Array.isArray(result?.items) ? result.items : []
       const left = result?.left
-      return `[pickup] 捡到 ${picked} 个${names.length ? `（${names.slice(0, 6).join('、')}${names.length > 6 ? '…' : ''}）` : ''}${left != null ? `；附近还剩 ${left} 个掉落` : ''}`
+      const partial = result?.partial === true ? `（partial：${result?.durationMs != null ? `${Math.round(Number(result.durationMs))}ms 内` : '超时前'}没捡完，可再 pickup 或改用 task）` : ''
+      return `[pickup] 捡到 ${picked} 个${names.length ? `（${names.slice(0, 6).join('、')}${names.length > 6 ? '…' : ''}）` : ''}${left != null ? `；附近还剩 ${left} 个掉落` : ''}${partial}`
+    }
+    if (op === 'craft') {
+      const crafted = result?.crafted ?? result?.item ?? '?'
+      const produced = result?.produced ?? result?.count ?? '?'
+      const batches = result?.batches?.length != null ? `（${result.batches.length}/${result.craftTimes ?? '?'} 批）` : ''
+      return `[craft] 做出 ${crafted}×${produced}${batches}${result?.partial ? '；partial：只完成部分，看背包再决定补做' : ''}（重的活走 task，别一次阻塞太久）`
     }
     if (op === 'say') return `[say] ${result?.ok === false ? '没发出去' : '已发送'}`
     if (result == null) return `[${op}] 已完成（没有返回内容）`
@@ -896,7 +967,12 @@ export function apply(ctx) {
       // wait 的 body 参数叫 ms；模型常写 durationMs，这里做一次容错，避免"等了 8 秒"实际只等 500ms。
       if (op === 'wait') {
         const params = raw.params && typeof raw.params === 'object' ? raw.params : {}
-        step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
+        const requested = Number(params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs)
+        const ms = Number.isFinite(requested) ? Math.max(0, Math.min(30_000, requested)) : (params.ms ?? 500)
+        step.params = { ...params, ms }
+        if (Number.isFinite(requested) && requested > 30_000) {
+          notes.push(`wait 单次最多 30s（你要了 ${Math.round(requested / 1000)}s，已截断）；长任务不要用 wait 轮询，完成/失败会作为事件回来`)
+        }
       }
       if (op === 'events' && raw.since == null) step.since = lastSeq
       // 坐标容错：params.pos / params.target 或顶层 pos/target，可以写 [x,y,z] 也可以写 {x,y,z}。
@@ -929,44 +1005,72 @@ export function apply(ctx) {
     return `mcb_do 在 ${Math.round(timeoutMs / 1000)}s 内没有返回：steps 里的长动作（goto/mine/explore 这类单步 op）可能还在跑。先 mcb_status 看位置/任务，或 {"steps":[{"op":"tasks"}]} 查台账；不要原样重试。长任务请用 {"op":"task"} 提交，立即拿 taskId。`
   }
 
+  /** 暂停原因 → 可操作建议（别只说"先 resume"：不处理原因会被再次暂停）。 */
+  const PAUSE_ADVICE = {
+    'low-health': '先吃/撤到安全点（eat 或 goto 掩体），血回上去再 resume；不处理会一直被暂停',
+    'health-drop': '先撤到安全点/吃，血稳住再 resume；继续硬拼会反复被暂停',
+    'low-oxygen': '先回水面/离开水下，氧气回来再 resume',
+    'spawn-unsafe': '先 goto 到安全位置，再 resume',
+    death: '复活后先 goto 安全点再 resume；旧任务不会续跑',
+    quarantine: '连续死亡隔离：先离开危险区/等隔离结束，再 resume',
+    disconnect: '等 body 重连；重连后身体仍是暂停态，要显式 resume',
+    stuck: '先 mcb_map 看地形、goto 脱困，再 resume',
+    'user-stop': '你让它停的：直接 {"op":"resume"} 继续，或 mcb_leave 离开；不会自动恢复',
+    emergency: '紧急规避中：先 mcb_look 确认脱离危险，再 resume',
+  }
+  function pauseAdvice(reason) {
+    return PAUSE_ADVICE[String(reason ?? '')] ?? '先看清原因/环境再 resume；只 resume 不处理原因会被再次暂停'
+  }
+
   async function runDo(steps, safety = null) {
     const { steps: normalized, notes } = normalizeSteps(steps)
     const noteText = notes.length ? `（参数处理：${notes.join('；')}）` : ''
     const timeoutMs = Number(raw.doTimeoutMs) || 120_000
-    try {
-      const body = await call('/v1/do', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ steps: normalized, safety }),
-        timeoutMs,
-      })
-      lastStatus = await refreshStatus() ?? lastStatus
-      const parts = (body.results ?? []).map(renderRow)
-      // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
-      if (normalized.some((step) => step.op === 'resume')) {
-        const cleared = setTimePausedMode(false)
-        if (cleared) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
+    // 逐步执行（而不是一次发整批）：一步失败也能把**已执行步骤的结果**带回来，
+    // 失败归因到具体第几步；task 语义保持"提交后立即返回、后面的步骤不执行"。
+    const parts = []
+    let task = null
+    let failed = null
+    for (let index = 0; index < normalized.length; index += 1) {
+      const step = normalized[index]
+      try {
+        const body = await call('/v1/do', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ steps: [step], safety }),
+          timeoutMs,
+        })
+        lastStatus = await refreshStatus() ?? lastStatus
+        for (const row of body.results ?? []) parts.push(renderRow({ ...row, index }))
+        // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
+        if (step.op === 'resume' && setTimePausedMode(false)) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
+        if (body.task) { task = body.task; break }
+      } catch (error) {
+        if (isTimeoutError(error) || error?.code === 'timeout') {
+          return { text: [...parts, doTimeoutText(timeoutMs)].filter(Boolean).join('\n\n') }
+        }
+        failed = { index, op: step.op, error }
+        break
       }
-      if (noteText) parts.push(noteText)
-      if (body.task) {
-        // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
-        // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
-        const head = `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。`
-        return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
-      }
-      return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
-    } catch (error) {
-      if (isTimeoutError(error) || error?.code === 'timeout') return { text: doTimeoutText(timeoutMs) }
-      const message = String(error?.message ?? error)
-      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；再补一句"下一步"。
-      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，任务被挂起就带 taskId，或 mcb_leave 收尾'
+    }
+    if (failed) {
+      const message = String(failed.error?.message ?? failed.error)
+      const pausedReason = (/暂停（([^）]+)）/.exec(message) ?? [])[1] ?? null
+      const hint = /暂停/.test(message) ? `；${pauseAdvice(pausedReason)}。暂停期间仍可用 look/inventory/map/scan/move/eat/cancel/tasks/events/resume/stop`
         : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
           : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
             : /队列已满|429|409|上一个 do 动作还在执行/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑；长动作一律用 {"op":"task"} 提交，别并发单步 op'
               : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
                 : ''
-      throw new Error(`${message}${hint}`)
+      const done = parts.length ? `\n\n已完成的前序步骤：\n${parts.join('\n\n')}` : '\n\n失败前没有已完成的步骤。'
+      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}${hint}${done}`)
     }
+    if (noteText) parts.push(noteText)
+    if (task) {
+      const head = `任务 ${task.id}（${task.kind}）已接受，状态 ${task.state}。完成/失败/中断会作为事件通知回来，**不要循环 mcb_status/tasks 查**（需要时看一眼即可）。`
+      return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+    }
+    return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
   }
 
   const tools = [
@@ -996,7 +1100,7 @@ export function apply(ctx) {
     {
       name: 'mcb_join',
       summary: '连接 MC 服务器：必要时启动 mc-body 进程，并等到真正连上；只负责连接，不建 focus/goal。',
-      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服唯一；默认 ICL）。成功返回服务器与连接状态，之后 mcb_status 复核。失败给可读原因：进程退出码 + body 日志、端口被占、服务器没开/端口错、同名 bot 被踢；失败不留半死进程，可再 join。想认真投入：连上后 focus_enter 带 activity:"mc"，再 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾 mcb_leave {cleanup:true}。',
+      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服唯一；默认 ICL）。成功返回服务器与连接状态，之后 mcb_status 复核。失败给可读原因（退出码/日志/端口/服务器/同名被踢）；可再 join。想认真投入：连上后 focus_enter 带 activity:"mc"，再 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾 mcb_leave {cleanup:true}。',
       when: ['被叫去玩，或她自己想玩', 'mcb_status 显示未连接、服务器已经开着'],
       avoid: ['body 已经连在另一台服务器：先 mcb_leave', '只想随便玩一小会儿：连上直接玩，不必建 focus/goal'],
       parameters: {
@@ -1029,7 +1133,7 @@ export function apply(ctx) {
     {
       name: 'mcb_leave',
       summary: '退出 MC：安全停止并结束本会话启动的 body；可选 cleanup 一并清 focus/goal。',
-      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部 body 只安全停止、不杀进程（返回里说明）。返回报告：安全停止是否成功、进程怎么结束、还挂着什么 focus/goal。默认只停 body；不想被持续叫醒带 cleanup：释放模型 focus、取消 MC 相关 time 目标（按 activity/主题/服务器别名识别）。幂等。离开世界=结束 body；只想停任务用 mcb_stop（暂停≠离开）。',
+      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部 body 只安全停止、不杀进程（返回里说明）。返回报告：安全停止是否成功、进程怎么结束、还挂着什么 focus/goal。默认只停 body；不想被持续叫醒带 cleanup：释放模型 focus、取消 MC 相关 time 目标。幂等。离开世界=结束 body；只想停任务用 mcb_stop（暂停≠离开）。',
       when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）', '收工：想同时清掉 focus 和 MC 持续目标'],
       avoid: ['只离开游戏但想保留持续目标：默认 leave 就行，别带 cleanup'],
       parameters: {
@@ -1116,9 +1220,64 @@ export function apply(ctx) {
       },
     },
     {
+      name: 'mcb_combat',
+      summary: '战斗宏：hunt 猎杀 / defend 防御 / flee 逃跑 / guard 守卫（自动选武器/走位/低血中断）。',
+      description: '一条 task 完成整场战斗，别逐次手动 attack。mode=hunt|defend|flee|guard；参数 target（默认 nearest_hostile；hunt 可 "chicken"/"zombie"/"nearest:villager"）、radius(16)、attackRange(3)、lostTargetMs(10s)、maxDurationMs（guard120s/flee30s/其他60s）、lowHealth(10)、maxHostiles(3)、creeperDistance(5)、safeDistance(24)。立即返回 taskId；progress 有 mode/state/target/targetHealth/distance/attacks/health/hostiles；可 {"op":"cancel"}。危机（低血/苦力怕近身/敌人过多）会先自动躲避再 task_failed(combat: reason)——按提示先吃/躲或改 flee；打死目标后用 pickup 捡掉落。',
+      when: ['要打怪/防守基地/从怪群逃跑/站岗', '多只敌人或持久战（单只补刀用 mcb_attack）'],
+      avoid: ['只想打一下面前一只：mcb_attack 更直接', '没武器/护甲：先 craft 或跑，别硬刚'],
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          mode: { type: 'string', description: 'hunt 猎杀 / defend 防御 / flee 逃跑 / guard 守卫。' },
+          target: { type: 'string', description: '目标：chicken/zombie/nearest/nearest_hostile/nearest:villager 等；默认 nearest_hostile。' },
+          radius: { type: 'number', description: '搜索半径（4–32，默认 16）。' },
+          attackRange: { type: 'number', description: '攻击距离（2–4，默认 3）。' },
+          lostTargetMs: { type: 'number', description: '目标丢失多久放弃（1–60s，默认 10s）。' },
+          maxDurationMs: { type: 'number', description: '整场战斗上限（5–300s；guard 120s/flee 30s/其他 60s）。' },
+          lowHealth: { type: 'number', description: '低血中断阈值（1–20，默认 10）。' },
+          maxHostiles: { type: 'number', description: '敌人超过多少中断（1–12，默认 3）。' },
+          creeperDistance: { type: 'number', description: '苦力怕多近算危险（2–12，默认 5）。' },
+          safeDistance: { type: 'number', description: 'flee 跑到多远算安全（8–48，默认 24）。' },
+        },
+        required: ['mode'],
+      },
+      async execute(args = {}) {
+        const mode = String(args.mode ?? '').trim()
+        if (!['hunt', 'defend', 'flee', 'guard'].includes(mode)) throw new Error(`mcb_combat 需要 mode：hunt/defend/flee/guard（收到 ${mode || '(空)'}）；单只补刀用 mcb_attack。`)
+        const params = {}
+        for (const key of ['target', 'radius', 'attackRange', 'lostTargetMs', 'maxDurationMs', 'lowHealth', 'maxHostiles', 'creeperDistance', 'safeDistance']) {
+          if (args[key] != null) params[key] = args[key]
+        }
+        return runDo([{ op: 'task', kind: mode, params }])
+      },
+    },
+    {
+      name: 'mcb_attack',
+      summary: '攻击单个目标（自动判定命中/伤害/击杀）；多只或持久战用 mcb_combat。',
+      description: 'target 支持 "chicken"/"zombie"/"nearest"/"nearest_hostile"/"nearest:villager"；range 默认 4.5（2–6）。返回 hit/damage/healthBefore→healthAfter/killed；真实受伤才 hit:true；太远/没打中会报错（先靠近，别原样重试）；killed:true 后用 pickup 捡掉落。只适合单只/补刀；多只、防守、逃跑用 mcb_combat {mode:"hunt|defend|flee|guard"}（自动选武器/走位/低血中断）。',
+      when: ['补刀/打面前一只', '想确认这一下有没有打中'],
+      avoid: ['多只敌人/持久战：用 mcb_combat，别手动循环 attack', '目标太远：先 goto 到 3-4 格内'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          target: { type: 'string', description: '目标：chicken/zombie/nearest/nearest_hostile/nearest:villager 等（掉落物/投射物会被 body 排除）。' },
+          range: { type: 'number', description: '攻击距离（2–6，默认 4.5）；太远会报错。' },
+        },
+        required: ['target'],
+      },
+      async execute({ target = null, range = null } = {}) {
+        if (!target) throw new Error('mcb_attack 需要 target（如 "chicken"/"nearest_hostile"）；多只敌人用 mcb_combat。')
+        const params = { target: String(target) }
+        if (range != null) params.range = Number(range)
+        return runDo([{ op: 'attack', params }])
+      },
+    },
+    {
       name: 'mcb_status',
       summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/重连/body 进程状态。只读。',
-      description: '返回多行事实。连接行以 body 顶层 connected 为准（不会假在线），离线附原因/重连。任务行 kind/state：paused=断线挂起（{"op":"resume","taskId":"t-x"} 继续）、unknown=超时未知（先看背包/位置）、failed 带 error。暂停行给原因与安全反射；暂停=停任务，身体仍在世界，解除用 {"op":"resume"}。危险补投行说明被 pause/睡眠拦下、等待补投的 alarm。任务历史用 {"steps":[{"op":"tasks"}]}。',
+      description: '返回多行事实。**只在需要时查一次，不要轮询**（任务进度会作为事件回来）。连接行以 body 顶层 connected 为准（不会假在线），离线附原因/重连。任务行 kind/state：paused=断线挂起（{"op":"resume","taskId":"t-x"} 继续）、unknown=超时未知（先看背包/位置）、failed 带 error。暂停行给原因 + 可操作建议（吃/撤/换位置/何时再 resume），暂停=停任务、身体仍在世界。危险补投行说明被 pause/睡眠拦下、等待补投的 alarm。',
       when: ['行动前确认位置/血量/任务', '任务事件之后核对真实结果', '怀疑掉线/卡死'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -1171,7 +1330,7 @@ export function apply(ctx) {
         // time 的睡眠边界事实（下一版才有；旧版无字段就静默）：只读展示，不做 cancel。
         const boundary = timeSleepBoundary()
         if (boundary) lines.push(boundary.text)
-        if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
+        if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}——${pauseAdvice(status.pausedReason)}`)
         // 暂停 ≠ 离开：把 body 的安全反射状态与时间相位都摆出来，并说明危险仍会穿透。
         const safetyState = status.safety ?? {}
         const reflex = safetyState.reflex ?? null
@@ -1183,8 +1342,26 @@ export function apply(ctx) {
           lines.push(`安全反射：${reflex.enabled ? '开启' : '关闭'}（≤${Math.round((reflex.maxDurationMs ?? 10000) / 1000)}s/次、≤${reflex.maxPerMinute ?? 2} 次/分）${reflex.active ? `；正在规避（${reflex.count ?? 0} 次）` : ''}${lastText}`)
         }
         if (safetyState.paused) {
-          const reflexReason = REASON_TEXT[safetyState.reason] ?? safetyState.reason ?? status.pausedReason ?? '安全'
-          lines.push(`暂停：${reflexReason}——任务停/不接活，但身体仍在世界（会掉落/受伤/被推）；继续用 {"op":"resume"}，离开世界用 mcb_leave`)
+          lines.push('暂停语义：任务停/不接活，但身体仍在世界（会掉落/受伤/被推）；不处理原因会被再次暂停；离开世界用 mcb_leave')
+        }
+        // 战斗/防御：附近敌对、自动躲避记录、恢复宽限（低血恢复期 3s 内不会被立刻按回去）。
+        const hostiles = Array.isArray(status.adapter?.nearbyHostiles) ? status.adapter.nearbyHostiles : []
+        lines.push(`附近敌对：${hostiles.length ? hostiles.slice(0, 6).map((row) => `${row.name ?? '?'}(${row.distance != null ? `${row.distance}m` : '?'}${row.position ? ` @ ${fmtPosition(row.position)}` : ''})`).join('、') : '无'}`)
+        const defense = safetyState.autoDefense
+        if (defense) {
+          const lastDefense = safetyState.lastDefense
+          const lastText = lastDefense?.at
+            ? `；最近一次：${new Date(Number(lastDefense.at)).toLocaleTimeString('zh-CN', { hour12: false })} ${REASON_TEXT[lastDefense.reason] ?? lastDefense.reason ?? '威胁'} → ${lastDefense.action ?? '?'}（${Math.round(Number(lastDefense.durationMs) || 0)}ms${lastDefense.timedOut ? '，超时' : ''}）`
+            : ''
+          lines.push(`自动防御：${defense.enabled ? '开启' : '关闭'}（已 ${defense.count ?? 0} 次；冷却 ${Math.round((Number(defense.cooldownMs) || 0) / 1000)}s；威胁距离 ${defense.threatDistance ?? '?'}m / 苦力怕 ${defense.creeperDistance ?? '?'}m）${defense.active ? '；正在躲避' : ''}${lastText}`)
+        }
+        const recovery = safetyState.recovery
+        if (recovery) {
+          const graceUntil = Number(recovery.resumeGraceUntil)
+          const cooldownUntil = Number(recovery.lowHealthPauseCooldownUntil)
+          const graceText = Number.isFinite(graceUntil) && graceUntil > Date.now() ? `resume 宽限剩余 ${Math.ceil((graceUntil - Date.now()) / 1000)}s` : `resume 后 ${Math.round((Number(recovery.resumeGraceMs) || 3000) / 1000)}s 宽限`
+          const cooldownText = Number.isFinite(cooldownUntil) && cooldownUntil > Date.now() ? `低血暂停冷却剩余 ${Math.ceil((cooldownUntil - Date.now()) / 1000)}s` : '低血暂停冷却已过'
+          lines.push(`恢复规则：${graceText}（期内不会被立刻再暂停）；${cooldownText}；极低血 ≤${recovery.criticalHealth ?? '?'} 才会立即再暂停${recovery.pausedRecoverable ? '；当前暂停可恢复（先 eat/撤，再 resume）' : ''}`)
         }
         if (status.playable && typeof status.playable.ok === 'boolean') {
           const blockerText = {
@@ -1298,13 +1475,86 @@ export function apply(ctx) {
       },
     },
     {
+      name: 'mcb_snapshot',
+      summary: '结构化场景快照：位置/血/背包/脚下方块图/实体/任务/安全（毫秒级，日常先看它）。',
+      description: 'GET /v1/eyes/snapshot；参数 radius（3–16，默认 8），控制脚下方块图/附近统计范围。返回可读摘要 + 紧凑 JSON（含 captureMs）。毫秒级、零依赖，暂停/离线也能出基础快照；**日常看场景先用它，不要一上来截图**（截图贵且慢）。',
+      when: ['要看清楚周围地形/实体/背包再决定下一步', '写 checkpoint、任务前后取证', '觉得自己"看不见"或位置可疑'],
+      avoid: ['只是要位置/血/任务：mcb_status 更便宜', '想给用户看画面：mcb_eyes 截图（仅里程碑/告警时）'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { radius: { type: 'number', description: '快照半径（格），3–16，默认 8。' } },
+      },
+      async execute({ radius } = {}) {
+        const query = radius == null ? '' : `?radius=${encodeURIComponent(String(radius))}`
+        const body = await call(`/v1/eyes/snapshot${query}`, { timeoutMs: 6000 })
+        sessionTouchedMc = true
+        return { text: renderSnapshotText(body) }
+      },
+    },
+    {
+      name: 'mcb_eyes',
+      summary: '按需截图（Edge headless，成本高）：返回 PNG 图片附件 + 落盘路径；可用 mode:"snapshot" 复用结构化快照。',
+      description: 'POST /v1/eyes/screenshot；参数 mode（screenshot 默认/snapshot）、kind、frames(1–8)、width/height、waitMs(3–10s)。成本约 7–8s/张、Edge 峰值 ~1.3GB（CPU 软渲染，不占 GPU 锁）；quota：同时 1 个、间隔 ≥15s。仅里程碑/告警取证/用户明确要看画面时用，日常用 mcb_snapshot。返回 PNG 附件 + JSON meta；429 太频繁、501 未配置 viewer/Edge（改用 snapshot）、500 可重试一次。',
+      when: ['里程碑/告警要留画面证据', '用户明确要求"看一眼/截个图"', '画面相关判断（建筑外观、地形大局）'],
+      avoid: ['日常看场景/找方块：mcb_snapshot 更快更便宜', '需要精确坐标/数量：用结构化快照，别靠看图'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', description: 'screenshot（默认）或 snapshot（等同 mcb_snapshot）。' },
+          kind: { type: 'string', description: '截图用途标签：milestone/alert/manual…（写进文件名/meta）。' },
+          frames: { type: 'number', description: '帧数 1–8，默认 1；>1 返回 -f001.png…（给 album/video 用，默认不开）。' },
+          width: { type: 'number', description: '视口宽 640–1600，默认 1280。' },
+          height: { type: 'number', description: '视口高 360–900，默认 720。' },
+          waitMs: { type: 'number', description: '渲染等待 3000–10000ms，默认 7000；太短会截到没加载完的画面。' },
+        },
+      },
+      async execute({ mode = 'screenshot', kind = null, frames = null, width = null, height = null, waitMs = null } = {}) {
+        if (mode === 'snapshot') {
+          const body = await call('/v1/eyes/snapshot', { timeoutMs: 6000 })
+          sessionTouchedMc = true
+          return { text: renderSnapshotText(body) }
+        }
+        const payload = {}
+        if (kind != null) payload.kind = String(kind)
+        if (frames != null) payload.frames = Number(frames)
+        if (width != null) payload.width = Number(width)
+        if (height != null) payload.height = Number(height)
+        if (waitMs != null) payload.waitMs = Number(waitMs)
+        const timeoutMs = Math.max(30_000, Number(payload.waitMs ?? 7000) + 45_000)
+        let body
+        try {
+          body = await call('/v1/eyes/screenshot', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), timeoutMs,
+          })
+        } catch (error) {
+          const message = String(error?.message ?? error)
+          const hint = /501|未配置|viewer|Edge/i.test(message) ? '；body 没配置截图能力（需要 viewer+Edge）——改用 mcb_snapshot 看场景'
+            : /429|限频|进行中/.test(message) ? '；截图较贵：等 15s 后再试，或改用 mcb_snapshot'
+              : '；本次截图失败，可重试一次；还不行就用 mcb_snapshot'
+          throw new Error(`${message}${hint}`)
+        }
+        const files = Array.isArray(body?.files) ? body.files : []
+        const images = files[0]?.file ? [files[0].file] : []
+        const meta = body?.meta ?? {}
+        const summary = [
+          `截图完成（${body?.captureMs ?? meta.captureMs ?? '?'}ms；视口 ${meta.viewport?.width ?? '?'}×${meta.viewport?.height ?? '?'}；${files.length} 张）`,
+          files.length ? `文件：${files.map((row) => `${row.file}（${Math.round((Number(row.bytes) || 0) / 1024)}KB）`).join('；')}` : '没有返回文件',
+          `位置：${meta.position ? fmtPosition(meta.position) : (meta.viewer?.center ? fmtPosition(meta.viewer.center) : '未知')}${meta.task ? `；任务：${meta.task.kind ?? ''} ${meta.task.state ?? ''}`.trimEnd() : ''}${meta.safety?.paused ? '；身体暂停中' : ''}`,
+          images.length ? '（首张图已作为图片附件给你看；其余帧在落盘路径，可给 album/video 用）' : '（旧宿主没有图片附件：按上面的路径手动查看）',
+        ]
+        return images.length ? { text: summary.join('\n'), images } : { text: summary.join('\n') }
+      },
+    },
+    {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
 宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
-重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
-单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；pickup 捡附近掉落 {radius,max} → picked/items/left，别 goto 自己脚下；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
-失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）。示例用 mcb_help collect/tunnel。`,
+重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动找/换工具/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（最长~120s；**wait 单次≤30s，长任务别 wait 轮询**，结果作为事件回来；pickup 捡掉落 {radius,max} → picked/items/left，别 goto 脚下；sleep 夜里/雷暴+有床）。坐标 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内；attack 看命中/伤害/血量，没带=无法确认。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）；示例用 mcb_help。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
       avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
       safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],
@@ -1353,7 +1603,7 @@ export function apply(ctx) {
     {
       name: 'mcb_help',
       summary: '读 MC 的深层操作文档（按需，不常驻）。不带参数列出全部；参数 skill 指定一篇。',
-      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
+      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；combat=打/跑/守/自动躲避/低血恢复；eyes=快照/截图与成本；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
       when: ['准备做一整件事（合成、熔炼、交易、脱困、长期发展）', 'mcb_do 报了不懂的错'],
       parameters: {
         type: 'object',

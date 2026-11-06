@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 config/icl.local.json
 mem_export.json
+media/

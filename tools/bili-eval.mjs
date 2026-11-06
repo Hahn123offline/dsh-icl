@@ -21,6 +21,7 @@ import { createHost } from '../packages/core/src/index.mjs'
 import * as bili from '../packages/plugins/bili/src/index.mjs'
 import biliManifest from '../packages/plugins/bili/manifest.json' with { type: 'json' }
 import { credentialExpiry } from '../packages/plugins/bili/src/login.mjs'
+import { resolveConfig, readStoryboardAuth } from '../packages/plugins/bili/src/runtime.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(name)
@@ -31,11 +32,13 @@ const opt = (name, fallback = null) => {
 
 const REPO = path.resolve(import.meta.dirname, '..')
 const LEGACY = process.env.BILI_DIR ?? path.join(os.homedir(), '.dsh', 'bili-duty')
-const PY = process.env.BILI_PYTHON ?? path.join(LEGACY, '.venv', 'Scripts', 'python.exe')
-const RUNNER = process.env.BILI_RUNNER ?? path.join(REPO, 'tools', 'bili-run.py')
-const VENDOR = process.env.BILI_VENDOR ?? path.join(REPO, 'packages', 'plugins', 'bili', 'vendor', 'bilibili-mcp')
-const STORYBOARD_CLI = process.env.STORYBOARD_CLI ?? 'C:\\Users\\ai_admin\\.dsh\\profiles\\desktop\\node_modules\\dsh-video-storyboard\\bin\\storyboard.mjs'
 const STATE = process.env.ICL_BILI_STATE ?? fs.mkdtempSync(path.join(os.tmpdir(), 'icl-bili-eval-'))
+// 与插件同一套解析：显式 config/env > ICL stateDir venv > 旧 venv 兼容回退。
+const cfg = resolveConfig({ config: { stateDir: STATE, legacyBiliDir: LEGACY } })
+const PY = cfg.pythonPath
+const RUNNER = cfg.runnerPath
+const VENDOR = cfg.vendorDir
+const STORYBOARD_CLI = cfg.storyboardCli
 
 const checks = []
 const record = (name, ok, detail = '') => {
@@ -52,11 +55,22 @@ const fileCheck = (name, file) => {
 
 console.log('== 接缝路径（ICL 自持） ==')
 const pathsOk = [
-  fileCheck('python 解释器（BILI_PYTHON）', PY),
+  fileCheck(`python 解释器（来源 ${cfg.pythonSource}）`, PY),
   fileCheck('只读桥（BILI_RUNNER → tools/bili-run.py）', RUNNER),
   fileCheck('vendored MCP（repo）', path.join(VENDOR, 'mcp_server.py')),
   fileCheck('storyboard CLI（STORYBOARD_CLI）', STORYBOARD_CLI),
 ].every(Boolean)
+
+// storyboard 的 yt-dlp 登录态：只读到到期列，不打印任何 cookie 值。
+const auth = readStoryboardAuth({})
+const authDetail = [
+  auth.status,
+  auth.expiresAt ? `到期 ${new Date(auth.expiresAt).toISOString().slice(0, 10)}（${auth.daysLeft} 天）` : '无到期信息',
+  auth.warning ?? '',
+].filter(Boolean).join(' · ')
+record('storyboard cookies（切帧画质）', true, authDetail)
+if (auth.warning) console.log(`  ⚠️ ${auth.warning}`)
+
 const legacyCred = path.join(LEGACY, 'bili_credential.json')
 try {
   const st = fs.statSync(legacyCred)
@@ -67,10 +81,8 @@ try {
 
 const host = createHost({ log: () => {} })
 host.registerPlugin(biliManifest, bili, {
-  config: {
-    stateDir: STATE, legacyBiliDir: LEGACY,
-    pythonPath: PY, runnerPath: RUNNER, vendorDir: VENDOR, storyboardCli: STORYBOARD_CLI,
-  },
+  // 只传覆盖；解释器/桥/vendor/CLI 都走插件自己的默认解析（与真实会话同一套）。
+  config: { stateDir: STATE, legacyBiliDir: LEGACY },
 })
 await host.enable('bili')
 const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))

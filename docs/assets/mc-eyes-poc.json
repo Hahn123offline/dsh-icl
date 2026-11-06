@@ -1,0 +1,64 @@
+{
+  "generatedAt": "2026-11-06T03:52:52.021Z",
+  "mode": "offline",
+  "viewer": {
+    "package": "prismarine-viewer",
+    "version": "1.33.0",
+    "root": "<viewer-root>",
+    "port": 3999
+  },
+  "edge": {
+    "path": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "width": 960,
+    "height": 540,
+    "debugPort": 9333,
+    "flags": "headless=new,disable-gpu(SwiftShader),mute-audio"
+  },
+  "capture": {
+    "waitMs": 6000,
+    "frames": 2,
+    "intervalMs": 500,
+    "outBase": "<poc-out-base>"
+  },
+  "world": {
+    "kind": "in-memory-demo",
+    "version": "1.16.4",
+    "center": {
+      "x": 8,
+      "y": 6,
+      "z": 8
+    },
+    "viewDistance": 3,
+    "approxBlocks": 1381
+  },
+  "captureResult": {
+    "files": [
+      {
+        "file": "C:\\DSH\\icl\\.state\\lab\\mc-eyes-poc\\repo-shot-960-f001.png",
+        "bytes": 250987,
+        "at": "2026-11-06T03:52:58.477Z"
+      },
+      {
+        "file": "C:\\DSH\\icl\\.state\\lab\\mc-eyes-poc\\repo-shot-960-f002.png",
+        "bytes": 250987,
+        "at": "2026-11-06T03:52:59.084Z"
+      }
+    ],
+    "elapsedMs": 6724,
+    "sanity": "{\"ready\":\"complete\",\"canvas\":true,\"w\":934,\"h\":447}"
+  },
+  "files": [
+    {
+      "file": "C:\\DSH\\icl\\.state\\lab\\mc-eyes-poc\\repo-shot-960-f001.png",
+      "bytes": 250987,
+      "at": "2026-11-06T03:52:58.477Z"
+    },
+    {
+      "file": "C:\\DSH\\icl\\.state\\lab\\mc-eyes-poc\\repo-shot-960-f002.png",
+      "bytes": 250987,
+      "at": "2026-11-06T03:52:59.084Z"
+    }
+  ],
+  "nodeRssMb": 107
+}
+

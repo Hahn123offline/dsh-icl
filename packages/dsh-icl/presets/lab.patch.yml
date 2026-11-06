@@ -169,6 +169,20 @@
                   shape: { dim: 1024 }
                   baseUrl: 'http://127.0.0.1:8088/v1'
                   model: embed-bge-m3
+              # MC 场景工具白名单（P1 复杂度收敛，用户/lead 批准；只在 lab 生效）：
+              # E2 实测 48 工具里 31 个一次没调用；MC 会话只留 mcb_* + 时间安排 + 记忆/待办。
+              # 支持精确名与 `前缀*`；空数组 = 全量（产品默认不变）。DSH 原生工具（todo 等）不受影响。
+              toolAllowlist:
+                - 'mcb_*'
+                - time_status
+                - time_arrange
+                - remember
+                - recall
+                - forget
+                - memo
+                - memo_append
+                - memo_commit
+                - memos
               pluginConfig:
                 mc-link:
                   listenPort: __LAB_MC_PORT__

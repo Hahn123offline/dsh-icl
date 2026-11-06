@@ -3,10 +3,12 @@
 // 行为契约见 docs/MC-LEARNED.md §2.3/2.5；不 import 第三方 dsh-mc-agent 代码。
 import { createRequire } from 'node:module'
 import { createProgressTracker, isDangerousBlock, recoveryStep } from './recovery.mjs'
+import { startViewerServer } from './eyes.mjs'
 import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
 import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
+import { chooseWeaponItem, isHostile, parseTargetSpec, shouldAbortCombat } from './combat.mjs'
 
 const require = createRequire(import.meta.url)
 const mineflayer = require('mineflayer')
@@ -90,6 +92,7 @@ export function createMineflayerAdapter({
   let lastError = null
   let lastPacketAt = 0
   let lastDeath = null
+  const entityHurtAt = new Map()
   let safePoint = null
   let spawnSafety = null
   let movements = null
@@ -229,6 +232,123 @@ export function createMineflayerAdapter({
     }
   }
 
+  // ---- 眼睛：结构化快照 + 按需截图（docs/MC-EYES.md） --------------------------
+  function snapshot({ radius = 8 } = {}) {
+    const pos = currentPosition()
+    const size = Math.max(3, Math.min(16, Number(radius) || 8))
+    const items = (bot?.inventory?.items?.() ?? []).map((item) => ({
+      name: item.name, count: item.count, slot: item.slot, ...describeItemTool(item.name),
+    }))
+    const hotbar = []
+    const slots = bot?.inventory?.slots ?? []
+    const quickBarSlot = Number(bot?.quickBarSlot) || 0
+    for (let index = 0; index < 9; index += 1) {
+      const item = slots[36 + index]
+      hotbar.push({
+        slot: index + 1,
+        selected: index === quickBarSlot,
+        name: item?.name ?? null,
+        count: item?.count ?? null,
+        toolFor: item ? describeItemTool(item.name).toolFor : null,
+      })
+    }
+    const rows = []
+    const blockCounts = {}
+    let lookingAt = null
+    try {
+      const hit = bot?.blockAtCursor?.(6)
+      if (hit) lookingAt = { name: hit.name, position: { x: hit.position.x, y: hit.position.y, z: hit.position.z } }
+    } catch { /* ignore */ }
+    if (pos) {
+      const feetY = Math.floor(pos.y)
+      for (let dz = -size; dz <= size; dz += 1) {
+        let row = ''
+        for (let dx = -size; dx <= size; dx += 1) {
+          const block = bot?.blockAt?.(new Vec3(Math.floor(pos.x) + dx, feetY, Math.floor(pos.z) + dz))
+          const name = block?.name ?? 'unknown'
+          if (name in blockCounts) blockCounts[name] += 1
+          else blockCounts[name] = 1
+          if (/^(air|cave_air|void_air)$/.test(name)) row += '.'
+          else if (/water|flowing_water/.test(name)) row += '~'
+          else if (/lava|flowing_lava/.test(name)) row += '≈'
+          else row += '#'
+        }
+        rows.push(row)
+      }
+    }
+    const entities = Object.values(bot?.entities ?? {})
+      .filter((entity) => entity && entity !== bot?.entity && entity.position)
+      .map((entity) => ({
+        name: entity.name ?? entity.username ?? entity.type ?? 'entity',
+        username: entity.username ?? null,
+        distance: round1(distanceTo(pos, entity.position)),
+        position: { x: Math.round(entity.position.x), y: Math.round(entity.position.y), z: Math.round(entity.position.z) },
+      }))
+      .sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999))
+      .slice(0, 24)
+    return {
+      position: pos,
+      dimension: bot?.game?.dimension ?? null,
+      health: bot?.health ?? null,
+      food: bot?.food ?? null,
+      oxygen: oxygenValue(),
+      submerged: bot?.entity?.isInWater === true,
+      time: timeSummary(),
+      sleeping: bot?.isSleeping === true,
+      held: (() => {
+        const held = bot?.heldItem
+        if (!held) return null
+        const tool = describeItemTool(held.name)
+        return { name: held.name, count: held.count ?? 1, ...tool }
+      })(),
+      inventory: { items, hotbar, emptySlots: bot?.inventory?.emptySlotCount?.() ?? null },
+      equipment: equipmentSummary(),
+      lookingAt,
+      map: rows.length ? rows.join('\n') : null,
+      mapLegend: '#=solid .=air ~=water ≈=lava',
+      nearbyBlocks: Object.fromEntries(Object.entries(blockCounts).sort((a, b) => b[1] - a[1]).slice(0, 16)),
+      entities,
+      nearbyHostiles: nearbyThreats(8),
+      spawnSafety,
+      pathfinder: Boolean(bot?.pathfinder),
+      lastDeath,
+      danger: inspectDanger(),
+    }
+  }
+
+  // 截图用 viewer：每次截图按当前 pose 起一个（可关闭）的 viewer，截完立刻关。
+  let screenshotViewer = null
+  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3 } = {}) {
+    if (!bot?.player) throw new Error('body 未连接，无法截图')
+    if (screenshotViewer) await stopScreenshotViewer()
+    const center = currentPosition()
+    if (!center) throw new Error('拿不到当前位置，无法截图')
+    let lastError = null
+    const start = Math.max(1024, Math.min(65_000, Number(portStart) || 3998))
+    for (let port = start; port < start + 12; port += 1) {
+      try {
+        const viewer = await startViewerServer({
+          viewerRoot: process.env.MC_EYES_VIEWER_ROOT ?? null,
+          world: bot.world, center, version: bot.version, port, viewDistance,
+        })
+        screenshotViewer = viewer
+        return { port: viewer.port, center: viewer.center, version: bot.version }
+      } catch (error) {
+        lastError = error
+        if (!/EADDRINUSE/i.test(String(error?.message))) break
+      }
+    }
+    throw lastError ?? new Error('viewer 启动失败')
+  }
+
+  async function stopScreenshotViewer() {
+    const viewer = screenshotViewer
+    screenshotViewer = null
+    if (!viewer) return false
+    try { await viewer.close() } catch { /* ignore */ }
+    return true
+  }
+
   // ---- 环境事实（供“该干什么”判断；缺这些她会两眼一抹黑）----------------------
   function inventorySummary() {
     if (!bot?.inventory) return null
@@ -366,6 +486,8 @@ export function createMineflayerAdapter({
       spawned = false
       const b = mineflayer.createBot({ host, port, username, auth: 'offline', version: false })
       bot = b
+      entityHurtAt.clear()
+      b.on('entityHurt', (entity) => { if (entity?.id != null) entityHurtAt.set(entity.id, Date.now()) })
       // pathfinder 必须显式挂上；挂了才有 goto/脱困。失败要留痕，不能变成“身体走不了路但没人知道”。
       try {
         b.loadPlugin(pathfinder)
@@ -1691,6 +1813,156 @@ export function createMineflayerAdapter({
       emit('macro_done', { kind: 'farm', crop, planted, tilled, total: count })
       return { crop, planted, tilled, total: count, seeds: seedCount, water: waterPositions.length }
     }
+    if (['hunt', 'defend', 'flee', 'guard'].includes(task.kind)) {
+      const mode = task.kind
+      const targetSpec = String(params.target ?? 'nearest_hostile')
+      const radius = Math.max(4, Math.min(32, Number(params.radius) || 16))
+      const attackRange = Math.max(2, Math.min(4, Number(params.attackRange) || 3))
+      const lostTargetMs = Math.max(1000, Math.min(60_000, Number(params.lostTargetMs) || 10_000))
+      const durationMs = Math.max(5000, Math.min(300_000, Number(params.maxDurationMs) || (mode === 'guard' ? 120_000 : mode === 'flee' ? 30_000 : 60_000)))
+      const lowHealthLimit = Math.max(1, Math.min(20, Number(params.lowHealth) || 10))
+      const maxHostiles = Math.max(1, Math.min(12, Number(params.maxHostiles) || 3))
+      const creeperDistance = Math.max(2, Math.min(12, Number(params.creeperDistance) || 5))
+      const safeDistance = Math.max(8, Math.min(48, Number(params.safeDistance) || 24))
+      const startedAt = Date.now()
+      const liveHostiles = (range = radius) => {
+        const pos = currentPosition()
+        if (!pos) return []
+        return Object.values(bot.entities ?? {})
+          .filter((entity) => entity && entity !== bot.entity && entity.position && isHostile(entity.name) && entity.position.distanceTo(pos) <= range)
+          .map((entity) => ({ entity, name: entity.name, distance: round1(entity.position.distanceTo(pos)), position: entity.position }))
+          .sort((a, b) => a.distance - b.distance)
+      }
+      const equipCombatGear = async () => {
+        try {
+          const weapon = chooseWeaponItem(bot.inventory?.items?.() ?? [])
+          if (weapon && bot.heldItem?.name !== weapon.item.name) await bot.equip(weapon.item, 'hand')
+          const shield = (bot.inventory?.items?.() ?? []).find((item) => item.name === 'shield')
+          if (shield && bot.getEquipmentDestSlot?.('off-hand') !== undefined) {
+            try { await bot.equip(shield, 'off-hand') } catch { /* 没盾也打 */ }
+          }
+          return weapon?.item?.name ?? bot.heldItem?.name ?? null
+        } catch { return null }
+      }
+      const combatAbort = async (reason, extra = {}) => {
+        const hostiles = liveHostiles(10).map(({ name, distance }) => ({ name, distance }))
+        emit('combat_abort', { mode, target: targetSpec, reason, hostiles, health: round1(bot.health) })
+        try { await emergency(`combat-${reason}`) } catch { /* 反射失败也要中断 */ }
+        throw taskFailure(`combat: ${reason}`, {
+          mode, target: targetSpec, reason, health: round1(bot.health), hostiles,
+          ...extra,
+          suggestion: reason === 'low-health' ? '低血：先吃/躲/垫高，resume 后再来；可改用 mode:"flee"'
+            : reason === 'creeper-near' ? '苦力怕近身：先跑/垫高，别贴脸打'
+              : '多敌：先撤到安全点，逐个解决',
+        })
+      }
+      await equipCombatGear()
+      if (mode === 'flee') {
+        let flees = 0
+        let lastSafeAt = null
+        while (Date.now() - startedAt < durationMs) {
+          checkAbort(signal)
+          const threats = liveHostiles(radius)
+          if (!threats.length) {
+            emit('combat_done', { mode, reason: 'no-threat', durationMs: Date.now() - startedAt })
+            return { mode, fled: true, reason: 'no-threat', flees, durationMs: Date.now() - startedAt }
+          }
+          const assessment = shouldAbortCombat({ health: bot.health, hostiles: threats, lowHealth: lowHealthLimit, maxHostiles, creeperDistance })
+          const threat = threats[0]
+          if (threat.distance >= safeDistance) {
+            emit('combat_done', { mode, reason: 'safe', distance: threat.distance })
+            return { mode, fled: true, reason: 'safe', distance: threat.distance, flees, durationMs: Date.now() - startedAt }
+          }
+          const pos = currentPosition()
+          if (!pos) throw taskFailure('flee: no-position', {})
+          const dx = pos.x - threat.position.x
+          const dz = pos.z - threat.position.z
+          const len = Math.hypot(dx, dz) || 1
+          const fleeTo = { x: pos.x + (dx / len) * 12, y: Math.floor(pos.y), z: pos.z + (dz / len) * 12 }
+          try {
+            await gotoWithRecovery({ ...fleeTo, range: 2, timeoutMs: 5000, stallMs: 2000 }, signal, null)
+            flees += 1
+            lastSafeAt = Date.now()
+          } catch (error) {
+            if (signal?.aborted) throw error
+            if (lastSafeAt && Date.now() - lastSafeAt > 6000) throw taskFailure('flee: cornered', { threat: threat.name, flees, suggestion: '被围/被地形卡住：垫高或挖坑封口，或用 hunt 先清路' })
+            await sleep(300)
+          }
+          progress?.({ mode, state: 'flee', threat: threat.name, distance: threat.distance, flees, health: round1(bot.health), durationMs: Date.now() - startedAt })
+        }
+        throw taskFailure('flee: timeout', { flees, durationMs: Date.now() - startedAt, suggestion: '没跑到安全距离：继续/换方向/垫高' })
+      }
+      let targetRef = null
+      let attacks = 0
+      let lastSeenAt = Date.now()
+      while (Date.now() - startedAt < durationMs) {
+        checkAbort(signal)
+        const threats = liveHostiles(radius)
+        const assessment = shouldAbortCombat({ health: bot.health, hostiles: threats, lowHealth: lowHealthLimit, maxHostiles, creeperDistance })
+        if (assessment.abort && mode !== 'guard') await combatAbort(assessment.reason, { attacks, hostiles: threats.map(({ name, distance }) => ({ name, distance })) })
+        if (!targetRef || !bot.entities?.[targetRef.entity.id]) {
+          if (targetRef && attacks > 0) {
+            emit('combat_done', { mode, target: targetRef.name, killed: true, attacks, durationMs: Date.now() - startedAt })
+            return { mode, killed: true, target: targetRef.name, attacks, durationMs: Date.now() - startedAt }
+          }
+          const candidates = targetSpec === 'nearest_hostile' || targetSpec === 'nearest'
+            ? threats
+            : threats.filter((threat) => threat.name === targetSpec.toLowerCase())
+          const picked = candidates[0] ?? null
+          if (picked) {
+            targetRef = picked
+            lastSeenAt = Date.now()
+            await equipCombatGear()
+            progress?.({ mode, state: 'acquired', target: picked.name, distance: picked.distance, health: round1(bot.health) })
+          } else {
+            if (mode === 'guard' || mode === 'defend') {
+              if (Date.now() - startedAt + 1000 >= durationMs) break
+              await sleep(500)
+              progress?.({ mode, state: 'scanning', hostiles: threats.length, health: round1(bot.health), durationMs: Date.now() - startedAt })
+              continue
+            }
+            if (targetRef && Date.now() - lastSeenAt > lostTargetMs) throw taskFailure('combat: target-lost', { target: targetSpec, attacks, suggestion: '目标丢了：换 target/扩大 radius 或先 scan' })
+            if (Date.now() - startedAt > Math.min(durationMs, 15_000)) throw taskFailure('combat: no-target', { target: targetSpec, radius, suggestion: '附近没有敌对目标：确认目标名/换地方/用 scan 看实体' })
+            await sleep(400)
+            continue
+          }
+        }
+        const target = targetRef
+        const entity = target.entity
+        if (!entity || !bot.entities?.[entity.id]) { targetRef = null; continue }
+        const distance = round1(entity.position.distanceTo(currentPosition()))
+        progress?.({ mode, state: 'chase', target: entity.name, targetHealth: entity.health ?? null, distance, attacks, health: round1(bot.health), durationMs: Date.now() - startedAt })
+        if (entity.name === 'creeper' && distance <= creeperDistance && attacks === 0) {
+          targetRef = null
+          await combatAbort('creeper-near', { attacks: 0, distance })
+        }
+        if (distance > attackRange) {
+          try {
+            await gotoWithRecovery({ x: entity.position.x, y: entity.position.y, z: entity.position.z, range: Math.max(1.5, attackRange - 1), timeoutMs: 6000, stallMs: 2500 }, signal, progress)
+          } catch (error) {
+            if (signal?.aborted) throw error
+            await sleep(250)
+          }
+          continue
+        }
+        try { await bot.lookAt(entity.position.offset(0, 1.2, 0), true) } catch { /* ignore */ }
+        try {
+          bot.attack(entity)
+          attacks += 1
+          if (bot.food <= 14) await autoEat(signal, progress).catch(() => false)
+          await sleep(650)
+        } catch (error) {
+          if (signal?.aborted) throw error
+          await sleep(200)
+        }
+        progress?.({ mode, state: 'attack', target: entity.name, targetHealth: entity.health ?? null, distance: round1(entity.position.distanceTo(currentPosition())), attacks, health: round1(bot.health), durationMs: Date.now() - startedAt })
+      }
+      if (mode === 'guard' || mode === 'defend') {
+        emit('combat_done', { mode, reason: 'duration', attacks, durationMs: Date.now() - startedAt })
+        return { mode, attacks, reason: 'duration', durationMs: Date.now() - startedAt }
+      }
+      throw taskFailure('combat: timeout', { mode, target: targetSpec, attacks, durationMs: Date.now() - startedAt, suggestion: '没打死：换武器/找落单目标/先补血补给' })
+    }
     throw new Error(`unsupported task: ${task.kind}`)
   }
 
@@ -1706,14 +1978,28 @@ export function createMineflayerAdapter({
     }
   }
 
-  function resolveEntity(target = {}) {
-    const key = String(target?.entity ?? target?.name ?? 'nearest').toLowerCase()
-    const wanted = key.startsWith('nearest:') ? key.slice('nearest:'.length) : key === 'nearest' ? '' : key
-    const pos = bot.entity?.position
-    return Object.values(bot.entities ?? {})
-      .filter((entity) => entity && entity !== bot.entity && entity.position)
-      .filter((entity) => !wanted || String(entity.name ?? entity.username ?? entity.type ?? '').toLowerCase() === wanted || String(entity.name ?? '').toLowerCase().includes(wanted))
-      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] ?? null
+  // 不可攻击实体（掉落物/投射物/载具/展示框…）：旧实现会锁到地上的 item，造成“攻击假成功”。
+  const NON_ATTACKABLE = /^(item|experience_orb|arrow|spectral_arrow|egg|snowball|ender_pearl|eye_of_ender|firework_rocket|potion|splash_potion|lingering_potion|area_effect_cloud|lightning_bolt|falling_block|primed_tnt|tnt|boat|.*_boat|minecart|.*_minecart|armor_stand|painting|item_frame|glow_item_frame|lead|fishing_bobber|trident)$/
+
+  function resolveEntity(target = {}, { forAttack = false } = {}) {
+    const spec = parseTargetSpec(target)
+    const wanted = spec.mode === 'name' ? spec.name : (spec.mode === 'nearest' && spec.name ? spec.name : '')
+    const pos = bot?.entity?.position ?? null
+    if (!bot?.entities) return null
+    let candidates = Object.values(bot.entities)
+      .filter((entity) => entity && entity !== bot.entity && entity.position && entity.isValid !== false)
+    if (forAttack) candidates = candidates.filter((entity) => !NON_ATTACKABLE.test(String(entity.name ?? entity.username ?? entity.type ?? '')))
+    if (forAttack && spec.mode === 'nearest_hostile') candidates = candidates.filter((entity) => isHostile(entity.name ?? entity.username ?? ''))
+    const matched = wanted
+      ? candidates.filter((entity) => {
+        const name = String(entity.name ?? entity.username ?? entity.type ?? '').toLowerCase()
+        return name === wanted || name.includes(wanted)
+      })
+      : candidates
+    const pool = matched.length ? matched : (wanted ? [] : candidates)
+    if (!pool.length) return null
+    if (!pos) return pool[0]
+    return pool.sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0]
   }
 
   function blockAtTarget(target = {}) {
@@ -1930,12 +2216,16 @@ export function createMineflayerAdapter({
       return { tossed: found.name }
     }
     if (op === 'pickup') {
-      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标。
+      // 拾取附近掉落物实体：模型不用再“goto 自己”猜坐标；有总预算，不做 45s+ 长阻塞。
       const radius = Math.max(1, Math.min(16, Number(params.radius) || 8))
       const max = Math.max(1, Math.min(16, Number(params.max) || 8))
+      const maxMs = Math.max(3000, Math.min(60_000, Number(params.maxMs) || 20_000))
+      const startedAt = Date.now()
       let picked = 0
+      let partial = false
       const pickedNames = []
       for (let index = 0; index < max; index += 1) {
+        if (Date.now() - startedAt > maxMs) { partial = true; break }
         const pos = currentPosition()
         if (!pos) break
         const drops = Object.values(bot.entities ?? {})
@@ -1958,13 +2248,41 @@ export function createMineflayerAdapter({
         }
       }
       const left = Object.values(bot.entities ?? {}).filter((entity) => entity?.name === 'item' && entity.position && entity.position.distanceTo(currentPosition() ?? { x: 0, y: 0, z: 0 }) <= radius).length
-      return { picked, items: pickedNames, radius, left }
+      return { picked, items: pickedNames, radius, left, partial, durationMs: Date.now() - startedAt }
     }
     if (op === 'attack') {
-      const entity = resolveEntity(params.target ?? params)
-      if (!entity) throw new Error('attack: 找不到目标')
-      await bot.attack(entity)
-      return { attacked: entity.name ?? entity.username ?? entity.type }
+      if (!bot?.entities) throw new Error('attack: 身体未连接（entities 不可用）；等连接后重试')
+      const entity = resolveEntity(params.target ?? params, { forAttack: true })
+      if (!entity) throw new Error('attack: 找不到可攻击目标（已排除掉落物/投射物）；用 mcb_scan 看实体，或 target:"nearest_hostile"')
+      const targetName = entity.name ?? entity.username ?? entity.type ?? 'entity'
+      const distance = round1(distanceTo(currentPosition(), entity.position))
+      const maxRange = Math.max(2, Math.min(6, Number(params.range) || 4.5))
+      if (Number.isFinite(distance) && distance > maxRange) {
+        throw new Error(`attack: 目标太远（${targetName} ${distance} 格 > ${maxRange}）；先靠近/用 move 到它旁边再攻击`)
+      }
+      const healthBefore = Number.isFinite(Number(entity.health)) ? Number(entity.health) : null
+      try { await bot.lookAt(entity.position.offset(0, 1.2, 0), true) } catch { /* ignore */ }
+      const hurtBefore = entityHurtAt.get(entity.id) ?? 0
+      const attackAt = Date.now()
+      try { await bot.attack(entity) } catch (error) {
+        throw new Error(`attack: 发起攻击失败（${targetName}）：${String(error?.message ?? error)}`)
+      }
+      let hurtAt = null
+      for (let index = 0; index < 20; index += 1) {
+        await sleep(50)
+        const at = entityHurtAt.get(entity.id)
+        if (at && at >= attackAt - 50 && at >= hurtBefore) { hurtAt = at; break }
+      }
+      const alive = Boolean(bot.entities?.[entity.id])
+      const healthAfter = Number.isFinite(Number(entity.health)) ? Number(entity.health) : null
+      const damage = healthBefore != null && healthAfter != null ? Math.round((healthBefore - healthAfter) * 10) / 10 : null
+      if (!alive) {
+        return { attacked: targetName, id: entity.id, killed: true, hit: true, damage, healthBefore, healthAfter: healthAfter ?? 0 }
+      }
+      if (!hurtAt) {
+        throw new Error(`attack: 没打中 ${targetName}（目标无受伤事件；可能太远/被挡/攻击冷却）；先靠近或换目标，别重复空挥`)
+      }
+      return { attacked: targetName, id: entity.id, hit: true, killed: false, damage, healthBefore, healthAfter }
     }
     if (op === 'craft') {
       const name = String(params.item ?? params.name ?? '')
@@ -2054,8 +2372,14 @@ export function createMineflayerAdapter({
       const inputsBefore = inputs.map((entry) => ({ ...entry, have: countOf(entry.name) }))
       const batches = []
       let craftError = null
+      const craftStartedAt = Date.now()
+      const craftMaxMs = Math.max(3000, Math.min(120_000, Number(params.maxMs) || 30_000))
       // 逐批合成并逐批验证：一批失败/产物没到不会把前面成功的批次算丢（旧实现只等一次）。
       for (let index = 0; index < craftTimes; index += 1) {
+        if (Date.now() - craftStartedAt > craftMaxMs) {
+          craftError = new Error(`craft: 超过 ${Math.round(craftMaxMs / 1000)}s 预算（完成 ${batches.length}/${craftTimes} 批）；先 mcb_inventory 复核，避免一次阻塞太久`)
+          break
+        }
         const batchBefore = countOf(name)
         let batchError = null
         try {
@@ -2332,8 +2656,13 @@ export function createMineflayerAdapter({
     throw new Error(`unsupported inspect: ${kind}`)
   }
 
-  return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
+  return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
+
+
+
+
 
 
 

@@ -30,6 +30,7 @@ function fakeAdapter() {
     oxygen: 20,
     submerged: false,
     danger: null,
+    hostiles: [],
     packetSilentMs: 0,
   }
   const adapter = {
@@ -48,6 +49,7 @@ function fakeAdapter() {
       packetSilentMs: state.packetSilentMs,
       inventoryCount: 0,
       nearby: {},
+      nearbyHostiles: state.hostiles ?? [],
     }),
     chat: async (text) => { state.chats.push(text) },
     inspect: async (kind) => ({ text: `fake:${kind}` }),
@@ -270,21 +272,23 @@ test('body：danger 告警穿透配额（alarm+pierce），idle 心跳仍受限�
     adapter, watchdogMs: 10, lowHealth: 10, dangerAlertPerMinute: 2, idleAlertPerMinute: 1, heartbeatMs: 10, alertWindowMs: 60_000,
   })
   adapter.state.health = 5
-  // danger 告警不能因为 2 次/分配额被静默：第一条以 alarm/pierce 投递，后续去重记账（alarm_suppressed），窗口后补投。
+  // danger 告警不能因为 2 次/分配额被静默：第一条以 alarm/pierce 投递。
   await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'watchdog' && e.data?.kind === 'low-health'), 3000, 'danger alarm delivered')
-  await waitFor(() => body.eventsSince(0).events.some((e) => e.type === 'alarm_suppressed'), 3000, 'alarm suppressed recorded')
-  const events = body.eventsSince(0).events
-  const alarm = events.find((e) => e.type === 'watchdog' && e.data?.kind === 'low-health')
+  const alarm = body.eventsSince(0).events.find((e) => e.type === 'watchdog' && e.data?.kind === 'low-health')
   assert.equal(alarm.data.priority, 'alarm')
   assert.equal(alarm.data.pierce, true)
   assert.equal(alarm.priority, 'alarm', 'top-level priority')
   assert.equal(alarm.pierce, true, 'top-level pierce')
   assert.equal(alarm.data.meta?.pierce, true, 'meta pierce')
-  assert.ok(events.some((e) => e.type === 'alarm_suppressed' && e.data?.type === 'watchdog'))
+  // 15s 去重被拦要记账（alarm_suppressed）且之后可补投：暂停中再报两次更严重事件。
+  body.ingest('spawn_unsafe', { position: { x: 1, y: 64, z: 1 } })
+  body.ingest('spawn_unsafe', { position: { x: 1, y: 64, z: 1 } })
+  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'alarm_suppressed' && e.data?.type === 'safety_stop'))
   const stats = body.status().watchdog
   assert.equal(stats.limits.danger, 2)
   assert.equal(stats.limits.idle, 1)
   // idle 心跳仍受 idle 配额限制，但至少有 1 条（danger 告警不把 idle 全压死）
+  const events = body.eventsSince(0).events
   const heartbeats = events.filter((e) => e.type === 'heartbeat').length
   assert.ok(heartbeats >= 1)
   await body.stop()
@@ -680,3 +684,153 @@ test('body：status 暴露 playable 布尔与 spawn 日志（E6/E7）', async ()
 
 
 
+
+test('body：eyesSnapshot 结构化快照（零依赖；暂停/离线也能出）', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  const out = await body.eyesSnapshot({ radius: 4 })
+  assert.equal(out.ok, true)
+  assert.equal(out.snapshot.kind, 'structured')
+  assert.ok(out.captureMs >= 0)
+  assert.ok(out.snapshot.map, '应包含 inspect map 文本（fake adapter 返回 fake:map）')
+  assert.ok(out.snapshot.playable && typeof out.snapshot.playable.ok === 'boolean')
+  assert.ok(out.snapshot.safety && out.snapshot.safety.bodyOnline === true)
+  assert.ok(out.snapshot.inventory && out.snapshot.inventory.counts)
+  // 暂停时仍可出快照（只读）
+  body.safetyStop('manual')
+  const paused = await body.eyesSnapshot({})
+  assert.equal(paused.snapshot.safety.paused, true)
+  assert.equal(paused.snapshot.safety.pausedReason, 'manual')
+  await body.stop()
+})
+
+test('body：eyesScreenshot 在无截图能力时给可读 501（不崩）', async () => {
+  const { body } = await startedBody({ watchdogMs: 60_000 })
+  await assert.rejects(() => body.eyesScreenshot({ kind: 'test' }), /未配置截图能力|501/)
+  await body.stop()
+})
+
+
+test('body：未暂停时自动躲避（hostile 近身 → 有界 emergency，不打断任务，有冷却）', async () => {
+  const adapter = fakeAdapter()
+  let clock = 1_000_000
+  const { body } = await startedBody({
+    adapter, now: () => clock, watchdogMs: 60_000,
+    autoDefense: true, defenseCooldownMs: 5000, defenseMaxPerMinute: 3, defenseThreatDistance: 6,
+  })
+  adapter.state.hostiles = [{ name: 'zombie', distance: 4, position: { x: 5, y: 64, z: 1 } }]
+  body.watchdogTick(clock)
+  await waitFor(() => adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length >= 1, 1500, 'auto-defense emergency')
+  const st = body.status()
+  assert.equal(st.safety.autoDefense.enabled, true)
+  assert.equal(st.safety.autoDefense.count, 1)
+  assert.equal(st.safety.autoDefense.lastReason, 'threat-near')
+  assert.ok(body.eventsSince(0).events.some((event) => event.type === 'auto_defense'))
+  // 冷却内再来一次：不应重复 emergency
+  adapter.state.hostiles = [{ name: 'zombie', distance: 3, position: { x: 5, y: 64, z: 1 } }]
+  body.watchdogTick(clock + 1000)
+  await sleep(100)
+  assert.equal(adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length, 1)
+  // 冷却过后可再次规避
+  body.watchdogTick(clock + 6000)
+  await waitFor(() => adapter.state.emergencies.filter((entry) => entry === 'auto-defense').length >= 2, 1500, 'second auto-defense')
+  assert.ok(body.status().safety.autoDefense.count >= 2)
+  await body.stop()
+})
+
+test('body：贴脸苦力怕/残血时自动躲避升级为安全暂停（reflex 接管）', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000, lowHealth: 10 })
+  adapter.state.hostiles = [{ name: 'creeper', distance: 3, position: { x: 2, y: 64, z: 1 } }]
+  body.watchdogTick(1_000_000)
+  assert.equal(body.status().paused, true)
+  assert.equal(body.status().pausedReason, 'threat')
+  adapter.state.hostiles = []
+  adapter.state.health = 6
+  const body2 = await startedBody({ adapter: fakeAdapter(), watchdogMs: 60_000, lowHealth: 10 })
+  body2.adapter.state.hostiles = [{ name: 'zombie', distance: 5 }]
+  body2.adapter.state.health = 6
+  body2.body.watchdogTick(1_000_000)
+  assert.equal(body2.body.status().paused, true)
+  await body2.body.stop()
+  await body.stop()
+})
+
+test('body：暂停时由 reflex 处理威胁（不重复跑 autoDefense），战斗任务运行时不抢自动躲避', async () => {
+  const adapter = fakeAdapter()
+  let clock = 2_000_000
+  const { body } = await startedBody({ adapter, now: () => clock, watchdogMs: 60_000 })
+  body.safetyStop('manual')
+  adapter.state.hostiles = [{ name: 'zombie', distance: 5 }]
+  body.watchdogTick(clock)
+  await waitFor(() => body.status().safety.reflex.count >= 1, 1500, 'paused reflex threat')
+  assert.equal(body.status().safety.lastReflex.reason, 'threat-near')
+  assert.equal(body.status().safety.autoDefense.count, 0)
+  await body.stop()
+
+  const adapter2 = fakeAdapter()
+  const second = await startedBody({ adapter: adapter2, watchdogMs: 60_000 })
+  const task = second.body.createTask({ kind: 'hunt', params: { hang: true } })
+  await waitFor(() => second.body.getTask(task.id)?.state === 'running', 2000, 'hunt running')
+  adapter2.state.hostiles = [{ name: 'zombie', distance: 4 }]
+  second.body.watchdogTick(3_000_000)
+  await sleep(100)
+  assert.equal(adapter2.state.emergencies.filter((entry) => entry === 'auto-defense').length, 0)
+  await second.body.stop()
+})
+
+test('body：hunt 任务被接受（KINDS）并走 adapter runTask', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  const task = body.createTask({ kind: 'hunt', params: { target: 'nearest_hostile', maxDurationMs: 5000 } })
+  assert.equal(task.kind, 'hunt')
+  await waitFor(() => body.getTask(task.id)?.state === 'done', 2000, 'hunt done')
+  assert.equal(adapter.state.runTaskCalls.at(-1).kind, 'hunt')
+  await body.stop()
+})
+
+test('body：低血暂停/恢复死锁修复（resume 后 3s 宽限 + 8s 冷却；极低血例外）', async () => {
+  const adapter = fakeAdapter()
+  let clock = 5_000_000
+  const { body } = await startedBody({ adapter, now: () => clock, watchdogMs: 60_000, lowHealth: 10, criticalHealth: 4, resumeGraceMs: 3000, lowHealthPauseCooldownMs: 8000 })
+  adapter.state.health = 5
+  body.watchdogTick(clock)
+  await waitFor(() => body.status().paused && body.status().pausedReason === 'low-health', 1000, 'low-health pause')
+  // resume 后宽限内：低血但还能动 → 不再立刻暂停，只记 recover_grace
+  const res = body.resume()
+  assert.ok(res.graceUntil >= clock + 3000)
+  clock += 100
+  body.watchdogTick(clock)
+  assert.equal(body.status().paused, false, 'grace 内不应立刻再暂停')
+  assert.ok(body.eventsSince(0).events.some((e) => e.type === 'recover_grace'))
+  // 宽限过后但仍在低血暂停冷却内
+  clock += 4000
+  body.watchdogTick(clock)
+  assert.equal(body.status().paused, false, '冷却内也不应立刻再暂停')
+  // 冷却结束仍低血 → 再次暂停
+  clock += 5000
+  body.watchdogTick(clock)
+  await waitFor(() => body.status().paused, 500, 'pause after cooldown')
+  // 极低血无视宽限/冷却
+  body.resume()
+  adapter.state.health = 3
+  clock += 100
+  body.watchdogTick(clock)
+  await waitFor(() => body.status().paused && body.status().pausedReason === 'low-health', 500, 'critical low-health pause')
+  await body.stop()
+})
+
+test('body：暂停中允许 eat/stop（低血能自己爬出来）；写动作仍拒', async () => {
+  const adapter = fakeAdapter()
+  adapter.runOp = async (op) => ({ ok: true, op })
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  body.safetyStop('low-health')
+  assert.equal(body.status().paused, true)
+  await assert.doesNotReject(() => body.doPlan([{ op: 'eat' }]))
+  await assert.doesNotReject(() => body.doPlan([{ op: 'stop' }]))
+  await assert.rejects(() => body.doPlan([{ op: 'mine', params: { block: 'dirt', count: 1 } }]), /暂停/)
+  const recovery = body.status().safety.recovery
+  assert.equal(typeof recovery.criticalHealth, 'number')
+  assert.equal(typeof recovery.lowHealthPauseCooldownMs, 'number')
+  await body.stop()
+})

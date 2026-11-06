@@ -178,6 +178,8 @@ async function up() {
   const modelKey = String(arg('--model', 'flash'))
   const customRoute = arg('--provider') && arg('--model') ? { provider: String(arg('--provider')), model: String(arg('--model')), source: 'explicit' } : null
   const route = customRoute ?? MODEL_ROUTES[modelKey]
+  // P2（复杂度审计）：lab 可单独调 reasoningEffort（high/medium/low 等，由 DSH 校验）；产品默认不动。
+  const reasoningEffort = arg('--reasoning-effort', null)
   if (!route) fail(`未知 --model：${modelKey}（可选：${Object.keys(MODEL_ROUTES).join(', ')}，或 --provider X --model Y）`)
 
   const existing = loadCurrent()
@@ -221,7 +223,7 @@ async function up() {
     startedAt: nowIso(),
     status: 'starting',
     pids: {},
-    model: { provider: route.provider, model: route.model, source: route.source ?? 'explicit' },
+    model: { provider: route.provider, model: route.model, ...(reasoningEffort ? { reasoningEffort: String(reasoningEffort) } : {}), source: route.source ?? 'explicit' },
   }
   writeRunMeta(runId, meta)
   saveCurrent({ runId, port, preset, runDir, startedAt: meta.startedAt, pids: {} })
@@ -245,8 +247,8 @@ async function up() {
     // 显式钉住模型：忽略 profile 默认值的漂移（2026-11-05 18:21 事故）。
     // 失败就 up 失败：不知道 profile 默认会落到哪个模型（可能是本地 GPU），不能冒险跑。
     try {
-      await selectModel(api, sessionId, { provider: route.provider, model: route.model })
-      info(`已 selectModel → ${route.provider}/${route.model}`)
+      await selectModel(api, sessionId, { provider: route.provider, model: route.model, reasoningEffort })
+      info(`已 selectModel → ${route.provider}/${route.model}${reasoningEffort ? `（reasoningEffort=${reasoningEffort}）` : ''}`)
     } catch (error) {
       throw new Error(`selectModel 失败，拒绝在这个 session 上跑（避免跟随 profile 默认模型意外吃本地 GPU）：${String(error?.message ?? error)}`)
     }

@@ -12,6 +12,7 @@ import { createHost } from '../../../core/src/index.mjs'
 import * as bili from '../src/index.mjs'
 import manifest from '../manifest.json' with { type: 'json' }
 import { credentialExpiry } from '../src/login.mjs'
+import { resolveConfig, venvPython, readStoryboardAuth, makeCaller } from '../src/runtime.mjs'
 
 const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
@@ -24,6 +25,12 @@ function baseConfig(root, extra = {}) {
     stateDir: root,
     pythonPath: process.execPath,
     legacyBiliDir: path.join(root, 'legacy-empty'),
+    // 测试里不睡：限速/退避的默认值（1200ms/2 次）由专门的用例注入假 sleep 验证。
+    minIntervalMs: 0,
+    maxRetries: 0,
+    callTimeoutMs: 5_000,
+    // 不读用户真实的 ~/.dsh/video.json（避免测试依赖机器状态）。
+    videoConfigPath: path.join(root, 'video.json'),
     ...extra,
   }
 }
@@ -57,7 +64,7 @@ console.log(JSON.stringify(out ?? { ok: true, result: { fn } }))
   return file
 }
 
-/** 假 storyboard CLI：写 PNG + 清单。 */
+/** 假 storyboard CLI：写 PNG + 清单；FAKE_STORYBOARD_AUTH=anonymous 时模拟"匿名降级"。 */
 function writeFakeStoryboard(dir) {
   const file = path.join(dir, 'fake-storyboard.mjs')
   fs.writeFileSync(file, `#!/usr/bin/env node
@@ -65,6 +72,7 @@ import fs from 'node:fs'
 const args = process.argv.slice(2)
 const out = args[args.indexOf('--out') + 1]
 fs.writeFileSync(out, Buffer.from('${PNG_1X1}', 'base64'))
+if (process.env.FAKE_STORYBOARD_AUTH === 'anonymous') console.error('[fetch] downloaded 0.9MB → 360p (source max 480p, auth=anonymous)')
 console.log('<storyboard path="' + args[0] + '" duration="60.00" window="0.00-10.00" image="320x240" grid="2 cells x 1 image(s)">')
 console.log('cell 1 = 00:00.00-00:05.00')
 console.log('cell 2 = 00:05.00-00:10.00')
@@ -262,4 +270,197 @@ test('真 runner 的只读白名单：--list 正常，写函数被拒（不 impo
   const denied = JSON.parse(spawnSync(python, [runner, 'bili_reply', '{}'], { encoding: 'utf8' }).stdout)
   assert.equal(denied.ok, false)
   assert.equal(denied.code, 'E_READ_ONLY')
+})
+
+/* ── venv 迁移 / cookies 到期 / 限速退避（2026-11-06 收尾） ───────────── */
+
+test('venv 解析：显式 > ICL stateDir venv > 旧 venv 兼容回退 > missing', () => {
+  const root = tempRoot('venv')
+  const legacy = path.join(root, 'legacy')
+  const legacyPython = venvPython(path.join(legacy, '.venv'))
+  fs.mkdirSync(path.dirname(legacyPython), { recursive: true })
+  fs.writeFileSync(legacyPython, '')
+
+  const base = { stateDir: root, legacyBiliDir: legacy }
+  const fallback = resolveConfig({ config: base })
+  assert.equal(fallback.pythonSource, 'legacy-compat')
+  assert.equal(fallback.pythonPath, legacyPython)
+
+  const ownPython = venvPython(path.join(root, 'bili', '.venv'))
+  fs.mkdirSync(path.dirname(ownPython), { recursive: true })
+  fs.writeFileSync(ownPython, '')
+  const own = resolveConfig({ config: base })
+  assert.equal(own.pythonSource, 'icl')
+  assert.equal(own.pythonPath, ownPython)
+
+  const explicit = resolveConfig({ config: { ...base, pythonPath: 'C:/custom/python.exe' } })
+  assert.equal(explicit.pythonSource, 'explicit')
+  assert.equal(explicit.pythonPath, 'C:/custom/python.exe')
+
+  const missing = resolveConfig({ config: { stateDir: path.join(root, 'empty'), legacyBiliDir: path.join(root, 'empty-legacy') } })
+  assert.equal(missing.pythonSource, 'missing')
+  assert.equal(missing.pythonPath, venvPython(path.join(root, 'empty', 'bili', '.venv')))
+})
+
+test('storyboard cookies：只读到到期列，给出"还会不会变糊"的可操作警告', () => {
+  const root = tempRoot('cookies')
+  const videoJson = path.join(root, 'video.json')
+  const day = 86_400_000
+  const now = Date.parse('2026-11-06T00:00:00Z')
+
+  const unconfigured = readStoryboardAuth({ videoConfigPath: videoJson, now })
+  assert.equal(unconfigured.status, 'unconfigured')
+  assert.match(unconfigured.warning, /没有配置 cookies/)
+  assert.match(unconfigured.warning, /VIDEO-EYES\.md §11/)
+
+  const missingPath = path.join(root, 'nope.txt')
+  fs.writeFileSync(videoJson, JSON.stringify({ cookies: missingPath }))
+  const missing = readStoryboardAuth({ videoConfigPath: videoJson, now })
+  assert.equal(missing.status, 'missing')
+  assert.match(missing.warning, /文件不存在/)
+
+  const cookies = (expirySec) => [
+    '# Netscape HTTP Cookie File',
+    `.bilibili.com\tTRUE\t/\tFALSE\t${expirySec}\tSESSDATA\tFAKE-SECRET-VALUE`,
+    `.bilibili.com\tTRUE\t/\tFALSE\t${expirySec}\tDedeUserID\tFAKE-ID`,
+  ].join('\n')
+  const file = path.join(root, 'cookies.txt')
+  fs.writeFileSync(file, cookies(Math.floor((now + 30 * day) / 1000)))
+  fs.writeFileSync(videoJson, JSON.stringify({ cookies: file }))
+  const okState = readStoryboardAuth({ videoConfigPath: videoJson, now })
+  assert.equal(okState.status, 'ok')
+  assert.equal(okState.warning, null)
+  assert.ok(okState.expiresAt > now)
+
+  fs.writeFileSync(file, cookies(Math.floor((now + 3 * day) / 1000)))
+  const soon = readStoryboardAuth({ videoConfigPath: videoJson, now })
+  assert.match(soon.warning, /天后到期/)
+  assert.doesNotMatch(soon.warning, /FAKE-SECRET-VALUE/)
+
+  fs.writeFileSync(file, cookies(Math.floor((now - day) / 1000)))
+  const expired = readStoryboardAuth({ videoConfigPath: videoJson, now })
+  assert.match(expired.warning, /已过期/)
+  assert.match(expired.warning, /480P/)
+})
+
+/** 假 runner：前 N 次失败（FAKE_CODE），之后成功；计数器落在 FAKE_COUNTER 文件。 */
+function writeFlakyRunner(dir) {
+  const file = path.join(dir, 'flaky-runner.mjs')
+  fs.writeFileSync(file, `#!/usr/bin/env node
+import fs from 'node:fs'
+const counter = process.env.FAKE_COUNTER
+let n = 0
+try { n = Number(fs.readFileSync(counter, 'utf8')) || 0 } catch { n = 0 }
+n += 1
+fs.writeFileSync(counter, String(n))
+const fails = Number(process.env.FAKE_FAILS || 0)
+const code = process.env.FAKE_CODE || 'E_RATE_LIMIT'
+if (n <= fails) {
+  console.log(JSON.stringify({ ok: false, code, error: 'retry me', next: 'wait' }))
+  process.exit(1)
+}
+console.log(JSON.stringify({ ok: true, result: { bvid: 'BV1L7xm64EHP' } }))
+`, 'utf8')
+  return file
+}
+
+function callerCfg(root, runner, extra = {}) {
+  return resolveConfig({
+    config: {
+      stateDir: root,
+      pythonPath: process.execPath,
+      runnerPath: runner,
+      legacyBiliDir: path.join(root, 'legacy-empty'),
+      videoConfigPath: path.join(root, 'video.json'),
+      callTimeoutMs: 5_000,
+      ...extra,
+    },
+  })
+}
+
+test('限速/退避：风控/超时按指数退避重试，E_AUTH 不重试', async () => {
+  const root = tempRoot('retry')
+  const runner = writeFlakyRunner(root)
+  const counter = path.join(root, 'calls.txt')
+  const calls = () => { try { return Number(fs.readFileSync(counter, 'utf8')) || 0 } catch { return 0 } }
+
+  process.env.FAKE_COUNTER = counter
+  process.env.FAKE_FAILS = '2'
+  process.env.FAKE_CODE = 'E_RATE_LIMIT'
+  try {
+    const sleeps = []
+    const caller = makeCaller(callerCfg(root, runner, { maxRetries: 2, retryBaseMs: 100, retryMaxMs: 500, minIntervalMs: 0 }), {
+      sleep: async (ms) => { sleeps.push(ms) },
+      now: () => 0,
+    })
+    const result = await caller('bili_search', { keyword: 'x' })
+    assert.equal(result.ok, true)
+    assert.equal(calls(), 3, '2 次失败 + 1 次成功')
+    assert.equal(sleeps.length, 2)
+    assert.ok(sleeps[1] > sleeps[0], `退避应递增：${sleeps.join(',')}`)
+  } finally {
+    delete process.env.FAKE_COUNTER
+    delete process.env.FAKE_FAILS
+    delete process.env.FAKE_CODE
+  }
+
+  fs.writeFileSync(counter, '0')
+  process.env.FAKE_COUNTER = counter
+  process.env.FAKE_FAILS = '9'
+  process.env.FAKE_CODE = 'E_AUTH'
+  try {
+    const caller = makeCaller(callerCfg(root, runner, { maxRetries: 3, retryBaseMs: 100, minIntervalMs: 0 }), {
+      sleep: async () => {},
+      now: () => 0,
+    })
+    const result = await caller('bili_search', { keyword: 'x' })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'E_AUTH')
+    assert.equal(calls(), 1, 'E_AUTH 重试也没用，不应重试')
+  } finally {
+    delete process.env.FAKE_COUNTER
+    delete process.env.FAKE_FAILS
+    delete process.env.FAKE_CODE
+  }
+})
+
+test('限速：同一插件实例的调用串行且至少间隔 minIntervalMs', async () => {
+  const root = tempRoot('interval')
+  const runner = writeFlakyRunner(root)
+  const counter = path.join(root, 'calls.txt')
+  process.env.FAKE_COUNTER = counter
+  process.env.FAKE_FAILS = '0'
+  try {
+    let clock = 1000
+    const sleeps = []
+    const caller = makeCaller(callerCfg(root, runner, { minIntervalMs: 1000, maxRetries: 0 }), {
+      sleep: async (ms) => { sleeps.push(ms); clock += ms },
+      now: () => clock,
+    })
+    await caller('bili_search', { keyword: 'a' })
+    await caller('bili_search', { keyword: 'b' })
+    assert.ok(sleeps.some((ms) => ms >= 1000), `第二次调用前应等待 ≥1000ms，实际：${sleeps.join(',')}`)
+  } finally {
+    delete process.env.FAKE_COUNTER
+    delete process.env.FAKE_FAILS
+  }
+})
+
+test('bili_frames：cookies 缺失 + CLI 匿名降级 → 文本明确说"会糊"并给 runbook', async () => {
+  const root = tempRoot('frames-warn')
+  const fake = writeFakeStoryboard(root)
+  const host = hostWith(baseConfig(root, { runnerPath: writeFakeRunner(root), storyboardCli: fake }))
+  await host.enable('bili')
+  const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
+  process.env.FAKE_STORYBOARD_AUTH = 'anonymous'
+  try {
+    const out = await tools.bili_frames.execute({ target: 'BV1L7xm64EHP', from: 0, to: 10, cells: 2 })
+    assert.match(out.text, /没有配置 cookies/)
+    assert.match(out.text, /匿名/)
+    assert.match(out.text, /VIDEO-EYES\.md §11/)
+    assert.equal(out.images.length, 1)
+  } finally {
+    delete process.env.FAKE_STORYBOARD_AUTH
+    await host.disable('bili')
+  }
 })

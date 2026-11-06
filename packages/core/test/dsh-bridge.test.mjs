@@ -9,12 +9,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import {
-  toDshToolDefinition, toDshUserMessage, normalizeParameters, textOfSessionEvent,
+  toDshToolDefinition, toDshUserMessage, normalizeParameters, textOfSessionEvent, IMAGE_OUTPUT_SCHEMA,
 } from '../src/index.mjs'
 import { createDshBridge } from '../../dsh-icl/src/bridge.mjs'
 import { createIclPlugin } from '../../dsh-icl/src/plugin.mjs'
 import { bootstrapHost } from '../../dsh-icl/src/bootstrap.mjs'
-import { DEFAULT_PLUGINS, normalizeConfig } from '../../dsh-icl/src/config.mjs'
+import { DEFAULT_PLUGINS, normalizeConfig, matchToolAllowlist } from '../../dsh-icl/src/config.mjs'
 import * as memory from '../../plugins/memory/src/index.mjs'
 import * as recall from '../../plugins/recall/src/index.mjs'
 import * as note from '../../plugins/note/src/index.mjs'
@@ -22,7 +22,7 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import noteManifest from '../../plugins/note/manifest.json' with { type: 'json' }
 
-function fakeCtx({ withContext = true, attachments = null } = {}) {
+function fakeCtx({ withContext = true, attachments = null, rejectImageOutput = false } = {}) {
   const tools = new Map()
   const sections = new Map()
   const contexts = new Map()
@@ -43,6 +43,10 @@ function fakeCtx({ withContext = true, attachments = null } = {}) {
         assert.equal(typeof def.parameters, 'object')
         assert.equal(def.parameters.type, 'object')
         assert.ok(Object.hasOwn(def.parameters, 'additionalProperties'), `${def.name} 参数必须是闭合对象`)
+        // 模拟旧 DSH 0.2.0-rc.2：不接受声明 images 的 output schema（会 throw）。
+        if (rejectImageOutput && def.output?.schema?.properties?.images) {
+          throw new Error(`unsupported output schema for ${def.name}: images`)
+        }
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -211,6 +215,56 @@ test('桥：插件回图片路径 → 宿主附件服务 → image block（真�
     assert.equal(saved.length, 1)
     assert.equal(saved[0].mediaType, 'image/png')
     assert.deepEqual(def.output.render({}, out)[0], { type: 'image', attachment: out.images[0] })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('IMAGE_OUTPUT_SCHEMA 是合法 JSON Schema（不能用 type:json，旧 DSH 会拒）', () => {
+  const item = IMAGE_OUTPUT_SCHEMA.properties?.images?.items
+  assert.ok(item && item.type === 'object', `images.items 必须是对象 schema：${JSON.stringify(item)}`)
+  assert.notEqual(item.type, 'json')
+  assert.deepEqual(IMAGE_OUTPUT_SCHEMA.required, ['text'])
+})
+
+test('旧 DSH 拒绝 image output schema 时，bridge 自动回退 text-only 且工具不丢（P0 回归）', async () => {
+  const root = tempRoot('tool-output-fallback')
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(
+    { id: 'fake-tools', version: '0.0.1', entry: './x.mjs', tools: ['fake_shot', 'plain_text'] },
+    {
+      apply(pluginCtx) {
+        pluginCtx.tools.register({
+          name: 'fake_shot',
+          summary: '一张假截图',
+          parameters: { type: 'object', properties: {} },
+          async execute() { return { text: '截图好了', images: ['C:/x.png'] } },
+        })
+        pluginCtx.tools.register({
+          name: 'plain_text',
+          summary: '纯文本工具',
+          parameters: { type: 'object', properties: {} },
+          async execute() { return 'ok' },
+        })
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-tools')
+  const logs = []
+  const ctx = fakeCtx({ rejectImageOutput: true })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') }, log: (entry) => logs.push(entry) })
+  bridge.start()
+  try {
+    assert.ok(ctx.tools_.has('fake_shot') && ctx.tools_.has('plain_text'), `工具不能丢：${[...ctx.tools_.keys()]}`)
+    for (const [name, def] of ctx.tools_) {
+      assert.equal(def.output?.schema?.properties?.images, undefined, `${name} 应回退到 text-only output schema`)
+    }
+    assert.ok(logs.some((entry) => entry?.msg === 'icl.tool-output-fallback'), `应留回退告警：${JSON.stringify(logs.slice(0, 6))}`)
+    const out = await ctx.tools_.get('fake_shot').execute({})
+    assert.match(out.text, /C:\/x\.png/)
+    assert.equal(out.images, undefined, '回退时不能提交 images（schema 没声明）')
   } finally {
     bridge.dispose()
   }
@@ -945,4 +999,82 @@ test('装配：默认插件清单全部启用，且工具面齐全', async () =>
     assert.ok(names.includes(name), `缺少工具 ${name}`)
   }
   for (const id of [...out.enabled].reverse()) { try { host.disable(id) } catch { /* ignore */ } }
+})
+
+test('工具白名单：MC 场景只注册名单内工具（支持 mcb_* 前缀）', async () => {
+  const root = tempRoot('allowlist')
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(
+    { id: 'fake-tools', version: '0.0.1', entry: './x.mjs', tools: ['mcb_do', 'mcb_status', 'album_list', 'time_status'] },
+    {
+      apply(pluginCtx) {
+        for (const name of ['mcb_do', 'mcb_status', 'album_list', 'time_status']) {
+          pluginCtx.tools.register({ name, summary: 'x', parameters: { type: 'object', properties: {} }, async execute() { return 'ok' } })
+        }
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-tools')
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), toolAllowlist: ['mcb_*', 'time_status'] } })
+  bridge.start()
+  try {
+    assert.deepEqual([...ctx.tools_.keys()].sort(), ['mcb_do', 'mcb_status', 'time_status'])
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('matchToolAllowlist：空=全量；精确/前缀/通配', () => {
+  assert.equal(matchToolAllowlist('album_list', []), true)
+  assert.equal(matchToolAllowlist('mcb_do', ['mcb_*']), true)
+  assert.equal(matchToolAllowlist('mcb_do', ['mcb_status']), false)
+  assert.equal(matchToolAllowlist('time_status', ['time_*', 'mcb_*']), true)
+  assert.equal(matchToolAllowlist('anything', ['*']), true)
+})
+
+test('facts dirty：MC 事件不让快照变化，time 事件才刷新（≤1 条/轮的前提）', async () => {
+  const root = tempRoot('facts-dirty')
+  const host = createHost({ log: () => {} })
+  let counter = 0
+  host.registerPlugin(
+    { id: 'fake-facts', version: '0.0.1', entry: './x.mjs', tools: [] },
+    {
+      apply(pluginCtx) {
+        pluginCtx.prompt.section({ name: 'fake-facts', order: 880, text: () => `时间：${counter}` })
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-facts')
+  const ctx = fakeCtx()
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  try {
+    const session = fakeSession('s1')
+    bridge.bindSession(session)
+    bridge.bindAgent(fakeAgent(session))
+    bridge.onEvent(session, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+    const facts = ctx.contexts_.get('icl:facts')
+    assert.ok(facts, '应注册 facts context')
+    const first = facts.text({})
+    const refresh1 = bridge.status().stats.factsRefreshes
+    counter = 1
+    host.services.delivery.push({ source: { plugin: 'mc' }, content: { text: '[MC] 掉血：20 → 19' } })
+    await bridge.tick()
+    const afterMc = facts.text({})
+    counter = 2
+    host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '[时间] 下一个安排变了' } })
+    await bridge.tick()
+    const afterTime = facts.text({})
+    const refresh2 = bridge.status().stats.factsRefreshes
+    assert.equal(afterMc, first, 'MC 事件不应改变 facts 快照（允许整轮陈旧，以 mcb_status 为准）')
+    assert.notEqual(afterTime, afterMc, 'time 事件应让 facts 刷新')
+    assert.equal(refresh2, refresh1 + 1, '只应多刷新一次')
+  } finally {
+    bridge.dispose()
+  }
 })

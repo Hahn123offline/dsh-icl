@@ -20,7 +20,7 @@
 | `dream` | 995 | 0 | — | 可用待调 | 7 个默认 job 的夜间整理流水线（另有废弃的 `slang`） |
 | `rhythm` | 109 | 0 | — | 遗留兼容 | 旧 nightly 时钟；默认不启用，time 接管 |
 | `loop-probe` | 90 | 0 | — | 测试接缝 | 闭环外部信号注入；只在 `icl-loop` preset 启用 |
-| `mc-link` | 380 | 12 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_stop` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → 工具面 + signals（不注册 world source）；默认不启用，`icl-mc`/`icl-mc-lab` preset |
+| `mc-link` | 380 | 16 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_stop` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_snapshot` `mcb_eyes` `mcb_attack` `mcb_combat` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → 工具面 + signals（不注册 world source）；默认不启用，`icl-mc`/`icl-mc-lab` preset |
 | `time` | 618 | 7 | `time_status` `time_arrange` `time_list` `time_edit` `time_cancel` `time_pause` `time_resume` | 可用待调 | 日程、睡眠、目标的时钟 |
 | `compaction` | 77 | 0 | — | 可用待调 | 把早前对话压成摘要再注入 |
 | `persona` | 85 | 0 | — | 可用待调 | 人格卡与版本历史 |
@@ -143,7 +143,10 @@
 
 ### mc-link（实验接缝，默认不启用）
 
-- **工具**：12 个 —— `mcb_servers`、`mcb_lan`、`mcb_join`、`mcb_leave`、`mcb_stop`、`mcb_status`、`mcb_look`、`mcb_scan`、`mcb_map`、`mcb_inventory`、`mcb_do`、`mcb_help`。
+- **工具**：16 个 —— `mcb_servers`、`mcb_lan`、`mcb_join`、`mcb_leave`、`mcb_stop`、`mcb_status`、`mcb_look`、`mcb_scan`、`mcb_map`、`mcb_snapshot`、`mcb_eyes`、`mcb_attack`、`mcb_combat`、`mcb_inventory`、`mcb_do`、`mcb_help`。
+  `mcb_combat` = 战斗宏（hunt/defend/flee/guard；自动选武器/走位/低血中断）；`mcb_attack` = 单目标攻击（hit/伤害/血 before→after/killed）。
+  `mcb_snapshot` = 结构化场景快照（毫秒级，日常先看它）；`mcb_eyes` = 按需截图（Edge headless，约 7–8s/1.3GB，
+  quota 15s；PNG 通过 `{images:[路径]}` 作为图片附件，501=body 未配置 viewer）。
   `mcb_join` 会 spawn/复用 `mc-body` 子进程并等到真连接；`mcb_leave` 只杀本会话 spawn 的进程。
   `mcb_stop` = 停任务+安全反射但**不离开世界**（同步 time 暂停模式；暂停≠离开），`mcb_leave` 才是结束 body；
   长任务/单步动作/任务台账/事件/取消/恢复/发言都走 `mcb_do` 的 steps op（`task`/`dig`/`tasks`/`events`/`cancel`/`resume`/`say`…）；
@@ -186,7 +189,7 @@
   - `bili_login_start` → 二维码 PNG（attachment）+ `key`；`bili_login_poll`（必填 `key`）→ 成功后原子写凭证。
 - **配置**：`stateDir`（由 `bootstrap.configFor('bili')` 注入 ICL 的 stateDir）、`maxChars`（`6000`）、`timeoutMs`（`90_000`），以及路径覆盖 `pythonPath` / `runnerPath` / `vendorDir` / `storyboardCli` / `legacyBiliDir` / `credentialFile`（测试用 `fetchImpl`）。
 - **依赖**：repo 内 `vendor/bilibili-mcp/`（MIT，见 `NOTICE.md` / `PATCHES.md`）、`tools/bili-run.py` 只读桥、`execFile`、storyboard CLI（仅 `bili_frames`）、Python venv（bilibili-api-python / aiohttp / mcp<2 / qrcode）。插件**不直接发 HTTP**：扫码登录走 host 的 `ctx.fetch`。
-- **状态**：可用待调 —— C 路线最小可跑已落地（2026-11-06）：repo 自持 vendor、只读白名单、凭证从旧家目录一次性迁移到 `<stateDir>/bili/`、热门/排行接出、错误归一化（`E_AUTH`/`E_RATE_LIMIT`/`E_NETWORK`/`E_TOOL`…）。已知待办：venv 仍默认用旧目录那份（迁移到 stateDir 属后续）；storyboard 的 cookies 到期时间独立于 B 站凭证（见 `docs/BILI-FEASIBILITY.md` §7.1）。
+- **状态**：可用待调 —— C 路线最小可跑已落地（2026-11-06，含收尾）：repo 自持 vendor、只读白名单、凭证从旧家目录一次性迁移到 `<stateDir>/bili/`、热门/排行接出、错误归一化（`E_AUTH`/`E_RATE_LIMIT`/`E_NETWORK`/`E_TOOL`…）、**解释器优先 ICL 自己的 venv（旧 venv 兼容回退；2026-11-06 已实建，`pythonSource=icl`；`tools/bili-venv.mjs` 迁移）**、**只读调用串行 + 最小间隔 + 指数退避重试**、**切帧 cookies 到期/匿名降级的显式提示**。已知待办：storyboard cookies 需在 12-01 前重新导出（runbook 见 `docs/VIDEO-EYES.md §10`）；ASR 只有设计（§11，不落桌面配置）。
 
 ### video
 
@@ -207,7 +210,7 @@
 
 | 位置 | 值 | 可否覆盖 |
 |---|---|---|
-| `bili` 的 Python 解释器 | 默认 `C:\Users\ai_admin\.dsh\bili-duty\.venv\Scripts\python.exe` | `BILI_PYTHON` / 插件 config `pythonPath` |
+| `bili` 的 Python 解释器 | 默认 `<ICL stateDir>/bili/.venv/Scripts/python.exe`（POSIX `bin/python`）；不存在时**兼容回退**旧插件 venv `C:\Users\ai_admin\.dsh\bili-duty\.venv\Scripts\python.exe` | `BILI_PYTHON` / 插件 config `pythonPath`；迁移用 `node tools/bili-venv.mjs --create` |
 | `bili` 的只读桥 | 仓库内 `tools/bili-run.py` | `BILI_RUNNER` / `runnerPath` |
 | `bili` 的 vendored MCP | 仓库内 `packages/plugins/bili/vendor/bilibili-mcp/` | `BILI_VENDOR` / `vendorDir` |
 | `bili` 的旧家目录（仅一次性迁移凭证） | `C:\Users\ai_admin\.dsh\bili-duty` | `BILI_DIR` / `legacyBiliDir` |
@@ -272,7 +275,7 @@
 
 | 路径 | 是什么 | 为什么不算产品 |
 |---|---|---|
-| `tools/*.mjs`（13 个） | 评测、诊断、回放、验收、控制后门、自建 agent 循环 | 全部在 `workspaces` 外、无自己的 `package.json`、`npm test` 只跑 `packages/core/test`；头部注释自述「评测 / 诊断 / 回放 / 验收 / 控制后门」 |
+| `tools/*.mjs` | 评测、诊断、回放、验收、控制后门、自建 agent 循环、B 站/视频体检（`bili-eval.mjs`、`bili-venv.mjs`） | 全部在 `workspaces` 外、无自己的 `package.json`；`npm test` 只跑各插件的 `test/` 目录，不含 `tools/`；头部注释自述「评测 / 诊断 / 回放 / 验收 / 迁移」 |
 | `config/marathon.json`、`config/marathon-30.json` | 马拉松脚手架的配置 | 只被 `tools/marathon.mjs` 读；其中的 `plugins` 是 8 个 id，比脚本内置的 9 个少 `dream`——照这份配置跑时 `dream` 注册了但不会被 `enable` |
 | `prompts/marathon.md` | 挂机刷视频的提示词 | 只被 `config/marathon*.json` 的 `personaFile` 指向，`dream` 的默认 `personaFile` 是 `prompts/dream.md` |
 | `state/` 下产物 | `marathon-exports/`、`marathon-workspace/`、`test-*`、`*.jsonl`、`probe-early.json` | 运行产物，`.gitignore` 已忽略 `state/`；`marathon-*` 与 `test-*` 只由脚手架生成 |

@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
-import { ensureRuntime, makeCaller, preflight, failText, resolveConfig } from './runtime.mjs'
+import { ensureRuntime, makeCaller, preflight, failText, resolveConfig, readStoryboardAuth } from './runtime.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng, credentialExpiry } from './login.mjs'
 
 export const name = 'bili'
@@ -136,7 +136,7 @@ function framesTarget(target) {
   return { url: VIDEO_URL(bvid) }
 }
 
-function callStoryboard(cfg, { url, from, to, cells, workDir }) {
+function callStoryboard(cfg, { url, from, to, cells, workDir, allowAnonymous = true }) {
   return new Promise((resolve) => {
     const sheet = path.join(workDir, 'sheet.png')
     const manifest = path.join(workDir, 'manifest.json')
@@ -146,10 +146,12 @@ function callStoryboard(cfg, { url, from, to, cells, workDir }) {
       cfg.storyboardCli, url,
       '--cells', String(Math.min(16, Math.max(1, Number(cells) || 6))),
       '--out', sheet, '--manifest', manifest,
-      '--allow-anonymous',
       '--from', String(Math.max(0, start)), '--to', String(Math.max(start + 1, end)),
       '--scan-height', '240', '--text',
     ]
+    // 有 cookies 时不传 --allow-anonymous：让 CLI 自己在降级时把警告打到 stderr；
+    // 没有 cookies 时传上，避免它把"匿名"当异常（我们自己的 auth 提示更具体）。
+    if (allowAnonymous) args.push('--allow-anonymous')
     execFile(process.execPath, args, { timeout: 600_000, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
       const out = String(stdout ?? '')
       const at = out.indexOf('<storyboard')
@@ -164,7 +166,7 @@ function callStoryboard(cfg, { url, from, to, cells, workDir }) {
         resolve({ ok: false, error: String(error?.message ?? error), stderr: String(stderr ?? '') })
         return
       }
-      resolve({ ok: true, block, images, manifest })
+      resolve({ ok: true, block, images, manifest, stderr: String(stderr ?? '') })
     })
   })
 }
@@ -329,12 +331,25 @@ export function apply(ctx) {
       if (blocked) return { text: blocked }
       const info = framesTarget(target)
       if (info.error) return { text: info.error }
+      const auth = readStoryboardAuth({ videoConfigPath: cfg.videoConfigPath, videoCookies: cfg.videoCookies })
       const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-bili-board-'))
-      const result = await callStoryboard(cfg, { url: info.url, from, to, cells, workDir })
+      const result = await callStoryboard(cfg, {
+        url: info.url, from, to, cells, workDir,
+        // 没有 cookies 时显式匿名，避免 CLI 的"未配置"噪声；我们自己给更具体的提示。
+        allowAnonymous: auth.status !== 'ok',
+      })
       if (!result.ok) {
         return { text: `看不成画面：${result.error}\n下一步：用原生 video_storyboard（B 站链接直传）；或检查 ffmpeg/网络。` }
       }
-      const text = takeText(result.block || '宫格图已生成（没有清单输出）。', cfg.maxChars)
+      // "别再悄悄变糊"：即使 CLI 静默降级成匿名，也把这次的真实来源写进结果。
+      const degraded = /auth=anonymous/.test(result.stderr || '')
+      const warnings = []
+      if (auth.warning) warnings.push(auth.warning)
+      if (degraded && !auth.warning) {
+        warnings.push('⚠️ 本次实际按匿名拉流（最高 480P，图可能糊）：cookies 缺失或已过期。续期见 docs/VIDEO-EYES.md §11。')
+      }
+      const body = takeText(result.block || '宫格图已生成（没有清单输出）。', cfg.maxChars)
+      const text = warnings.length ? `${warnings.join('\n')}\n\n${body}` : body
       return { text, images: result.images.slice(0, 2) }
     }),
   })

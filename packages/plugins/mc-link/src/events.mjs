@@ -24,9 +24,9 @@ export const QUIET_EVENTS = Object.freeze([
   // 观测/记账类：body 自己的 watchdog 统计与心跳、寻路/隧道的中间过程，不叫她。
   'heartbeat', 'watchdog', 'watchdog_suppressed', 'task_idempotent_hit', 'ledger_loaded',
   'path_recovered', 'tunnel_clear', 'path_approximate', 'auto_eat', 'dig_fallback', 'craft_no_product',
-  // 宏的信息事件（MC-MACRO §5）：macro_step/macro_blocked 等在 body 台账里可查，不逐条叫醒；
-  // 宏真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
-  'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
+  // 宏/战斗的中间信息事件：macro_step/macro_blocked/combat_done 等在 body 台账里可查，不逐条叫醒；
+  // 真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
+  'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool', 'combat_done',
 ])
 
 /**
@@ -44,7 +44,7 @@ const DEFAULTS = Object.freeze({
     chat: 0, join: 30_000, leave: 30_000, health_drop: 120_000, disconnected: 10_000,
     'connection-lost': 30_000, reconnecting: 60_000, reconnected: 60_000, body_error: 30_000,
     idle_disconnect: 60_000, resume_required: 120_000, quarantine: 300_000,
-    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000,
+    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, auto_defense: 60_000, combat_abort: 30_000,
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
@@ -71,6 +71,9 @@ const REASON_TEXT = Object.freeze({
   manual: '手动停止',
   cleanup: '收尾停止',
   timeout: '超时',
+  'user-stop': '你让它停的（mcb_stop，可随时 resume）',
+  emergency: '紧急规避',
+  threat: '有威胁（自动躲避/防御触发）',
 })
 
 /** 哪些暂停原因真的紧急到可以带 alarm 标签（focus 的"勿扰"也会放行 alarm）。 */
@@ -101,6 +104,10 @@ const TASK_REASON_TEXT = Object.freeze({
   'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
   'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
   'not connected': '身体当时不在线（先 mcb_status，需要就 mcb_join）',
+  'combat: low-health': '战斗低血中断（已自动躲避）：先吃/躲/垫高，或改用 mcb_combat {mode:"flee"}；血回上去再打',
+  'combat: creeper-near': '苦力怕近身（已自动躲避）：先跑/垫高，别贴脸打',
+  'combat: too-many': '敌人太多（已自动躲避）：改用 flee 或 guard，别硬刚',
+  'combat: no-threat': '附近没有威胁了：不用再打',
 })
 
 /** 从 error 字符串（如 "mine: no-target"）里认出原因与下一步。 */
@@ -114,7 +121,7 @@ function reasonHint(raw) {
 
 const OPS = Object.freeze(['look', 'inventory', 'scan', 'map', 'move', 'goto', 'patrol', 'explore', 'follow', 'mine', 'use', 'dig', 'place', 'equip', 'toss', 'pickup', 'attack', 'wait', 'eat', 'face', 'sleep', 'craft', 'furnace', 'chest', 'trade', 'task', 'cancel', 'resume', 'events', 'tasks', 'say'])
 /** 任务类型：原语 kind + 宏 kind（body KINDS 的超集；宏契约见 docs/MC-MACRO.md）。 */
-const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
+const TASK_KINDS = Object.freeze(['mine', 'goto', 'patrol', 'explore', 'follow', 'routine', 'chat', 'collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm', 'hunt', 'defend', 'flee', 'guard'])
 /** 宏 kind（重复劳动下沉到 body 脚本，模型只下一条指令/查进度/打断）。 */
 const MACRO_KINDS = Object.freeze(['collect', 'tunnel', 'bridge', 'build', 'sort', 'deposit', 'shelter', 'farm'])
 
@@ -139,6 +146,13 @@ export function positionText(status) {
   const p = status?.adapter?.position
   if (!p || !Number.isFinite(Number(p.x))) return null
   return `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`
+}
+
+/** 事件时刻的坐标（优先事件 data 里的 position/lastDeath.position），避免用格式化时的实时位置。 */
+function eventPositionText(data, fallback = null) {
+  const p = data?.position ?? data?.lastDeath?.position ?? data?.at
+  if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.y)) || !Number.isFinite(Number(p.z))) return fallback
+  return `${Math.round(Number(p.x))},${Math.round(Number(p.y))},${Math.round(Number(p.z))}`
 }
 
 function aliveText(status) {
@@ -282,8 +296,19 @@ function taskKey(event) {
   return `${event.type}:${event.data?.task?.id ?? event.data?.taskId ?? '?'}`
 }
 
-/** 单条事件 → 信号描述；null 表示不投递（仍然会记日志）。 */
-function describe(event, status, ctx) {
+/**
+ * 报警行长度上限（≤80 字/条，含"另有 N 条已合并"这类后缀）：
+ * 睡眠/醒来简报会整行展示，太长会挤掉真正重要的内容。
+ */
+const ALARM_LINE_MAX = 80
+function alarmLine(text, suffix = '') {
+  const chars = [...String(text ?? '')]
+  const room = Math.max(30, ALARM_LINE_MAX - [...suffix].length)
+  if (chars.length <= room) return `${text}${suffix}`
+  return `${chars.slice(0, Math.max(1, room - 1)).join('')}…${suffix}`
+}
+
+/** 单条事件 → 信号描述；null 表示不投递（仍然会记日志）。 */function describe(event, status, ctx) {
   const type = String(event?.type ?? '')
   const d = event?.data ?? {}
   const pos = positionText(status)
@@ -301,31 +326,62 @@ function describe(event, status, ctx) {
       return { kind: 'event', tags: ['mc', 'join'], priority: 'notice', merge: 'join', text: `[MC] ${d.username ?? '有人'} 进入游戏` }
     case 'leave':
       return { kind: 'event', tags: ['mc', 'leave'], priority: 'notice', merge: 'leave', text: `[MC] ${d.username ?? '有人'} 离开游戏` }
-    case 'death':
+    case 'death': {
+      // 用死亡时刻的事实（位置/当时的背包件数），不要混入格式化时的实时状态。
+      const dropped = d.lastDeath?.inventoryCount ?? d.inventoryCount
+      const deathPos = eventPositionText(d, pos)
       return {
         kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', merge: 'death', alarm: true,
-        text: `[MC] 死亡${pos ? `（上次位置 ${pos}）` : ''}；${pausedHint(status) || 'body 会复活，但不会自己接着做任务。'}`,
+        text: `[MC] 死亡${deathPos ? ` @ ${deathPos}` : ''}${dropped != null ? `（当时背包 ${num(dropped)} 件）` : ''}；body 会复活，但旧任务不会自己续跑，先 mcb_status 看位置。`,
       }
-    case 'health_drop':
+    }
+    case 'health_drop': {
+      // 事件时刻的血量：from/to 就是那一下的；括号里不再放"当前状态"（合并/限流后会不同步）。
+      const hasValues = d.from != null || d.to != null
+      const detail = [
+        d.to != null ? `事件时 ${num(d.to)}/20` : null,
+        d.drop != null ? `一次掉 ${num(d.drop)}` : null,
+      ].filter(Boolean).join('，')
       return {
         kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'health_drop',
-        text: `[MC] 掉血：${num(d.from)} → ${num(d.to)}${aliveText(status) ? `（${aliveText(status)}）` : ''}`,
+        text: `[MC] 掉血：${hasValues ? `${num(d.from)} → ${num(d.to)}` : '血量下降'}${detail ? `（${detail}）` : '（事件数据没带前后血量）'}`,
       }
+    }
     case 'safety_stop': {
       const why = REASON_TEXT[d.reason] ?? valueText(d.reason, '安全原因', 60)
       const serious = seriousReason(d.reason)
+      const extra = d.event && d.event !== d.reason ? `（叠加：${REASON_TEXT[d.event] ?? valueText(d.event, '更严重事件', 30)}）` : ''
       return {
         kind: 'event',
         tags: ['mc', 'safety'].concat(serious ? ['alarm'] : []),
         priority: serious ? 'alarm' : 'notice',
         merge: 'safety_stop', alarm: serious,
-        text: `[MC] 安全停止：${why}；${pausedHint(status)}`,
+        text: `[MC] 安全停止：${why}${extra}${d.repeated ? '（重复报警）' : ''}；任务已中断（停任务≠离开世界）；resume 继续，mcb_leave 离开。`,
+      }
+    }
+    case 'auto_defense': {
+      // body 自己在危险时做的有界保命动作（躲避/垫高/退开）：说清"做了什么、为什么"，别让她重复跑一遍。
+      const action = d.action === 'error' ? '躲避失败' : d.action === 'offline' ? '身体离线没法躲' : d.action === 'no-op' ? '没有可执行的规避动作' : '已自动躲避'
+      const why = REASON_TEXT[d.reason] ?? valueText(d.reason ?? d.assessment?.reason, '威胁', 40)
+      return {
+        kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'auto_defense',
+        text: `[MC] 自动躲避：${why} → ${action}（${Math.round(Number(d.durationMs) || 0)}ms${d.timedOut ? '，超时' : ''}${d.error ? `，错误：${valueText(d.error, '', 60)}` : ''}）；body 自己做的保命动作，不用重复跑。`,
+      }
+    }
+    case 'combat_abort': {
+      const why = valueText(d.reason ?? d.assessment?.reason, '未知', 40)
+      const hostiles = Array.isArray(d.hostiles) && d.hostiles.length
+        ? `（${d.hostiles.slice(0, 3).map((row) => `${row.name ?? '?'}${row.distance != null ? ` ${row.distance}m` : ''}`).join('、')}）`
+        : ''
+      return {
+        kind: 'event', tags: ['mc', 'safety'], priority: 'notice', merge: 'combat_abort',
+        text: `[MC] 战斗中断：${why}${hostiles}；已先自动躲避，任务随后会报失败——按提示先吃/躲/改用 flee。`,
       }
     }
     case 'spawn_unsafe':
       return {
         kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', alarm: true,
-        text: `[MC] 出生点危险（脚下/头顶/下方是岩浆或火）${pos ? ` @ ${pos}` : ''}；身体已暂停，先 resume 前先换位置（mcb_do goto）。`,
+        text: alarmLine(`[MC] 出生点危险${eventPositionText(d, pos) ? ` @ ${eventPositionText(d, pos)}` : ''}（脚下/头顶/下方是岩浆或火）；已暂停，换个位置再 resume。`),
       }
     case 'path_stuck':
       return {
@@ -510,7 +566,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
         signals.push({
           id: `mc:alarm:${event?.seq ?? atNow}`,
           kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
-          text: `[MC] 危险：${type}${detail ? `（${valueText(detail, '', 80)}）` : ''}；身体已按安全反射处理。先 mcb_status 看位置/血量，想停手用 mcb_stop，想离开用 mcb_leave。`,
+          text: alarmLine(`[MC] 危险：${type}${detail ? `（${valueText(detail, '', 60)}）` : ''}；按安全反射处理，先 mcb_status。`),
         })
         state.counters.signals += 1
         state.counters.alarm += 1
@@ -549,7 +605,7 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
           signals.push({
             id: `mc:escalate:death:${atNow}`,
             kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
-            text: `[MC] 危险：${Math.round(cfg.deathEscalation.windowMs / 60_000)} 分钟内死了 ${cfg.deathEscalation.deaths} 次以上。硬拼没意义：先 mcb_do resume，然后 goto 到安全点/挖掩体/等天亮；不想硬撑就 mcb_leave 收尾。`,
+            text: alarmLine(`[MC] 危险：${Math.round(cfg.deathEscalation.windowMs / 60_000)} 分钟内死了 ${cfg.deathEscalation.deaths} 次以上。别硬拼：先 resume，再 goto 安全点/挖掩体或 mcb_leave。`),
           })
         }
       }
@@ -569,12 +625,13 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
       if (isAlarm && !alarmAllowed(atNow)) { bump('alarm-quota'); continue }
 
       const suffix = suppressedSuffix()
+      const text = isAlarm ? alarmLine(d.text, suffix) : (suffix ? `${d.text}${suffix}` : d.text)
       signals.push({
         id: `mc:e:${event?.seq ?? atNow}`,
         kind: d.kind ?? 'event',
         tags: d.tags ?? ['mc'],
         priority: d.priority ?? 'notice',
-        text: suffix ? `${d.text}${suffix}` : d.text,
+        text,
       })
       state.counters.signals += 1
       if (isAlarm) state.counters.alarm += 1
