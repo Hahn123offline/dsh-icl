@@ -173,3 +173,9 @@ S2 run `.state/lab/e2-20261106-soak`：
 - `.state/lab/mc-building-poc/run15/result.json`：`shelter done`、`verify.ok=true`、`entryOk=true`、`home` 写入；截图 125KB。
 - 截图存档：[`docs/assets/mc-shelter.png`](assets/mc-shelter.png)（3×3 木屋正面，门洞/墙/屋顶清晰可见）。
 - 之前的空白 PNG（run10）保留作为排查对照；run12/13/14 为逐步修镜头过程。
+
+### 2.5 材料不足诊断（needs-material）
+
+- `shelter: needs-material` 的 result 现在带：`material`、`needed`（需要）、`have`（现有）、`deficit`（还差）、`available`（常见建材逐项数量）、`alternatives[{material,have,enough}]`、`suggestion`。
+- 建议会优先给“背包已有足够替代材料 → 直接改 material 重试”，否则给“先 dig 脚边 dirt/stone 补 N 块”的**可执行 op**，并提示“别原样重试”。
+- 真服证据：`.state/lab/mc-body-fix-poc/run1/result.json`（dirt 0/27 → `deficit:27`、suggestion 带 dig 27 dirt/改 material）。

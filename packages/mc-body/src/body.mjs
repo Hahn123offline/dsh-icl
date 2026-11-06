@@ -122,6 +122,9 @@ export function createBody({
   let defenseTimes = []
   const defenseStats = { count: 0, lastAt: null, lastReason: null, lastAction: null, lastDurationMs: null, lastTimedOut: false, lastEventSeq: null }
   let defenseActive = false
+  // danger 时先取消当前非战斗任务、暂停起新任务一小会儿，避免“边逃边接任务继续走进危险”。
+  let defenseHoldUntil = 0
+  let defenseHoldTimer = null
   let resumeGraceUntil = 0
   let lastLowHealthPauseAt = 0
   let lowHealthCooldownNotified = 0
@@ -301,9 +304,28 @@ export function createBody({
     if (task?.timer) { clearTimeout(task.timer); task.timer = null }
   }
 
+  // 危险规避期间暂停起新任务；等规避/冷却结束后自动续跑（不丢队列）。
+  function holdTasksForDefense(ms = 15_000) {
+    defenseHoldUntil = Math.max(defenseHoldUntil, stamp() + Math.max(1000, ms))
+    if (defenseHoldTimer) return
+    const tick = () => {
+      defenseHoldTimer = null
+      const remaining = defenseHoldUntil - stamp()
+      if (remaining > 0) {
+        defenseHoldTimer = setTimeout(tick, Math.min(2000, remaining))
+        if (typeof defenseHoldTimer.unref === 'function') defenseHoldTimer.unref()
+        return
+      }
+      void pump()
+    }
+    defenseHoldTimer = setTimeout(tick, Math.min(2000, Math.max(50, defenseHoldUntil - stamp())))
+    if (typeof defenseHoldTimer.unref === 'function') defenseHoldTimer.unref()
+  }
+
   async function pump() {
     if (pumping || returning || closed || current) return
     if (paused || connectionState === false) return
+    if (stamp() < defenseHoldUntil) return
     const next = queue.shift()
     if (!next) return
     pumping = true
@@ -900,7 +922,7 @@ export function createBody({
     })
   }
 
-  function runAutoDefense(assessment, at) {
+  function runAutoDefense(assessment, at, taskCancelled = null) {
     if (defenseActive || closed) return false
     defenseTimes = defenseTimes.filter((time) => at - time < 60_000)
     if (defenseTimes.length >= defenseMaxPerMinute) {
@@ -941,6 +963,10 @@ export function createBody({
         durationMs,
         timedOut: defenseStats.lastTimedOut,
         error: result?.error ?? null,
+        taskCancelled: Boolean(taskCancelled),
+        taskId: taskCancelled?.taskId ?? null,
+        taskKind: taskCancelled?.taskKind ?? null,
+        taskCancelReason: taskCancelled?.reason ?? null,
       })
       defenseStats.lastEventSeq = event.seq
     }).catch(() => { defenseActive = false })
@@ -959,7 +985,22 @@ export function createBody({
       safetyStop('threat')
       return assessment
     }
-    runAutoDefense(assessment, at)
+    // danger 但还没到“立即暂停”：先取消当前非战斗任务（长任务不能边逃边继续走进危险），
+    // 并短暂 hold 队列，等规避/冷却结束再续跑；combat 任务在上面已经直接 return。
+    let cancelled = null
+    if (current && !COMBAT_KINDS.has(current.kind)) {
+      const task = current
+      cancelTask(task.id, 'auto-defense: threat')
+      cancelled = { taskId: task.id, taskKind: task.kind, reason: 'auto-defense: threat' }
+      push('task_cancelled_for_defense', {
+        taskId: task.id,
+        kind: task.kind,
+        reason: 'auto-defense: threat',
+        threats: assessment.reasons ?? [],
+      })
+    }
+    holdTasksForDefense(15_000)
+    runAutoDefense(assessment, at, cancelled)
     return assessment
   }
 

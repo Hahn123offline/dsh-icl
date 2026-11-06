@@ -711,7 +711,7 @@ test('body：eyesScreenshot 在无截图能力时给可读 501（不崩）', asy
 })
 
 
-test('body：未暂停时自动躲避（hostile 近身 → 有界 emergency，不打断任务，有冷却）', async () => {
+test('body：未暂停时自动躲避（hostile 近身 → 有界 emergency、可取消非战斗任务，有冷却）', async () => {
   const adapter = fakeAdapter()
   let clock = 1_000_000
   const { body } = await startedBody({
@@ -856,3 +856,31 @@ test('body：shelter 成功写入 home（status/ldger 持久化，且不被 retu
   assert.equal(second.body.status().home.origin.x, 10)
   await second.body.stop()
 })
+
+test('body：未暂停时 danger 会取消当前非战斗任务（auto_defense.taskCancelled），并 hold 队列', async () => {
+  const adapter = fakeAdapter()
+  let clock = 3_000_000
+  const { body } = await startedBody({
+    adapter, now: () => clock, watchdogMs: 60_000,
+    autoDefense: true, defenseCooldownMs: 5000, defenseMaxPerMinute: 3, defenseThreatDistance: 6,
+  })
+  const task = body.createTask({ kind: 'goto', params: { hang: true } })
+  await waitFor(() => body.getTask(task.id)?.state === 'running', 1500, 'long task running')
+  adapter.state.hostiles = [{ name: 'zombie', distance: 4, position: { x: 5, y: 64, z: 1 } }]
+  body.watchdogTick(clock)
+  await waitFor(() => body.getTask(task.id)?.state === 'cancelled', 2000, 'task cancelled by auto-defense')
+  assert.equal(body.getTask(task.id).error, 'auto-defense: threat')
+  const event = body.eventsSince(0).events.find((entry) => entry.type === 'auto_defense')
+  assert.ok(event, 'auto_defense event')
+  assert.equal(event.data.taskCancelled, true)
+  assert.equal(event.data.taskId, task.id)
+  assert.equal(event.data.taskKind, 'goto')
+  assert.ok(body.eventsSince(0).events.some((entry) => entry.type === 'task_cancelled_for_defense'))
+  // 威胁仍在：hold 期间新排队任务不应立刻启动
+  const queued = body.createTask({ kind: 'goto', params: { count: 1 } })
+  await sleep(250)
+  assert.equal(body.getTask(queued.id).state, 'queued')
+  // 威胁消失 + 时间越过 hold：队列任务应恢复（用真实 wait 等待 hold 15s 太长，直接验证不会立刻跑即可）
+  await body.stop()
+})
+
