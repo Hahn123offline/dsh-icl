@@ -212,3 +212,15 @@
 - 睡眠/醒来/dream/dawn 全链路一致（02:09:06→06:39:06→dream wash 1119 行→dawn 06:49 一次）；睡眠期外部直投 9 次全在 02:09:56–02:11:56，之后 0 活动。
 - 装备转向已部署真服验证（seq 390/391、726/727、773/774、370/372）；宏转向 body 已实现 8 op、今晚未部署，明早验收只算 collect/tunnel，其余 beta。
 - **body 侧三项明早任务已在 07:0x 提前完成**：doPlan 单飞锁（409）、`pickup` op、craft 无配方“缺料最少变体”选择；47/47 测试绿（73a209d）。
+
+## 10. 第三次设计转向：暂停语义（方案 B + danger pierce，2026-11-06 用户拍板）
+
+用户原话：“将游戏在线时的危险作为穿透消息唤醒会话并自动规避危险，模型能选择暂停去干别的，但是一出事一定会被通知。”
+
+- **body 已实现**（wt/mc-body `9ac281c`/`c8c4ddf`，52/52 测试绿，未部署）：
+  - 暂停只停任务/控制，世界继续；暂停期安全反射继续（低血/危险方块/近身怪/低氧 → `adapter.emergency`，≤10s/次、≤2 次/分，不生成新任务、不自动 resume）；`status.safety.reflex/lastReflex`。
+  - alarm 级事件（safety_stop/death/spawn_unsafe/kicked/reconnect_exhausted/quarantine/emergency/reflex + 危险 watchdog）带 `priority:"alarm"`+`pierce:true`；15s 去重，被拦记 `alarm_suppressed` 并窗口后补投 `redelivered:true`；`status.safety.alarms` 对账。
+  - `mcb_stop` body 行为：cancel+暂停(user-stop)+反射+回执（任务已停 / 身体仍在世界或不在世界分开）；暂停中可直接 stop，无需先 resume。
+  - E6 `status.playable {ok,blockers}`（join 可玩布尔）；E7 `status.spawnLog`（spawn 位置/维度/来源/安全）。
+- **待别人**：mc-link 接 `mcb_stop`、gate 对 pierce 放行/记录、展示 reflex/playable/spawnLog；time `fd81f56` 的 pausedMode/alarm 积压与 body 事件对齐（只读，不改协议）。
+- **adapter 待补**：emergency 目前覆盖“脱离岩浆/火、吃、上浮、近怪逃/后退、回安全点”；**“垫脚”(pillar-up) 尚无专门动作**，建议作为 adapter 下一小项（需真服验证）。
