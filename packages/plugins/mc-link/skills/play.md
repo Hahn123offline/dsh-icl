@@ -1,5 +1,14 @@
 # 开一局 / 操作手册
 
+## 一行宏链（常用组合，直接照抄改参数）
+
+1. 采集→合成→装备：`{"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count":8}}]}` → 完成后
+   `{"op":"craft","params":{"item":"oak_planks","count":16}}` → `{"op":"equip","params":{"item":"stone_pickaxe"}}`。
+2. 挖通道→下矿：`{"op":"task","kind":"tunnel","params":{"direction":"east","length":16,"height":2}}` → `{"op":"task","kind":"collect","params":{"item":"iron_ore","count":8}}`。
+3. 打架→捡掉落：`{"op":"task","kind":"hunt","params":{"target":"nearest_hostile"}}`（或直接 `mcb_combat {mode:"hunt"}`）→ 打死后 `{"op":"pickup","params":{"radius":8}}`；逃跑用 `mcb_combat {mode:"flee"}`。
+
+**原则：重复劳动（采集/挖/建/打整场）用宏 task 或战斗宏；单步 op 只做少量/精确动作。**
+
 ## 想玩 / 被叫去玩（连接）
 
 1. `mcb_servers` 看已知服务器（flat 测试服、survival）；用户在自己客户端里开了"对局域网开放"时用 `mcb_lan`。
