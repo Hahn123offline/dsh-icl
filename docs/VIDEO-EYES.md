@@ -226,7 +226,7 @@ node tools/bili-eval.mjs --offline
 
 ## 11. ASR（whisper-asr @ 8088）接 `video_locate` 的可行性设计
 
-> 只做可行性评估与设计；**没有写 `asr.json`、没有发起推理**（避免占 GPU）。
+> 只做可行性评估与设计；**没有写 `asr.json`、没有发起推理**（避免占 GPU）。lead 2026-11-06：不落桌面配置，等用户批准/产品化。
 
 **现状（2026-11-06 只读探测）**
 - `http://127.0.0.1:8088/v1/models` 列出 `whisper-asr`（llama-swap 网关）。
@@ -239,14 +239,17 @@ node tools/bili-eval.mjs --offline
 **结论：可行性高，且很可能零代码**
 - 只要把 storyboard 的 ASR 指向 8088，`video_locate` 就能用：它内部会跑一次 `video_storyboard --text-only`
   （`--transcript auto` 触发 ASR），解析出每格台词；转写结果由 storyboard 缓存，第二次很快。
-- 推荐先走**配置**（方案 A）：
+- **现在不写 `$DSH_HOME/asr.json`**（lead 2026-11-06 决定：宿主/桌面配置需用户批准，等产品化一起做）。
+  下面只是接线方案，不是已执行的操作；要验证只能在**临时 env / lab 侧**，不落桌面配置。
+- 方案 A（配置面，需用户批准）：
   ```json
-  // %USERPROFILE%\.dsh\asr.json
+  // %USERPROFILE%\.dsh\asr.json   ← 示意，未写入
   { "baseUrl": "http://127.0.0.1:8088/v1", "model": "whisper-asr", "language": "zh" }
   ```
   （loopback 可不要 key；llama-swap 若要求占位 key，加 `"key": "local"`。）
 - 方案 B（ICL 自持，后续可做）：`video` 插件加 `asrBaseUrl/asrModel/asrLang` 配置，调用 CLI 时注入
-  `DSH_ASR_BASE_URL/DSH_ASR_MODEL/DSH_ASR_LANG`（env 优先级高于 `asr.json`），这样 ICL 不依赖用户全局文件。
+  `DSH_ASR_BASE_URL/DSH_ASR_MODEL/DSH_ASR_LANG`（env 优先级高于 `asr.json`），这样 ICL 不依赖用户全局文件；
+  临时验证也可以直接用这组 env，不碰 `asr.json`。
 
 **接进 `video_locate` 的流程（设计）**
 1. `video_locate {path, query}` → 若没有缓存转写，先 `storyboard --text-only --text --detail high`（这步触发 ASR）。

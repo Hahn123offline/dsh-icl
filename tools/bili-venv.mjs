@@ -12,6 +12,7 @@
 //
 // 说明：venv 不可重定位，所以是"新建 + 重装依赖"，不是 move。装完重启 ICL 会话即生效。
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { iclPaths } from '../packages/core/src/icl-paths.mjs'
@@ -66,31 +67,96 @@ if (!ready) {
 if (!flag('--create')) process.exit(ready ? 0 : 1)
 
 // ── 新建 venv + 装依赖（会联网；仅写 ICL stateDir） ────────────────────────
-if (ok(cfg.ownPython) && !flag('--force')) {
-  console.log(`\n已经存在：${cfg.ownPython}\n加 --force 可重建（会先删掉这个 venv 目录）。`)
-  process.exit(0)
+
+/** venv 里是否已经有 4 个依赖（bilibili_api / mcp / qrcode；aiohttp 随 bilibili-api 装）。 */
+function depsReady(venvDir) {
+  const candidates = process.platform === 'win32'
+    ? [path.join(venvDir, 'Lib', 'site-packages')]
+    : [path.join(venvDir, 'lib', 'python3.12', 'site-packages'), path.join(venvDir, 'lib', 'python3.11', 'site-packages'), path.join(venvDir, 'lib', 'python3.10', 'site-packages')]
+  const site = candidates.find((dir) => fs.existsSync(dir))
+  if (!site) return false
+  return ['bilibili_api', 'mcp', 'qrcode'].every((name) => fs.existsSync(path.join(site, name)))
 }
-const basePython = String(opt('--python') || process.env.BILI_BASE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'))
-const version = spawnSync(basePython, ['--version'], { encoding: 'utf8' })
-if (version.status !== 0) {
-  console.error(`\n找不到 base python：${basePython}（用 --python 指定一个 3.10+ 的解释器）`)
-  process.exit(2)
+
+/** 找 uv（旧插件家目录那份、PATH、UV_PATH 都可以）；没有就用 pip。 */
+function findUv() {
+  const candidates = [process.env.UV_PATH, path.join(os.homedir(), '.dsh', 'bili-duty', 'bin', 'uv.exe'), 'uv']
+  for (const candidate of candidates.filter(Boolean)) {
+    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' })
+    if (probe.status === 0) return candidate
+  }
+  return null
 }
-console.log(`\n== 建 venv ==\nbase python：${basePython}（${String(version.stdout || version.stderr).trim()}）`)
-if (flag('--force')) {
-  fs.rmSync(cfg.ownVenvDir, { recursive: true, force: true })
-  console.log(`已删除旧目录（--force）：${cfg.ownVenvDir}`)
+
+/**
+ * pip/uv 在 Windows 上按 cp1252 读 requirements 会爆 UnicodeDecodeError：
+ * 上游 requirements.txt 带中文注释（UTF-8）。这里先剥成纯 ASCII 临时文件。
+ */
+function asciiRequirements(file) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+    .map((line) => line.replace(/#.*$/, '').trim())
+    .filter(Boolean)
+  const target = path.join(os.tmpdir(), `bili-requirements-${process.pid}.txt`)
+  fs.writeFileSync(target, `${lines.join('\n')}\n`, 'utf8')
+  return target
 }
-const create = spawnSync(basePython, ['-m', 'venv', cfg.ownVenvDir], { stdio: 'inherit' })
-if (create.status !== 0) {
-  console.error('\n建 venv 失败（见上面输出）。')
-  process.exit(create.status || 1)
+
+if (!ok(cfg.ownPython)) {
+  const basePython = String(opt('--python') || process.env.BILI_BASE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'))
+  const version = spawnSync(basePython, ['--version'], { encoding: 'utf8' })
+  if (version.status !== 0) {
+    console.error(`\n找不到 base python：${basePython}（用 --python 指定一个 3.10+ 的解释器）`)
+    process.exit(2)
+  }
+  console.log(`\n== 建 venv ==\nbase python：${basePython}（${String(version.stdout || version.stderr).trim()}）`)
+  const create = spawnSync(basePython, ['-m', 'venv', cfg.ownVenvDir], { stdio: 'inherit' })
+  if (create.status !== 0) {
+    console.error('\n建 venv 失败（见上面输出）。')
+    process.exit(create.status || 1)
+  }
+} else {
+  console.log(`\n== venv 已存在 ==\n${cfg.ownVenvDir}`)
+  if (flag('--force')) {
+    fs.rmSync(cfg.ownVenvDir, { recursive: true, force: true })
+    const basePython = String(opt('--python') || process.env.BILI_BASE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'))
+    console.log(`已删除旧目录（--force），重建：${cfg.ownVenvDir}`)
+    const create = spawnSync(basePython, ['-m', 'venv', cfg.ownVenvDir], { stdio: 'inherit' })
+    if (create.status !== 0) process.exit(create.status || 1)
+    } else if (depsReady(cfg.ownVenvDir)) {
+    console.log('依赖已齐全，不需要再装。要重建用 --force。')
+    process.exit(0)
+  } else {
+    console.log('依赖不全（上次可能失败过），继续装依赖。')
+  }
 }
-const pip = spawnSync(cfg.ownPython, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirements], { stdio: 'inherit' })
-if (pip.status !== 0) {
-  console.error('\npip install 失败（网络/镜像问题）。venv 已建好，可稍后重跑：')
-  console.error(`  "${cfg.ownPython}" -m pip install -r "${requirements}"`)
-  process.exit(pip.status || 1)
+const reqAscii = asciiRequirements(requirements)
+const mirror = String(opt('--mirror') || 'https://pypi.tuna.tsinghua.edu.cn/simple')
+const uv = findUv()
+const attempts = []
+if (uv) {
+  attempts.push({ label: `uv + 清华镜像（${uv}）`, command: uv, args: ['pip', 'install', '--python', cfg.ownPython, '-i', mirror, '-r', reqAscii] })
 }
+attempts.push({ label: 'pip + 清华镜像', command: cfg.ownPython, args: ['-m', 'pip', 'install', '--disable-pip-version-check', '-i', mirror, '-r', reqAscii] })
+attempts.push({ label: 'pip + 默认 PyPI', command: cfg.ownPython, args: ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', reqAscii] })
+
+let installed = false
+for (const attempt of attempts) {
+  console.log(`\n== 装依赖：${attempt.label} ==`)
+  const run = spawnSync(attempt.command, attempt.args, { stdio: 'inherit' })
+  if (run.status === 0) { installed = true; break }
+  console.log(`（${attempt.label} 失败，换下一条路）`)
+}
+try { fs.unlinkSync(reqAscii) } catch { /* 临时文件清不掉不影响 */ }
+
+if (!installed || !depsReady(cfg.ownVenvDir)) {
+  console.error('\n装依赖失败。venv 已建好，但依赖不齐；手动重试（任选）:')
+  console.error(`  "${cfg.ownPython}" -m pip install -i ${mirror} -r "<仓库>/packages/plugins/bili/vendor/bilibili-mcp/requirements.txt"`)
+  console.error(`  uv pip install --python "${cfg.ownPython}" -i ${mirror} -r "<仓库>/packages/plugins/bili/vendor/bilibili-mcp/requirements.txt"`)
+  process.exit(1)
+}
+
 console.log(`\n完成：${cfg.ownPython}`)
-console.log('下一步：重启 ICL 会话；`node tools/bili-eval.mjs --offline` 里“Python 解释器”应指向 ICL stateDir。')
+const verify = spawnSync(cfg.ownPython, ['-c', 'import bilibili_api, mcp, aiohttp, qrcode; print("deps ok")'], { encoding: 'utf8' })
+console.log(String(verify.stdout || verify.stderr || '').trim())
+console.log('下一步：重启 ICL 会话；`node tools/bili-venv.mjs --check` 应显示来源 `icl`。')
+

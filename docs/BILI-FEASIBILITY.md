@@ -439,14 +439,14 @@ DSH / ICL 会话
 | 错误归一化 | `src/runtime.mjs`：`E_AUTH` / `E_RATE_LIMIT` / `E_TIMEOUT` / `E_NETWORK` / `E_TOOL` / `E_PREFLIGHT` / `E_EMPTY`，每种带"下一步" | 单测 + `bili-eval` |
 | `bili_frames` 图进模型 | 返回 `{text, images:[png]}`，由 `dsh-icl` 桥接层 `ctx.attachments.saveImage()` 变成 image block | 单测（假 CLI）+ 桥接层单测 |
 | 搜索空 bvid 清洗 | `formatSearch` 丢掉无 `bvid` 卡片 | 单测 |
-| **解释器归 ICL**（2026-11-06 收尾） | 默认 `<stateDir>/bili/.venv`（Windows `Scripts/python.exe`），不存在时**兼容回退**旧插件 venv；`BILI_PYTHON`/`config.pythonPath` 仍可覆盖；`pythonSource` 会写进日志/eval | `node tools/bili-venv.mjs --check`；单测 `venv 解析` |
+| **解释器归 ICL**（2026-11-06 收尾） | 默认 `<stateDir>/bili/.venv`（Windows `Scripts/python.exe`），不存在时**兼容回退**旧插件 venv；`BILI_PYTHON`/`config.pythonPath` 仍可覆盖；`pythonSource` 会写进日志/eval | **已实建**（2026-11-06）：`--check` 显示 `pythonSource=icl`；`bili-eval --offline` 10/10；另有单测 `venv 解析` |
 | **限速/退避**（2026-11-06 收尾） | 同一插件实例的只读调用**串行**、最小间隔默认 1.2 s；`E_RATE_LIMIT`/`E_TIMEOUT`/`E_NETWORK` 指数退避重试 2 次（1.5→3 s，带抖动）；`E_AUTH`/`E_READ_ONLY` 等**不重试** | 单测 `限速/退避`、`串行且至少间隔` |
 | **切帧降级提示**（2026-11-06 收尾） | `bili_frames` 读 `~/.dsh/video.json` + cookies 的**到期列**（不打印值）；缺失/过期/7 天内到期时文本明确写"会糊"，并识别 CLI 的 `auth=anonymous` 再补一条降级说明 | 单测 `storyboard cookies`、`bili_frames` 匿名降级 |
 | 通用视频浏览器（另开） | `packages/plugins/video` + `docs/VIDEO-EYES.md`；本地路径/QQ 落盘/MC 录屏都走 `video_open` | `packages/plugins/video/test` |
 
 **还没做（顺序即优先级）**
 
-1. **venv 真正建到 ICL stateDir**：代码默认/回退已完成（见 §11.1），但本机 `--create` **未执行**（要联网 pip + 约 1–2 分钟；且 live desktop 还没加载新代码，建了也暂不被用）。你在能接受安装时跑一次即可。
+1. **venv 已建到 ICL stateDir**（2026-11-06 实建成功，见 §11.1）；旧 venv 保留可回退。live desktop 需要合并/重启后才会真正用到新 venv。
 2. **限速/退避的线上观察**：代码与单测有了，还没在真实夜间连刷里量化（建议第一次长测记录重试次数/耗时）。
 3. **storyboard cookies 续期**：runbook 写在 `docs/VIDEO-EYES.md §11`；`bili_frames` 现在会把"匿名降级/即将到期"明说，但 cookie 本身仍要用户/运维重新导出。
 4. **ASR 配置入口**：只在 `docs/VIDEO-EYES.md §12` 做了可行性设计（8088 的 `whisper-asr` + storyboard 的 OpenAI `/audio/transcriptions` 契约）；**没有写用户 `asr.json`，也没有调用推理**。
@@ -473,6 +473,26 @@ node tools/bili-eval.mjs --offline
 - venv 不可重定位，所以是"新建 + 重装依赖"，不是 move；`--create --force` 会删掉 ICL venv 重建（不碰旧 venv）。
 - 凭证 (`<stateDir>/bili/bili_credential.json`) 和代码（repo vendor）与 venv 解耦，迁移期间不需要重新扫码。
 
+**实建结果（2026-11-06）**
+
+```text
+$ node tools/bili-venv.mjs --create
+== venv 已存在 ==   C:\Users\ai_admin\.dsh\icl\state\bili\.venv
+依赖不全（上次可能失败过），继续装依赖。
+== 装依赖：uv + 清华镜像（C:\Users\ai_admin\.dsh\bili-duty\bin\uv.exe） ==
+...  (bilibili-api-python / aiohttp / mcp<2 / qrcode[pil] 及其依赖)
+完成：C:\Users\ai_admin\.dsh\icl\state\bili\.venv\Scripts\python.exe
+deps ok
+
+$ node tools/bili-venv.mjs --check
+ICL python  C:\Users\ai_admin\.dsh\icl\state\bili\.venv\Scripts\python.exe ✓
+当前解析    ...（来源 icl）
+```
+
+**踩到的坑（已修进脚本）**：直接用 `pip install -r vendor/.../requirements.txt` 会因文件带中文注释、Windows 下被 pip 按
+cp1252 解码而 `UnicodeDecodeError`（本次第一次 `--create` 就是这样失败的）。脚本现在先把 requirements 剥成纯 ASCII
+临时文件，并优先用 `uv`（旧插件家目录那份）+ 清华镜像；失败再退 pip 镜像、默认 PyPI。以后换机同样适用。
+
 **证据命令**
 
 ```bash
@@ -484,10 +504,34 @@ node tools/bili-eval.mjs --offline      # 路径/工具面/解释器来源/cooki
 ### 11.2 本轮收尾的验证结果（2026-11-06）
 
 - `npm test`：**672 pass / 0 fail**（master 合并后全量；含 bili 15 + video 5 + 桥接图片用例）。
-- `node tools/bili-venv.mjs --check`：默认解析 `legacy-compat`（旧 venv），并给出 `--create` 指引。
-- `node tools/bili-eval.mjs --offline`：路径/工具面/解释器来源/cookies 到期 **10/10**（不联网）。
+- `node tools/bili-venv.mjs --check`：**已实建**，`pythonSource=icl`（`<ICL stateDir>/bili/.venv`）；旧 venv 仍保留可回退。
+- `node tools/bili-eval.mjs --offline`：路径/工具面/解释器来源/cookies 到期 **10/10**（`python 解释器（来源 icl）`）。
 - `node tools/bili-eval.mjs --credential`：真网络只读 **14/14**；`--frames` 追加一次为 **15/15**（cookies 有效、走 `auth=cookies`）。
 - 未做任何 B 站写操作；未启动 lab/GUI/desktop；未调用 ASR 推理（只读 endpoint 契约与模型列表）。
+
+#### 限速实测（2026-11-06，只读 search/feed；默认 `minIntervalMs=1200, maxRetries=2`，`pythonSource=icl`）
+
+连续 8 次交替调用 `bili_search` / `bili_feed`（真实网络、只读；未制造 `-412/-509`，所以**没有触发退避重试**）：
+
+| # | 工具 | 本次耗时 ms | 距上次开始 ms |
+|---|---|---|---|
+| 1 | `bili_search` | 2376 | 0 |
+| 2 | `bili_feed` | 1402 | 2376 |
+| 3 | `bili_search` | 1737 | 1402 |
+| 4 | `bili_feed` | 1250 | 1737 |
+| 5 | `bili_search` | 2234 | 1250 |
+| 6 | `bili_feed` | 1272 | 2234 |
+| 7 | `bili_search` | 2444 | 1272 |
+| 8 | `bili_feed` | 1496 | 2444 |
+
+汇总：耗时 **1250–2444 ms**，开始间隔 **1250–2444 ms（avg 1816 ms）**，8 次全部 ok；总墙钟约 **15.7 s**。
+
+解读（对桌面/长测有用的结论）：
+- 调用**严格串行**，没有并发重叠；单条接口本身就要 1.2–2.4 s，所以 1.2 s 的"最小间隔"这次没有额外加等待
+  （间隔≈上一条的耗时）；如果 B 站响应变快（<1.2 s），节流才会成为下限。
+- 没有触发退避（未主动打 `-412/-509`）。退避路径由单测覆盖：失败 2 次→第 3 次成功、等待递增；`E_AUTH` 只调 1 次。
+- 按这个节奏，一轮"3 条视频（search + watch + comments ≈ 7 s）+ 滑动"约 10–15 s，远低于风控区；
+  夜间长测不需要额外降速，但**不要**并发调用或跳过 caller 直接刷 runner。
 
 ---
 
