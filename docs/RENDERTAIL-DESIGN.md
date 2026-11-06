@@ -128,3 +128,32 @@ cache 已确认：**只改 tool/result 文本内容 = append-only 缓存安全�
 3. **每轮上限/去重不依赖随机 id**：用 turn 号 + tail 文本内容比较（可重复、可审计）；同一轮相同 tail 跳过。
 4. `toolsHash` / system 基线**不应变**；cache 侧只记"tool result 平均长度变化"作为成本指标，不计为缓存回归。
 5. 若实现中意外出现 schema/system 变化，立即停、报 cache（按 `CACHE-MODEL §7 附录 B` 三场景 + `cache-layout-audit` 复核），不要自行改基线。
+
+## 11. 实现状态（2026-11-07，lab-only）
+
+代码已接线，commit `2d6e0c8`（场景/审计 `e7170fd`）：
+- `packages/dsh-icl/src/bridge.mjs`：syncTools 的 `toDshToolDefinition.execute` 包装 → `appendRenderTail`；
+  同 turn 去重/上限、错误/图片/超长跳过；`ICL_RENDERTAIL=0/1` 环境覆盖。
+- `config.mjs` 新增 `renderTail`（默认 {} = 关）；`lab.patch.yml` 的 **icl-lab** preset 开 `renderTail{enabled:true}`，
+  产品/mc-lab preset 不写（避免污染 L2/MC）。
+- 单测：dsh-bridge +4（出现/denylist/去重+上限+turn 重置/错误图片/关闭）；全量 760/761（1 skipped gated）。
+- A/B 工具：`tools/scenarios/render-tail-ab.json`（18 轮非 MC）、`tools/render-tail-audit.mjs`（状态调用/100、结果字符、turn-gap、投递字符）。
+
+**A/B 执行（2026-11-07 04:30–04:55，端口 57109，与 mc-lab 协调；不跑 MC）**：
+```powershell
+cd C:\DSH\icl-wt\misc
+# baseline（preset 里 enabled:true，但环境覆盖为 0）
+$env:ICL_RENDERTAIL='0'
+node tools/lab.mjs up --preset icl-lab --port 57109 --run tail-ab-base
+node tools/lab.mjs script --file tools/scenarios/render-tail-ab.json --gap 12 --timeout 240
+node tools/lab.mjs down
+# tail-on
+Remove-Item Env:\ICL_RENDERTAIL
+node tools/lab.mjs up --preset icl-lab --port 57109 --run tail-ab-on
+node tools/lab.mjs script --file tools/scenarios/render-tail-ab.json --gap 12 --timeout 240
+node tools/lab.mjs down
+# 审计
+node tools/render-tail-audit.mjs --run .state/lab/tail-ab-base > .state/lab/tail-ab-base/audit.json
+node tools/render-tail-audit.mjs --run .state/lab/tail-ab-on > .state/lab/tail-ab-on/audit.json
+```
+结果写入 `docs/RENDERTAIL-RESULT.md`（含适用/不适用结论；若收益不明显如实写）。
