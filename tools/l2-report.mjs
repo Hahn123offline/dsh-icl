@@ -75,6 +75,13 @@ if (Number(statusData.labStarts ?? 0) > 1 || generations.length > 1) evidenceIss
 if (commitsSeen.length > 1) evidenceIssues.push(`段内 commit 切换：${commitsSeen.join(' → ')}`)
 const segmentWraps = countWraps(segmentBodySeqs)
 const globalWraps = countWraps(bodySeqs)
+const segmentBodyDistinct = new Set(segmentBodySeqs).size
+const bodyDuplicates = segmentBodySeqs.length - segmentBodyDistinct
+const bodySpawns = body.filter((row) => row.type === 'spawn').length
+const bodyLedgerLoads = body.filter((row) => row.type === 'ledger_loaded').length
+const bodyOffline = body.filter((row) => row.type === 'offline').length
+if (bodyDuplicates > 0) evidenceIssues.push(`body seq 重复：rows=${segmentBodySeqs.length} distinct=${segmentBodyDistinct}（ledger 重放/重复落盘，引用需按 distinct）`)
+if (bodyLedgerLoads > 1) evidenceIssues.push(`body ledger_loaded=${bodyLedgerLoads} 次（body 进程/ledger 重载，段不纯净）`)
 // ── 任务尝试分桶（taskId + 来源；不沿用"91 次"的旧结论）─────────────────────
 const ledger = readJson(path.join(runDir, 'state', 'mc-body', 'tasks.json'), { tasks: [] })
 const segmentTasks = (ledger.tasks ?? []).filter((task) => Number(task.createdAt ?? 0) >= startMs || Number(task.finishedAt ?? 0) >= startMs)
@@ -139,7 +146,7 @@ lines.push('| 项 | 值 |')
 lines.push('|---|---|')
 lines.push(`| session events 覆盖 | ${sessionFirst ? `${new Date(Number(sessionFirst.time)).toISOString()}（seq ${sessionFirst.seq}）` : '-'} → ${sessionLast ? `${new Date(Number(sessionLast.time)).toISOString()}（seq ${sessionLast.seq}）` : '-'} |`)
 lines.push(`| events 条数 / 段内 seq 范围 | ${rawEvents.length} / ${eventSeqs.length ? `${Math.min(...eventSeqs)}–${Math.max(...eventSeqs)}` : '-'} |`)
-lines.push(`| body 事件（段内） | rows=${body.length} distinctSeq=${new Set(segmentBodySeqs).size} seqWraps=${segmentWraps} |`)
+lines.push(`| body 事件（段内） | rows=${body.length} distinctSeq=${segmentBodyDistinct} duplicates=${bodyDuplicates} seqWraps=${segmentWraps} spawn=${bodySpawns} ledgerLoaded=${bodyLedgerLoads} offline=${bodyOffline} |`)
 lines.push(`| body 全文件 seq | rows=${rawBody.length} distinctSeq=${new Set(bodySeqs).size} wraps=${globalWraps} |`)
 lines.push(`| lab 启动 / generation / commit | labStarts=${statusData.labStarts ?? '?'} · gen=${generations.length} · commits=${commitsSeen.join(' → ') || '-'} |`)
 lines.push(`| 证据问题 | ${evidenceIssues.length ? evidenceIssues.join('；') : '无'} |`)
