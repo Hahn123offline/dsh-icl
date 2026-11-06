@@ -10,6 +10,7 @@ import * as qqModule from '../../plugins/qq/src/index.mjs'
 import manifest from '../../plugins/qq/manifest.json' with { type: 'json' }
 import { createFakeOneBot } from '../../plugins/qq/tools/fake-onebot.mjs'
 import { createWakePlanner, normalizeWakeConfig } from '../../plugins/qq/src/wake.mjs'
+import { buildWakeSnapshot } from '../../plugins/qq/src/wake-snapshot.mjs'
 
 const TOKEN = 'wake-token'
 const OWNER = '10001'
@@ -84,6 +85,46 @@ test('规划器：小时预算限制，超了跳过并计数', () => {
   const out = planner.poll({ at })
   assert.equal(out.length, 1)
   assert.equal(planner.status().skippedBudget >= 1, true)
+})
+
+test('快照：oldest-first、≤12 条/6000 字、超预算 partial + readThroughSeq、去信封前缀', () => {
+  const rows = Array.from({ length: 15 }, (_, i) => ({
+    seq: i + 1, sender: '主人', at: 1000 + i, text: `[QQ私聊·主人] 主人：第${i + 1}条`,
+  }))
+  const snap = buildWakeSnapshot(rows)
+  assert.equal(snap.count, 15)
+  assert.equal(snap.included, 12)
+  assert.equal(snap.partial, true)
+  assert.equal(snap.readThroughSeq, 12)
+  assert.match(snap.text, /#1 主人：第1条/)
+  assert.doesNotMatch(snap.text, /\[QQ私聊/)
+  assert.match(snap.text, /#12/)
+  assert.doesNotMatch(snap.text, /#13/)
+  assert.equal(snap.text.split('\n').length, 12)
+  assert.deepEqual(buildWakeSnapshot([]), { text: '', count: 0, included: 0, partial: false, readThroughSeq: null })
+  const long = buildWakeSnapshot([{ seq: 1, sender: '主人', text: '啊'.repeat(7000) }], { maxItems: 3, maxChars: 6000 })
+  assert.equal(long.partial, true)
+  assert.equal(long.readThroughSeq, 1)
+  assert.ok(long.text.length <= 6000)
+})
+
+test('集成：积压 nudge 正文带醒来第一眼快照（oldest-first）', async () => {
+  const env = await setup({ nudgeSoftMs: 1000, nudgeCooldownMs: 1000, wakeTickMs: 250 })
+  try {
+    env.fake.privateMessage({ from: OWNER, name: '主人', text: '第一条', messageId: 9531 })
+    env.fake.privateMessage({ from: OWNER, name: '主人', text: '第二条', messageId: 9532 })
+    let captured = ''
+    const ok = await waitFor(() => {
+      for (const batch of env.drain()) {
+        if (batch.text.includes('[QQ积压提醒]')) { captured = batch.text; return true }
+      }
+      return false
+    }, { timeoutMs: 5000 })
+    assert.equal(ok, true)
+    assert.match(captured, /醒来第一眼/)
+    assert.match(captured, /#1/)
+    assert.ok(captured.indexOf('#1') < captured.indexOf('#2'), 'oldest-first')
+  } finally { await env.cleanup() }
 })
 
 function makeConfig(fake, dir, overrides = {}) {

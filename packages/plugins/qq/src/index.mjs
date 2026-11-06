@@ -31,6 +31,7 @@ import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 import { createWakePlanner } from './wake.mjs'
+import { buildWakeSnapshot } from './wake-snapshot.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'qq'
@@ -344,6 +345,22 @@ export async function apply(ctx) {
     })
   }
 
+  function ledgerWatermarks() {
+    if (!ledger) return []
+    return (ledger.activities() ?? [])
+      .filter((row) => ledgerPeerOf(row.activity))
+      .map((row) => {
+        const known = ledger.lastKnown(row.activity) ?? {}
+        return {
+          peer: ledgerPeerOf(row.activity),
+          lastSeq: known.lastSeq ?? row.total ?? 0,
+          deliveredSeq: known.deliveredSeq ?? row.deliveredSeq ?? 0,
+          attendedSeq: known.attendedSeq ?? row.attendedSeq ?? 0,
+          undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
+        }
+      })
+  }
+
   function peerList() {
     const list = new Set(cfg.allowPrivate.map(String))
     if (ledger) {
@@ -361,6 +378,15 @@ export async function apply(ctx) {
     if (!info || !ledger) return
     try { ledger.markDelivered(info.activity, info.seq) } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.ledger.mark-delivered', error: String(error?.message ?? error) })
+    }
+  }
+
+  /** 被 time/focus 拦下的行记下原因（可见、可解释，但**不**推进交付水位）。 */
+  function markLedgerBlocked(signal, reason) {
+    const info = signal?.meta?.qq?.ledger
+    if (!info || !ledger) return
+    try { ledger.markBlocked(info.activity, info.seq, reason) } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.ledger.mark-blocked', error: String(error?.message ?? error) })
     }
   }
 
@@ -500,14 +526,25 @@ export async function apply(ctx) {
     const peer = peerLabelOf(emission.activity)
     let text
     if (emission.kind === 'replyCheck') {
-      text = `[QQ主动检查] 你刚回过 ${peer} 的私聊，过了一小会儿了；看看有没有新回复。（这不是对方刚发来的消息）`
+      text = `[QQ主动检查] 你刚回过 ${peer} 的私聊，过了一小会儿了；想确认对方接没接话，所以来看看。（这不是对方刚发来的消息）`
     } else if (emission.kind === 'proactive') {
       const minutes = Math.max(1, Math.round((Number(emission.idleMs) || 0) / 60000))
-      text = `[QQ主动提醒] 你和 ${peer} 的私聊已经安静约 ${minutes} 分钟，可以考虑主动开个话题或分享点什么。（这不是对方发来的消息；要不要现在打扰由 time/focus 决定）`
+      text = `[QQ主动提醒] 你和 ${peer} 的私聊已经安静约 ${minutes} 分钟，你刚好有点空，可以想想有没有想分享的、或顺着上次的话题冒个泡。（这不是对方发来的消息；要不要现在打扰由 time/focus 决定）`
     } else if (emission.kind === 'nudge') {
-      text = `[QQ积压提醒] ${peer} 那边还有 ${emission.unread ?? '几'} 条账本里的未处理消息（水位之后）；这是提醒，不是新推送。可以 qq_unread 看，处理完用 qq_mark_read 推进水位。`
+      text = `[QQ积压提醒] 你离开这会儿，${peer} 那边又攒了 ${emission.unread ?? '几'} 条还没处理的私聊；怕你忘了，先把最该看的一小段列在下面。（这是提醒，不是新推送）`
     } else {
       return false
+    }
+    // "醒来第一眼"快照：oldest-first、≤12 条/6000 字；超预算标 partial + readThroughSeq。
+    let snapshot = { text: '', count: 0, included: 0, partial: false, readThroughSeq: null }
+    try {
+      const rows = ledger?.unread(emission.activity, { limit: 12 })?.messages ?? []
+      snapshot = buildWakeSnapshot(rows)
+    } catch { /* 快照失败不影响提醒本身 */ }
+    if (snapshot.text) {
+      text += `\n\n醒来第一眼（未读 ${snapshot.count} 条，从旧到新）：\n${snapshot.text}`
+      if (snapshot.partial) text += `\n（先看到 #${snapshot.readThroughSeq}；后面还有，用 qq_unread/qq_history 继续看）`
+      text += '\n（处理完可以 qq_mark_read 推进已读水位；它不会替你回复。）'
     }
     const signal = {
       id: emission.id,
@@ -519,7 +556,16 @@ export async function apply(ctx) {
       tags: emission.tags,
       createdAt: emission.at,
       expiresAt: emission.at + cfg.signalTtlMs,
-      meta: { qq: { wake: { kind: emission.kind, reason: emission.reason ?? null, unread: emission.unread ?? null } } },
+      meta: {
+        qq: {
+          wake: {
+            kind: emission.kind,
+            reason: emission.reason ?? null,
+            unread: emission.unread ?? null,
+            snapshot: { included: snapshot.included, partial: snapshot.partial, readThroughSeq: snapshot.readThroughSeq },
+          },
+        },
+      },
     }
     try {
       const out = ctx.signals.offer(signal)
@@ -570,6 +616,7 @@ export async function apply(ctx) {
       bump(stats.blockedReasons, out.reason ?? 'gate')
       stats.recent.lastBlocked = { at: now(), reason: String(out.reason ?? 'gate'), id: signal.id }
       record({ kind: 'blocked', id: signal.id, reason: out.reason ?? 'gate' })
+      markLedgerBlocked(signal, out.reason ?? 'gate')
       return 'blocked'
     }
     if (out?.expired) {
@@ -913,6 +960,7 @@ export async function apply(ctx) {
         stats.blocked += 1
         bump(stats.blockedReasons, out.reason ?? 'gate')
         record({ kind: 'blocked', id: item.signal.id, reason: out.reason ?? 'gate' })
+        markLedgerBlocked(item.signal, out.reason ?? 'gate')
         continue
       }
       if (out?.expired) { retry.splice(i, 1); stats.expired += 1; continue }
@@ -1072,7 +1120,7 @@ export async function apply(ctx) {
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
       wake: wakePlanner?.status() ?? null,
-      ledger: ledger?.stats() ?? { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0 },
+      ledger: ledger ? { ...ledger.stats(), watermarks: ledgerWatermarks() } : { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0, watermarks: [] },
       http: { ok: Boolean(http?.ok), endpointUrl: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
       media: {
         enabled: cfg.mediaEnabled,
@@ -1112,6 +1160,13 @@ export async function apply(ctx) {
       const bk = gp.backfill ?? {}
       lines.push(`账本：${s.ledger?.mode ?? 'off'}（${s.ledger?.messages ?? 0} 条消息，已交付 ${s.ledger?.delivered ?? 0}）${s.ledger?.file ? `；文件：${s.ledger.file}` : '；内存模式（重启不保留）'}`)
       lines.push(`断线补课：重连 ${gp.reconnects ?? 0} 次${gp.lastDowntimeMs != null ? `（最近断开 ${Math.round(gp.lastDowntimeMs / 1000)}s）` : ''}；补课 ${gp.backfillRuns ?? 0} 次，补回 ${gp.filled ?? 0} 条，过期跳过 ${gp.dropped ?? 0}，失败 ${gp.failed ?? 0}${gp.unsupported ? `，无 HTTP 端点 ${gp.unsupported} 次` : ''}${s.http?.ok ? '' : '（补课不可用）'}${gp.lastError ? `；最近错误：${gp.lastError}` : ''}`)
+      const lw = s.ledger?.watermarks ?? []
+      if (lw.length) {
+        const blocked = s.stats?.blockedReasons && Object.keys(s.stats.blockedReasons).length
+          ? `；被拦原因：${Object.entries(s.stats.blockedReasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${reason}×${count}`).join('，')}`
+          : ''
+        lines.push(`账本水位（delivered ≠ seen ≠ attended）：${lw.map((w) => `${w.peer} 最后#${w.lastSeq}/已交付#${w.deliveredSeq}/已读#${w.attendedSeq}${w.undelivered ? `（未交付 ${w.undelivered}，不会被 mark_read 跨过）` : ''}`).join('；')}${blocked}`)
+      }
       const media = s.media ?? {}
       if (media.enabled) {
         lines.push(`媒体：已存 ${media.saved ?? 0} 条 / ${formatBytes(media.bytes ?? 0)}（软上限 ${formatBytes(media.softLimitBytes ?? 0)}${media.overSoftLimit ? '，已超限只告警不删' : ''}）；失败 ${media.failed ?? 0}；目录：${media.dir}；保留：${media.retentionDays > 0 ? `${media.retentionDays} 天（未自动删）` : '全部保留/手清'}；不自动进 album`)
@@ -1221,14 +1276,17 @@ export async function apply(ctx) {
 
   function formatLedgerRow(row) {
     const sender = row.sender ? `[${row.sender}] ` : ''
-    return `#${row.seq} ${formatLedgerTime(row.at)} ${sender}${row.text || ''}`.trim()
+    const flag = row.deliveredAt == null
+      ? ` [未交付${row.blockedReason ? `·被拦：${row.blockedReason}` : ''}]`
+      : ''
+    return `#${row.seq} ${formatLedgerTime(row.at)} ${sender}${row.text || ''}${flag}`.trim()
   }
 
   ctx.tools.register({
     name: 'qq_unread',
-    summary: '看 QQ 私聊的未读/上次水位（账本口径：水位只在消息进入投递队列后前进；被 time/focus 拦下的仍在水位之后）。',
-    when: ['想知道有没有还没处理的 QQ 私聊', '想确认上次看到哪条（水位）'],
-    avoid: ['把它当实时未读计数（需要等投递/重连补课）', '用 qq_history 补看具体内容'],
+    summary: '看 QQ 私聊未读（账本口径，三个数分开：lastSeq 最后一条 / deliveredSeq 连续已交付高水位 / attendedSeq 已读水位）。被 time/focus 拦下的消息算"未交付"，不会被 mark_read 跨过，也不会从 unread 里消失。',
+    when: ['想知道有没有还没处理的 QQ 私聊', '想确认上次看到哪条（水位）', '怀疑有被睡眠/静音拦下的消息'],
+    avoid: ['把 delivered 当成"模型看过"（delivered 只代表进了投递队列）', '用 qq_history 补看具体内容'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -1246,16 +1304,21 @@ export async function apply(ctx) {
         const lines = rows.map((row) => {
           const known = ledger.lastKnown(row.activity)
           const attended = known?.attendedSeq ?? row.attendedSeq ?? 0
+          const delivered = known?.deliveredSeq ?? row.deliveredSeq ?? 0
           const last = known?.lastSeq ?? row.total ?? 0
-          return `- ${row.peer}：水位 #${attended}，最后 #${last}，未读约 ${Math.max(0, last - attended)} 条（共 ${row.total} 条）`
+          const undelivered = Math.max(0, last - delivered)
+          return `- ${row.peer}：最后 #${last}，已交付 #${delivered}，水位 #${attended}，未读约 ${Math.max(0, last - attended)} 条${undelivered ? `（其中未交付 ${undelivered} 条，不会被 mark_read 跨过）` : ''}`
         })
-        return { text: `QQ 私聊账本：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号"} 看具体未读，或 qq_history 补看。` }
+        return { text: `QQ 私聊账本（delivered ≠ seen ≠ attended）：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号"} 看具体未读，或 qq_history 补看。` }
       }
       const activity = ledgerActivityFor(targetPeer)
       const out = ledger.unread(activity, { afterSeq: afterSeq == null ? null : Number(afterSeq), limit })
-      const head = `私聊 ${targetPeer}：上次水位 #${out.watermark.attendedSeq}，最后 #${out.watermark.lastSeq}`
+      const head = `私聊 ${targetPeer}：最后 #${out.watermark.lastSeq}，已交付 #${out.watermark.deliveredSeq}，水位 #${out.watermark.attendedSeq}`
       if (!out.messages.length) return { text: `${head}；没有水位之后的未读消息。` }
-      return { text: `${head}；未读 ${out.messages.length} 条：\n${out.messages.map(formatLedgerRow).join('\n')}` }
+      const undelivered = out.messages.filter((row) => row.deliveredAt == null).length
+      return {
+        text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中未交付 ${undelivered} 条：可能被 time/focus 拦下，详见行尾标记；mark_read 不能跨过）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}`,
+      }
     },
   })
 
@@ -1318,14 +1381,14 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_mark_read',
-    summary: '手动把 QQ 私聊账本水位推进到某条（只动本地水位；不发消息、不自动回复、不标记"已回"）。用 qq_unread 看未读口径。',
+    summary: '手动推进 QQ 私聊账本的**已读水位**（只动本地水位；不发消息、不自动回复、不标记"已回"）。只能推进到"连续已交付"高水位：被 time/focus 拦下、从未交付的消息**不许被跨过**。',
     when: ['你已经看过/处理了这些私聊，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
-    avoid: ['以为它会回复对方（不会发任何消息）', '把它当发送回执（用 qq_status 看 send.recent）', '群消息（群不接）'],
+    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回', '群消息（群不接）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
-        throughSeq: { type: 'number', description: '推进到这个 seq（不填=最后一条）；超过最后一条会被夹到 lastSeq。' },
+        throughSeq: { type: 'number', description: '推进到这个 seq（不填=连续已交付高水位）；超过已交付部分会被夹住，不会跨过未交付消息。' },
       },
     },
     async execute({ peer, throughSeq } = {}) {
@@ -1337,10 +1400,12 @@ export async function apply(ctx) {
       if (!before) return { text: `私聊 ${targetPeer} 还没有账本记录。` }
       const result = ledger.markRead(activity, { throughSeq: throughSeq == null ? null : Number(throughSeq), at: now() })
       const afterUnread = ledger.unread(activity, { limit: 100 }).messages.length
-      const clamped = throughSeq != null && Number(throughSeq) > result.lastSeq
+      const undelivered = Math.max(0, (result.lastSeq ?? 0) - (result.deliveredSeq ?? 0))
+      const clamped = result.clampedToDelivered === true
+      const tail = `最后 #${result.lastSeq}，已交付 #${result.deliveredSeq}，水位 #${result.attendedSeq}，剩余未读 ${afterUnread} 条${undelivered ? `；未交付 ${undelivered} 条（可能被 time/focus 拦下，不会被标掉，也不会从 unread 消失）` : ''}${clamped && !undelivered ? '；请求的 seq 超过已交付部分，已夹住' : ''}。只改了本地水位，没有发消息，也没有标记已回。`
       const text = result.advanced > 0
-        ? `已把私聊 ${targetPeer} 的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}），剩余未读 ${afterUnread} 条${clamped ? `；请求的 seq 超过最后一条 #${result.lastSeq}，已夹住` : ''}。只改了本地水位，没有发消息，也没有标记已回。`
-        : `私聊 ${targetPeer} 的水位已经是 #${result.attendedSeq}（最后 #${result.lastSeq}），没有再推进；剩余未读 ${afterUnread} 条。`
+        ? `已把私聊 ${targetPeer} 的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}）。${tail}`
+        : `私聊 ${targetPeer} 的水位没有推进（已经是 #${result.attendedSeq}）。${tail}`
       return { text }
     },
   })

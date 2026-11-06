@@ -46,20 +46,27 @@ test('账本：messages/unread/markReplied/replyState（SQLite + 重启）', () 
     assert.equal(agg.lastRepliedSeq, 1)
     assert.equal(agg.unreplied, 1)
     assert.equal(ledger.lastKnown('qq:private:10001').lastSeq, 2)
-    // 手动已读：只推进水位；夹到 lastSeq；不改 replied
+    // delivered ≠ attended：未交付时 mark_read 不能推进；交付后只推进到连续已交付高水位。
+    const beforeDelivery = ledger.markRead('qq:private:10001', { throughSeq: 99, at: 4000 })
+    assert.equal(beforeDelivery.attendedSeq, 0, '未交付消息不能被标掉')
+    assert.equal(beforeDelivery.deliveredSeq, 0)
+    assert.equal(beforeDelivery.clampedToDelivered, true)
+    assert.equal(ledger.unread('qq:private:10001').messages.length, 2)
+    ledger.markDelivered('qq:private:10001', 1)
     const read1 = ledger.markRead('qq:private:10001', { throughSeq: 1, at: 5000 })
     assert.equal(read1.attendedSeq, 1)
     assert.equal(read1.advanced, 1)
     assert.equal(ledger.unread('qq:private:10001').messages.length, 1)
+    ledger.markDelivered('qq:private:10001', 2)
     const read2 = ledger.markRead('qq:private:10001', { throughSeq: 99, at: 6000 })
-    assert.equal(read2.attendedSeq, 2, '超过 lastSeq 夹住')
+    assert.equal(read2.attendedSeq, 2, '交付后夹到 deliveredSeq')
     assert.equal(ledger.replyState('qq:private:10001', { messageId: 'm2' }).replied, false, '已读不等于已回')
     ledger.close()
 
     ledger = createLedger({ file })
     assert.equal(ledger.replyState('qq:private:10001', { messageId: 'm1' }).replied, true, 'replied_at 跨重启保留')
     ledger.close()
-  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) } catch { /* Windows sqlite 句柄可能延迟释放；临时目录不阻塞测试 */ } }
 })
 
 async function setup() {
@@ -90,6 +97,33 @@ async function setup() {
   }
 }
 
+test('账本：deliveredSeq 只认连续交付；markRead 不跨未交付空洞', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-p1-gap-'))
+  const file = path.join(dir, 'gap.db')
+  try {
+    const ledger = createLedger({ file })
+    const activity = 'qq:private:10002'
+    ledger.append({ activity, qqId: 'g1', at: 1000 })
+    ledger.append({ activity, qqId: 'g2', at: 2000 })
+    ledger.append({ activity, qqId: 'g3', at: 3000 })
+    ledger.markDelivered(activity, 1)
+    ledger.markDelivered(activity, 3) // 2 被拦下：已交付 1、3，但连续高水位仍是 1
+    assert.equal(ledger.watermarks(activity).deliveredSeq, 1)
+    assert.equal(ledger.watermarks(activity).lastSeq, 3)
+    const read = ledger.markRead(activity, { throughSeq: 3 })
+    assert.equal(read.attendedSeq, 1, '只能到连续已交付高水位')
+    assert.equal(read.clampedToDelivered, true)
+    assert.equal(ledger.unread(activity).messages.length, 2, '未交付的 #2 和后面的 #3 仍可见')
+    assert.equal(ledger.undelivered(activity).map((m) => m.qqId).join(','), 'g2')
+    ledger.markDelivered(activity, 2)
+    assert.equal(ledger.watermarks(activity).deliveredSeq, 3)
+    const read2 = ledger.markRead(activity)
+    assert.equal(read2.attendedSeq, 3)
+    assert.equal(ledger.unread(activity).messages.length, 0)
+    ledger.close()
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* Windows sqlite 句柄延迟 */ } }
+})
+
 test('qq_unread / qq_history：水位、历史、补课标记保留', async () => {
   const env = await setup()
   try {
@@ -103,8 +137,11 @@ test('qq_unread / qq_history：水位、历史、补课标记保留', async () =
     assert.match(history.text, /#2/)
     assert.match(history.text, /\[QQ私聊·主人\]/)
     const unread = await env.tool('qq_unread').execute({ peer: OWNER })
-    assert.match(unread.text, /上次水位 #2/)
-    assert.match(unread.text, /没有水位之后的未读/)
+    assert.match(unread.text, /已交付 #2，水位 #0/)
+    assert.match(unread.text, /未读 2 条/)
+    await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 2 })
+    const afterRead = await env.tool('qq_unread').execute({ peer: OWNER })
+    assert.match(afterRead.text, /没有水位之后的未读/)
     const all = await env.tool('qq_unread').execute({ peer: OWNER, afterSeq: 0 })
     assert.match(all.text, /未读 2 条/)
     const summary = await env.tool('qq_unread').execute({})
@@ -163,12 +200,12 @@ test('qq_mark_read：只推进本地水位（无网络/不自动回/不改已回
     await waitFor(() => env.qq.status().ledger.messages >= 1)
     const framesBefore = env.fake.sendActions().length
     const read = await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
-    assert.match(read.text, /水位已经是 #1|已把私聊/)
+    assert.match(read.text, /水位没有推进|已把私聊/)
     assert.equal(env.fake.sendActions().length, framesBefore, 'mark_read 不发任何 QQ 消息')
     const replied = await env.tool('qq_replied').execute({ peer: OWNER, messageId: '9601' })
     assert.match(replied.text, /还没回过/, '已读不等于已回')
     const unread = await env.tool('qq_unread').execute({ peer: OWNER })
-    assert.match(unread.text, /没有水位之后的未读|上次水位 #1/)
+    assert.match(unread.text, /没有水位之后的未读|水位 #1/)
   } finally { await env.cleanup() }
 })
 
@@ -177,11 +214,13 @@ test('发送后新消息：未读从水位之后开始；qq_history 可分段补
   try {
     env.fake.privateMessage({ from: OWNER, text: '先来的', messageId: 9301 })
     await waitFor(() => env.qq.status().ledger.messages >= 1)
+    await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
     await env.tool('qq_send').execute({ text: '收到' })
     env.fake.privateMessage({ from: OWNER, text: '后来的', messageId: 9302 })
     await waitFor(() => env.qq.status().ledger.messages >= 2)
     const unread = await env.tool('qq_unread').execute({ peer: OWNER })
-    assert.match(unread.text, /上次水位 #2/)
+    assert.match(unread.text, /已交付 #2，水位 #1/)
+    assert.match(unread.text, /后来的/)
     const after = await env.tool('qq_history').execute({ peer: OWNER, afterSeq: 1 })
     assert.match(after.text, /后来的/)
     assert.doesNotMatch(after.text, /先来的/)
