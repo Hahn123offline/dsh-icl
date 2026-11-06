@@ -348,3 +348,18 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 
 - `path_stuck` v2 字段、L1/L2 checkpoint/回放输入 JSON schema：见 [`MC-INSTRUMENTATION.md`](MC-INSTRUMENTATION.md)；
 - 研究对照：[`MC-RESEARCH.md`](MC-RESEARCH.md)；local3 数据：[`MC-LOCAL3-FORENSICS.md`](MC-LOCAL3-FORENSICS.md)。
+
+## 11.9 L1 回放器（已实现，2026-11-07，冻结期离线）
+
+- **工具**：`tools/mc-replay.mjs`
+  ```powershell
+  node tools/mc-replay.mjs docs/examples/mc-local3-examples/shelter-3x3 docs/examples/mc-local3-examples/collect-resource
+  node tools/mc-replay.mjs <checkpoint-dir> --json --report .state/lab/<run>/replay-report.json
+  ```
+- **语义**（按 `MC-INSTRUMENTATION §3.6/§4.1`）：读最小包 `meta/scenario/tasks/events/expected-events`；**fake adapter**（无 mineflayer、无服务器）；`terminal/error` 精确、`result.require` 只查存在、`result.<path>` 精确、任务 `events` 必须出现（不要求顺序）、`eventAssertions where+min`、`forbidden` 命中即 FAIL；输出 PASS/FAIL + 差异（task/event/forbidden 逐项）。
+- **示例**（`docs/examples/mc-local3-examples/`）：
+  - `shelter-3x3`（t-106 failed `shelter: incomplete`，verify 墙缺 9/屋顶缺 6，24 条 `shelter_place_fail@repair-walls`）→ **PASS**；
+  - `collect-resource`（t-1 done，`collected/net=8` oak_log）→ **PASS**。
+- **world.json 可选**：当前 L1 断言基于录制的 ledger/events（结构结果已在 `task.result.verify`），不重放方块/物理，因此这两个示例**不需要** `world.json`；若后续要验证"世界实际结构（blockAt）"再补，格式见 `MC-INSTRUMENTATION §3.8`。
+- **单测**：`packages/core/test/mc-replay.test.mjs` 覆盖两个 PASS + terminal 不符、缺必须事件、缺 result 字段、eventAssertions min 不足、forbidden 命中、缺文件报错、world 可选、路径/where 匹配语义。
+- **限制**：`forbidden.when` 表达式暂不解释（显式 FAIL，不静默忽略）；`tool-replay`（L2/tool-calls）未实现，待 L2。
