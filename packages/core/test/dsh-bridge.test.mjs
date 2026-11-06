@@ -106,6 +106,8 @@ function tempRoot(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `icl-dsh-${tag}-`))
 }
 
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
+
 async function hostWithMemory(root) {
   const host = createHost({ log: () => {} })
   host.registerPlugin(memoryManifest, memory, { config: { root } })
@@ -360,6 +362,136 @@ test('桥：没有动态事实时 facts context 返回空（DSH 会跳过空段�
   assert.equal(ctx.sections_.get('icl:core').text({}), '你是小千。')
   assert.equal(ctx.contexts_.get('icl:facts').text({}), '')
   bridge.dispose()
+})
+
+test('桥：ctx.inject 同步注入 attachment → 第一张图也不降级（首图 bug 回归）', async () => {
+  const root = tempRoot('image-first-inject')
+  const host = await hostWithMemory(root)
+  const saves = []
+  const store = {
+    async saveImages(images) {
+      saves.push(...images)
+      return images.map((img, i) => ({ attachmentId: `inject-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1 }))
+    },
+  }
+  const ctx = fakeCtx()
+  ctx.inject = (deps, cb) => { if (deps.includes('attachments')) cb({ attachments: store }) }
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '第一张图', images: [{ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    assert.equal(saves.length, 1, 'inject 同步成功时第一张图必须交给 attachment')
+    assert.equal(agent.steers[0].content[1].type, 'image')
+    assert.doesNotMatch(agent.steers[0].content[0].text, /未能显示/)
+  } finally { bridge.dispose() }
+})
+
+test('桥：imageLimits 预检（张数/字节/类型）→ 超限跳过并提示，不塞给 saveImages', async () => {
+  const root = tempRoot('image-limits')
+  const host = await hostWithMemory(root)
+  const saves = []
+  const store = {
+    imageLimits: { maxImageBytes: 10, maxImagesPerMessage: 1, maxMessageImageBytes: 15, mediaTypes: ['image/png'] },
+    async saveImages(images) {
+      saves.push(...images)
+      return images.map((img, i) => ({ attachmentId: `lim-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1 }))
+    },
+  }
+  const ctx = fakeCtx({ attachments: store })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: {
+        text: '两张图',
+        images: [
+          { data: new Uint8Array(8), mediaType: 'image/png' },
+          { data: new Uint8Array(8), mediaType: 'image/png' },
+        ],
+      },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    assert.equal(saves.length, 1, '超过 maxImagesPerMessage 的图被预检跳过')
+    assert.match(agent.steers[0].content[0].text, /超过附件上限/)
+    assert.equal(agent.steers[0].content.filter((part) => part.type === 'image').length, 1)
+  } finally { bridge.dispose() }
+})
+
+test('桥：纯图片消息正文占位（不出现空 text）', async () => {
+  const root = tempRoot('image-only')
+  const host = await hostWithMemory(root)
+  const store = {
+    async saveImages(images) { return images.map((img, i) => ({ attachmentId: `only-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1 })) },
+  }
+  const ctx = fakeCtx({ attachments: store })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '', images: [{ data: new Uint8Array([1]), mediaType: 'image/png' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    assert.equal(agent.steers[0].content[0].type, 'text')
+    assert.equal(agent.steers[0].content[0].text, '（图片）')
+    assert.match(agent.steers[0].source.summary, /图片/)
+  } finally { bridge.dispose() }
+})
+
+test('桥：tick 不重叠，图片与文字按投递顺序 steer', async () => {
+  const root = tempRoot('tick-order')
+  const host = await hostWithMemory(root)
+  let release = null
+  const gate = new Promise((resolve) => { release = resolve })
+  const store = {
+    async saveImages(images) {
+      await gate
+      return images.map((img, i) => ({ attachmentId: `ord-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1 }))
+    },
+  }
+  const ctx = fakeCtx({ attachments: store })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: '图在前', images: [{ data: new Uint8Array([1]), mediaType: 'image/png' }] } })
+    host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '文字在后' } })
+    const first = bridge.tick()
+    await sleep(10)
+    const second = await bridge.tick()
+    assert.deepEqual(second, { sent: 0, skipped: 'busy' }, '上一批未完成时跳过本 tick')
+    release()
+    assert.deepEqual(await first, { sent: 2 })
+    assert.deepEqual(agent.steers.map((m) => m.content[0].text), ['图在前', '文字在后'])
+  } finally { bridge.dispose() }
 })
 
 test('桥：QQ 图片 → DSH attachment image block；正文无 URL/base64', async () => {
