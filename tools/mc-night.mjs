@@ -16,7 +16,7 @@ import net from 'node:net'
 import { spawn } from 'node:child_process'
 import {
   DEFAULT_PORT, REPO_ROOT, STATE_ROOT, apiFor, cleanupStrayBodies, countTurnEnds,
-  findLabBodyPids, isPidAlive, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
+  findLabBodyPids, isPidAlive, loadCurrent, nowIso, orderedEvents, promptSession, readJson, readJsonl, readRunMeta,
   rebuildTranscript, runDirOf, sleep, textOfMessage, tsSlug, writeJson,
 } from './lab-lib.mjs'
 
@@ -53,6 +53,13 @@ const cfg = {
   playbookMin: num('--playbook-min', 2.5),
   playbookIdleSec: num('--playbook-idle-sec', 120),
   noPlaybook: flag('--no-playbook'),
+  /** fast-play：清醒节拍/目标续推间隔（秒），materialize 到 lab preset。 */
+  awakeIdleSec: num('--awake-idle-sec', 30),
+  goalGapSec: num('--goal-gap-sec', 30),
+  /** time 的 immediate 模式（turn/end 后 ~1s 触发）；time 未实现时由 --fast-followup 兜底。 */
+  awakeMode: String(arg('--awake-mode', 'interval')),
+  awakeMinIdleSec: num('--awake-min-idle-sec', 30),
+  fastFollowup: flag('--fast-followup'),
   /** E2 文案收敛：死亡/暂停提示压成一句策略，不列逐步动作。 */
   tersePrompts: flag('--terse-prompts'),
 }
@@ -134,6 +141,7 @@ const state = {
   sleepEnteredAt: null,
   sleepFlushedAt: null,
   sleepDirectSeen: 0,
+  lastFastFollowupAt: null,
   windowStart: null,
   windowCalls: 0,
   windowErrors: 0,
@@ -290,6 +298,14 @@ function archiveLabGeneration() {
 }
 
 async function startLab({ fresh = false } = {}) {
+  // 单一 lab 纪律：同一时间只允许一条 lab（lab.mjs 的 current 是全局的）。
+  // 并发两个 supervisor 时，谁带 --force 就会把对方的 lab down 掉，形成互杀循环（2026-11-06 事故）。
+  const other = loadCurrent()
+  if (other?.alive && other.runId && other.runId !== cfg.runId) {
+    state.lastError = `另一个 lab run ${other.runId}（port ${other.port}）还活着；单 lab 纪律：先停它再起本 run`
+    log(state.lastError)
+    return false
+  }
   if (fresh && state.labStarts > 0) archiveLabGeneration()
   log(`启动 lab（preset=${cfg.preset} port=${cfg.port} model=${cfg.model} mc-port=${cfg.mcPort} user=${cfg.mcUser}）`)
   const result = await runLabCli('up', [
@@ -299,9 +315,13 @@ async function startLab({ fresh = false } = {}) {
     '--mc-user', cfg.mcUser,
     '--servers', cfg.serverName,
     '--server-port', String(cfg.serverPort),
+    '--awake-idle-sec', String(cfg.awakeIdleSec),
+    '--goal-gap-sec', String(cfg.goalGapSec),
+    '--awake-mode', cfg.awakeMode,
+    '--awake-min-idle-sec', String(cfg.awakeMinIdleSec),
     '--model', cfg.model,
     '--timeout', '300',
-    ...(fresh ? ['--force'] : []),
+    // 不再带 --force：它会 down 掉"当前 lab"（可能是并发的另一条 run）。同 run 重启前 stopLab 已清 current。
   ], 420_000)
   if (result.code !== 0) {
     state.lastError = `lab up failed: ${result.err.trim().slice(-500)}`
@@ -724,10 +744,12 @@ function hasProgress(events) {
 /** 前 90 分钟的"照抄式 playbook"（弱模型需要确切调用，不要原则）。 */
 const PLAYBOOK = [
   { id: 'join', text: '第一步：先 mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。' },
-  { id: 'logs', text: '第二步：就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。' },
+  { id: 'collect', text: '第二步（用宏，别逐方块）：mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count":8,"radius":24}}]}；完成后 mcb_inventory 看净增。' },
   { id: 'planks', text: '第三步：把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}。若报没有配方，先 mcb_inventory，别用原参数重试。' },
   { id: 'table', text: '第四步：做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。' },
-  { id: 'explore', text: '第五步：在出生点 30 格内看看周围（mcb_map / mcb_scan 附近方块），把看到的东西 remember 记一笔；天黑了就回安全点。' },
+  { id: 'shelter', text: '第五步（宏）：用 mcb_do {"steps":[{"op":"task","kind":"shelter","params":{"size":3,"height":3}}]} 搭一个能站进去的庇护所（四面墙+门+屋顶）；完成后报告"四面墙/门/屋顶/能否站进去"，失败要报缺哪一面。' },
+  { id: 'combat', text: '如果附近有 hostile 怪先保命：mcb_combat {"mode":"hunt","target":"nearest_hostile","radius":16} 猎杀；血低或苦力怕近身用 {"mode":"flee"}。不要 mcb_attack 逐只手动。' },
+  { id: 'explore', text: '再看看周围（mcb_map / mcb_scan），把看到的东西 remember 记一笔；天黑了回安全点。' },
 ]
 
 /** 生存模式/降级后的单步指令：一次只给一个 op，做完再下一步（弱模型成功率更高）。 */
@@ -953,10 +975,12 @@ function initialInstruction() {
   return [
     '今晚这段时间你自己安排，不用等我吩咐。先按下面这条链一步步来（每一步做成了再做下一步；报错就先 mcb_status/换简单动作，别用原参数重试）：',
     '① mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。',
-    '② 就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。',
+    '② 就近砍木头（用宏，别逐方块）：mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count":8,"radius":24}}]}；做完 mcb_inventory 看背包。',
     '③ 把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}；报没有配方就先 mcb_inventory。',
     '④ 做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后再 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。',
-    '⑤ 在出生点 30 格内看看周围（mcb_map/mcb_scan），把看到的东西 remember 记一笔。',
+    '⑤ 搭庇护所（宏）：mcb_do {"steps":[{"op":"task","kind":"shelter","params":{"size":3,"height":3}}]}，做完报告"四面墙/门/屋顶/能站进去"，失败说缺哪面。',
+    '⑥ 遇到 hostile 怪：mcb_combat {"mode":"hunt","target":"nearest_hostile","radius":16}；血低/苦力怕近身 → {"mode":"flee"}。**优先宏，不要逐只 mcb_attack**。',
+    '⑦ 再看看周围（mcb_map/mcb_scan），把看到的东西 remember 记一笔。',
     '',
     '规矩：**同一个动作连续失败 3 次就换做法**（先 mcb_status、换目标、或回安全点），禁止原参数硬撞；',
     '前 90 分钟只做低风险的事（就近采集/整理/探索/看时间），不下矿、不长途、不打架；',
@@ -1420,6 +1444,19 @@ async function main() {
       try {
         await sendPrompt('快到你睡觉的时间了（约 20 分钟后）。现在开始收尾：把手上的事停一下，回刚才的安全点（或就近搭个能睡的庇护所），整理一下背包；到点就安排睡下（sleep 安排我已经帮你排好了，到点会生效）。', { timeoutSec: 300 })
       } catch (error) { log(`pre-sleep 提示失败：${String(error?.message ?? error)}`) }
+    }
+
+    // fast-play 兜底（time immediate 未合入时）：turn/end 后 ~0.8s 补一条 followup，避免等 awake-tick。
+    // 注意：这里不能用后面的 hb（TDZ，2026-11-06 事故），现场算 turn-end。
+    const fastLastTurnEnd = heartbeatFromEvents(events).lastTurnEndAt
+    if (cfg.fastFollowup && !sleeping && !state.restMode && !stats.inTurn && fastLastTurnEnd) {
+      const sinceEnd = nowMs - Number(fastLastTurnEnd)
+      const lastFollow = state.lastFastFollowupAt ? Date.parse(state.lastFastFollowupAt) : 0
+      if (sinceEnd > 500 && sinceEnd < 12_000 && nowMs - lastFollow > 2500) {
+        state.lastFastFollowupAt = nowIso()
+        state.fastFollowups = (state.fastFollowups ?? 0) + 1
+        try { await sendPrompt('继续，下一步。', { timeoutSec: 120 }) } catch (error) { log(`fast-followup 失败：${String(error?.message ?? error)}`) }
+      }
     }
 
     // playbook 单步推进（E2 可调：--playbook-min / --playbook-idle-sec / --no-playbook；睡眠/休息期不催）
