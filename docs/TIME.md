@@ -130,15 +130,15 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 1. `to === 'plugin'`（事件总线）→ **放行**，不进积压。`emit()` 就是 `offer({to:'plugin'})`；core 现在只对 `to:'model'` 调用 gate，time 的 gate 也做同样防御。睡眠时 `turn-end` 之类的事件不会再变成"积压的用户消息"。
 2. `from.plugin === 'time'` → 放行（自己的闹钟/结束语/目标续推；FOCUS.md §1.6：静音不关自己的闹钟）。
-3. `phase === 'paused'` → 入队 `reason:'paused'`。
-4. `lock` 生效（静音）→ `lock.allow` 命中放行；紧急事件在独立配额内放行（每次放行记 `lock.emergency.log`），超配额入队 `reason:'muted-quota'`；其余入队 `reason:'muted'`。**静音优先于睡眠白名单。**
-5. `phase === 'sleeping'` → 活动 span 的 `allow` 命中放行；其余入队 `reason:'sleeping'`。白名单默认 `[{from:'admin'}]`（`from/kinds/tags/any` 任一规则全字段匹配即放行）。
+3. `lock` 生效（显式静音）→ `lock.allow` 命中放行；危险消息（`emergencyTags`：默认 `alarm/safety/emergency`）**默认也拦**（`emergencyQuota` 默认 0，显式配置才 opt-in 放行）→ 入队 `reason:'muted'`、`priority:'alarm'`，记 `lastBlockedAlarm`；普通消息入队 `reason:'muted'`。**静音优先于睡眠白名单。**
+4. `phase === 'sleeping'` → 活动 span 的 `allow` 命中放行；**危险消息不叫醒**，入队 `reason:'sleeping'`、`priority:'alarm'`（醒来简报第一条呈现），普通消息入队 `reason:'sleeping'`；白名单默认 `[{from:'admin'}]`。
+5. `phase === 'paused'` **或外部 pausedMode.active** → **危险消息穿透并叫醒会话**（记 `lastPierce` + `time-events pause-pierce`）；普通消息入队 `reason:'paused'`。暂停 = 任务停止、世界继续（见 §16）。
 
 补充：
 - `allow: []` 表示**没有**白名单（除 time 自己和静音锁规则外全拦）；`allow:null` 才回落默认。
-- 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（没有 `mention/at/private/direct/admin` 标签的），@/私聊优先保留；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
-- 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId`。
-- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
+- 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（`priority:'alarm'` 最高，其次 `mention/at/private/direct/admin`，最后 ambient）；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
+- 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId` 与 `priority`（`alarm|normal`）。
+- 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），**危险条目排最前**（`⚠ ` 前缀），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
 - 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
 
 ### 4.1 静音锁（新）
@@ -146,9 +146,9 @@ const PHASES = ['awake', 'sleeping', 'paused']
 `mute({minutes, until, reason, allow, emergencyQuota})`：
 
 - 默认 30 分钟，最长 `maxMuteMs`（默认 8h）——超时到点**自动解除**并释放有界积压摘要，不会把系统永久卡死；解除时发 `mute-end` 事件。
-- 紧急事件 = 带 `tags` 里的 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 配置可把来源收敛成显式插件白名单（默认 null=不限制）。
-- 可查：`time_status` / `status().lock` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
-- 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason`、`time_list` 显示 `（sleeping）/（muted）/（muted-quota）`。
+- **用户 2026-11-06 拍板：静音默认连危险消息也拦**（`emergencyQuota` 默认 0），但会记录（`lastBlockedAlarm` + `time-events alarm-blocked`），恢复/醒来时可见。危险消息 = 带 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 可把来源收敛成显式插件白名单。要 opt-in 放行危险：`emergencyQuota:N` 或 `allow:[{tags:['alarm']}]`。
+- 可查：`time_status` / `status().lock` / `status().lastBlockedAlarm` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
+- 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason` 与 `priority`、`time_list` 显示 `（sleeping）/（muted）`。
 - 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。
 - 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
 
@@ -202,7 +202,7 @@ CLI：`node tools/time.mjs <命令> [JSON] [--state <time.json>] [--no-wait]`。
 
 | 工具 | 一句话 |
 |---|---|
-| `time_status` | 现在/阶段/睡到/静音到/下一个安排/进行中/目标 id/积压/漏响；以及心跳：上次 turn-end、醒着空闲秒数、下次自检（§13） |
+| `time_status` | 现在/阶段/睡到/静音到/暂停语义（任务停止、世界继续、危险穿透 + 最近穿透）/下一个安排/进行中/目标 id/积压/漏响；以及心跳（§13） |
 | `time_arrange` | 新建安排（§2 语法；工具 description 是参数契约的家） |
 | `time_list` | 安排（按下一次触发排序）+ 目标 + 积压，带相对时间 |
 | `time_edit` | 改时间/消息/模式/时长/silent/tags；进行中 span 同步结束时间 |
@@ -625,3 +625,50 @@ node tools/lab.mjs down --run "$RUN"
   - 一直没收到回执时简报显示"入睡时已触发（dream 回执未回传）"，不假装成功。
 - `time-events.jsonl` 也会落 `dream-result {ok,text,jobs,ranJobs,degraded,failedShards}`，supervisor/早报可直接消费。
 - 测试：正常醒来简报内容/顺序/计数；dream 回执（含 degraded/失败分片）+ 边界超时进简报；醒着收到失败回执发 notice（`time-lock.test.mjs`）。
+
+---
+
+## 16. 暂停 / 危险穿透语义（用户 2026-11-06 拍板）
+
+> 用户原话："将游戏在线时的危险作为穿透消息唤醒会话并自动规避危险，模型能选择暂停去干别的，但是一出事一定会被通知。"
+> 结论：**暂停不能吞 alarm**；只有显式静音（mute）与睡眠（sleep）可以拦，且都必须留痕。
+
+### 16.1 四态 × 两类消息（time gate 的实际行为）
+
+| 状态 | 普通消息 | 危险消息（tags 命中 `emergencyTags`） |
+|---|---|---|
+| `awake` | 投递 | 投递 |
+| `paused`（phase）或外部 `pausedMode.active` | 进积压 `reason:'paused'` | **穿透并叫醒会话**；记 `lastPierce`、`time-events pause-pierce` |
+| `sleeping` | 进积压 `reason:'sleeping'` | **不叫醒**；进积压 `priority:'alarm'`，记 `lastBlockedAlarm`/`sleep-alarm-buffered`，醒来简报**第一条**呈现（`⚠ 睡眠期间有 N 条危险/紧急事件…`），积压摘要里排最前 |
+| `lock`（mute，显式静音） | 进积压 `reason:'muted'` | **默认也拦**（`emergencyQuota=0`），记 `lastBlockedAlarm`/`alarm-blocked`；显式 `emergencyQuota`/`allow` 才 opt-in 放行 |
+
+优先级：`mute > sleeping > paused`（显式静音最硬；mute 在 sleep 期间也压过睡眠白名单）。
+
+### 16.2 两种"暂停"（别混）
+
+- **`phase='paused'`（time 自己的 pause，测试/维护后门）**：冻结 time 计时（spans/goal.until/一次性安排/lock 后移），普通消息积压；**危险仍穿透**。
+- **外部 `pausedMode.active`（用户语义：任务停止、世界继续）**：**不冻结 time 计时**（schedule/sleep 照常跑），只改变投递裁决；由 mc-body/mc-link 在 `mcb_stop` / 危险暂停时调用。
+  - API：`ctx.services.get('time').setPausedMode({active, reason, source})`；控制后门 `inbox {cmd:'pause_mode', args:{active:true,reason:'mcb_stop',source:'mc-link'}}`。
+  - 状态：`status().pausedMode = {active, phasePaused, external, reason, since, source, worldContinues:true, alarmsPierce:true, lastPierce, lastBlockedAlarm}`；`time_status` 输出"暂停（来源：原因）：任务停止、世界继续；危险（alarm/safety）会穿透并叫醒你；最近穿透：…"。
+  - `time` 事实段在暂停时补一句事实：`…（任务已暂停、世界继续；危险事件会穿透）`。
+
+### 16.3 与 `mcb_stop` 协同（语义保留，不静默清空）
+
+- time 侧**不会**因为暂停/stop 清空 `goals`、`focus`、`schedules`、`queue`；`time_status` 在暂停时列出"保留：目标 id/专注标题"，并提示"继续用 `time_resume`/`focus_leave`；离开用 `time_cancel`"。
+- `mcb_stop`（mc-body/mc-link）应当：停任务 → 调 `time.setPausedMode({active:true, reason:'mcb_stop', source:'mc-link'})` → 之后危险事件仍会被 time 放行并叫醒；恢复时 `setPausedMode({active:false})`。不要替 she 取消 goal/focus（那是 `time_cancel`/`focus_leave` 的显式选择）。
+
+### 16.4 可观测
+
+- `status().lastPierce`：最近一次危险穿透（`{at, plugin, activity, tags, text, context: pause|mute-quota|sleep-allow|mute-allow}`）——mc-body/mc-link 文案可引用"最近一次穿透：xx"。
+- `status().lastBlockedAlarm`：最近一次危险被拦（`reason: sleeping|muted`）。
+- `time-events.jsonl` 新类型：`pause-on` / `paused-mode-on|off` / `pause-pierce` / `alarm-blocked` / `sleep-alarm-buffered` / `wake-brief`（含 alarms 计数）。
+- `time_status` 暂停行、`lastSleepBrief.alarms = {count, sources, samples}` 可查。
+
+### 16.5 测试
+
+`time-lock.test.mjs`：
+- pause 下 alarm/safety 穿透并记录 `lastPierce`，普通消息 `reason:'paused'`；
+- 外部 `pausedMode` 不冻结 time 计时（暂停中安排照常响），alarm 穿透；
+- 睡眠中 alarm 不叫醒、`priority:'alarm'`、醒来简报第一条且积压排序最前；
+- mute 默认连 alarm 也拦并记录；显式 `emergencyQuota` 才放行；
+- 暂停时保留 goal/focus 并输出"继续/离开"选项。
