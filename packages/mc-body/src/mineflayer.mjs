@@ -319,10 +319,10 @@ export function createMineflayerAdapter({
 
   // 截图用 viewer：每次截图按当前 pose 起一个（可关闭）的 viewer，截完立刻关。
   let screenshotViewer = null
-  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3 } = {}) {
+  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3, center: centerOverride = null, cameraOffset = null } = {}) {
     if (!bot?.player) throw new Error('body 未连接，无法截图')
     if (screenshotViewer) await stopScreenshotViewer()
-    const center = currentPosition()
+    const center = centerOverride ?? currentPosition()
     if (!center) throw new Error('拿不到当前位置，无法截图')
     let lastError = null
     const start = Math.max(1024, Math.min(65_000, Number(portStart) || 3998))
@@ -331,9 +331,10 @@ export function createMineflayerAdapter({
         const viewer = await startViewerServer({
           viewerRoot: process.env.MC_EYES_VIEWER_ROOT ?? null,
           world: bot.world, center, version: bot.version, port, viewDistance,
+          cameraOffset: cameraOffset ?? { x: 0, y: 20, z: 20 },
         })
         screenshotViewer = viewer
-        return { port: viewer.port, center: viewer.center, version: bot.version }
+        return { port: viewer.port, center: viewer.center, version: bot.version, stats: viewer.stats, cameraOffset: viewer.cameraOffset }
       } catch (error) {
         lastError = error
         if (!/EADDRINUSE/i.test(String(error?.message))) break
@@ -2879,6 +2880,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
 
 
 

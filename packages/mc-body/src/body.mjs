@@ -1131,7 +1131,23 @@ export function createBody({
     const kind = String(params.kind ?? 'manual').replace(/[^\w.-]/g, '_').slice(0, 40) || 'manual'
     eyesBusy = true
     try {
-      const viewer = await adapter.startScreenshotViewer({ portStart: Number(params.portStart) || eyesPortStart })
+      // 小屋截图：镜头放在门口一侧（能看见门/墙/屋顶），而不是默认的远处斜后方。
+      let centerOverride = null
+      let cameraOffset = null
+      if (kind === 'shelter' && home?.center && home?.doorSide) {
+        centerOverride = home.center
+        const distance = 6.5
+        const height = 3
+        cameraOffset = home.doorSide === 'north' ? { x: 0, y: height, z: -distance }
+          : home.doorSide === 'south' ? { x: 0, y: height, z: distance }
+            : home.doorSide === 'west' ? { x: -distance, y: height, z: 0 }
+              : { x: distance, y: height, z: 0 }
+      }
+      const viewer = await adapter.startScreenshotViewer({
+        portStart: Number(params.portStart) || eyesPortStart,
+        ...(centerOverride ? { center: centerOverride } : {}),
+        ...(cameraOffset ? { cameraOffset } : {}),
+      })
       const root = path.resolve(String(mediaDir || path.join(process.cwd(), 'media', 'mc-eyes')))
       const run = String(runId || process.env.MC_RUN_ID || 'body').replace(/[^\w.-]/g, '_')
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
@@ -1147,7 +1163,7 @@ export function createBody({
         ts: new Date().toISOString(),
         runId: run,
         requestedKind: kind,
-        viewer: { port: viewer.port, version: viewer.version, center: viewer.center },
+        viewer: { port: viewer.port, version: viewer.version, center: viewer.center, stats: viewer.stats ?? null },
         viewport: { width, height },
         waitMs,
         frames,
@@ -1393,6 +1409,8 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
+
 
 
 
