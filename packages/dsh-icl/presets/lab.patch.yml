@@ -61,6 +61,7 @@
                 - editor
                 - bili
                 - album
+                - video
                 - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'

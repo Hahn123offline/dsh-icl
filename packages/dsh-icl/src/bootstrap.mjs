@@ -22,6 +22,8 @@ export function configFor(id, cfg) {
     case 'loop-probe': return { inboxFile: path.join(cfg.stateDir, 'loop.inbox.jsonl'), outboxFile: path.join(cfg.stateDir, 'loop.outbox.jsonl') }
     case 'mc-link': return { baseUrl: cfg.mcBaseUrl, logFile: path.join(cfg.stateDir, 'mc-link.jsonl') }
     case 'album': return { root: path.join(cfg.stateDir, 'media') }
+    case 'bili': return { stateDir: cfg.stateDir }
+    case 'video': return { stateDir: cfg.stateDir }
     case 'model-manager': return { providers: cfg.providers ?? [] }
     default: return {}
   }

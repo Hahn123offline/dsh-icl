@@ -9,6 +9,7 @@ export { createHost } from './host.mjs'
 export { createSessionAdapter } from './session.mjs'
 export {
   TEXT_OUTPUT_SCHEMA,
+  IMAGE_OUTPUT_SCHEMA,
   normalizeParameters,
   normalizeToolResult,
   toDshToolDefinition,

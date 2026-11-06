@@ -47,6 +47,7 @@ function fakeCtx({ withContext = true, attachments = null } = {}) {
         return () => tools.delete(def.name)
       },
     },
+    ...(attachments ? { attachments } : {}),
     systemPrompt: {
       section(sec) {
         assert.equal(typeof sec.text, 'function')
@@ -149,6 +150,70 @@ test('工具结果统一成 {text}：字符串、对象、图片路径', async (
 
   const withImage = toDshToolDefinition({ name: 'y', description: '', parameters: { type: 'object', properties: {} }, async execute() { return { text: '帧', imagePath: 'C:/a.png' } } })
   assert.match((await withImage.execute({})).text, /C:\/a\.png/)
+})
+
+test('工具结果图片：给了 saveImage 就把路径换成 attachment 引用，并渲染成 image block', async () => {
+  const file = path.join(os.tmpdir(), `icl-img-${Date.now()}.png`)
+  fs.writeFileSync(file, Buffer.from('fake-png'))
+  const calls = []
+  const saveImage = async (f) => {
+    calls.push(f)
+    return { id: 'att-1', mediaType: 'image/png', bytes: 8 }
+  }
+  const def = toDshToolDefinition({
+    name: 'z', description: '', parameters: { type: 'object', properties: {} },
+    async execute() { return { text: '帧', images: [file] } },
+  }, { saveImage })
+  const out = await def.execute({})
+  assert.deepEqual(calls, [file])
+  assert.equal(out.text, '帧')
+  assert.equal(out.images.length, 1)
+  assert.deepEqual(def.output.render({}, out)[0], { type: 'image', attachment: out.images[0] })
+  assert.deepEqual(def.output.render({}, out)[1], { type: 'text', text: '帧' })
+})
+
+test('桥：插件回图片路径 → 宿主附件服务 → image block（真实 attachment 形状）', async () => {
+  const root = tempRoot('img-bridge')
+  const file = path.join(root, 'frame.png')
+  fs.writeFileSync(file, Buffer.from('fake-png'))
+  const saved = []
+  const attachments = {
+    async saveImage(input) {
+      saved.push(input)
+      return { id: `att-${saved.length}`, mediaType: input.mediaType, bytes: input.data.byteLength }
+    },
+  }
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(
+    { id: 'fake-eyes', version: '0.0.1', entry: './x.mjs', tools: ['fake_eyes'] },
+    {
+      apply(pluginCtx) {
+        pluginCtx.tools.register({
+          name: 'fake_eyes',
+          summary: '一张假图',
+          parameters: { type: 'object', properties: {} },
+          async execute() { return { text: '看到一帧', images: [file] } },
+        })
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-eyes')
+  const ctx = fakeCtx({ attachments })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  try {
+    const def = ctx.tools_.get('fake_eyes')
+    const out = await def.execute({})
+    assert.equal(out.text, '看到一帧')
+    assert.equal(out.images.length, 1)
+    assert.equal(saved.length, 1)
+    assert.equal(saved[0].mediaType, 'image/png')
+    assert.deepEqual(def.output.render({}, out)[0], { type: 'image', attachment: out.images[0] })
+  } finally {
+    bridge.dispose()
+  }
 })
 
 test('toDshUserMessage 与 createUserMessage 同形', () => {

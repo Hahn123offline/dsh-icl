@@ -8,7 +8,7 @@ import { REPO_ROOT, defaultStateDir, dshHome, resolvePath } from './paths.mjs'
  *  checkpoint/压缩；留着会与 dream 的原文输入冲突。要实验时在 preset 里显式列出。 */
 export const DEFAULT_PLUGINS = Object.freeze([
   'memory', 'world-state', 'recall', 'note', 'lexicon', 'whois', 'persona', 'focus',
-  'eager-recall', 'model-manager', 'time', 'dream', 'editor', 'bili', 'mc-link', 'album',
+  'eager-recall', 'model-manager', 'time', 'dream', 'editor', 'bili', 'video', 'mc-link', 'album',
 ])
 
 function readText(file, fallback = '') {

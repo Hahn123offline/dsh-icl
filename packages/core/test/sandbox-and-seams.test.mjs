@@ -38,8 +38,10 @@ test('bili 接缝注册了只读工具，且没有发评论的工具', async () 
   const host = host_(root)
   await host.enable('bili')
   const names = host.services.tools.names().sort()
-  assert.deepEqual(names, ['bili_comments', 'bili_frames', 'bili_search', 'bili_watch'])
-  assert.ok(!host.services.tools.names().some((n) => /reply|comment_?post|send/i.test(n)), '不应有发言类工具')
+  assert.deepEqual(names, [
+    'bili_comments', 'bili_feed', 'bili_frames', 'bili_login_poll', 'bili_login_start', 'bili_search', 'bili_watch',
+  ])
+  assert.ok(!host.services.tools.names().some((n) => /reply|comment_?post|send|upload|dynamic/i.test(n)), '不应有发言/上传类工具')
   const search = host.services.tools.list().find((t) => t.name === 'bili_search')
   assert.ok(search.description.includes('Search Bilibili'), '描述应说明这是搜索')
 })

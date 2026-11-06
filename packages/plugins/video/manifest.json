@@ -1,0 +1,9 @@
+{
+  "id": "video",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["video_probe", "video_open", "video_storyboard", "video_zoom", "video_locate", "video_frames"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}
