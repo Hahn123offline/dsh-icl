@@ -20,7 +20,7 @@
 | 3 | `ui:deliverable-file-references` | 1335 | 26.6% | `dsh-client-ui-deliverables`（Markdown/Office/present/file-link 规范） | **shadow 掉** |
 | 4 | `harness:source` | 368 | 7.3% | `dsh-app-boot`（仓库 checkout 路径与规则） | **shadow 掉** |
 | 5 | `app:web-surface` | 994 | 19.8% | web app（GUI URL/HMR/`pnpm run dev:web` 等） | **shadow 掉** |
-| 6 | `deployment:persona-suffix` | 83 | 1.7% | 宿主部署（cwd） | 保留（事实） |
+| 6 | `deployment:persona-suffix` | 83 | 1.7% | 宿主部署（cwd） | 保留（事实）；**产品 preset 的 tool-persona.suffix 必须为空**（desktop 内置 DSH 无 cwd 变量；lab/npm DSH 才有） |
 | | **合计** | **5011** | 100% | | |
 
 首行：`You are an AI agent powered by DeepSeek Harness.`；persona+sim 只占 43.5%，与红队观察一致。
@@ -34,7 +34,9 @@
 | ~~harness:identity / deliverable refs / harness:source / app:web-surface~~ | **0** | 0% |
 | **合计** | **2294** | 100%（-54.2%） |
 
-首行：`你是小千。`；`persona` 在 0，`cwd` 在 2210；**四段工程脚手架在文本中完全消失**。
+首行：`你是小千。`；`persona` 在 0；**四段工程脚手架在文本中完全消失**。
+
+> 运行时差异（2026-11-07 desktop A1 live P0）：desktop 内置 DSH 的 agent-loop 只注册 `provider/model`，**没有 `{{cwd}}`**；产品 preset 的 `tool-persona.suffix` 必须为空，否则每个 turn 在模型请求前报 `unknown prompt variable "{{cwd}}"`。npm DSH（lab）注册了 cwd，所以 lab 保留 cwd suffix 不受影响；下文 lab 基线（cwd 在 2210）只代表 lab。
 字节：8485 → **5762**（-32.1%，中文字符 3 字节压缩比低于字符数压缩比）。
 
 ## 3. 机制（方案 A：同名空段 shadow，不用 complete:true）

@@ -5,6 +5,10 @@
 #
 # 路径约定：stateDir 之类的"数据路径"相对 ICL_ROOT 解析（默认 <REPO_ROOT>/.state），
 # 不写盘符；只读资产（personaFile 等）相对仓库根解析。换盘/整体迁移见 docs/PATHS.md。
+#
+# 注意：tool-persona.suffix 必须为空（不能引用 {{cwd}}）。desktop 内置 DSH（app.asar）的
+# agent-loop 只注册 provider/model 变量，不注册 cwd；引用 {{cwd}} 会让每个 turn 在模型请求前
+# 直接失败（unknown prompt variable）。lab 用的 npm DSH 有 cwd，但产品 preset 以 desktop 为准。
 - insert:
     - id: dsh-icl-host
       name: ../host.mjs
@@ -53,7 +57,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
-              suffix: 'Your working directory is {{cwd}}.'
+              suffix: ''
     # 闭环测试专用：独立 stateDir，不碰用户 ICL 的记忆/时间/focus。
     - id: preset-icl-loop
       name: '@deepseek-ai/dsh-agent-preset'
@@ -97,7 +101,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
-              suffix: 'Your working directory is {{cwd}}.'
+              suffix: ''
     - id: preset-icl-mc
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -140,4 +144,4 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
-              suffix: 'Your working directory is {{cwd}}.'
+              suffix: ''
