@@ -37,3 +37,12 @@ node tools/quality-run.mjs        # 固定素材 + 真模型，写本目录 <时
   （见 [../STATUS.md §4](../STATUS.md)）。
 - **词汇条数下降不是退步**：早期 6 条里含 `白饭`/`白饭了` 这种重复与单字噪声，现在只有 2 条有释义的。
 - 这份数据**只有 21 条固定素材**，不能代表长会话；样本量小，别据此调参。
+
+## E2 记忆质量监控（mc-quality）
+
+> E2 长测用 `tools/mc-quality.mjs` 观测真实会话的"事件→记忆成块"质量；口径与判据见 [../MEMORY-BLOCK-QUALITY.md §4](../MEMORY-BLOCK-QUALITY.md)，产物为 `<runDir>/quality.jsonl` / `quality-report.md`。
+
+- 可回忆块 = `event/person/slang` 的 `kind=block`；`day/log` 是 wash 原料、`dream-run` 是运行记录、`consume` 是备忘回收，三者都**不计入块大小**（旧口径把 138,778 字符的 day 原料误算成 p95 的教训）。
+- dream job 按 `run:/fail:/skip:` 三态统计（master 已让失败/跳过落 `dream-run`）；`index` 无嵌入时记 `skipped:no-embed`，不算失败。
+- 槽健康：`slots.unmatched` 期望 `[]`（`icl.ready` 日志不可得时由 dream 模型 job 成功行/fail 行推断，`slots.source` 标注来源）。
+- 2026-11-06 lab 侧已给 `icl-lab` / `icl-mc-lab` 注入 `providers`（8088 llama-swap chat/embedding）；验证：dream `events` job `ran`、`blocks=1`、`event/block` 与 4 条 `mem_vec` 落库、无 `fail:` 行、eager-recall 注入 2 次。

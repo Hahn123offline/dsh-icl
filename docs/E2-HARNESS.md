@@ -49,7 +49,8 @@
 
 ## 5. 记忆质量指标（可判据）
 
-数据源：`state/icl-mc-lab/state/memory.db`（`mem_ns`/`mem_items`，`node:sqlite` 只读）、`events.jsonl`（tool/call+result、user/message、system/message）、`body.jsonl`（真实事件）、`time.json`、`transcript.md`、dream-run 行。
+数据源：`state/icl-mc-lab/state/memory.db`（`mem_ns`/`mem_items`/`mem_vec`，`node:sqlite` 只读）、`events.jsonl`（tool/call+result、user/message、system/message）、`body.jsonl`（真实事件）、`time.json`、`transcript.md`、dream-run 行。
+口径以 [MEMORY-BLOCK-QUALITY.md §4](MEMORY-BLOCK-QUALITY.md) 为准：**原料（day/log）与可回忆块（event/person/slang 的 block）分离**；dream job 按 `run:/fail:/skip:` 三态；consume 只算"备忘回收"；index 无嵌入记 `skipped:no-embed`；槽健康读 `icl.ready.slots.unmatched`（日志不可得时由 dream fail 行/模型 job 成功行推断，字段 `slots.source` 标注来源）。
 
 | 指标 | 定义 | 告警阈值（可配） |
 |---|---|---|
@@ -57,14 +58,17 @@
 | `recall.avgResultChars` / `noiseHits` | 结果平均字符；结果行中不含查询词的块比例（粗噪声代理） | avgChars<40 或 noiseHits>0.5 |
 | `remember.calls` / `forget.calls` | 显式记忆写入/删除调用 | — |
 | `eager.injections` / `eager.chars` | `<icl-context>` 注入次数/字符 | 有事件但 0 注入（kind 未命中）记 info |
-| `dream.jobs[]` | 每 job（wash/events/people/lexicon/consume/cleanup/index）是否记录、`wash{lines,chars,omittedLines}`、`consume{written,archived}`、`index{indexed,missing}` | 缺 job、consume.written=0 连续 2 天、index.missing>indexed |
+| `dream.jobs[job].ran/skipped/failed` | 每 job 三态（`run:` / `skip:` / `fail:` 行；失败带 error） | 任一实际进入的 job 无三态行、或 `failed>0` |
+| `mem.blockChars.p50/p95/p99` | **只统计可回忆块**（event/person/slang 的 `block`）字符分布 | p95 > 1200 或 p50 < 20（太碎） |
+| `mem.rawMaterial` | `day/log` 原料条数/字符（**不计入块大小**；目标 ≤40k/条，待用户批分段落盘） | >40k/条 |
+| `mem.vectors` / `slots.embedded` | 向量数 / 是否配置嵌入；无 embed 时 index 应 `skipped:no-embed`，不算失败 | 有 embed 但覆盖 <100% |
 | `mem.growthPerHour` / `mem.items` / `mem.bytes` | mem_items 总数与增速（按 namespace/kind） | 增长 > 60 条/h 或 byte 增速异常 |
-| `mem.dupRate` | 同 (namespace,kind,归一化文本) 重复行占比 | >0.2 |
-| `mem.blockChars.p50/p95/p99` | 记忆块字符数分布 | p95 > 1200 或 p50 < 20（太碎） |
-| `latency.eventToMemoryMs` | remember 调用 → 随后首个新 memory 行 created_at 的差（p50/p95）；dream consume → 首个 block 行 created_at 差 | p95 > 5min |
-| `compaction` | `compaction/summary` 行数与 `data.dropped` 和 | dropped 激增 |
-| `events.loss` / `events.dup` | body 事件行数 vs 记忆 event/note 块数（仅启发式）；同 seq 重复数 | 重复 seq >0 或 loss>50%（启发式，标注置信度） |
-| `dream.failures` | 预期 job 缺失/报错（data.error）次数 | ≥1 |
+| `mem.dupRate` | 同 (namespace,kind,归一化文本) 重复行占比（全库） | >0.2 |
+| `latency.eventToMemoryMs` | remember 调用 → 随后首个新 memory 行 created_at 差（p50/p95）；dream consume → 首个非 dream-run 行差 | p95 > 5min |
+| `dream.memoRecycle` | consume 的 `written/archived`（**不计入成块**） | — |
+| `dream.failures` / `failRows` / `skipRows` | 失败行数/明细、跳过行明细（三态修后应可见） | failures ≥1 标红 |
+| `slots.unmatched` | 槽健康（`icl.ready` 或推断）；期望 `[]` | 非空 = dream 模型 job 会缺席 |
+| `events.loss` / `events.dup` | body 事件行数 vs 记忆 event block/note 数（启发式）；同 seq 重复数 | 重复 seq >0 或覆盖率 <1 block/天 |
 
 `quality.jsonl` 每行：
 ```json

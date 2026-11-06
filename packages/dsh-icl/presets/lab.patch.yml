@@ -71,6 +71,22 @@
                 time:
                   # 测试/复核用：允许 inbox clock 命令平移 time 看到的时钟（跨小时前缀复核）。
                   testClock: true
+              # dream-chat / embed-text 插槽必须有 providers，否则 dream 的 events/people/lexicon/cleanup
+              # 等需要模型的 job 会整段缺席（night-1 事故：只有 wash/consume/index）。
+              # lab 复用 8088 llama-swap（chat: qwen35-9b / embedding: embed-bge-m3），零成本、无 API key。
+              providers:
+                - id: lab-llama-swap-chat
+                  kind: chat
+                  shape: { tools: false }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: qwen35-9b
+                  timeoutMs: 120000
+                  disableThinking: true
+                - id: lab-bge-m3
+                  kind: embedding
+                  shape: { dim: 1024 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: embed-bge-m3
               plugins:
                 - memory
                 - world-state
@@ -136,6 +152,21 @@
                 - 'harness:source'
                 - 'app:web-surface'
               mcBaseUrl: '__LAB_MC_BASE__'
+              # 同 icl-lab：dream-chat/embed-text 插槽必须有 providers，否则 dream 的
+              # events/people/lexicon/cleanup 等 job 会整段缺席（night-1 只跑了 wash/consume/index）。
+              providers:
+                - id: lab-llama-swap-chat
+                  kind: chat
+                  shape: { tools: false }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: qwen35-9b
+                  timeoutMs: 120000
+                  disableThinking: true
+                - id: lab-bge-m3
+                  kind: embedding
+                  shape: { dim: 1024 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: embed-bge-m3
               pluginConfig:
                 mc-link:
                   listenPort: __LAB_MC_PORT__
