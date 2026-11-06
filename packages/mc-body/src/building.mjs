@@ -171,3 +171,25 @@ function buildMissingSummary({ wallMissing, missingFaces, roofMissing, doorMissi
   if (!insideClear) parts.push('门内没有可站立空间')
   return parts.length ? parts.join('；') : '结构完整：四面墙 + 屋顶 + 门洞 + 室内 2 格高 + 进出通路'
 }
+
+/** shelter 材料诊断：给“需要/现有/还差”、可用替代材料和可执行建议。 */
+export function shelterMaterialReport({ material, need, counts = {}, width = 3, interiorHeight = 2 } = {}) {
+  const have = Number(counts[material]) || 0
+  const deficit = Math.max(0, Number(need) - have)
+  const candidateNames = ['dirt', 'cobblestone', 'oak_planks', 'spruce_planks', 'birch_planks', 'stone', 'cobbled_deepslate', 'mud', 'sand', 'gravel']
+  const available = {}
+  for (const name of candidateNames) available[name] = Number(counts[name]) || 0
+  for (const [name, count] of Object.entries(counts)) {
+    if (!(name in available) && /(planks|log|cobblestone|stone|dirt|sand|gravel|mud|deepslate)/.test(name)) available[name] = Number(count) || 0
+  }
+  const alternatives = Object.entries(available)
+    .filter(([name, count]) => count > 0 && name !== material)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([name, count]) => ({ material: name, have: count, enough: count >= Number(need) }))
+  const usable = alternatives.find((entry) => entry.enough)
+  const suggestion = usable
+    ? `建 ${width}×${width} 小屋（内部 ${interiorHeight} 格高）需要 ${material}×${need}，现有 ${have}（还差 ${deficit}）；背包已有 ${usable.material}×${usable.have} 足够——请把 material 改成 "${usable.material}" 重试，不用再收集。`
+    : `建 ${width}×${width} 小屋（内部 ${interiorHeight} 格高）需要 ${material}×${need}，现有 ${have}（还差 ${deficit}）；先 dig 脚边/地表补料：{"op":"dig","params":{"block":"dirt","count":${deficit}}}（或 stone/cobblestone），或改用现有最多的 ${alternatives[0]?.material ?? 'dirt'}（${alternatives[0]?.have ?? 0} 块）；不够就先 collect 再建，别原样重试。`
+  return { material, needed: Number(need), need: Number(need), have, deficit, available, alternatives, enough: have >= Number(need), suggestion }
+}

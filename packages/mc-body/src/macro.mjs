@@ -171,3 +171,14 @@ export function shelterPlan(params = {}) {
   return { size, height, door: { x: Math.floor(size / 2), z: 0, y: [0, 1] }, cells }
 }
 
+
+/** collect 资源枯竭 fallback：候选方块跑完后逐级扩大搜索半径（最多 48）。 */
+export function collectRadiusPlan(radius = 16) {
+  const base = Math.max(2, Math.min(48, Number(radius) || 16))
+  return [...new Set([base, Math.min(48, Math.max(base + 8, Math.round(base * 1.5))), 48].map((value) => Math.max(2, Math.min(48, value))))]
+}
+
+/** collect 的失败是否全部属于“附近没资源”（用于给 no-resources 而不是原始 no-target）。 */
+export function collectAttemptsAreNoTarget(attempts = []) {
+  return attempts.length > 0 && attempts.every((entry) => /no-target|no-resource|附近没有/.test(String(entry?.error ?? '')))
+}
