@@ -629,7 +629,7 @@ export function apply(ctx) {
   // 运行时（不落盘）
   const goalLeases = new Map()
   let sleepLease = null
-  let gateRemover = null
+
   let ticking = false
 
   /**
@@ -1715,21 +1715,10 @@ export function apply(ctx) {
     if (schedule.__parsed?.kind === 'once') dropSchedule(schedule.id)
   }
 
-  /** 自愈：如果别的插件用旧 setGate 把我们的拦截层整体覆盖了，重新装回去。 */
-  function ensureSignalGate() {
-    if (typeof signals.gates !== 'function' || typeof signals.addGate !== 'function') return
-    if (signals.gates().includes(gate)) return
-    log('warn', 'time.gate.missing', { gates: signals.gates().length })
-    try {
-      gateRemover = signals.addGate(gate) ?? gateRemover
-    } catch (error) { log('warn', 'time.gate.reinstall', { error: String(error?.message ?? error) }) }
-  }
-
   function tick(at = nowTime()) {
     if (ticking) return { skipped: 'reentrant' }
     ticking = true
     try {
-      ensureSignalGate()
       processInbox()
       if (state.phase === 'paused') { if (dirty) persist(); return { skipped: 'paused' } }
       expireLock(at)
@@ -2337,16 +2326,9 @@ export function apply(ctx) {
   // ── 启动：重启前没放出去的积压显式释放（原因如实写，不假装是错误） ──
   if (state.queue.length) flushQueue('重启后发现的')
 
-  // ── 拦截层：signals 的 gate 和 delivery 的 push-time gate 都走组合安装 ──
-  // 多槽位：别的插件再装自己的规则也不会静默覆盖我们（setGate 是旧接口，会整体替换）。
-  if (typeof signals.addGate === 'function') {
-    const off = signals.addGate(gate)
-    gateRemover = typeof off === 'function' ? off : null
-    ctx.onDispose(() => { try { gateRemover?.() } catch { /* 已经卸下 */ } })
-  } else {
-    signals.setGate(gate)
-    ctx.onDispose(() => { try { signals.setGate(null) } catch { /* 已经卸下 */ } })
-  }
+  // ── 拦截层：只在 delivery 层裁决（P3：focus→time，signals 与直投同序） ──
+  // 不再安装 signals gate：host 的 focus.admit 先跑，随后 delivery 的 time gate 再判时间。
+  // 这样同一条消息只经过一次 time 裁决（配额/记录不会重复计数）。
   ctx.onDispose(() => clearInterval(timer))
   ctx.onDispose(() => { if (awakeTimer) { clearTimeout(awakeTimer); awakeTimer = null } })
 
@@ -2358,9 +2340,8 @@ export function apply(ctx) {
       const source = entry.source ?? entry
       const plugin = String(source?.plugin ?? entry?.plugin ?? '')
       if (plugin === 'time') return { accept: true }
-      // signals 已经过 gate 的投递（channel:'signal'）不再拦第二遍，否则紧急配额会被
-      // 计数两次、放行的消息又被打回积压。直接 ctx.delivery.push 的其它 channel 才在这里拦。
-      if (entry.channel === 'signal') return { accept: true }
+      // P3：不再跳过 channel:'signal'。signals 层已没有 time gate，时间裁决只在 delivery 层做一次
+      // （host focus.admit 先跑 → 这里再判 phase/lock/pause），配额/记录不会重复计数。
       // C1：直投也带上 source 的 tags/priority/pierce/meta，alarm 的判定与 signal 路径一致
       // （暂停穿透；睡眠/静音按最高优先级进 time 队列，内容不丢）。
       const tags = Array.isArray(source?.tags) ? source.tags.map(String) : []
@@ -2374,6 +2355,9 @@ export function apply(ctx) {
         focus: source?.focus == null ? null : String(source.focus),
         tags,
         meta: Object.keys(meta).length ? meta : null,
+        id: source?.signalId == null ? null : String(source.signalId),
+        createdAt: Number(source?.createdAt) > 0 ? Number(source.createdAt) : null,
+        expiresAt: Number(source?.expiresAt) > 0 ? Number(source.expiresAt) : null,
       }
       const decision = gate(pseudo)
       if (decision.accept) return { accept: true }

@@ -168,15 +168,29 @@ export function createSignalService({ now = () => Date.now(), dedupeWindowMs = 8
       counters.failed += 1
       return { accepted: false, error: '没有投递器：signals.setDeliver 未接' }
     }
+    let outcome = null
     try {
-      const outcome = deliver(signal)
+      outcome = deliver(signal)
       if (outcome && typeof outcome.then === 'function') {
         outcome.catch((error) => fail('deliver-async', error))
+        outcome = null
       }
     } catch (error) {
       // 瞬时失败（会话正忙/下游抛错）：不占用 id，调用方可以重试
       fail('deliver', error)
       return { accepted: false, id: signal.id, error: String(error?.message ?? error) }
+    }
+    // P3：delivery 层的 time gate 拦下时，内容已在下游（time queue）持久化；如实回报 blocked，
+    // 让来源（QQ 等）不要把它记成 delivered（重放回执会在真正投递后补）。
+    if (outcome && outcome.blocked === true) {
+      counters.blocked += 1
+      return { accepted: false, blocked: true, id: signal.id, reason: outcome.reason ?? 'delivery-gate', queued: Boolean(outcome.queued) }
+    }
+    // focus 积压：内容在 focus backlog，不算 delivered；调用方可用 queued 识别。
+    if (outcome && outcome.queued === true) {
+      seen.set(signal.id, at)
+      counters.accepted += 1
+      return { accepted: true, id: signal.id, queued: true, delivered: false, reason: outcome.reason ?? null }
     }
     seen.set(signal.id, at)
     counters.accepted += 1

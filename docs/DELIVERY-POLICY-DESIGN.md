@@ -1,6 +1,6 @@
 # 投递裁决统一设计（DELIVERY-POLICY）
 
-> 状态：**设计稿 + 2026-11-07 已实施 C1/C6/重放回执**。`decide()` 主体（P0–P3）仍只是设计；已实施部分见 §2.8，并作为未来迁移的 parity 基准。
+> 状态：**设计稿 + 2026-11-07 已实施 C1/C6/重放回执 + P3（统一 focus→time）**。`decide()` 主体（P0–P2）仍只是设计；已实施部分见 §2.8，并作为未来迁移的 parity 基准。
 > 范围：`signals.offer(to:'model')` → 投递到 session 这一条链上的**裁决**。
 > 不在范围：QQ 入口的归一化/限流、审批状态机、记忆写入、focus backlog 的存储结构。
 > 参考：`docs/OLD-QWENSTUFF-MEMORY.md`（唯一裁决点 / 2 通道 / 5 reason 的 A/B 结论）、
@@ -190,6 +190,14 @@ export function decide(input) {}
 decide(input):
   if signal.to === 'plugin'      → deliver(plugin bus, no wake)   // 调用方通常直接跳过
   if from.plugin === 'time'      → deliver(pierce, wake=false?)   // 她自己的闹钟/续推，一律放行
+
+  // —— 空间维度（focus）先判；sleep 租约是时间标记，跳过 ——
+  if focus && !(focus.owner==='time' && focus.label==='sleep' && focus.kind==='idle'):
+      if !focus.interruptible && !privileged → queue(reason=sacred, queueKey=focus:<label>)
+      if signal.focus !== focus.label && !privileged:
+          if !resolvePierce(focus.pierce, signal.focus, mention).allowed → queue(reason=focus, queueKey=focus:<label>)
+
+  // —— 时间维度（time）后判 ——
   if phase === 'sleeping':
       if allowMatch(sleep.allow)  → deliver
       return queue(reason=sleep, priority=alarm? , holdMs=sleepUntil-now)
@@ -200,19 +208,13 @@ decide(input):
   if pausedActive:                // phase paused 或 pausedMode.active
       if alarm/pierce             → deliver(pierce, wake=true)
       return queue(reason=stop, holdMs=null)
-  // —— 到这里才问 focus（与现顺序一致：time 拦下就不进 focus）——
-  if !focus                     → deliver(pierce)
-  if privileged(time/admin/alarm) → deliver(pierce)
-  if signal.focus === focus.label → deliver(pierce)
-  if focus.interruptible === false → queue(reason=sacred, queueKey=focus:<label>)
-  if !resolvePierce(focus.pierce, signal.focus, mention).allowed → queue(reason=focus, queueKey=focus:<label>)
   return deliver(pierce)
 ```
 
-> 注意第 2 条：当前 time 自己的信号 `from.plugin==='time'` 在 B 直接 accept，之后仍会过 A
-> （A 也 privileged 放行）；统一后一次判定即可。`wake` 对 time 的 `goal/notice` 仍为 false
-> 还是 true 由现有 bridge 行为决定（现在 delivery.push 后由 bridge steer 唤醒）→ 统一时保持
-> `wake:true`（等价于现在的 steer）。
+> 顺序说明：P3 起统一为 **focus→time**（signals 与直投同序）。空间维度不拦时，
+> 才轮到时间维度。`sleep` 租约是 time 的时间锁标记（owner=time/kind=idle/label=sleep），
+> 跳过空间判定，保证睡眠积压仍归 time queue（而不是被 sacred 的睡眠租约收进 focus backlog）。
+> 第 2 条 time 自己的信号仍 privileged 放行；`wake` 统一为 true（等价于 bridge steer 唤醒）。
 
 ### 2.5 5 个 canonical suppressReason 与 9→5 映射
 
@@ -261,10 +263,10 @@ decide(input):
 3. **重放不直接投递**：两条队列释放时都生成一条**摘要信号重新进入管道**，再走一次双闸门：
    - focus 释放 → `signals.offer({from.plugin:'focus', tags:['focus-backlog']})` → 先 time gate、再 focus.admit；
    - time 释放 → `send()`（time 自己的 notice）→ 先 time gate（time 自身放行）→ focus.admit（privileged 放行）。
-4. **顺序**：
-   - **signals 路径**：time gate → focus.admit（历史原因：`signals` gates 先于 `setDeliver`；现状不变）。
-   - **直投 delivery.push**（C6）：focus.admit → time gate（host 先装 focus 空间闸门，插件的 time 时间闸门后装）。`channel:'signal'` 的投递已在 signals 路径裁决过，**不再二次裁决**。
-   - 两个顺序的差别只决定"两个都该拦时先进哪条队列"——本轮不改 signals 顺序（避免行为漂移）；P3 统一时再定一个顺序（建议 focus→time，与直投一致）。\n   - 残留结构洞：插件若调旧 `delivery.setGate` 会**整体替换**（包括 host 的 focus 空间闸门）；P3 建议禁用/收窄该接口，只用 `addGate`。
+4. **顺序（P3 起统一为 focus → time）**：
+   - **signals 路径**：`setDeliver` 先 `focusDecision`（空间）→ `delivery.push(channel:'signal')` → delivery 上的 focus 空间闸门跳过（已判过）→ **time 时间闸门**再判 phase/lock/pause；signals 层不再安装 time gate。
+   - **直投 delivery.push**：delivery 上的 focus 空间闸门（host 先装）→ time 时间闸门（插件后装），同序；两条路径都是 **focus→time**，同一条消息的时间裁决只发生一次。
+   - **睡眠租约例外**：time 的 `sleep` 租约（owner=time/kind=idle/label=sleep）是**时间锁标记**，不是空间；host `focusDecision` 在它生效时跳过空间闸门，让 time 时间闸门处理睡眠积压（否则普通消息会被 sacred 睡眠租约收进 focus backlog，破坏 sleep backlog/醒来简报语义）。\n   - 残留结构洞：插件若调旧 `delivery.setGate` 会**整体替换**（包括 host 的 focus 空间闸门）；建议禁用/收窄该接口，只用 `addGate`（本轮未改，避免扩大范围）。
 5. **重复/过期语义**：
    - time queue：`signal.id` 去重（同 id 不重复入队）、`expiresAt` 过期显式丢弃计数、溢出保护（alarm 最高优先级，其次 mention/私聊、再 ambient）；摘要受 `backlogShow/backlogMaxChars` 上限约束。
    - focus backlog：按空间计数，`items` 只留最近 20 条（`lastText` 供摘要），**没有 TTL**（焦点不释放就一直攒；这是"别处的事"的语义，不是收件箱）。
@@ -284,8 +286,11 @@ decide(input):
 | **C6 改（结构性防洞）** | host 在 delivery 上先装 **focus 空间闸门**：直投默认过 `focus.admit`，被拦进 focus backlog；显式 bypass = `from.plugin==='time'`、`tags:admin/alarm`、`source.meta.bypassFocus===true`；`channel:'signal'` 不二次裁决 | `delivery-gate.test.mjs`：C6 拦截/privileged/bypass/sacred |
 | **C3 保留 legacy** | 对外 `reason` 仍为 `sleeping/muted/paused/focus-*`；canonical 只进新字段（本文 §2.5），迁移未切 | — |
 | **重放回执** | time flush 成功后按 `activity` 分组调 `qq.noteDeliveredSeqs({seqs:number[], via:'time-backlog'})`；focus 释放立即进管道时同理（`focus-backlog`），被 time 拦下则 seqs 随 `meta.replayQq` 进 time 队列、flush 时补推 | `time-lock`（time-backlog 分组）、`focus-semantics`（focus-backlog） |
+| **P3 统一顺序** | 删除 signals 层 time gate（`signals.addGate`），time 只在 delivery 层裁决；`deliveryGate` 不再跳过 `channel:'signal'`；host `setDeliver` 处理 delivery blocked（返回 queued/blocked，不误报 delivered）；`focusDecision` 对 sleep 租约做时间标记例外 → 两条路径都 **focus→time** | `time-lock`（signals 层无 gate / 配额只计一次 / 睡眠积压仍在 time queue）、`delivery-gate`、`focus-semantics`、QQ 回执 |
 
-> 注意：本轮只实施 C1/C6/回执，**没有**把两个 gate 的内部矩阵换成 `decide()`（P0–P3 仍是设计）。迁移时上述行为是 parity 基准。
+> 注意：本轮实施 C1/C6/重放回执 + P3（统一 focus→time），**没有**把两个 gate 的内部矩阵换成 `decide()`（P0–P2 仍是设计）。迁移时上述行为是 parity 基准。
+>
+> **是否还需要窄 gate？** 已检查：`to:'model'` 的唯一出口是 `signals.setDeliver → delivery.push`（bridge/file/raw 都不绕过它）；`to:'plugin'` 是事件总线，按设计不进模型投递、不裁决。因此去掉 signals gate 后没有"不走 delivery 的信号"漏网，不需要保留窄 gate。
 
 > 原则：先加 facade（两旧闸门调同一个 `decide`），**行为逐条对拍**，再删旧逻辑。
 > 不一次性重写；每个 phase 单独 commit，失败 revert 该 commit 即回到上一状态。
@@ -374,7 +379,7 @@ decide(input):
 | C3 | 对外 reason 字符串若切 canonical（`sleeping→sleep` 等） | QQ `blockedReasons` 显示文案、脚本断言会变 | **✅ 用户已拍板保留 legacy**：对外 `reason` 不变，canonical 只作为新字段（未来迁移用） |
 | C4 | `focus.admit` 的放行原因（`always/mention`）不再作为 suppress reason 暴露 | 目前没有消费者依赖；`focus.admit()` 返回值仍保留 legacy | 可接受 |
 | C5 | `holdMs` 的语义（mute 到期/sleep 醒来）是新增信息 | 无 | 观察用，不改变投递 |
-| C6 | 统一后 delivery push gate 将执行完整 decide（包括 focus） | 直接 push 绕 signals 的路径会开始受 focus 裁决（现在只受 time 裁决） | **✅ 用户已拍板改、已实施**：host 在 delivery 上先装 focus 空间闸门（直投先焦点后 time；bypass=time/admin/alarm/`meta.bypassFocus`）；当前无插件直投调用者，风险低。见 §2.8 与 `delivery-gate` C6 测试 |
+| C6 | 统一后 delivery push gate 将执行完整 decide（包括 focus） | 直接 push 绕 signals 的路径会开始受 focus 裁决（现在只受 time 裁决） | **✅ 用户已拍板改、已实施**：host 在 delivery 上先装 focus 空间闸门（直投先焦点后 time；bypass=time/admin/alarm/`meta.bypassFocus`）；当前无插件直投调用者，风险低。见 §2.8 与 `delivery-gate` C6 测试；P3 已把两条路径顺序统一为 focus→time |
 
 ### 4.3 失败模式
 
@@ -474,7 +479,7 @@ focus ∈ {none,interruptible,sacred,pierce-deny,mention} × signal ∈ {normal,
 3. **C3**：✅ 已拍板保留 legacy（canonical 只进新字段）。
 4. **队列是否统一**：✅ 拍板**不统一**（两个维度，见 §2.7）。
 5. **`budget`/`dedupe`**：确认不纳入 decide（分别留在 awakeTick/quota 与 delivery exactlyOnce）。
-6. **signals 路径的闸门顺序**（`time→focus`）是否在 P3 统一成 `focus→time`：**待 P3 决定**。
+6. **signals 路径的闸门顺序**：✅ P3 已实施，统一为 `focus→time`；残留只有旧 `delivery.setGate` 整体替换（建议后续禁用/收窄）。
 
 ---
 
