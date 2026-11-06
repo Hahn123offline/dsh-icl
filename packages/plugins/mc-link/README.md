@@ -58,6 +58,7 @@ CLI 工具面：11 个常驻 `mcb_*` 工具 + 按需技能文档；只懂 `mc-bo
 | `task_resumed` | notice | 显式继续后的确认 |
 | `task_interrupted` / `task_cancelled` | notice | 中断/取消，不自动续跑 |
 | `safety_stop` | alarm（仅真危险） | death/low-health/low-oxygen/spawn-unsafe 带 `alarm`；disconnect/stuck 不带 |
+| **alarm/pierce 透传** | — | body 事件带 `data.priority:'alarm'` 或 `data.pierce:true`（watchdog 六类/reflex/emergency/危险 watchdog）时，即使类型不在上表/属于 quiet，也强制发 alarm 信号；`sendSignal` 统一写 `meta.priority='alarm'` + `meta.pierce=true`（time gate 认这两个字段），并在 `mc-link.jsonl` 的 `signal` 行留 `priority/pierce/tags` 供对账 |
 | `death` / `quarantine` | alarm | 死亡合并 60s；5 分钟 3 次额外升级提醒；隔离单独一条 |
 | `health_drop` | notice（合并 120s） | body 现在暂停后不再逐条发 |
 | `offline` / `disconnected` / `reconnecting` / `resume_required` | notice | 同一次断线合并；重连不自动续跑 |

@@ -255,6 +255,26 @@ test('事件闸门：task_done 的成功 reason 白名单（net-target/duration/
   assert.match(legacy, /没达成/)
 })
 
+test('事件闸门：危险标记三层（顶层/data/data.meta 的 priority|pierce、severity:danger）都能把 quiet 事件升成 alarm', () => {
+  const gate = createEventGate({ now: () => clock.t })
+  const clock = { t: 0 }
+  const out = gate.take([
+    // 危险 watchdog：类型本来 quiet，但 data.meta 只有 pierce
+    { seq: 1, type: 'watchdog', data: { kind: 'low-health', severity: 'danger', meta: { pierce: true } } },
+    // reflex：顶层 priority/pierce
+    { seq: 2, type: 'reflex', priority: 'alarm', pierce: true, data: { reason: 'low-health', action: 'retreat' } },
+    // 普通 watchdog 没有危险标记：仍不叫醒
+    { seq: 3, type: 'watchdog', data: { kind: 'periodic' } },
+  ], { status: null })
+  assert.equal(out.signals.length, 2)
+  for (const signal of out.signals) {
+    assert.ok(signal.tags.includes('alarm'), '危险标记必须带 alarm tag')
+    assert.equal(signal.priority, 'alarm', '危险标记必须升到 alarm priority')
+  }
+  assert.match(out.signals[0].text, /watchdog|危险/)
+  assert.match(out.signals[1].text, /危险|reflex/)
+})
+
 test('事件闸门：dig_fallback/path_approximate/心跳/auto_eat/craft_no_product 不叫醒（观测事件）', () => {
   const gate = createEventGate({ now: () => clock.t })
   const clock = { t: 0 }

@@ -29,7 +29,11 @@ export const QUIET_EVENTS = Object.freeze([
   'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool',
 ])
 
-/** 危险事件：tags 带 alarm，focus 里也放行（MC-CONTRACT §8）。 */
+/**
+ * 危险事件：tags 带 alarm，focus 里也放行（MC-CONTRACT §8）。
+ * 另外 body 任意事件带 `data.priority:'alarm'` 或 `data.pierce:true` 时（watchdog 六类/reflex/emergency），
+ * take() 会强制标成 alarm 并透传 meta.priority='alarm' + meta.pierce=true —— 不因 pause/quiet 被吞。
+ */
 export const ALARM_EVENTS = Object.freeze([
   'safety_stop', 'death', 'spawn_unsafe', 'reconnect_exhausted', 'kicked', 'quarantine',
 ])
@@ -492,9 +496,32 @@ export function createEventGate({ now = () => Date.now(), config = {} } = {}) {
     for (const event of Array.isArray(events) ? events : []) {
       const type = String(event?.type ?? '')
       state.counters.seen += 1
-      if (QUIET_EVENTS.includes(type)) { state.counters.quiet += 1; continue }
+      // body 对危险事件做三层标记：事件顶层 priority/pierce、data.priority/pierce、data.meta.priority/pierce
+      // （危险 watchdog 还带 severity:'danger'）。这类**不能**被 quiet/合并吞掉：即使类型不认识，
+      // 也要用通用危险文案把它送到她面前，信号再透传 meta.priority='alarm'+meta.pierce=true 给 time。
+      const dataAlarm = event?.priority === 'alarm' || event?.pierce === true
+        || event?.data?.priority === 'alarm' || event?.data?.pierce === true
+        || event?.data?.meta?.priority === 'alarm' || event?.data?.meta?.pierce === true
+        || event?.severity === 'danger' || event?.data?.severity === 'danger'
+      if (QUIET_EVENTS.includes(type) && !dataAlarm) { state.counters.quiet += 1; continue }
       const d = describe(event, status, cfg)
+      if (!d && dataAlarm) {
+        const detail = event?.data?.reason ?? event?.data?.note ?? event?.data?.detail ?? null
+        signals.push({
+          id: `mc:alarm:${event?.seq ?? atNow}`,
+          kind: 'event', tags: ['mc', 'safety', 'alarm'], priority: 'alarm',
+          text: `[MC] 危险：${type}${detail ? `（${valueText(detail, '', 80)}）` : ''}；身体已按安全反射处理。先 mcb_status 看位置/血量，想停手用 mcb_stop，想离开用 mcb_leave。`,
+        })
+        state.counters.signals += 1
+        state.counters.alarm += 1
+        continue
+      }
       if (!d) { state.counters.quiet += 1; continue }
+      if (dataAlarm) {
+        d.tags = Array.from(new Set([...(d.tags ?? ['mc']), 'alarm']))
+        d.priority = 'alarm'
+        d.alarm = true
+      }
 
       // path_stuck：单次只是"重算了路线"，任务常常随后就成功；连续 ≥2 次才值得说一句。
       // 任务终态/新任务开始都重置计数（body 事件本身仍留在 mc-link.jsonl 台账里）。
