@@ -49,7 +49,9 @@
 | `created_at` / `imported_at` | 源时间（若有）/ 入库时间 |
 | `deleted_at` | 软删标记（行保留，文件已删；便于"我删过它"可追溯） |
 
-**去重**：`sha256` 唯一。重复导入返回**已有 id** + `deduped:true`，不重复占盘；允许顺带补 caption/tags/origin。
+**item_vectors 表**（二阶段，2026-11-06）：`item_id, model, dim, vec BLOB(Float32), source, updated_at`——CLIP 图片向量；与 items 同库、只本地，不进 system/facts（详见 §4）。
+
+**去重**：`sha256` 唯一。重复导入返回**已有 id** + `deduped:true`，不重复占盘；允许顺带补 caption/tags/origin；若该图缺向量且嵌入服务可用，顺带补建。
 **写入纪律**：先写 `tmp/`，校验哈希/尺寸后再原子 rename 到 `库/年-月/`；中途失败清 tmp，不留半文件。
 
 **保留策略（用户 2026-11-06 拍板）**：
@@ -62,17 +64,19 @@
 **归档手动（用户拍板）**：QQ 入站媒体只落 inbox 供当次会话使用，**不自动进 album**；要留就显式 `album_import`。
 （与 qq 侧对齐：入站下载/缓冲区管理与相册解耦。）
 
-## 2. 工具（最小可用，7 个）
+## 2. 工具（9 个：7 个最小可用 + 二阶段 reindex/caption）
 
 | 工具 | 作用 | 关键返回 |
 |---|---|---|
 | `album_import` | 从本地路径导入 1–32 个图片/视频（可带 library/source/caption/tags/private） | 每件 `#id path deduped:true/false`；失败逐条给原因；**不自动清理** |
 | `album_list` | 按库/类型/标签/来源/时间窗列（默认 20 条，倒序）；默认不含隐私项 | 一行一件：`#id 时间 类型 尺寸 大小 标签 描述 — 路径（隐私相册）`；空库说"还没导入"；`includePrivate:true` 才列隐私 |
-| `album_search` | 按描述/标签/来源/路径做文字检索；默认不含隐私项 | 命中 id/路径；**没有就说没有**（相册 N 件、关键词、建议换说法/放宽标签），不凑数；隐私需 `includePrivate:true + allowPrivate:true` |
+| `album_search` | 语义检索：`query` 文本（CLIP 中文图文空间）/ `image` 本地图片（图-图）+ tags/时间/隐私过滤；嵌入不可用时降级为描述/标签/文件名 | topK + 相似度 + 路径；**没有就说没有**，不凑数；隐私需 `includePrivate:true + allowPrivate:true` |
 | `album_collage` | 选 N 张图（id 列表或筛选条件）拼宫格 PNG（复用 storyboard 思路：cols × rows、cell 尺寸、留白）；默认不含隐私项 | `imagePath` + 文本清单（第 i 格=#id）；python/Pillow 缺失时给可操作错误 |
 | `album_show` | 单件详情（路径、尺寸、标签、来源、发送记录）；隐私项需 `allowPrivate:true` | 一行详情 + `imagePath`；隐私项未授权时只给拒绝理由、不给路径 |
 | `album_prune` | **手动**清理（默认 dryRun=true；不自动跑）；隐私项默认跳过 | 计划/实际删除清单、释放字节数；`allowPrivate:true` 才可能清隐私 |
-| `album_status` | 相册体检：件数/总字节/库/来源/告警阈值/最近导入 | 一段可读摘要；超 `warnBytes` 只提示"不会自动删" |
+| `album_status` | 相册体检：件数/总字节/库/来源/告警阈值/最近导入/向量覆盖 | 一段可读摘要；超 `warnBytes` 只提示"不会自动删"；报"向量：n/m 张图片（512d）" |
+| `album_reindex` | 批量为图片建/刷新 CLIP 512d 向量（CPU）；嵌入缺失/延迟导入后用 | 已建/失败数 + 覆盖率；默认跳过隐私，`allowPrivate:true` 才碰 |
+| `album_caption` | **手动**让本地 vision 模型给图片写一句中文描述（不自动跑，避免抢 GPU） | 每件"描述：…"；默认只补无 caption 的图，`force:true` 重写 |
 
 **状态行不写进 system/facts**：相册信息只在工具返回里；如果以后要在醒来简报里提"相册新增 N 张"，走 runtime-context facts（与 cache 的 `icl:facts` 同一机制，≤1 条/轮），**绝不进静态段**。
 
@@ -84,20 +88,27 @@
 - 输出：`<root>/collages/grid-<ISO>.png`，返回 `{imagePath}`（沿用 bili `bili_frames` 的约定；**图片真正进模型要等 DSH attachment 通道**，现在返回路径 + 明确说明"没有直接发给你"）。
 - 失败姿态：没有 Pillow/没有可用图片/图片损坏 → 明确原因 + 下一步（装 Pillow / 换 ALBUM_PYTHON / 先导入）；不产出半张图（先写 tmp 再 rename）。
 
-## 4. 图像向量化回忆（第二阶段，接口先留）
+## 4. 图片记忆 / 语义检索（二阶段，最小可用已落地）
 
-**现状约束**：本轮不占 GPU、不引入重模型；`recall` 现有 `kind` 枚举不含 `image`；DSH 无 attachment 通道（图片不能直接进模型）。
+> 2026-11-06 实现（album v0.2）。CLIP 512d 在 8088 上 **CPU** 跑（0 VRAM）；图片向量与模型名**不进 system/facts**。
 
-**降级方案（先做，最小可用）**：
-- 入库时 `caption` = 用户/文件名/来源描述（例如 bili 的标题、QQ 图片消息文字）；
-- `album_search` 先在 caption/tags/source/path 上做 LIKE 检索；
-- 二阶段接视觉模型（`dream-chat` 槽或本地 vision）把图片生成 2–3 句描述，写进 `caption`；**描述文本**再按现有文本记忆/检索召回。
+**存储**：`media.db` 新增 `item_vectors(item_id, model, dim, vec BLOB, source, updated_at)`；向量只在本地相册库。
 
-**升级路径（明确接口）**：
-1. 新增 `album` 向量表（`item_id, model, dim, vec BLOB`）或复用 memory 的 `mem_vec`；对图片做 CLIP 类嵌入（本地轻量模型，如 `clip-ViT-B-32` 的 ONNX/`sentence-transformers`），**不把模型/向量写进 system/facts**。
-2. `recall` 增加 `kind:'image'`：内部调 `album.searchByVector(query)` → 命中返回 `#id + imagePath + caption + 缩略图附件`；与文本记忆统一游标/预算。
-3. `dream` 增加 `media` job（可选，默认关）：给未描述的图片补 caption；夜间跑，失败按 dream 分片回执上报（已有 `dream-result` 通道）。
-4. 验收指标：已知 20 张图，5 个查询的 top-3 命中 ≥ 4/5；空查询不凑数（与 recall D1 同口径）。
+**配置**（`configFor('album')`，均可选）：
+- `embedEnabled`（默认 true）：关掉就不建向量；
+- `embedDefer`（默认 false）：入库不建，之后 `album_reindex` 批处理（适合一次导很多图）；
+- `embedSlot`（默认 `image-embed`，host 声明 512d embedding 插槽）；`embedDim`（默认 512，**维度断言**）；
+- `embedBatchMax`（默认 8）；`caption`（vision 服务 config：baseUrl/model）；`captionPrompt`；`captionMax`（默认 3）。
+
+**provider**：`config/icl.example.json` 已加 `clip-zh` / `clip-en`（dim 512，8088 `/embeddings`）。model-manager 自动接到 album 的 `image-embed` 插槽；文本 query 用同一插槽；图片按 data URL 走 OpenAI 兼容 `/embeddings`（若你的裁剪服务接口不同，改 provider 适配层，不改 album）。
+
+**album_import**：图片入库后若插槽可用 → 立刻嵌入；失败只提示"向量未建：<原因>"，**不阻断入库**；去重命中也会补缺失向量；无 provider 时静默跳过（不污染导入输出）。
+**album_search**：`query` 文本 / `image` 本地路径（图-图）+ `tags`/kind/source/时间窗；返回 topK + 相似度 + 路径；隐私默认不返回（需 `includePrivate+allowPrivate`，与列表同口径）；嵌入不可用/无向量时**降级**为 caption/tags/文件名并说明原因；空查询不凑数。
+**album_reindex**：批量为图片建/刷向量；默认跳过隐私，`allowPrivate:true` 才可能碰；返回覆盖 `n/m` 与失败明细。
+**album_caption**（手动，不自动）：`album_caption {ids?, limit?, force?}` 调 vision 服务生成一句中文描述写入 `caption`；默认只补无 caption 的图，避免自动批处理抢本地 GPU。
+**album_status**：报"向量：n/m 张图片（512d×…）"与插槽状态；超 `warnBytes` 仍只软告警。
+
+**验收**：原目标"已知 20 张图、5 查询 top-3 ≥4/5"；本实现用 fake embedding provider 的单元测试覆盖语义命中/图-图/隐私/降级/维度断言，真实 8088 用 `ALBUM_CLIP_SMOKE=1` 的可选集成测试（默认不联网、不占 GPU）。
 
 ## 5. 发送（本地文件 → 通道）
 
@@ -173,4 +184,5 @@ system 1 append/0 replace、2296 字符/5764 字节（与上轮 2300 差 4 字�
 - **隐私分区**：`private` 标记 + `private/` 物理子目录；默认列表/搜索/拼图不展示；`album_show`/发送需 `allowPrivate:true`；工具描述与 sim 写明"不能乱发"。
 - **路径**：album root 跟随 `stateDir` 推导（当前 `<stateDir>/media`），整体迁移由 paths 子任务统一处理，插件内不硬编码。
 - 回归：`packages/core/test/album.test.mjs` 增加 3 条（隐私门槛/不自动清理/手清跳过隐私）；`npm test` 全绿。
+- **图片记忆（二阶段，2026-11-06）**：CLIP 512d CPU（0 VRAM）入库建向量；`album_search` 支持文字/图-图语义检索，隐私默认不返回；嵌入缺失降级标签并说明；`album_reindex` 批处理；`album_caption` 手动调本地 vision（不自动跑）。
 

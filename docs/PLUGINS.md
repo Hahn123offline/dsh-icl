@@ -1,7 +1,7 @@
 # 插件
 
 > 读者：要加一个插件、或要判断某个插件能不能依赖的开发者 / 范围：`packages/plugins/*` 的 22 个插件、它们声明的 60+ 个工具与全部外部依赖 / 最后核对：2026-11-06（B 站 C 路线 + 通用视频插件 + album 落地后）
-> **⚠️ 数字/成熟度可能滞后**：以 [ALBUM.md](ALBUM.md)、[AUDIT-2026-11-05](AUDIT-2026-11-05.md) §6.2 与代码为准。**当前事实（2026-11-06 实测）：产品 `icl` preset 未显式写 `plugins`，按 `DEFAULT_PLUGINS` 装配 66 个 ICL 工具（含 album 7 / video 6 / bili 7 / mcb 17 / editor 3），album/video 已在产品默认生效**；旧文档"产品未启用 album/video（34/41 工具）"已过期。产品工具面预算与显式白名单待拍板，见 [PRODUCT-SURFACE.md](PRODUCT-SURFACE.md) 与 [PRODUCTIZATION-KICKOFF.md](PRODUCTIZATION-KICKOFF.md)。
+> **⚠️ 数字/成熟度可能滞后**：以 [ALBUM.md](ALBUM.md)、[AUDIT-2026-11-05](AUDIT-2026-11-05.md) §6.2 与代码为准。**当前事实（2026-11-06 实测）：产品 `icl` preset 未显式写 `plugins`，按 `DEFAULT_PLUGINS` 装配 68 个 ICL 工具（album 9（二阶段 reindex/caption）/ video 6 / bili 7 / mcb 17 / editor 3），album/video 已在产品默认生效**；旧文档"产品未启用 album/video（34/41 工具）"已过期。产品工具面预算与显式白名单待拍板，见 [PRODUCT-SURFACE.md](PRODUCT-SURFACE.md) 与 [PRODUCTIZATION-KICKOFF.md](PRODUCTIZATION-KICKOFF.md)。
 
 本文是插件事实的唯一归属地：工具名、参数、`ctx.config` 键、成熟度、外部依赖只在这里写。服务契约见 [ARCHITECTURE.md](ARCHITECTURE.md)，记忆的数据形状与检索算法见 [MEMORY.md](MEMORY.md)。
 
