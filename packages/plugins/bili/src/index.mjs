@@ -171,12 +171,50 @@ function callStoryboard(cfg, { url, from, to, cells, workDir, allowAnonymous = t
   })
 }
 
+/** B 站格图临时目录的前缀（旧版落在系统临时目录，新版落在 <stateDir>/bili/work）。 */
+const LEGACY_BOARD_PREFIX = 'icl-bili-board-'
+
+/**
+ * 清掉旧版遗留在系统临时目录里的 `icl-bili-board-*`，并顺手清 `<stateDir>/bili/work` 下超过 24h 的目录。
+ * bili_frames 的图在工具返回后还要被桥读成 attachment，所以成功路径用 cleanup 回调删；这里只兜底旧残留。
+ */
+function pruneBoardDirs(biliDir) {
+  let removed = 0
+  try {
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      if (!name.startsWith(LEGACY_BOARD_PREFIX)) continue
+      try { fs.rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true }); removed += 1 } catch { /* 跳过 */ }
+    }
+  } catch { /* 没有 tmpdir 权限就算了 */ }
+  try {
+    const root = path.join(biliDir, 'work')
+    for (const name of fs.readdirSync(root)) {
+      const full = path.join(root, name)
+      try {
+        const stat = fs.statSync(full)
+        if (stat.isDirectory() && Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+          fs.rmSync(full, { recursive: true, force: true }); removed += 1
+        }
+      } catch { /* 单个目录坏了就跳过 */ }
+    }
+  } catch { /* 目录还不存在 */ }
+  return removed
+}
+
+/** 在 ICL 自己的 stateDir 下建一个格图工作目录（不落用户 %TEMP%）。 */
+function makeBoardDir(biliDir) {
+  const root = path.join(biliDir, 'work')
+  fs.mkdirSync(root, { recursive: true })
+  return fs.mkdtempSync(path.join(root, 'board-'))
+}
+
 export function apply(ctx) {
   const cfg = resolveConfig(ctx)
   const notes = ensureRuntime(cfg)
+  const pruned = pruneBoardDirs(cfg.biliDir)
   const call = makeCaller(cfg, { log: (entry) => ctx.log?.(entry) })
   const disposers = []
-  ctx.log?.({ msg: 'bili.ready', stateDir: cfg.biliDir, vendor: cfg.vendorDir, notes })
+  ctx.log?.({ msg: 'bili.ready', stateDir: cfg.biliDir, vendor: cfg.vendorDir, notes, prunedBoardDirs: pruned })
 
   const register = (definition) => {
     const off = ctx.tools.register(definition)
@@ -332,25 +370,36 @@ export function apply(ctx) {
       const info = framesTarget(target)
       if (info.error) return { text: info.error }
       const auth = readStoryboardAuth({ videoConfigPath: cfg.videoConfigPath, videoCookies: cfg.videoCookies })
-      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-bili-board-'))
-      const result = await callStoryboard(cfg, {
-        url: info.url, from, to, cells, workDir,
-        // 没有 cookies 时显式匿名，避免 CLI 的"未配置"噪声；我们自己给更具体的提示。
-        allowAnonymous: auth.status !== 'ok',
-      })
-      if (!result.ok) {
-        return { text: `看不成画面：${result.error}\n下一步：用原生 video_storyboard（B 站链接直传）；或检查 ffmpeg/网络。` }
+      const workDir = makeBoardDir(cfg.biliDir)
+      const cleanup = () => {
+        try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* 清不掉也不影响结果 */ }
       }
-      // "别再悄悄变糊"：即使 CLI 静默降级成匿名，也把这次的真实来源写进结果。
-      const degraded = /auth=anonymous/.test(result.stderr || '')
-      const warnings = []
-      if (auth.warning) warnings.push(auth.warning)
-      if (degraded && !auth.warning) {
-        warnings.push('⚠️ 本次实际按匿名拉流（最高 480P，图可能糊）：cookies 缺失或已过期。续期见 docs/VIDEO-EYES.md §11。')
+      let handedOff = false
+      try {
+        const result = await callStoryboard(cfg, {
+          url: info.url, from, to, cells, workDir,
+          // 没有 cookies 时显式匿名，避免 CLI 的"未配置"噪声；我们自己给更具体的提示。
+          allowAnonymous: auth.status !== 'ok',
+        })
+        if (!result.ok) {
+          cleanup()
+          return { text: `看不成画面：${result.error}\n下一步：用原生 video_storyboard（B 站链接直传）；或检查 ffmpeg/网络。` }
+        }
+        // "别再悄悄变糊"：即使 CLI 静默降级成匿名，也把这次的真实来源写进结果。
+        const degraded = /auth=anonymous/.test(result.stderr || '')
+        const warnings = []
+        if (auth.warning) warnings.push(auth.warning)
+        if (degraded && !auth.warning) {
+          warnings.push('⚠️ 本次实际按匿名拉流（最高 480P，图可能糊）：cookies 缺失或已过期。续期见 docs/VIDEO-EYES.md §10。')
+        }
+        const body = takeText(result.block || '宫格图已生成（没有清单输出）。', cfg.maxChars)
+        const text = warnings.length ? `${warnings.join('\n')}\n\n${body}` : body
+        handedOff = true
+        // 图还要被 dsh-icl 桥读成 attachment；cleanup 由 normalizeToolResult 在提交附件后调用。
+        return { text, images: result.images.slice(0, 2), cleanup }
+      } finally {
+        if (!handedOff) cleanup()
       }
-      const body = takeText(result.block || '宫格图已生成（没有清单输出）。', cfg.maxChars)
-      const text = warnings.length ? `${warnings.join('\n')}\n\n${body}` : body
-      return { text, images: result.images.slice(0, 2) }
     }),
   })
 

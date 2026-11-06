@@ -176,6 +176,48 @@ test('工具结果图片：给了 saveImage 就把路径换成 attachment 引用
   assert.deepEqual(def.output.render({}, out)[1], { type: 'text', text: '帧' })
 })
 
+test('工具结果 cleanup：在图片提交成 attachment 之后才调用（且一定调用一次）', async () => {
+  const file = path.join(os.tmpdir(), `icl-img-cleanup-${Date.now()}.png`)
+  fs.writeFileSync(file, Buffer.from('fake-png'))
+  let cleaned = 0
+  const saveImage = async () => {
+    assert.equal(fs.existsSync(file), true, '提交附件时临时文件必须还在')
+    return { id: 'att-1', mediaType: 'image/png' }
+  }
+  const def = toDshToolDefinition({
+    name: 'cleanup_tool', description: '', parameters: { type: 'object', properties: {} },
+    async execute() {
+      return {
+        text: '帧',
+        images: [file],
+        cleanup() {
+          cleaned += 1
+          fs.rmSync(file, { force: true })
+        },
+      }
+    },
+  }, { saveImage })
+  const out = await def.execute({})
+  assert.equal(out.images.length, 1)
+  assert.equal(cleaned, 1)
+  assert.equal(fs.existsSync(file), false, 'cleanup 应该在附件提交后删除临时文件')
+})
+
+test('工具结果 cleanup：没有 saveImage 时也会调用，文本路径仍保留', async () => {
+  const file = path.join(os.tmpdir(), `icl-img-cleanup2-${Date.now()}.png`)
+  fs.writeFileSync(file, Buffer.from('fake-png'))
+  let cleaned = 0
+  const def = toDshToolDefinition({
+    name: 'cleanup_tool2', description: '', parameters: { type: 'object', properties: {} },
+    async execute() {
+      return { text: '帧', images: [file], cleanup() { cleaned += 1; fs.rmSync(file, { force: true }) } }
+    },
+  }, { saveImage: null })
+  const out = await def.execute({})
+  assert.equal(cleaned, 1)
+  assert.match(out.text, /图片文件/)
+})
+
 test('桥：插件回图片路径 → 宿主附件服务 → image block（真实 attachment 形状）', async () => {
   const root = tempRoot('img-bridge')
   const file = path.join(root, 'frame.png')

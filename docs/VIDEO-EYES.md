@@ -112,7 +112,7 @@ DSH ImageAttachmentRef → 模型收到 image content block（和 qq 图片通�
 | 抽帧 | 每次 ≤6 帧，多帧拼一张（每格约 360px 高） | `times` 校验 |
 | 单次 CLI/ffmpeg | 15 分钟（超时 `E_TIMEOUT`） | `runStoryboard` / `extractFrames` |
 | 图片附件 | DSH 默认：单图 20 MB、单批 20 张/200 MB、8192px | DSH `attachment-local` 默认配置（不由本插件放大） |
-| 临时产物 | `stateDir/video/work/` 24h 清理 | `pruneWorkDirs` |
+| 临时产物 | `stateDir/video/work/` 24h 清理；`bili_frames` 的格图在 `<stateDir>/bili/work`，附件提交后立即清理（失败即删） | `pruneWorkDirs` / `bili` 插件 cleanup |
 | 网络 | **不出网** | 工具层拒绝 http(s) 路径 |
 
 ---
@@ -142,7 +142,7 @@ DSH ImageAttachmentRef → 模型收到 image content block（和 qq 图片通�
 |---|---|---|
 | **focus** | 看视频是一种可专注的 Activity（`docs/FOCUS.md:17-19` 已把"刷 B 站"当例子）。视频工具**不自动** enter/leave focus；操作层约定：用户说"一起看/看这个"时可 `focus_enter({kind:'video', title:'看视频'})`，看完 `focus_leave`。 | 设计约定，无代码耦合 |
 | **time** | 本插件不排程、不唤醒、不发信号；只是被调用时干活。夜间长测要看视频，由 `time` 的唤醒/目标或用户消息触发。 | 无耦合 |
-| **album（媒体库）** | 仓库里**没有** album 实现（QQ 侧只有"群相册"概念，未做）。约定：本插件**只登记路径与元数据**，不复制视频字节；未来 album 若要索引，读 `video_open` 的同一路径即可，不要另存一份。 | 📋 预留 |
+| **album（媒体库）** | `packages/plugins/album` 已有 7 个工具（`album_import`/`list`/`search`/`collage`/`show`/`prune`/`status`），根目录 `<ICL_ROOT>/album`。**bili / qq / dream 目前 0 处自动调用 album**（grep 确认）——**不自动归档**。`album_import {paths:[绝对路径], source}` 会把**本地文件**复制进相册（sha 去重，`source` 可写 `bili`/`qq`）；它不接受 URL/目录。注意 `bili_frames`/`video_*` 的图是**临时产物**（附件提交后即删 / work 目录 24h 清），不能作为自动/延后 import 的来源；要收藏请手动 import **本地源文件**或用户自己另存的 PNG（B 站视频需先落成本地文件）。 | ✅ album 可用；归档是手动行为 |
 | **qq 图片通道** | qq 侧已走 DSH attachment：入站图片字节 → bridge → `ctx.attachments.saveImages` → ImageBlock（正文无 URL/base64，失败降级文字）。本插件的图片是**工具结果**入口（`{text, images:[png 路径]}` → `saveImage`），两条入口互不冲突、不重复设计。 | ✅ 机制一致 |
 | **记忆/做梦** | 工具结果不进 ICL 原文层（`docs/DSH-INTEGRATION.md:146-154`）；看完要留痕，由模型自己 `memo_append`/`remember` 写一句。 | 约定 |
 | **提示词分层** | 工具用法只在 description；`prompts/sim.md` 的"看视频"纪律保持 4 行不变（`docs/PROMPT-CONTRACT.md:7-20`）。 | ✅ 不改提示词 |
@@ -199,7 +199,7 @@ node tools/bili-eval.mjs --offline
    插件会检测 `DSH_ASR_BASE_URL` / `$DSH_HOME/asr.json` / `config.asr`，没有配置时 `video_locate` 直接给可操作提示、
    不会偷偷走远程默认 ASR。尚未做的是"ICL 自持注入 env"（方案 B）；等产品化。
 2. **MC 录屏/截图落盘约定**：接口已按"绝对路径"预留，录制端还没实现。
-3. **album 元数据索引**：见 §7。
+3. **album 元数据索引**：见 §7；当前明确"不自动归档"，只支持 `album_import` 手动导入本地源文件。
 4. **批量/长片**：storyboard CLI 有 `--batch`（按窗口切、写 `-timeline.md`），ICL 工具层暂未暴露；
    长片现在靠 `from/to` 分段调用。
 5. ~~**QQ 入站图片**~~：qq 侧已接 `ctx.attachments.saveImages → ImageBlock`，和本插件的工具结果入口独立共存（见 §7）。

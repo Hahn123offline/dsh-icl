@@ -84,10 +84,23 @@ function normalizeValueSchema(value) {
  * 图片：插件可以回 `{ text, images: [绝对路径] }`（或旧的单个 `imagePath`）。
  * 给了 `saveImage` 时，路径会被提交成 attachment 引用，模型真的能看到图；
  * 没给（测试/老宿主）时退化成文本提示——绝不假装图已经在上下文里。
+ *
+ * 清理：结果可以带 `cleanup()`（同步/异步）。它会在图片被提交成 attachment **之后**才调用，
+ * 这样"临时图读进附件 → 删临时目录"是安全的，不会在桥读文件前把目录删掉。
  * @param {unknown} result
  * @param {{ saveImage?: ((file: string) => Promise<unknown>) | null }} [options]
  */
-export async function normalizeToolResult(result, { saveImage = null } = {}) {
+export async function normalizeToolResult(result, options = {}) {
+  try {
+    return await normalizeToolResultInner(result, options)
+  } finally {
+    if (result && typeof result === 'object' && typeof result.cleanup === 'function') {
+      try { await result.cleanup() } catch { /* 清理失败不影响工具结果 */ }
+    }
+  }
+}
+
+async function normalizeToolResultInner(result, { saveImage = null } = {}) {
   if (result == null) return { text: '' }
   if (typeof result === 'string') return { text: result }
   if (typeof result !== 'object') return { text: String(result) }

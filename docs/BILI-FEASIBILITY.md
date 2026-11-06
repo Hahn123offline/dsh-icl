@@ -442,6 +442,7 @@ DSH / ICL 会话
 | **解释器归 ICL**（2026-11-06 收尾） | 默认 `<stateDir>/bili/.venv`（Windows `Scripts/python.exe`），不存在时**兼容回退**旧插件 venv；`BILI_PYTHON`/`config.pythonPath` 仍可覆盖；`pythonSource` 会写进日志/eval | **已实建**（2026-11-06）：`--check` 显示 `pythonSource=icl`；`bili-eval --offline` 10/10；另有单测 `venv 解析` |
 | **限速/退避**（2026-11-06 收尾） | 同一插件实例的只读调用**串行**、最小间隔默认 1.2 s；`E_RATE_LIMIT`/`E_TIMEOUT`/`E_NETWORK` 指数退避重试 2 次（1.5→3 s，带抖动）；`E_AUTH`/`E_READ_ONLY` 等**不重试** | 单测 `限速/退避`、`串行且至少间隔` |
 | **切帧降级提示**（2026-11-06 收尾） | `bili_frames` 读 `~/.dsh/video.json` + cookies 的**到期列**（不打印值）；缺失/过期/7 天内到期时文本明确写"会糊"，并识别 CLI 的 `auth=anonymous` 再补一条降级说明 | 单测 `storyboard cookies`、`bili_frames` 匿名降级 |
+| **临时文件归 ICL + 清理**（2026-11-07 审计修） | `bili_frames` 的格图工作目录从 `%TEMP%` 改到 `<stateDir>/bili/work/board-*`；成功路径把 `cleanup()` 交给桥，**附件提交后**才删；失败路径立即删；插件启动时清旧版遗留的 `%TEMP%/icl-bili-board-*` | 单测：成功=提交后删、失败=不留目录、启动=清旧残留（`packages/plugins/bili/test`） |
 | 通用视频浏览器（另开） | `packages/plugins/video` + `docs/VIDEO-EYES.md`；本地路径/QQ 落盘/MC 录屏都走 `video_open` | `packages/plugins/video/test` |
 
 **还没做（顺序即优先级）**
@@ -503,7 +504,8 @@ node tools/bili-eval.mjs --offline      # 路径/工具面/解释器来源/cooki
 
 ### 11.2 本轮收尾的验证结果（2026-11-06）
 
-- `npm test`：**672 pass / 0 fail**（master 合并后全量；含 bili 15 + video 5 + 桥接图片用例）。
+- `npm test`：**677 pass / 0 fail**（审计修后全量；新增 bili 临时目录清理 3 条 + 桥接 cleanup 2 条用例）。
+- **临时目录审计**：`bili_frames` 成功不再往 `%TEMP%` 堆目录（`<stateDir>/bili/work`，附件提交后 cleanup）；失败即删；启动清旧残留。仓库内不再产生新的 `icl-bili-board-*`；本机已有的板图目录 **323 → 0**，顺带清掉历史测试残留（`icl-bili-*` / `icl-video-*` 共约 4k 个），测试文件也改成退出时清自己的临时目录。
 - `node tools/bili-venv.mjs --check`：**已实建**，`pythonSource=icl`（`<ICL stateDir>/bili/.venv`）；旧 venv 仍保留可回退。
 - `node tools/bili-eval.mjs --offline`：路径/工具面/解释器来源/cookies 到期 **10/10**（`python 解释器（来源 icl）`）。
 - `node tools/bili-eval.mjs --credential`：真网络只读 **14/14**；`--frames` 追加一次为 **15/15**（cookies 有效、走 `auth=cookies`）。

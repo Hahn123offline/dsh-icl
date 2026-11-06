@@ -126,7 +126,7 @@ export function ensureRuntime(cfg) {
     }
   }
   if (cfg.pythonSource === 'legacy-compat') {
-    notes.push(`解释器仍用旧 venv（${cfg.pythonPath}）；迁移：node tools/bili-venv.mjs --create（见 docs/VIDEO-EYES.md §10）`)
+    notes.push(`解释器仍用旧 venv（${cfg.pythonPath}）；迁移：node tools/bili-venv.mjs --create（见 docs/BILI-FEASIBILITY.md §11.1）`)
   } else if (cfg.pythonSource === 'missing') {
     notes.push(`还没有 ICL 自己的 venv（${cfg.ownVenvDir}）；先跑 node tools/bili-venv.mjs --create`)
   }
@@ -284,7 +284,7 @@ export function failText(result) {
 }
 
 const AUTH_COOKIE_NAMES = new Set(['SESSDATA', 'bili_jct', 'buvid3', 'DedeUserID'])
-const RUNBOOK = 'docs/VIDEO-EYES.md §11「storyboard cookies 续期」'
+const RUNBOOK = 'docs/VIDEO-EYES.md §10「storyboard cookies 续期」'
 
 /**
  * storyboard（yt-dlp）的登录态：只读 `video.json` 与 cookies 文件的**到期列**，

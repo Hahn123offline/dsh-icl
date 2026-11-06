@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { createHost } from '../../../core/src/index.mjs'
+import { createHost, normalizeToolResult } from '../../../core/src/index.mjs'
 import * as bili from '../src/index.mjs'
 import manifest from '../manifest.json' with { type: 'json' }
 import { credentialExpiry } from '../src/login.mjs'
@@ -16,9 +16,18 @@ import { resolveConfig, venvPython, readStoryboardAuth, makeCaller } from '../sr
 
 const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
+const tempRoots = []
 function tempRoot(tag) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `icl-bili-${tag}-`))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `icl-bili-${tag}-`))
+  tempRoots.push(dir)
+  return dir
 }
+// 测试结束（进程退出）时清掉自己建的临时 stateDir；同步清理，不依赖 after 钩子的调度。
+process.on('exit', () => {
+  for (const dir of tempRoots) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响测试结论 */ }
+  }
+})
 
 function baseConfig(root, extra = {}) {
   return {
@@ -243,7 +252,7 @@ test('扫码登录：假 fetch → 拿到 key；poll 成功 → 原子写凭证�
   await host.disable('bili')
 })
 
-test('bili_frames：假 storyboard CLI → 图路径 + 清单（图由桥接层提交成 attachment）', async () => {
+test('bili_frames：图在 stateDir/work；成功时附件提交后才清理临时目录', async () => {
   const root = tempRoot('frames')
   const fake = writeFakeStoryboard(root)
   const host = hostWith(baseConfig(root, { runnerPath: writeFakeRunner(root), storyboardCli: fake }))
@@ -253,6 +262,43 @@ test('bili_frames：假 storyboard CLI → 图路径 + 清单（图由桥接层�
   assert.match(out.text, /cell 1 = 00:00\.00-00:05\.00/)
   assert.equal(out.images.length, 1)
   assert.ok(out.images[0].endsWith('.png'))
+  const workRoot = path.join(root, 'bili', 'work')
+  assert.ok(path.resolve(out.images[0]).startsWith(workRoot), `图应在 stateDir/work 下：${out.images[0]}`)
+  assert.ok(fs.existsSync(out.images[0]), '附件提交前图必须还在')
+  assert.equal(typeof out.cleanup, 'function', '成功结果应带 cleanup 回调')
+
+  // 桥接层：把图换成 attachment 后，cleanup 才删除临时目录。
+  let saved = 0
+  const normalized = await normalizeToolResult(out, { saveImage: async () => ({ id: `att-${++saved}` }) })
+  assert.equal(normalized.images.length, 1)
+  assert.equal(fs.existsSync(out.images[0]), false, '附件提交后临时图应被删掉')
+  assert.equal(fs.existsSync(workRoot) && fs.readdirSync(workRoot).length, 0, 'work 下不应留下本次目录')
+  await host.disable('bili')
+})
+
+test('bili_frames：CLI 失败时立即清理，不留临时目录', async () => {
+  const root = tempRoot('frames-fail')
+  const failCli = path.join(root, 'fail-cli.mjs')
+  fs.writeFileSync(failCli, 'process.exit(1)\n', 'utf8')
+  const host = hostWith(baseConfig(root, { runnerPath: writeFakeRunner(root), storyboardCli: failCli }))
+  await host.enable('bili')
+  const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
+  const out = await tools.bili_frames.execute({ target: 'BV1L7xm64EHP', from: 0, to: 10, cells: 2 })
+  assert.match(out.text, /看不成画面/)
+  const workRoot = path.join(root, 'bili', 'work')
+  assert.ok(!fs.existsSync(workRoot) || fs.readdirSync(workRoot).length === 0, '失败路径不应留下临时目录')
+  await host.disable('bili')
+})
+
+test('bili：启动时清掉旧版遗留在系统 %TEMP% 的 icl-bili-board-*', async () => {
+  const root = tempRoot('prune')
+  const legacy = path.join(os.tmpdir(), `icl-bili-board-legacy-${process.pid}-${Date.now()}`)
+  fs.mkdirSync(legacy, { recursive: true })
+  fs.writeFileSync(path.join(legacy, 'sheet.png'), 'x')
+  assert.ok(fs.existsSync(legacy))
+  const host = hostWith(baseConfig(root, { runnerPath: writeFakeRunner(root) }))
+  await host.enable('bili')
+  assert.equal(fs.existsSync(legacy), false, '旧临时目录应被启动清理')
   await host.disable('bili')
 })
 
@@ -311,7 +357,7 @@ test('storyboard cookies：只读到到期列，给出"还会不会变糊"的可
   const unconfigured = readStoryboardAuth({ videoConfigPath: videoJson, now })
   assert.equal(unconfigured.status, 'unconfigured')
   assert.match(unconfigured.warning, /没有配置 cookies/)
-  assert.match(unconfigured.warning, /VIDEO-EYES\.md §11/)
+  assert.match(unconfigured.warning, /VIDEO-EYES\.md §10/)
 
   const missingPath = path.join(root, 'nope.txt')
   fs.writeFileSync(videoJson, JSON.stringify({ cookies: missingPath }))
@@ -457,10 +503,11 @@ test('bili_frames：cookies 缺失 + CLI 匿名降级 → 文本明确说"会糊
     const out = await tools.bili_frames.execute({ target: 'BV1L7xm64EHP', from: 0, to: 10, cells: 2 })
     assert.match(out.text, /没有配置 cookies/)
     assert.match(out.text, /匿名/)
-    assert.match(out.text, /VIDEO-EYES\.md §11/)
+    assert.match(out.text, /VIDEO-EYES\.md §10/)
     assert.equal(out.images.length, 1)
   } finally {
     delete process.env.FAKE_STORYBOARD_AUTH
     await host.disable('bili')
   }
 })
+
