@@ -399,6 +399,22 @@ async function bodyStatus() {
   }
 }
 
+/** P0 死亡兜底：body 侧取消当前任务 + 安全反射（不依赖模型回合，长回合也能生效）。 */
+async function bodySafetyStop(reason) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${cfg.mcPort}/v1/safety/stop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: String(reason ?? 'death-emergency') }),
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = await response.json().catch(() => null)
+    return { ok: response.ok, json }
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) }
+  }
+}
+
 /** 让 supervisor 代发 body 的一个单步操作（paused 时用 resume）。 */
 async function bodyDo(steps, timeoutMs = 15_000) {
   try {
@@ -1583,8 +1599,21 @@ async function main() {
       recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
       if (!sleeping) {
         try {
+          // P0：夜间连续死亡（≥6）→ 若当前任务在野外采集/探索，body 侧直接停掉，避免长回合带着任务继续送死。
+          const deathTask = String(bodyNow.task ?? '')
+          const riskyTask = /collect|explore|mine|tunnel|dig|farm/i.test(deathTask)
+          const emergency = deaths >= 6
+          if (emergency) {
+            recordStrategy('death-emergency', `连续死亡 ${deaths} 次：停危险任务并强推庇护所（task="${deathTask}"）`)
+            if (riskyTask) {
+              const stopped = await bodySafetyStop(`连续死亡 ${deaths} 次，停危险任务`)
+              log(`death-emergency：body safety stop ok=${stopped.ok} ${JSON.stringify(stopped.json ?? stopped.error).slice(0, 160)}`)
+            }
+          }
           const deathText = cfg.tersePrompts
-            ? `你刚死了（第 ${deaths} 次，位置 ${position}）。先保命，自己决定躲/封/等，别回去捡掉落。`
+            ? (emergency
+              ? `你已经连续死了 ${deaths} 次（最近位置 ${position}）。任务我已从 body 侧停掉：现在只做保命——先用脚下的土/石封洞或盖 3x3 小屋并走进去，天亮前不要跑远、不要下水、不要主动打怪。`
+              : `你刚死了（第 ${deaths} 次，位置 ${position}）。先保命，自己决定躲/封/等，别回去捡掉落。`)
             : `你刚死了（本 lab 代第 ${deaths} 次，死亡位置 ${position}）。**先保命**：mcb_look 看最近怪在多远哪个方向 → 朝反方向 goto 10 格 → 往下 dig 3 格做坑 → place 封口 → wait 到天亮。掉落 5 分钟会消失，现在别回去捡、别在原地纠缠；活下来优先。`
           await sendPrompt(deathText, { timeoutSec: 300 })
         } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
