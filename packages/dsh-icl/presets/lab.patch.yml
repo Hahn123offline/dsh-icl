@@ -133,6 +133,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     # 第二里程碑：在上面的基础上加 mc-link；body 用 mc-lab 自己的端口（54900），
     # bot 名 ICL-mclab-1（配置层默认值，避免与 mc-link 的 ICL/ICL-mclink-1 同名被踢）。
     - id: preset-icl-mc-lab
@@ -241,6 +242,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     - id: preset-icl-e2
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -317,3 +319,4 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
