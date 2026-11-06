@@ -277,6 +277,9 @@ test('body：danger 告警穿透配额（alarm+pierce），idle 心跳仍受限�
   const alarm = events.find((e) => e.type === 'watchdog' && e.data?.kind === 'low-health')
   assert.equal(alarm.data.priority, 'alarm')
   assert.equal(alarm.data.pierce, true)
+  assert.equal(alarm.priority, 'alarm', 'top-level priority')
+  assert.equal(alarm.pierce, true, 'top-level pierce')
+  assert.equal(alarm.data.meta?.pierce, true, 'meta pierce')
   assert.ok(events.some((e) => e.type === 'alarm_suppressed' && e.data?.type === 'watchdog'))
   const stats = body.status().watchdog
   assert.equal(stats.limits.danger, 2)
@@ -608,6 +611,10 @@ test('body：暂停中 alarm 穿透（death/spawn_unsafe/kicked 带 priority+pie
     assert.ok(event, `missing ${type}`)
     assert.equal(event.data.priority, 'alarm', `${type} priority`)
     assert.equal(event.data.pierce, true, `${type} pierce`)
+    assert.equal(event.priority, 'alarm', `${type} top-level priority`)
+    assert.equal(event.pierce, true, `${type} top-level pierce`)
+    assert.equal(event.data.meta?.priority, 'alarm', `${type} meta priority`)
+    assert.equal(event.data.meta?.pierce, true, `${type} meta pierce`)
   }
   await body.stop()
 })
@@ -665,5 +672,6 @@ test('body：status 暴露 playable 布尔与 spawn 日志（E6/E7）', async ()
   assert.equal(last.safe, true)
   await body.stop()
 })
+
 
 

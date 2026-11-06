@@ -166,8 +166,14 @@ export function createBody({
 
   function push(type, data = {}) {
     seq += 1
-    const payload = ALARM_TYPES.has(type) ? { ...data, priority: 'alarm', pierce: true } : data
+    // alarm 事件三轮标记，方便 mc-link/time 任意一层识别：
+    // 顶层 priority/pierce、data.priority/pierce、data.meta.priority/pierce。
+    const isAlarm = ALARM_TYPES.has(type) || data?.priority === 'alarm' || data?.pierce === true
+    const payload = isAlarm
+      ? { ...data, priority: 'alarm', pierce: true, meta: { ...(data?.meta ?? {}), priority: 'alarm', pierce: true } }
+      : data
     const event = { seq, at: stamp(), type, data: payload }
+    if (isAlarm) { event.priority = 'alarm'; event.pierce = true }
     events.push(event)
     while (events.length > eventLimit) events.shift()
     if (type !== 'heartbeat') lastPulseAt = event.at
@@ -205,7 +211,7 @@ export function createBody({
     alarmState.deliveredCount += 1
     alarmState.lastAt = at
     if (alarmState.pending.has(key)) { alarmState.pending.delete(key); alarmState.redeliveredCount += 1 }
-    // 不管事件类型是什么，alarm 投递都显式带 priority/pierce，mc-link 据此穿透 pause/focus。
+    // 不管事件类型是什么，alarm 投递都显式带 priority/pierce（push 会再补顶层/meta 标记），mc-link/time 据此穿透 pause/focus。
     return push(type, { ...data, priority: 'alarm', pierce: true, ...(retry ? { redelivered: true } : {}) })
   }
 
@@ -1125,6 +1131,7 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
 
 
 
