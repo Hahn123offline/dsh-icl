@@ -41,6 +41,7 @@ function statusBody(state) {
       },
     },
     task: state.task,
+    home: state.home === undefined ? null : state.home,
     queue: [],
     pausedTasks: extra.pausedTasks,
     eventsSeq: state.seq,
@@ -164,7 +165,7 @@ async function startFakeBody({ connected = true } = {}) {
           // 模拟真 body：task 之前的 steps 结果一并返回，然后立即返回 taskId。
           if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
           if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
-          else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }] })
+          else if (step.op === 'tasks') results.push({ index: results.length, op: 'tasks', result: [{ id: 't-1', kind: 'mine', state: 'done', result: { mined: 2 } }, { id: 't-2', kind: 'goto', state: 'failed', error: 'timeout' }, { id: 't-3', kind: 'hunt', state: 'running', progress: { target: 'zombie', distance: 4.2, attacks: 3, health: 14, hostiles: [{ name: 'zombie' }] } }] })
           else if (step.op === 'resume') {
             state.paused = false
             state.pausedReason = null
@@ -239,20 +240,20 @@ function openPort() {
   })
 }
 
-test('工具面：16 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
+test('工具面：17 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     const names = Object.keys(link.tools).sort()
-    assert.deepEqual(names, ['mcb_attack', 'mcb_combat', 'mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
+    assert.deepEqual(names, ['mcb_attack', 'mcb_combat', 'mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_shelter', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
     let total = 0
     for (const tool of Object.values(link.tools)) {
       assert.ok(tool.description.length > 60, `${tool.name} 描述太短`)
       assert.ok(tool.description.length <= 900, `${tool.name} 描述超 900 预算：${tool.description.length}`)
       total += tool.description.length
     }
-    // 16 个工具（眼睛 + 战斗/攻击）总量上调；每工具 900 预算不变（composeToolDescription 强制）
-    assert.ok(total <= 6000, `工具描述总量 ${total} 超预算`)
+    // 17 个工具（眼睛 + 战斗 + 盖房）总量上调；每工具 900 预算不变（composeToolDescription 强制）
+    assert.ok(total <= 6600, `工具描述总量 ${total} 超预算`)
     // 操作教学必须在工具描述里，而不是全局提示词段里。
     assert.match(link.tools.mcb_join.description, /server|host/)
     assert.match(link.tools.mcb_do.description, /tasks|op/)
@@ -544,6 +545,73 @@ test('发现性：mcb_do 第一行教"打架→combat/补刀→attack/采集建�
     const promptText = link.host.services.prompt.assemble({ sessionId: 'test' })
     assert.match(promptText, /combat/)
     assert.match(promptText, /mcb_combat/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_shelter：盖房 task 透传（size/height/material/door）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_shelter.execute({ size: 5, height: 4, material: 'oak_planks', door: true })
+    assert.match(out.text, /任务 t-1（shelter）已接受/)
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.kind, 'shelter')
+    assert.deepEqual(sent.params, { size: 5, height: 4, material: 'oak_planks', door: true })
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_status：显示 home（家）与"还没设家"提示', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const none = await link.tools.mcb_status.execute({})
+    assert.match(none.text, /家：还没设（mcb_shelter 盖一间/)
+    body.state.home = { center: { x: 40.2, y: 64, z: -12.7 }, size: 3, height: 3, doorSide: 'south', doorPlaced: 'oak_door', builtAt: Date.now() - 60_000 }
+    const status = await link.tools.mcb_status.execute({})
+    assert.match(status.text, /家：40,64,-13（3×3，高 3，门在 south，已装 oak_door/)
+    assert.match(status.text, /夜里\/下雨\/被追回 home\.center 躲/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('事件：home_set 可读；战斗任务在 tasks 台账里带 progress（可 cancel/危机中断）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    await link.api.poll()
+    body.push({ type: 'home_set', data: { home: { center: { x: 40, y: 64, z: -13 }, size: 3, doorSide: 'south', doorPlaced: 'oak_door' } } })
+    await link.api.poll()
+    await link.adapter.drainOnce()
+    assert.match(link.pushed.join('\n'), /家已设：40,64,-13（3×3，门在 south，已装门 oak_door）/)
+    const tasks = await link.tools.mcb_do.execute({ steps: [{ op: 'tasks' }] })
+    assert.match(tasks.text, /#t-3 hunt running target=zombie dist=4\.2 attacks=3 hp=14 hostiles=1/)
+    assert.match(tasks.text, /可 cancel；低血\/苦力怕\/敌人多会先自动躲避再中断/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_help：shelter/build 可查（模糊名也行）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const list = await link.tools.mcb_help.execute({})
+    assert.match(list.text, /shelter/)
+    assert.match(list.text, /build/)
+    const shelter = await link.tools.mcb_help.execute({ skill: 'shel' })
+    assert.match(shelter.text, /盖房 \/ 回家 \/ 躲藏/)
+    assert.match(shelter.text, /verify\.summary/)
+    const build = await link.tools.mcb_help.execute({ skill: 'buil' })
+    assert.match(build.text, /蓝图建造/)
   } finally {
     await link.cleanup()
     await body.close()

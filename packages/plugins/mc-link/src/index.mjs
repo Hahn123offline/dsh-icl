@@ -37,6 +37,8 @@ const SKILLS = [
   { id: 'macro', title: '宏操作总览', when: () => false, summary: '8 个宏、参数、失败码、别逐方块' },
   { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
   { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
+  { id: 'shelter', title: '盖房/回家/躲藏', when: () => false, summary: 'mcb_shelter 盖房+结构验收+home；夜里/下雨回家躲' },
+  { id: 'build', title: '蓝图建造（beta）', when: () => false, summary: 'build 蓝图参数、材料、partial 处理' },
   { id: 'eyes', title: '眼睛：快照/截图', when: () => false, summary: '先 snapshot 后 screenshot；成本/quota/失败处理' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
   { id: 'endgame', title: '通关参考', when: () => false, summary: '长期主线' },
@@ -821,6 +823,7 @@ export function apply(ctx) {
     const tasks = Array.isArray(result) ? result : []
     if (!tasks.length) return '（台账里没有任务）'
     const rows = tasks.slice(-Math.max(1, Number(limit) || 10))
+    const COMBAT = new Set(['hunt', 'defend', 'flee', 'guard'])
     return rows.map((task) => {
       const bits = [`#${task.id}`, task.kind, task.state]
       if (task.state === 'paused' && task.pausedReason) bits.push(`paused=${task.pausedReason}`)
@@ -833,6 +836,19 @@ export function apply(ctx) {
         else if (result.collected != null) bits.push(`collected=${result.collected}`)
         else if (result.arrived) bits.push('arrived')
       }
+      // 战斗任务：progress 里的目标/距离/攻击数/血量/敌人数直接摆出来，并说明可 cancel、危机会被中断。
+      const progress = task.progress
+      if (progress && COMBAT.has(String(task.kind))) {
+        const parts = []
+        if (progress.target != null) parts.push(`target=${progress.target}`)
+        if (progress.distance != null) parts.push(`dist=${progress.distance}`)
+        if (progress.attacks != null) parts.push(`attacks=${progress.attacks}`)
+        if (progress.health != null) parts.push(`hp=${progress.health}`)
+        if (progress.hostiles != null) parts.push(`hostiles=${Array.isArray(progress.hostiles) ? progress.hostiles.length : progress.hostiles}`)
+        if (parts.length) bits.push(parts.join(' '))
+        bits.push('（可 cancel；低血/苦力怕/敌人多会先自动躲避再中断）')
+      }
+      if (task.kind === 'shelter' && task.result?.verify) bits.push(`verify=${task.result.verify.ok ? 'ok' : 'incomplete'}${task.result.verify.summary ? `（${task.result.verify.summary}）` : ''}`)
       return bits.join(' ')
     }).join('\n')
   }
@@ -1231,6 +1247,28 @@ export function apply(ctx) {
       },
     },
     {
+      name: 'mcb_shelter',
+      summary: '盖一间带验收的小屋（四面墙+门洞+屋顶+入口），完成后记住 home；夜里/下雨回来躲。',
+      description: '一条 task：按 size/height/material 建房，body 验收四面墙/屋顶/门洞/室内高度，并真的从门外走进门内(entryOk)，成功后写 home（status.home，持久化）。参数 size(3–9 奇数,默认3)、height(3–6,默认3)、material(默认 dirt；橡木屋用 oak_planks)、door(true=有门就装)。done 回执带 verify.summary + 家的坐标/门朝向；失败码：no-site（地形放不下）、needs-material（方块不够，回执带缺数）、incomplete（结构差哪面/几块）、entry-blocked（门洞/门外被挡）——按码补，不用重跑整间。结构验收 body 已做，不需要截图验收。',
+      when: ['夜里/下雨前要有安全屋', '想固定一个家（home）以后回来躲/存东西', '被怪追要临时躲藏'],
+      avoid: ['只想搭几块方块：mcb_do place', '要盖大建筑：build 蓝图（beta）'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          size: { type: 'number', description: '边长（3–9，奇数，默认 3）。' },
+          height: { type: 'number', description: '总高（3–6，默认 3；室内高 = height-1）。' },
+          material: { type: 'string', description: '方块材料：dirt（默认）、oak_planks 等；材料不够会 needs-material。' },
+          door: { type: 'boolean', description: 'true = 背包有门就装上（不装门洞也能进出/验收）。' },
+        },
+      },
+      async execute(args = {}) {
+        const params = {}
+        for (const key of ['size', 'height', 'material', 'door']) if (args[key] != null) params[key] = args[key]
+        return runDo([{ op: 'task', kind: 'shelter', params }])
+      },
+    },
+    {
       name: 'mcb_combat',
       summary: '战斗宏：hunt 猎杀 / defend 防御 / flee 逃跑 / guard 守卫（自动选武器/走位/低血中断）。',
       description: '一条 task 完成整场战斗，别逐次手动 attack。mode=hunt|defend|flee|guard（省略默认 hunt）；target 可省略（默认 nearest_hostile；hunt 可 "chicken"/"zombie"/"nearest:villager"；flee/guard 不需要）、radius(16)、attackRange(3)、lostTargetMs(10s)、maxDurationMs（guard120s/flee30s/其他60s）、lowHealth(10)、maxHostiles(3)、creeperDistance(5)、safeDistance(24)。立即返回 taskId；progress 有 mode/state/target/targetHealth/distance/attacks/health/hostiles；可 {"op":"cancel"}。危机（低血/苦力怕近身/敌人过多）会先自动躲避再 task_failed(combat: reason)——按提示先吃/躲或改 flee；打死目标后用 pickup 捡掉落。',
@@ -1393,6 +1431,14 @@ export function apply(ctx) {
         if (Array.isArray(status.spawnLog) && status.spawnLog.length) {
           const lastSpawn = status.spawnLog[status.spawnLog.length - 1]
           lines.push(`最近 spawn：${fmtPosition(lastSpawn.position)} · ${lastSpawn.dimension ?? '?'}${lastSpawn.source ? ` · 来源 ${lastSpawn.source}` : ''}${lastSpawn.safe === false ? ' · ⚠不安全' : ''}`)
+        }
+        // 家（shelter 成功后 body 持久化）：夜里/下雨/被追时回 home.center 躲。
+        if (status.home && typeof status.home === 'object') {
+          const home = status.home
+          const center = home.center ? fmtPosition(home.center) : (home.origin ? fmtPosition(home.origin) : '未知')
+          lines.push(`家：${center}（${home.size ?? '?'}×${home.size ?? '?'}，高 ${home.height ?? '?'}，门在 ${home.doorSide ?? '?'}${home.doorPlaced ? `，已装 ${home.doorPlaced}` : '，未装门'}${home.builtAt ? `；建于 ${new Date(Number(home.builtAt)).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}）——夜里/下雨/被追回 home.center 躲；mcb_shelter 可重盖`)
+        } else {
+          lines.push('家：还没设（mcb_shelter 盖一间；成功后 status.home 持久化）')
         }
         const phaseNow = timePhase()
         if (phaseNow === 'paused') lines.push('时间：已暂停（新消息进积压；MC 危险 alarm 会暂存、gate 打开后补投）')
@@ -1621,7 +1667,7 @@ steps 按顺序执行，任一 op 失败即停（失败也带回已完成步骤�
     {
       name: 'mcb_help',
       summary: '读 MC 的深层操作文档（按需，不常驻）。不带参数列出全部；参数 skill 指定一篇。',
-      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；combat=打/跑/守/自动躲避/低血恢复；eyes=快照/截图与成本；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
+      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；combat=打/跑/守/自动躲避/低血恢复；shelter=盖房验收/回家躲；build=蓝图建造；eyes=快照/截图与成本；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
       when: ['准备做一整件事（合成、熔炼、交易、脱困、长期发展）', 'mcb_do 报了不懂的错'],
       parameters: {
         type: 'object',
