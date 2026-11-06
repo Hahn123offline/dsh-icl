@@ -2,29 +2,30 @@
 
 > 状态：**方案，未应用**。不改产品 preset、不改 desktop/profile、不重启。所有数字可复算（见 §6）。
 > 读者：用户 / lead / cache。关联：`docs/PRODUCTIZATION-KICKOFF.md`、`docs/ALBUM.md §10`、`docs/PLUGINS.md`、`docs/VIDEO-EYES.md`、`docs/CACHE-NIGHT-2026-11-06.md §9.1/§9.2`。
-> 一句话：产品 preset 现在按 `DEFAULT_PLUGINS` 装配 **66 个 ICL 工具 / 44,316 字符**；把 **mc-link（17 工具 / 12,492 字符）从产品 `icl` 移到已有的 `icl-mc` 场景 preset**，即可到 **49 / 31,824**；sandbox 产品化后再下线 editor（3 / 1,125）到 **46 / 30,699**——正好落在 45–50 工具、28–32k 字符目标内，且不动生活功能（memory/time/album/video/bili/focus…）。
+> 一句话：产品 preset 现在按 `DEFAULT_PLUGINS` 装配 **68 个 ICL 工具 / 46,541 字符**（album 二阶段新增 2 个工具）；把 **mc-link（17 / 12,492）从产品 `icl` 移到已有的 `icl-mc` 场景 preset** 是 **51 / 34,049**（略超 50）；sandbox 后再下线 editor（3 / 1,125）是 **48 / 32,924**（字符略超 32k）；再顺手裁 `memory_export`(277) + `time_edit`(447) 到 **45 / 31,923**——正好落在 45–50 工具、28–32k 目标内，且不动生活核心（memory/time/album/video/bili/focus…）。
 
 ## 0. 结论先行
 
 | 方案 | 工具数 | 字符 | 行为变化 | 需批准 | 回滚 |
 |---|---|---|---|---|---|
-| **A1（推荐，先做）**：产品 `icl` 去掉 `mc-link`（MC 只走 `icl-mc`） | **49** | **31,824** | desktop ICL 不再有 `mcb_*`；玩 MC 用 `icl-mc` preset | 用户（MC 入口变化） | 加回 `- mc-link` 一行 → 66/44,316 |
-| **A2（sandbox 产品化同批）**：A1 + 下线 `editor`（换 DSH 原生 fs 工具） | **46** | **30,699** | 产品 ICL 无 `read_file/write_file/list_dir`，改用原生 `read/write/edit/glob/grep/pwsh` | 用户（与 sandbox 同批） | 加回 `- editor` → 49/31,824 |
-| B（可选更低）**A2 + bili 移场景** | 39 | 25,921 | 刷 B 站要进 `icl-bili` 场景 | 用户 | 加回 `- bili` |
-| C（保守）**只加显式白名单，不删** | 66 | 44,316 | 无（只是锁面） | 用户（确认预算） | 删白名单行 |
+| **A1**：产品 `icl` 去掉 `mc-link`（MC 只走 `icl-mc`） | **51** | **34,049** | desktop ICL 不再有 `mcb_*`；玩 MC 用 `icl-mc` preset | 用户（MC 入口变化） | 加回 `- mc-link` 一行 → 68/46,541 |
+| **A2（sandbox 产品化同批）**：A1 + 下线 `editor`（换 DSH 原生 fs 工具） | **48** | **32,924** | 产品 ICL 无 `read_file/write_file/list_dir`，改用原生 `read/write/edit/glob/grep/pwsh` | 用户（与 sandbox 同批） | 加回 `- editor` → 51/34,049 |
+| **A2+O（推荐达标）**：A2 + 下线 `memory_export`(277) + `time_edit`(447) | **45** | **31,923** | 少一个手动导出、少一个日程编辑工具（其余日程工具保留） | 用户（P2 裁剪） | 加回两行 → 48/32,924 |
+| B（可选更低）**A2+O + bili 移场景** | 38 | 27,145 | 刷 B 站要进 `icl-bili` 场景 | 用户 | 加回 `- bili` |
+| C（保守）**只加显式白名单，不删** | 68 | 46,541 | 无（只是锁面） | 用户（确认预算） | 删白名单行 |
 
-> 目标 66→45–50 / 40k→28–32k：**A1 已达标**（49/31,824）；A2 更稳（46/30,699）。A1 的代价只有"MC 不再出现在生活会话"，而 MC 本来就有独立产品 preset `icl-mc`。
+> 目标 45–50 / 28–32k：**A1 略超工具上限**（51）、**A2 字符略超**（48/32,924）、**A2+O 精确达标**（45/31,923）。代价只有"MC 不再出现在生活会话"（MC 本来就有独立 `icl-mc`）+ 两个低频工具下线，不动生活核心。
 
 ## 1. 当前产品面（实测）
 
-复算方式见 §6。产品 `icl` 未显式写 `plugins` → 继承 `DEFAULT_PLUGINS`（17 个插件），ICL 工具共 **66** 个 / **44,316 字符**（JSON schema+description；不含 DSH 原生工具）。
+复算方式见 §6。产品 `icl` 未显式写 `plugins` → 继承 `DEFAULT_PLUGINS`（17 个插件），ICL 工具共 **68** 个 / **46,541 字符**（JSON schema+description；不含 DSH 原生工具；album 二阶段 +2 工具）。
 
 | 分组 | 工具数 | 字符 | 工具 | 建议层级 |
 |---|---|---|---|---|
 | **mc-link** | **17** | **12,492** | `mcb_servers/lan/join/leave/stop/shelter/combat/attack/status/look/inventory/scan/map/snapshot/eyes/do/help` | **P1 场景**（只进 `icl-mc`/`icl-mc-lab`） |
 | video | 6 | 6,006 | `video_probe/open/storyboard/zoom/locate/frames` | P0 生活（"眼睛"；产品化待批准） |
 | bili | 7 | 4,778 | `bili_search/watch/comments/feed/frames/login_start/login_poll` | P0/P1（默认保留；预算紧再移场景） |
-| album | 7 | 4,394 | `album_import/list/search/collage/show/prune/status` | P0 生活（产品化待批准） |
+| album | **9** | **6,619** | `album_import/list/search/collage/show/prune/status` + `album_reindex`/`album_caption`（二阶段） | P0 生活（产品化待批准） |
 | recall | 3 | 4,315 | `remember/recall/forget` | **P0 必留** |
 | time | 9 | 3,842 | `time_status/arrange/list/edit/cancel/pause/resume/mute/unmute` | P0 必留（P2 可裁 5 个低频） |
 | note | 6 | 2,237 | `memory_export/memo/memos/memo_append/memo_commit/note_status` | P0 必留（`memory_export` P2 可裁） |
@@ -33,7 +34,7 @@
 | whois | 1 | 848 | `whois` | P0 必留 |
 | world-state | 1 | 780 | `world_status` | P0 必留 |
 | editor | 3 | 1,125 | `read_file/write_file/list_dir` | **P2**（sandbox 后换原生 fs） |
-| 合计 | **66** | **44,316** | | |
+| 合计 | **68** | **46,541** | | |
 
 ## 2. 分级建议（逐项：行为变化 / 需批准 / 回滚）
 
@@ -96,7 +97,7 @@ plugins:
   - album
 ```
 
-- 相比"默认 17 个"：去掉 `mc-link`、`editor`；其余不变。预期 **46 工具 / 30,699 字符**（A2）；只去 `mc-link` 是 **49 / 31,824**（A1，若 sandbox 未就绪先做 A1）。
+- 相比"默认 17 个"：去掉 `mc-link`、`editor`；其余不变。预期 **48 工具 / 32,924 字符**（A2）；若再裁 `memory_export`+`time_edit` 是 **45 / 31,923**（A2+O，推荐达标）；只去 `mc-link` 是 **51 / 34,049**（A1）。
 - 产品 `icl-mc`：保留 `mc-link`（17 `mcb_*`），建议删 `editor`（若原生 fs 已上）并加 `toolAllowlist` 收敛；`icl-loop` 是内部夹具，不动。
 - 显式白名单的额外好处：`DEFAULT_PLUGINS` 将来新增插件不会被动进入产品；每个新工具都要一次批准。
 
@@ -104,7 +105,7 @@ plugins:
 
 1. 用户先拍板 **A1/A2** 与 album/video 产品启用（见 `PRODUCTIZATION-KICKOFF §5`）。
 2. lead 改 `presets/icl.patch.yml`（+ `preset-icl-mc` 的 editor/allowlist），同步 `preset-plugins.test` 断言（当前测试要求"产品未挂载项是待批准白名单"，要改成"产品显式列表 ⊆ 已批准清单"）。
-3. cache 在下次 sanctioned run 记产品预设的新 `tools.count/toolsChars/toolsHash`（A1≈49/31,824，A2≈46/30,699；实际含 DSH 原生工具的 header 计数会高一些，按 cache 口径）。
+3. cache 在下次 sanctioned run 记产品预设的新 `tools.count/toolsChars/toolsHash`（A1≈51/34,049，A2≈48/32,924，A2+O≈45/31,923；实际含 DSH 原生工具的 header 计数会高一些，按 cache 口径）。
 4. 与 `PRODUCTIZATION-KICKOFF` 的桌面重启清单合并执行（首屏/purify + 显式白名单 + sandbox profile 同批，减少重启次数）。
 
 ## 5. 测试建议（先写不应用）
@@ -121,12 +122,12 @@ test('产品 icl：显式插件列表 = 已批准生活面（无 mc-link/editor�
 })
 
 // 工具面预算（host 级，不起 lab）
-test('产品 icl 工具面在预算内（A2: 46 tools / 30,699 chars）', async () => {
+test('产品 icl 工具面在预算内（A2+O: 45 tools / 31,923 chars）', async () => {
   const host = createHost({ log: () => {} })
   await bootstrapHost(host, normalizeConfig({ stateDir: mkdtemp(), providers: [], presetId: 'icl' }), { log: () => {} })
   const defs = host.services.tools.list()
   const chars = defs.reduce((n, t) => n + JSON.stringify({ name: t.name, description: t.description, parameters: t.parameters }).length, 0)
-  assert.equal(defs.length, 46)
+  assert.equal(defs.length, 45)
   assert.ok(chars >= 28_000 && chars <= 32_000)
 })
 
@@ -156,7 +157,7 @@ import('./packages/core/src/index.mjs').then(async ({createHost}) => {
 "
 ```
 
-当前输出：`tools 66 chars 44316`（ICL 面；DSH 原生工具另计）。历史 lab 指纹：icl-lab 54/39,350/`c1df0e849a9f`、icl-mc-lab 27/21,459/`c91bce1e703b`（cache `6d2c518` sanctioned）。
+当前输出：`tools 68 chars 46541`（ICL 面；DSH 原生工具另计；album 二阶段 +2）。历史 lab 指纹：icl-lab 54/39,350/`c1df0e849a9f`、icl-mc-lab 27/21,459/`c91bce1e703b`（cache `6d2c518` sanctioned）。
 
 ## 7. 不做什么
 

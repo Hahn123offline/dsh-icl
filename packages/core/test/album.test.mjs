@@ -66,11 +66,15 @@ function findPillowPython() {
 }
 const PILLOW_PY = findPillowPython()
 
-async function setup({ config = {} } = {}) {
-  const host = createHost({ log: () => {} })
+async function setup({ config = {}, provider = null, fetchImpl = null } = {}) {
+  const host = createHost({ log: () => {}, ...(fetchImpl ? { fetchImpl } : {}) })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-'))
   host.registerPlugin(albumManifest, album, { config: { root, ...config } })
   await host.enable('album')
+  if (provider) {
+    host.services.slots.registerProvider(provider)
+    host.services.slots.autoBind()
+  }
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
   return { host, root, tools, service: host.shared.get('album') }
 }
@@ -80,7 +84,7 @@ const writePng = (dir, name, png) => { const file = path.join(dir, name); fs.wri
 test('manifest 声明的工具与实际注册一致', async () => {
   const { tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(), [...albumManifest.tools].sort())
-  assert.equal(albumManifest.tools.length, 7)
+  assert.equal(albumManifest.tools.length, 9)
 })
 
 test('导入两张图：落盘、尺寸/大小/路径正确；同一内容重复导入去重', async () => {
@@ -260,4 +264,134 @@ test('手清：prune 默认跳过隐私项，allowPrivate 才可能删到', asyn
   assert.deepEqual(noPrivate.victims.map((v) => v.id), [1], '默认只清普通相册')
   const withPrivate = service.prune({ dryRun: true, limitBytes: 1, days: 0, allowPrivate: true })
   assert.equal(withPrivate.victims.length, 2)
+})
+
+/* ── 二阶段：图片记忆/语义检索（fake embedding，不依赖 8088） ───────────── */
+
+const vec512 = (a = 0, b = 0, c = 0) => { const out = new Array(512).fill(0); out[0] = a; out[1] = b; out[2] = c; return out }
+
+function fakeClipProvider({ text = {}, image = {}, dim = null } = {}) {
+  return {
+    id: 'fake-clip', kind: 'embedding', shape: { dim: 512 },
+    async call({ input } = {}) {
+      const raw = String(input ?? '')
+      if (raw.startsWith('data:')) {
+        const decoded = Buffer.from(raw.split(',')[1] ?? '', 'base64').toString('latin1')
+        for (const [marker, vector] of Object.entries(image)) if (decoded.includes(marker)) return [dim ? new Array(dim).fill(0) : vector]
+        return [dim ? new Array(dim).fill(0) : vec512(0.5, 0.5)]
+      }
+      for (const [marker, vector] of Object.entries(text)) if (raw.includes(marker)) return [dim ? new Array(dim).fill(0) : vector]
+      return [dim ? new Array(dim).fill(0) : vec512(0.5, 0.5)]
+    },
+  }
+}
+
+const pngWithMarker = (dir, name, rgb, marker) => {
+  const png = makePng(2, 2, rgb)
+  const file = path.join(dir, name)
+  fs.writeFileSync(file, Buffer.concat([png, Buffer.from(String(marker), 'latin1')]))
+  return file
+}
+
+test('语义检索：文字 query 用 CLIP 图文空间命中；图片 query 图-图相似', async () => {
+  const provider = fakeClipProvider({
+    text: { 猫: vec512(1, 0), cat: vec512(1, 0), 狗: vec512(0, 1), dog: vec512(0, 1) },
+    image: { cat: vec512(1, 0), dog: vec512(0, 1) },
+  })
+  const { tools } = await setup({ provider })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  await tools.album_import.execute({ paths: [pngWithMarker(src, 'cat.png', [255, 0, 0], 'cat'), pngWithMarker(src, 'dog.png', [0, 255, 0], 'dog')] })
+  const byText = await tools.album_search.execute({ query: '猫' })
+  assert.match(byText.text, /语义检索/)
+  assert.match(byText.text, /#1/, byText.text)
+  assert.ok(byText.text.indexOf('#1') < byText.text.indexOf('#2'), '猫应排在狗前面')
+  assert.match(byText.text, /相似度 1\.000/)
+  const byImage = await tools.album_search.execute({ image: path.join(src, 'cat.png') })
+  assert.match(byImage.text, /语义检索/)
+  assert.match(byImage.text, /#1/, byImage.text)
+})
+
+test('语义检索：隐私项默认不返回；includePrivate+allowPrivate 才可见', async () => {
+  const provider = fakeClipProvider({ text: { 猫: vec512(1, 0) }, image: { pcat: vec512(1, 0) } })
+  const { tools } = await setup({ provider })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  await tools.album_import.execute({ paths: [pngWithMarker(src, 'pcat.png', [1, 1, 1], 'pcat')], private: true })
+  const hidden = await tools.album_search.execute({ query: '猫' })
+  assert.doesNotMatch(hidden.text, /#1/)
+  const visible = await tools.album_search.execute({ query: '猫', includePrivate: true, allowPrivate: true })
+  assert.match(visible.text, /#1/)
+})
+
+test('语义检索降级：没有嵌入服务/没有向量时退回文字标签，并说明原因', async () => {
+  const { tools } = await setup()
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  await tools.album_import.execute({ paths: [writePng(src, 'a.png', makePng(2, 2, [1, 2, 3]))], caption: '河边白鹭' })
+  const out = await tools.album_search.execute({ query: '白鹭' })
+  assert.match(out.text, /语义检索未接入|没有向量/)
+  assert.match(out.text, /#1/)
+  const byImage = await tools.album_search.execute({ image: path.join(src, 'a.png') })
+  assert.match(byImage.text, /嵌入服务|album_reindex/)
+})
+
+test('embedDefer + album_reindex：滞后建向量后语义检索生效；status 报覆盖率', async () => {
+  const provider = fakeClipProvider({ text: { 猫: vec512(1, 0) }, image: { cat: vec512(1, 0) } })
+  const { tools } = await setup({ provider, config: { embedDefer: true } })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  const imp = await tools.album_import.execute({ paths: [pngWithMarker(src, 'cat.png', [9, 9, 9], 'cat')] })
+  assert.doesNotMatch(imp.text, /向量✓/)
+  const before = await tools.album_search.execute({ query: '猫' })
+  assert.match(before.text, /没有图片向量|语义检索|album_reindex/)
+  const re = await tools.album_reindex.execute({})
+  assert.match(re.text, /已建\/刷新 1 条/)
+  const status = await tools.album_status.execute({})
+  assert.match(status.text, /向量：1\/1 张图片/)
+  const after = await tools.album_search.execute({ query: '猫' })
+  assert.match(after.text, /语义检索/)
+  assert.match(after.text, /#1/)
+})
+
+test('维度断言：返回 1024d 时入库给可操作错误、不写坏向量', async () => {
+  const provider = fakeClipProvider({ image: { cat: vec512(1, 0) }, dim: 1024 })
+  const { tools } = await setup({ provider })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  const imp = await tools.album_import.execute({ paths: [pngWithMarker(src, 'cat.png', [2, 2, 2], 'cat')] })
+  assert.match(imp.text, /向量未建/)
+  assert.match(imp.text, /维度不匹配/)
+  const status = await tools.album_status.execute({})
+  assert.match(status.text, /向量：0\/1 张图片/)
+})
+
+test('album_caption：手动/批量可选，不自动跑；vision 服务写入描述', async () => {
+  let visionCalls = 0
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('/chat/completions')) {
+      visionCalls += 1
+      return { ok: true, async json() { return { choices: [{ message: { content: '一只橘猫趴在窗台上晒太阳' } }] } } }
+    }
+    return { ok: false, status: 404, async json() { return {} } }
+  }
+  const provider = fakeClipProvider({ image: { cat: vec512(1, 0) } })
+  const { tools } = await setup({ provider, fetchImpl })
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  await tools.album_import.execute({ paths: [pngWithMarker(src, 'cat.png', [3, 3, 3], 'cat')] })
+  assert.equal(visionCalls, 0, '导入不应自动caption')
+  const cap = await tools.album_caption.execute({ ids: [1] })
+  assert.equal(visionCalls, 1)
+  assert.match(cap.text, /一只橘猫/)
+  assert.match((await tools.album_list.execute({})).text, /一只橘猫/)
+})
+
+test('真实 8088 clip-zh 集成（ALBUM_CLIP_SMOKE=1 才跑，CPU，不占 GPU）', { skip: process.env.ALBUM_CLIP_SMOKE !== '1' }, async () => {
+  const base = String(process.env.ALBUM_CLIP_BASE ?? 'http://127.0.0.1:8088/v1').replace(/\/+$/, '')
+  const model = String(process.env.ALBUM_CLIP_MODEL ?? 'clip-zh')
+  const res = await fetch(`${base}/embeddings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model, input: '一只猫在窗台上晒太阳' }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  assert.ok(res.ok, `clip 服务返回 ${res.status}（${base}/embeddings, model=${model}）`)
+  const data = await res.json()
+  const vec = data?.data?.[0]?.embedding
+  assert.ok(Array.isArray(vec) && vec.length === 512, `期望 512d CLIP 向量，实际 ${vec?.length}`)
 })

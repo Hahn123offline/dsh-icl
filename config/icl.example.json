@@ -19,6 +19,22 @@
       "disableThinking": true
     },
     {
+      "id": "clip-zh",
+      "kind": "embedding",
+      "shape": { "dim": 512 },
+      "baseUrl": "http://127.0.0.1:8088/v1",
+      "model": "clip-zh",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "clip-en",
+      "kind": "embedding",
+      "shape": { "dim": 512 },
+      "baseUrl": "http://127.0.0.1:8088/v1",
+      "model": "clip-en",
+      "timeoutMs": 30000
+    },
+    {
       "id": "bge-m3",
       "kind": "embedding",
       "shape": { "dim": 1024 },
