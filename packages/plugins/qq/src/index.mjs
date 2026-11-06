@@ -283,6 +283,8 @@ export async function apply(ctx) {
     mediaFailed: 0,
     mediaBytes: 0,
     mediaSoftWarned: false,
+    // time/focus 重放回执的补推统计：via -> {accepted,skipped,calls,lastAt}
+    deliveredVia: {},
     // 只读观测：最近一条进来的私聊 / 最近一次丢弃 / 最近一次被 time 锁拦下
     recent: { lastAccepted: null, lastDropped: null, lastBlocked: null },
   }
@@ -343,6 +345,48 @@ export async function apply(ctx) {
       dir: mediaDir,
       hint: '媒体目录超过软上限：只告警不删除；清理由人决定（album/prune 手动）',
     })
+  }
+
+  /**
+   * time/focus 重放回执（跨模块契约）：只把"确实已经重放给模型"的账本 seq 标记为 delivered，
+   * **不推 attended/不算已读/不发消息**。幂等；不存在/已交付的 seq 忽略；任何异常都只返回 ok:false，
+   * 绝不 throw，避免影响调用方的投递流程。
+   */
+  function noteDeliveredSeqs({ activity = null, peer = null, seqs = [], via = 'unknown', at = null } = {}) {
+    const empty = { ok: false, accepted: 0, skipped: 0, via: String(via || 'unknown').slice(0, 40) || 'unknown' }
+    if (!ledger) return { ...empty, error: 'ledger-off' }
+    const target = activity != null && String(activity).trim()
+      ? String(activity).trim()
+      : (peer != null && String(peer).trim() ? activityIdForPrivate(String(peer).trim()) : null)
+    if (!target) return { ...empty, error: 'activity-required（或传 peer）' }
+    const list = [...new Set((Array.isArray(seqs) ? seqs : [seqs]).map(Number).filter((n) => Number.isInteger(n) && n > 0))]
+    try {
+      const result = ledger.markDeliveredSeqs(target, list)
+      const key = String(via || 'unknown').trim().slice(0, 40) || 'unknown'
+      const stamp = Number(at) || now()
+      const bucket = stats.deliveredVia[key] ?? { accepted: 0, skipped: 0, calls: 0, lastAt: null }
+      bucket.accepted += result.accepted
+      bucket.skipped += result.skipped
+      bucket.calls += 1
+      bucket.lastAt = stamp
+      stats.deliveredVia[key] = bucket
+      // 只有真的补推了才让交付水位前进；不碰 attended。
+      const watermark = ledger.watermarks(target)
+      return {
+        ok: true,
+        activity: target,
+        via: key,
+        accepted: result.accepted,
+        skipped: result.skipped,
+        lastSeq: watermark.lastSeq,
+        deliveredSeq: watermark.deliveredSeq,
+        attendedSeq: watermark.attendedSeq,
+        at: stamp,
+      }
+    } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.note-delivered-seqs', error: String(error?.message ?? error), activity: target })
+      return { ...empty, error: String(error?.message ?? error) }
+    }
   }
 
   function ledgerWatermarks() {
@@ -1120,7 +1164,7 @@ export async function apply(ctx) {
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
       wake: wakePlanner?.status() ?? null,
-      ledger: ledger ? { ...ledger.stats(), watermarks: ledgerWatermarks() } : { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0, watermarks: [] },
+      ledger: ledger ? { ...ledger.stats(), watermarks: ledgerWatermarks(), deliveredVia: JSON.parse(JSON.stringify(stats.deliveredVia)) } : { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0, watermarks: [], deliveredVia: {} },
       http: { ok: Boolean(http?.ok), endpointUrl: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
       media: {
         enabled: cfg.mediaEnabled,
@@ -1166,6 +1210,11 @@ export async function apply(ctx) {
           ? `；被拦原因：${Object.entries(s.stats.blockedReasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${reason}×${count}`).join('，')}`
           : ''
         lines.push(`账本水位（delivered ≠ seen ≠ attended）：${lw.map((w) => `${w.peer} 最后#${w.lastSeq}/已交付#${w.deliveredSeq}/已读#${w.attendedSeq}${w.undelivered ? `（未交付 ${w.undelivered}，不会被 mark_read 跨过）` : ''}`).join('；')}${blocked}`)
+        const via = s.ledger?.deliveredVia ?? {}
+        const viaKeys = Object.keys(via)
+        if (viaKeys.length) {
+          lines.push(`重放回执（只补 delivered，不算已读）：${viaKeys.map((key) => `${key} 补推 ${via[key].accepted ?? 0} 条（忽略 ${via[key].skipped ?? 0}；调用 ${via[key].calls ?? 0} 次）`).join('；')}`)
+        }
       }
       const media = s.media ?? {}
       if (media.enabled) {
@@ -1416,6 +1465,9 @@ export async function apply(ctx) {
     offShared = ctx.services.provide('qq', {
       status,
       statusText,
+      // 跨模块：time/focus 在重放完自己的 backlog 后调用，补推 delivered（不推 attended）。
+      // 返回 {ok, accepted, skipped, deliveredSeq, attendedSeq, lastSeq, via}；失败不 throw。
+      noteDeliveredSeqs,
       gateCounters: () => gate.counters(),
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },

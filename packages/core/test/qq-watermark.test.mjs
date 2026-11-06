@@ -84,6 +84,49 @@ test('未交付消息：mark_read 不能跨过；qq_unread 仍可见；nudge 仍
     const wake = qq.status().wake
     assert.ok((wake.emittedByKind.nudge ?? 0) >= 1, 'nudge 仍尝试提醒未交付消息')
     assert.ok((wake.skippedBudget ?? 0) >= 0)
+
+    // 跨模块：time/focus 重放完自己的 backlog 后调用 noteDeliveredSeqs。
+    // 只补 delivered，不推 attended；幂等；空洞不推进；失败不抛。
+    const service = host.shared.get('qq')
+    const activity = `qq:private:${OWNER}`
+    const receipt1 = service.noteDeliveredSeqs({ activity, seqs: [2], via: 'time-backlog' })
+    assert.equal(receipt1.ok, true)
+    assert.equal(receipt1.accepted, 1)
+    assert.equal(receipt1.deliveredSeq, 0, 'seq1 还空着：连续交付水位仍是 0')
+    assert.equal(receipt1.attendedSeq, 0)
+    const receipt2 = service.noteDeliveredSeqs({ activity, seqs: [1, 3, 3], via: 'time-backlog' })
+    assert.equal(receipt2.accepted, 2)
+    assert.equal(receipt2.skipped, 0)
+    assert.equal(receipt2.deliveredSeq, 3)
+    assert.equal(receipt2.attendedSeq, 0, '补 delivered 不能算已读')
+    const receipt3 = service.noteDeliveredSeqs({ activity, seqs: [1, 3], via: 'time-backlog' })
+    assert.equal(receipt3.accepted, 0, '幂等')
+    assert.equal(receipt3.skipped, 2)
+    const via = qq.status().ledger.deliveredVia['time-backlog']
+    assert.equal(via.accepted, 3)
+    assert.equal(via.skipped, 2)
+    assert.equal(via.calls, 3)
+
+    const afterReceipt = await tool('qq_unread').execute({ peer: OWNER })
+    assert.match(afterReceipt.text, /已交付 #3，水位 #0/)
+    assert.doesNotMatch(afterReceipt.text, /\[未交付/, '补推后行上的未交付标记消失')
+    assert.match(afterReceipt.text, /静音里第三条/)
+
+    // 交付补齐后 mark_read 才能推进到 3
+    const readAfterReceipt = await tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 3 })
+    assert.match(readAfterReceipt.text, /已把私聊/)
+    const finalUnread = await tool('qq_unread').execute({ peer: OWNER })
+    assert.match(finalUnread.text, /水位 #3/)
+    assert.match(finalUnread.text, /没有水位之后的未读/)
+
+    // 参数别名/失败路径：不抛、不误伤
+    const peerAlias = service.noteDeliveredSeqs({ peer: OWNER, seqs: [], via: 'focus-backlog' })
+    assert.equal(peerAlias.ok, true)
+    assert.equal(peerAlias.accepted, 0)
+    assert.equal(qq.status().ledger.deliveredVia['focus-backlog'].calls, 1)
+    const bad = service.noteDeliveredSeqs({ seqs: [1] })
+    assert.equal(bad.ok, false)
+    assert.match(bad.error, /activity-required/)
   } finally {
     try { host.disable('qq') } catch { /* ignore */ }
     try { host.disable('time') } catch { /* ignore */ }

@@ -110,6 +110,9 @@ test('账本：deliveredSeq 只认连续交付；markRead 不跨未交付空洞'
     ledger.markDelivered(activity, 3) // 2 被拦下：已交付 1、3，但连续高水位仍是 1
     assert.equal(ledger.watermarks(activity).deliveredSeq, 1)
     assert.equal(ledger.watermarks(activity).lastSeq, 3)
+    // 批量补推（重放回执）：幂等、空洞不推进、不动 attended
+    assert.deepEqual(ledger.markDeliveredSeqs(activity, [3]), { accepted: 0, skipped: 1 })
+    assert.equal(ledger.watermarks(activity).deliveredSeq, 1)
     const read = ledger.markRead(activity, { throughSeq: 3 })
     assert.equal(read.attendedSeq, 1, '只能到连续已交付高水位')
     assert.equal(read.clampedToDelivered, true)

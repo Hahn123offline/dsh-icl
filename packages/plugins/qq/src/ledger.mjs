@@ -80,6 +80,23 @@ function memoryLedger() {
       // 只记录"交付"事实，不动 attended：delivered 只代表进了投递队列，不代表模型看过/读过。
       return true
     },
+    /** 批量补推"已交付"（time/focus 重放回执用）：幂等；不存在/已交付的 seq 忽略；不动 attended。 */
+    markDeliveredSeqs(activity, seqs = []) {
+      const row = activities.get(String(activity))
+      const list = [...new Set((Array.isArray(seqs) ? seqs : [seqs]).map(Number).filter((n) => Number.isInteger(n) && n > 0))]
+      if (!row) return { accepted: 0, skipped: list.length }
+      let accepted = 0
+      let skipped = 0
+      for (const seq of list) {
+        const message = row.rows.get(seq)
+        if (!message || message.deliveredAt != null) { skipped += 1; continue }
+        message.deliveredAt = Date.now()
+        message.blockedReason = null
+        message.blockedAt = null
+        accepted += 1
+      }
+      return { accepted, skipped }
+    },
     markBlocked(activity, seq, reason = 'blocked', at = Date.now()) {
       const row = activities.get(String(activity))
       const message = row?.rows.get(Number(seq))
@@ -271,8 +288,8 @@ function sqliteLedger(file, log) {
   `)
   const stHas = db.prepare('SELECT 1 AS hit FROM qq_messages WHERE activity = ? AND qq_id = ?')
   const stDeliver = db.prepare('UPDATE qq_messages SET delivered_at = COALESCE(delivered_at, ?), blocked_reason = NULL, blocked_at = NULL WHERE activity = ? AND seq = ?')
+  const stDeliverOne = db.prepare('UPDATE qq_messages SET delivered_at = ?, blocked_reason = NULL, blocked_at = NULL WHERE activity = ? AND seq = ? AND delivered_at IS NULL')
   const stBumpAttended = db.prepare('UPDATE qq_activity SET attended_seq = MAX(attended_seq, ?), updated_at = ? WHERE activity = ?')
-  const stSetAttended = db.prepare('UPDATE qq_activity SET attended_seq = ?, updated_at = ? WHERE activity = ?')
   const stBlocked = db.prepare('UPDATE qq_messages SET blocked_reason = ?, blocked_at = ? WHERE activity = ? AND seq = ? AND delivered_at IS NULL')
   const stGap = db.prepare('SELECT MIN(seq) AS gap FROM qq_messages WHERE activity = ? AND delivered_at IS NULL')
   const stUndeliveredCount = db.prepare('SELECT COUNT(*) AS n FROM qq_messages WHERE activity = ? AND delivered_at IS NULL')
@@ -383,6 +400,19 @@ function sqliteLedger(file, log) {
       const result = stDeliver.run(Date.now(), key, n)
       if (!result || result.changes === 0) return false
       return true
+    },
+    /** 批量补推"已交付"（time/focus 重放回执用）：幂等；不存在/已交付的 seq 忽略；不动 attended。 */
+    markDeliveredSeqs(activity, seqs = []) {
+      const key = String(activity)
+      const list = [...new Set((Array.isArray(seqs) ? seqs : [seqs]).map(Number).filter((n) => Number.isInteger(n) && n > 0))]
+      let accepted = 0
+      let skipped = 0
+      for (const seq of list) {
+        const result = stDeliverOne.run(Date.now(), key, seq)
+        if (result?.changes > 0) accepted += 1
+        else skipped += 1
+      }
+      return { accepted, skipped }
     },
     markBlocked(activity, seq, reason = 'blocked', at = Date.now()) {
       const key = String(activity)
