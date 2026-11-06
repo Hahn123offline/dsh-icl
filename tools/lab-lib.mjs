@@ -147,7 +147,7 @@ export const KNOWN_MC_SERVERS = Object.freeze({
   flat: { host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
 })
 
-export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace }) {
+export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace, serverPort = null }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
@@ -162,7 +162,7 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'I
     .map((name) => {
       const known = KNOWN_MC_SERVERS[name]
       if (!known) throw new Error(`未知 MC 服务器名：${name}（可选：${Object.keys(KNOWN_MC_SERVERS).join(', ')}）`)
-      return { name, host: known.host, port: known.port, note: known.note }
+      return { name, host: known.host, port: Number(serverPort) > 0 ? Number(serverPort) : known.port, note: known.note }
     })
   const serversFile = path.join(runDir, 'mc-servers.json')
   fs.writeFileSync(serversFile, `${JSON.stringify(listed, null, 2)}\n`, 'utf8')

@@ -49,6 +49,12 @@ const cfg = {
   nudgeMin: num('--nudge-min', 45),
   maxConsecutiveFail: num('--max-consecutive-fail', 3),
   interview: !flag('--no-interview'),
+  /** E2 时序收敛：playbook 节奏（分钟）与触发前空闲秒数；--no-playbook 完全关闭单步推进。 */
+  playbookMin: num('--playbook-min', 2.5),
+  playbookIdleSec: num('--playbook-idle-sec', 120),
+  noPlaybook: flag('--no-playbook'),
+  /** E2 文案收敛：死亡/暂停提示压成一句策略，不列逐步动作。 */
+  tersePrompts: flag('--terse-prompts'),
 }
 
 const runDir = runDirOf(cfg.runId)
@@ -492,8 +498,42 @@ function appendAnomaly(type, threshold, evidence) {
 }
 
 /** 从事件里推断细粒度心跳的时间戳（测试有效性指标）。 */
-function heartbeatFromEvents(events) {
-  let lastToolCallAt = null
+/**
+ * turn/end → 下一轮 turn/start 的 gap 统计 + 来源分类（E2 latency 修复观测）：
+ * awake-tick（plugin:time 清醒节拍）/ supervisor（本进程投递过的提示文本）/ external / idle。
+ */
+function turnGapBreakdown(events) {
+  const supervisorTexts = (() => {
+    try {
+      return readJsonl(path.join(runDir, 'prompts.jsonl')).slice(-200).map((row) => String(row.text ?? '')).filter((text) => text.length >= 12)
+    } catch { return [] }
+  })()
+  const ends = events.filter((event) => event.type === 'turn/end').slice(-20)
+  const starts = events.filter((event) => event.type === 'turn/start')
+  const gaps = []
+  const sources = {}
+  for (const end of ends) {
+    const next = starts.find((start) => Number(start.time) > Number(end.time))
+    if (!next) continue
+    const between = events.filter((event) => Number(event.time) > Number(end.time) && Number(event.time) <= Number(next.time) && event.type === 'user/message')
+    let source = 'idle'
+    for (const message of between) {
+      const text = String(message.data?.content?.[0]?.text ?? '')
+      const kind = String(message.data?.source?.kind ?? 'user')
+      if (/^清醒节拍/.test(text)) source = 'awake-tick'
+      else if (supervisorTexts.some((candidate) => text.includes(candidate.slice(0, 24)))) source = 'supervisor'
+      else if (kind !== 'runtime-context' && kind !== 'plugin:time') source = 'external'
+    }
+    const sec = Math.round((Number(next.time) - Number(end.time)) / 1000)
+    gaps.push(sec)
+    sources[source] = (sources[source] ?? 0) + 1
+  }
+  const sorted = [...gaps].sort((a, b) => a - b)
+  const percentile = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))] : null
+  return { count: sorted.length, p50: percentile(50), p95: percentile(95), max: sorted.at(-1) ?? null, over20: sorted.filter((sec) => sec > 20).length, sources }
+}
+
+function heartbeatFromEvents(events) {  let lastToolCallAt = null
   let lastTurnEndAt = null
   let lastModelActivityAt = null
   for (const event of events) {
@@ -1286,7 +1326,10 @@ async function main() {
           log(`body 暂停持续不恢复，supervisor 代发 resume ok=${result.ok}`)
         } else {
           try {
-            await sendPrompt('你现在处于"暂停"状态，身体不会动。第一步只做一个动作：mcb_do {"steps":[{"op":"resume"}]}；resume 成功后再继续原来的事。', { timeoutSec: 240 })
+            const pauseText = cfg.tersePrompts
+              ? '你还暂停着：先 resume，然后自己接着做。'
+              : '你现在处于"暂停"状态，身体不会动。第一步只做一个动作：mcb_do {"steps":[{"op":"resume"}]}；resume 成功后再继续原来的事。'
+            await sendPrompt(pauseText, { timeoutSec: 240 })
           } catch (error) { log(`paused 提示投递失败：${String(error?.message ?? error)}`) }
         }
       }
@@ -1374,10 +1417,11 @@ async function main() {
       } catch (error) { log(`pre-sleep 提示失败：${String(error?.message ?? error)}`) }
     }
 
-    // playbook 单步推进（前 90 分钟、且没有 turn 在跑时，每 2.5 分钟最多推一步；睡眠/休息期不催）
+    // playbook 单步推进（E2 可调：--playbook-min / --playbook-idle-sec / --no-playbook；睡眠/休息期不催）
     const sinceStartMin = (nowMs - startedAt) / 60000
     const lastStepAt = state.lastStepAt ? Date.parse(state.lastStepAt) : 0
-    const stepAllowed = !sleeping && !state.restMode && sinceStartMin < 90 && !stats.inTurn && lastEventAgeSec != null && lastEventAgeSec > 120 && nowMs - lastStepAt > 150_000
+    const stepAllowed = !cfg.noPlaybook && !sleeping && !state.restMode && sinceStartMin < 90 && !stats.inTurn
+      && lastEventAgeSec != null && lastEventAgeSec > cfg.playbookIdleSec && nowMs - lastStepAt > cfg.playbookMin * 60_000
     if (stepAllowed) {
       const useSingle = state.survivalMode || state.playbookIndex >= PLAYBOOK.length
       const stepper = state.survivalMode ? SURVIVAL_STEPS : SINGLE_STEPS
@@ -1446,6 +1490,7 @@ async function main() {
         lastModelActivityAt: hb.lastModelActivityAt ? new Date(hb.lastModelActivityAt).toISOString() : null,
         toolCallGapSec,
         turnEndGapSec,
+        turnGap: (() => { try { return turnGapBreakdown(events) } catch { return null } })(),
         positionStaticSec,
         awakeIdleSec: sleeping ? null : modelIdleSec,
         sleepIdleSec,
@@ -1496,7 +1541,10 @@ async function main() {
       recordStrategy('death', `body 死亡事件（第 ${deaths} 次），位置 ${position}`, { position, deaths })
       if (!sleeping) {
         try {
-          await sendPrompt(`你刚死了（本 lab 代第 ${deaths} 次，死亡位置 ${position}）。**先保命**：mcb_look 看最近怪在多远哪个方向 → 朝反方向 goto 10 格 → 往下 dig 3 格做坑 → place 封口 → wait 到天亮。掉落 5 分钟会消失，现在别回去捡、别在原地纠缠；活下来优先。`, { timeoutSec: 300 })
+          const deathText = cfg.tersePrompts
+            ? `你刚死了（第 ${deaths} 次，位置 ${position}）。先保命，自己决定躲/封/等，别回去捡掉落。`
+            : `你刚死了（本 lab 代第 ${deaths} 次，死亡位置 ${position}）。**先保命**：mcb_look 看最近怪在多远哪个方向 → 朝反方向 goto 10 格 → 往下 dig 3 格做坑 → place 封口 → wait 到天亮。掉落 5 分钟会消失，现在别回去捡、别在原地纠缠；活下来优先。`
+          await sendPrompt(deathText, { timeoutSec: 300 })
         } catch (error) { log(`死亡提示投递失败：${String(error?.message ?? error)}`) }
       }
     }

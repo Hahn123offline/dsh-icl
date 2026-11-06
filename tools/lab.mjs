@@ -201,7 +201,9 @@ async function up() {
   // workspace 先算出来：sandbox-policy.workspaceRoot 与会话 cwd 必须是同一个目录，
   // patch 里的 __LAB_WORKSPACE__ 用这个值物化（不再写死某个盘符）。
   const workspace = path.resolve(String(arg('--workspace', path.join(runDir, 'workspace'))))
-  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace })
+  // 可选：把所选服务器的端口改成自定义（E2 dev 服 54841 之类），mc-servers.json 里生效。
+  const serverPort = arg('--server-port') ? Number(arg('--server-port')) : null
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort })
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,
