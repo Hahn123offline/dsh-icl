@@ -501,13 +501,49 @@ test('mcb_attack：单目标工具（target 必填，命中/击杀可读）；mc
     assert.equal(sentAttack.op, 'attack')
     assert.equal(sentAttack.params.target, 'zombie')
     assert.equal(sentAttack.params.range, 4)
-    await assert.rejects(() => link.tools.mcb_combat.execute({ mode: 'fly' }), /需要 mode：hunt\/defend\/flee\/guard/)
+    await assert.rejects(() => link.tools.mcb_combat.execute({ mode: 'fly' }), /mode 只能是 hunt\/defend\/flee\/guard/)
     const combat = await link.tools.mcb_combat.execute({ mode: 'hunt', target: 'zombie', lowHealth: 8 })
     assert.match(combat.text, /任务 t-1（hunt）已接受/)
     const sentCombat = body.state.requests.at(-1).steps[0]
     assert.equal(sentCombat.kind, 'hunt')
     assert.equal(sentCombat.params.target, 'zombie')
     assert.equal(sentCombat.params.lowHealth, 8)
+    // 默认可用：不给 mode 也按 hunt 执行，并说明默认了
+    const defaulted = await link.tools.mcb_combat.execute({})
+    assert.match(defaulted.text, /任务 t-1（hunt）已接受/)
+    assert.match(defaulted.text, /没指定 mode，默认按 hunt/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('发现性：mcb_do 第一行教"打架→combat/补刀→attack/采集建造→task 宏"；单步重复动作回执提示宏（节流）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const desc = link.tools.mcb_do.description
+    assert.match(desc, /^.*想打架\/追怪→mcb_combat；补刀→mcb_attack；采集\/建造→/)
+    assert.match(desc, /别逐方块/)
+    // 单步重复动作（dig/mine/goto…）→ 回执提示可用宏
+    const first = await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: { x: 1, y: 2, z: 3 } } }] })
+    assert.match(first.text, /这类重复动作可用宏/)
+    assert.match(first.text, /mcb_combat/)
+    // 节流：紧接着再做单步，不再重复提示
+    const second = await link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { pos: { x: 1, y: 2, z: 3 } } }] })
+    assert.doesNotMatch(second.text, /这类重复动作可用宏/)
+    // 下发宏 task 时不提示（已经在用宏）
+    const macro = await link.tools.mcb_do.execute({ steps: [{ op: 'task', kind: 'collect', params: { item: 'oak_log', count: 2 } }] })
+    assert.doesNotMatch(macro.text, /这类重复动作可用宏/)
+    // play.md 开头有一行宏链示例
+    const play = await link.tools.mcb_help.execute({ skill: 'play' })
+    assert.match(play.text, /一行宏链/)
+    assert.match(play.text, /采集→合成→装备/)
+    // 附近有敌对时，mc:skills 提示直接指向战斗宏（提高发现性）
+    await link.api.poll()
+    const promptText = link.host.services.prompt.assemble({ sessionId: 'test' })
+    assert.match(promptText, /combat/)
+    assert.match(promptText, /mcb_combat/)
   } finally {
     await link.cleanup()
     await body.close()
