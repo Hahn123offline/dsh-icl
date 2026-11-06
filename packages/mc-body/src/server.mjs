@@ -45,6 +45,13 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
         const id = url.pathname.slice('/v1/tasks/'.length, -'/resume'.length)
         return json(res, 200, { ok: true, task: body.resumeTask(id) })
       }
+      if (req.method === 'GET' && url.pathname === '/v1/eyes/snapshot') {
+        return json(res, 200, await body.eyesSnapshot({ radius: url.searchParams.get('radius') }))
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/eyes/screenshot') {
+        const input = await readJson(req)
+        return json(res, 200, await body.eyesScreenshot(input))
+      }
       if (req.method === 'POST' && url.pathname === '/v1/do') {
         const input = await readJson(req)
         return json(res, 200, { ok: true, ...(await body.doPlan(input.steps, input.params ?? {})) })
@@ -86,3 +93,4 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
     },
   }
 }
+

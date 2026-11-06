@@ -25,6 +25,9 @@ const stateFile = path.resolve(String(arg('--state', path.join('C:/DSH/icl/.stat
 const pausedDisconnectMs = Number(arg('--paused-disconnect-ms', 120_000))
 const watchdogMs = Number(arg('--watchdog-ms', 2000))
 const heartbeatMs = Number(arg('--heartbeat-ms', 60_000))
+const mediaDir = arg('--media-dir', process.env.MC_BODY_MEDIA_DIR || null)
+const runId = arg('--run-id', process.env.MC_RUN_ID || null)
+const eyesPortStart = Number(arg('--eyes-port', 3998))
 const exitOnIdle = !flag('--no-exit-on-idle')
 const exitOnReconnectExhausted = flag('--exit-on-reconnect-exhausted')
 const stateDir = path.dirname(stateFile)
@@ -146,7 +149,7 @@ const adapter = createMineflayerAdapter({
 })
 
 body = createBody({
-  adapter, allowTask, allowSay, logFile, stateFile, pausedDisconnectMs, watchdogMs, heartbeatMs,
+  adapter, allowTask, allowSay, logFile, stateFile, pausedDisconnectMs, watchdogMs, heartbeatMs, mediaDir, runId, eyesPortStart,
   movementStallMs: Number(arg('--stuck-ms', 25_000)),
   packetStaleMs: Number(arg('--stale-ms', 45_000)),
   onIdleDisconnect: ({ reason }) => {
@@ -189,3 +192,4 @@ if (selftestCrash) {
 // 心跳文件：被硬 kill 时，上层至少能从最后一条 alive 判断“进程是在哪个状态下被杀的”。
 const aliveTimer = setInterval(() => { if (!exiting) writeJson(aliveFile, snapshot()) }, Math.max(1000, Math.min(10_000, Number(watchdogMs) || 2000)))
 if (typeof aliveTimer.unref === 'function') aliveTimer.unref()
+

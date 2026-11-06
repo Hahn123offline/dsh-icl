@@ -680,3 +680,28 @@ test('body：status 暴露 playable 布尔与 spawn 日志（E6/E7）', async ()
 
 
 
+
+test('body：eyesSnapshot 结构化快照（零依赖；暂停/离线也能出）', async () => {
+  const adapter = fakeAdapter()
+  const { body } = await startedBody({ adapter, watchdogMs: 60_000 })
+  const out = await body.eyesSnapshot({ radius: 4 })
+  assert.equal(out.ok, true)
+  assert.equal(out.snapshot.kind, 'structured')
+  assert.ok(out.captureMs >= 0)
+  assert.ok(out.snapshot.map, '应包含 inspect map 文本（fake adapter 返回 fake:map）')
+  assert.ok(out.snapshot.playable && typeof out.snapshot.playable.ok === 'boolean')
+  assert.ok(out.snapshot.safety && out.snapshot.safety.bodyOnline === true)
+  assert.ok(out.snapshot.inventory && out.snapshot.inventory.counts)
+  // 暂停时仍可出快照（只读）
+  body.safetyStop('manual')
+  const paused = await body.eyesSnapshot({})
+  assert.equal(paused.snapshot.safety.paused, true)
+  assert.equal(paused.snapshot.safety.pausedReason, 'manual')
+  await body.stop()
+})
+
+test('body：eyesScreenshot 在无截图能力时给可读 501（不崩）', async () => {
+  const { body } = await startedBody({ watchdogMs: 60_000 })
+  await assert.rejects(() => body.eyesScreenshot({ kind: 'test' }), /未配置截图能力|501/)
+  await body.stop()
+})
