@@ -1489,8 +1489,16 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     const eyes = await link.tools.mcb_help.execute({ skill: 'eye' })
     assert.match(eyes.text, /MC 眼睛/)
     assert.match(eyes.text, /先.*snapshot.*后.*screenshot|日常看场景先用/)
-    assert.match(eyes.text, /超平坦\/负 Y 世界.*可能只截到天空/)
-    assert.match(eyes.text, /不要用截图做结构\/方块验收/)
+    // live-world 截图已修：不再说"可能只截到天空"，改成"对结构仅作参考"
+    assert.doesNotMatch(eyes.text, /可能只截到天空/)
+    assert.match(eyes.text, /截图对结构仅作参考/)
+    assert.match(eyes.text, /负 Y 世界.*渲染层整体 \+64|截图里的视觉 y 会比真实坐标高 64/)
+    assert.match(eyes.text, /以 body 的 `verify`|验收.*verify|结构校验/)
+    assert.match(eyes.text, /kind:"shelter".*镜头|对准家的 center/)
+    // 工具描述同样更新（旧警告移除、新措辞在）
+    assert.doesNotMatch(link.tools.mcb_eyes.description, /可能只截到天空/)
+    assert.match(link.tools.mcb_eyes.description, /截图对结构仅作参考/)
+    assert.match(link.tools.mcb_eyes.description, /视觉 y 比真实高 64/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {
