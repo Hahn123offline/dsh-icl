@@ -9,6 +9,12 @@
 
 **原则：重复劳动（采集/挖/建/打整场）用宏 task 或战斗宏；单步 op 只做少量/精确动作。**
 
+**战斗/生存（S2 教训：别只采集合成）**：
+- 遇到敌对或要食物 → `mcb_combat {mode:"hunt"}`（自动选武器/走位，低血/苦力怕会中断）；
+  被围/低血 → `mcb_combat {mode:"flee"}`；守家 → `mcb_combat {mode:"guard"}`。
+- 单只补刀 → `mcb_attack {target:"zombie"}`（结果有 hit/伤害/血 before→after/killed；killed 后 pickup）。
+- 夜里/下雨/被追 → `mcb_shelter` 盖房（或回已有的 home）；`mcb_status` 的"家"行给坐标。
+
 ## 想玩 / 被叫去玩（连接）
 
 1. `mcb_servers` 看已知服务器（flat 测试服、survival）；用户在自己客户端里开了"对局域网开放"时用 `mcb_lan`。

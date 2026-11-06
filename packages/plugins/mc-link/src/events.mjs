@@ -27,6 +27,8 @@ export const QUIET_EVENTS = Object.freeze([
   // 宏/战斗的中间信息事件：macro_step/macro_blocked/combat_done 等在 body 台账里可查，不逐条叫醒；
   // 真正的结果走 task_done/task_failed/task_progress（progress 已限频）。
   'macro_step', 'macro_blocked', 'macro_done', 'macro_tool_auto', 'auto_tool', 'needs_tool', 'combat_done',
+  // 盖房的中间事件：结构不完整/盖完由 task_failed/task_done 统一说；home_set 单独通知（家是长期事实）。
+  'shelter_incomplete', 'shelter_done',
 ])
 
 /**
@@ -44,7 +46,7 @@ const DEFAULTS = Object.freeze({
     chat: 0, join: 30_000, leave: 30_000, health_drop: 120_000, disconnected: 10_000,
     'connection-lost': 30_000, reconnecting: 60_000, reconnected: 60_000, body_error: 30_000,
     idle_disconnect: 60_000, resume_required: 120_000, quarantine: 300_000,
-    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, auto_defense: 60_000, combat_abort: 30_000,
+    path_stuck: 120_000, dig_error: 60_000, dig_refused: 60_000, auto_defense: 60_000, combat_abort: 30_000, home_set: 300_000,
     stuck: 30_000, other: 120_000,
   },
   /** 危险事件的合并窗口：死亡/安全停止在窗口内合并计数，避免死亡循环刷屏。 */
@@ -98,8 +100,12 @@ const TASK_REASON_TEXT = Object.freeze({
   unsafe: '安全护栏拒绝（会造成危险：换位置/换做法）',
   partial: '只完成了一部分（有进展没达标：看 progress/背包再决定续做还是换目标）',
   'unsupported task': '这个宏还在 beta/未开放（先看 mcb_help play 或 mcb_help collect/tunnel；bridge/build/shelter/sort/deposit/farm 是 beta）',
-  'no-water': '附近没有水：找水边/引水（水离耕地 4 格内才能种）',
-  'no-site': '水边没有可开垦的土/草方块（要离水 4 格内、上方是空气）',
+  'farm: no-water': '附近没有水：找水边/引水（水离耕地 4 格内才能种）',
+  'farm: no-site': '水边没有可开垦的土/草方块（要离水 4 格内、上方是空气）',
+  'shelter: no-site': '这里放不下小屋（地形/空间不够）：先清平/换位置，或先挖平再重跑',
+  'shelter: needs-material': '盖房材料不够：按回执缺数先补方块（缺多少见 message），别硬跑',
+  'shelter: incomplete': '结构不完整：按 verify.summary 补缺的墙/屋顶/门洞，别直接重跑整间',
+  'shelter: entry-blocked': '结构 OK 但进不去：先清零格门洞/垫平门外通路，或换 doorSide 重试',
   unsupported: 'body 不支持这个参数组合（例如 tunnel 的向上 stairs）：换方向/换做法',
   'player not found': '找不到玩家（先 mcb_status 看在线玩家）',
   'pathfinder-unavailable': '寻路不可用（改用单点 goto/dig，别走复杂地形）',
@@ -110,10 +116,12 @@ const TASK_REASON_TEXT = Object.freeze({
   'combat: no-threat': '附近没有威胁了：不用再打',
 })
 
-/** 从 error 字符串（如 "mine: no-target"）里认出原因与下一步。 */
+/** 从 error 字符串（如 "mine: no-target"）里认出原因与下一步；多个 key 命中时选最长的（更具体）。 */
 function reasonHint(raw) {
-  const text = String(raw ?? '')
-  const key = Object.keys(TASK_REASON_TEXT).find((name) => text.toLowerCase().includes(name))
+  const text = String(raw ?? '').toLowerCase()
+  const key = Object.keys(TASK_REASON_TEXT)
+    .filter((name) => text.includes(name))
+    .sort((a, b) => b.length - a.length)[0]
   if (!key) return null
   return { key, hint: TASK_REASON_TEXT[key] }
 }
@@ -217,6 +225,11 @@ function macroDoneText(task, result) {
     return `[MC] 宏完成：build ${label} 放了 ${result?.placed ?? '?'} 块，跳过 ${result?.skipped ?? 0}${result?.totalLayers != null ? `（${result?.layer ?? '?'}/${result.totalLayers} 层）` : ''}`
   }
   if (task.kind === 'shelter') {
+    const verify = result?.verify ?? null
+    const home = result?.home ?? null
+    if (verify) {
+      return `[MC] 宏完成：shelter ${label} 结构完整（${verify.summary ?? '四面墙+屋顶+门洞+入口'}）${result?.entryOk ? '；门口能进出' : ''}${home?.center ? `；家在 ${positionText({ adapter: { position: home.center } })}（门在 ${home.doorSide ?? '?'}）` : ''}；夜里/下雨可回家躲`
+    }
     return `[MC] 宏完成：shelter ${label} 墙 ${result?.walls ?? '?'}、顶 ${result?.roof ?? '?'}、门 ${result?.door ?? '?'}`
   }
   if (task.kind === 'sort' || task.kind === 'deposit') {
@@ -357,6 +370,14 @@ function alarmLine(text, suffix = '') {
         priority: serious ? 'alarm' : 'notice',
         merge: 'safety_stop', alarm: serious,
         text: `[MC] 安全停止：${why}${extra}${d.repeated ? '（重复报警）' : ''}；任务已中断（停任务≠离开世界）；resume 继续，mcb_leave 离开。`,
+      }
+    }
+    case 'home_set': {
+      // 盖房成功：body 记住 home（持久化）。夜里/下雨/被追时回 home.center 躲。
+      const home = d.home ?? {}
+      return {
+        kind: 'event', tags: ['mc', 'shelter'], priority: 'notice', merge: 'home_set',
+        text: `[MC] 家已设：${home.center ? positionText({ adapter: { position: home.center } }) : '?'}（${home.size ?? '?'}×${home.size ?? '?'}${home.doorSide ? `，门在 ${home.doorSide}` : ''}${home.doorPlaced ? `，已装门 ${home.doorPlaced}` : ''}）；夜里/下雨/被追可回 home.center 躲，mcb_status 可看家。`,
       }
     }
     case 'auto_defense': {

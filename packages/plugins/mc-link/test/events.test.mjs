@@ -224,6 +224,29 @@ test('OP 与 task kind 列表是 mc-body 的公开集合（防止工具描述与
   }
 })
 
+test('宏：shelter done 展示 verify.summary/entryOk/home；失败码按缺面/门堵翻译', () => {
+  const done = taskEventText('task_done', {
+    task: {
+      id: 't-9', kind: 'shelter', params: { size: 3, material: 'oak_planks' },
+      result: { verify: { ok: true, summary: '结构完整：四面墙+屋顶+门洞+室内2格高+进出通路' }, entryOk: true, home: { center: { x: 1, y: 64, z: 2 }, doorSide: 'south' } },
+    },
+  })
+  assert.match(done, /结构完整：四面墙\+屋顶\+门洞\+室内2格高\+进出通路/)
+  assert.match(done, /门口能进出/)
+  assert.match(done, /家在 1,64,2/)
+  assert.match(done, /门在 south/)
+  for (const [error, pattern] of [
+    ['shelter: incomplete', /结构不完整（按 verify\.summary 补缺的墙\/屋顶\/门洞）|结构不完整：按 verify\.summary/],
+    ['shelter: entry-blocked', /结构 OK 但进不去|进不去/],
+    ['shelter: no-site', /放不下小屋/],
+    ['shelter: needs-material', /盖房材料不够/],
+  ]) {
+    const text = taskEventText('task_failed', { task: { id: 't-9', kind: 'shelter', error } })
+    assert.match(text, /任务失败/, error)
+    assert.match(text, pattern, error)
+  }
+})
+
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {
   const collected = taskEventText('task_done', { task: { id: 't-1', kind: 'collect', params: { item: 'oak_log', count: 8 }, result: { collected: 9, net: 8, item: 'oak_log', requested: 8 } } })
   assert.match(collected, /宏完成/)
