@@ -23,7 +23,7 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 760 tests（759 pass / 1 skip） | `npm test` |
+| 全量测试 | ✅ 779 tests（778 pass / 1 skip） | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
@@ -531,6 +531,10 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - 补课消息与普通消息同一套账本；`qq_history` 里能看到 `[补课]` 标记。
 
 **跨模块重放回执契约（time/focus → QQ；2026-11-07）**：
+- **queued ≠ delivered**：P3 后 focus 拦下返回 `{accepted:true, queued:true, delivered:false}`；QQ 只记 `stats.queued` +
+  行上的 `blocked_reason`，**不记 delivered**（focus backlog 还没进模型）。只有 `outcome.delivered === true`
+  或 `accepted && !queued` 才 `markDelivered`；`deduped` 也不凭自己去补 delivered。被 time 拦下（blocked）同理不记 delivered。
+- 等 focus/time 把 backlog **真正重放给模型之后**，它们调 QQ 的 `noteDeliveredSeqs(...)` 补 delivered（见下）。
 - QQ 在共享服务 `ctx.services.provide('qq', …)` 暴露 **`noteDeliveredSeqs({ activity, seqs, via, at })`**
   （也接受 `peer` 代替 `activity`；`via` 例：`time-backlog` / `focus-backlog`）。
 - **谁调/何时调**：time/focus 把被自己拦下的 QQ backlog **真正重放给模型之后**调用（不是入队时、不是拦截时）。
@@ -902,7 +906,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 760 tests（759 pass / 1 skip）
+node --test packages/core/test packages/mc-body/test   # 779 tests（778 pass / 1 skip）
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
@@ -1112,6 +1116,17 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
   回执后 `qq_unread` 的未交付标记消失、`qq_mark_read` 才能推进到 3；`peer` 别名可用、缺 activity 返回 ok:false 不抛。
 - `qq-ledger-tools.test.mjs` 第 7 条用 SQLite 单测证明 `deliveredSeq` 连续语义与 markRead 夹取。
 - 契约：**delivered ≠ seen ≠ attended**；未交付 = 被 time/focus 拦下、`delivered_at IS NULL`，只能等待真正交付，不能被 mark_read 清掉。
+
+### 13.14 P3 focus 积压 queued ≠ delivered（2026-11-07）
+
+- `qq-focus-queued.test.mjs` → **2 pass**：
+  - `host.services.focus.enter({label:'qq:test', interruptible:false})` 下收私聊：`signals.offer` 返回
+    `accepted+queued+delivered:false`，QQ 记 `stats.queued`/`queuedReasons` 与行上原因，**不记 delivered**；
+    `deliveredSeq` 仍 0、`mark_read` 不能跨；delivery 无 QQ 批。
+  - `lease.release()` 后 focus 摘要进管道，host 调 `noteDeliveredSeqs(via:'focus-backlog')`：只补 delivered，
+    `attendedSeq` 仍 0；`deliveredVia['focus-backlog']` 计数；之后 `mark_read` 才能推进。
+  - 正常路径（无 focus）`delivered:true` 立即记 delivered，不回归。
+- `qq-mc-concurrent` T2 断言同步：sacred focus 下 `stats.delivered=0`、`stats.queued>=1`。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 

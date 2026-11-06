@@ -125,10 +125,11 @@ test('T2 sacred focus：两条来源都被 core defer 到各自积压，不投�
     ws.emit('message', { data: JSON.stringify(qqEvent({ text: '专注时来的私聊', messageId: 7002 })) })
     await sleep(30)
     assert.equal(host.services.delivery.pendingCount(), 0, 'sacred focus 下不应有投递')
-    // focus 层的拦截发生在 host.setDeliver 内部：signals.offer 仍返回 accepted（delivery 接住了并 defer），
-    // 所以 QQ 插件的 blocked 计数**只反映 time gate**，不反映 focus。这里断言 core 的积压与投递结果。
+    // focus 层的拦截发生在 host.setDeliver 内部：P3 的 offer 结果是 accepted+queued+delivered:false，
+    // 所以 QQ 不能把它记成 delivered（否则 mark_read 会跨过没进模型的消息）；这里按 queued 记。
     const qq = host.shared.get('qq').status()
-    assert.equal(qq.stats.delivered, 1, 'QQ 信号被 signals 接受（随后被 focus defer）')
+    assert.equal(qq.stats.delivered, 0, 'focus defer 不是 delivered')
+    assert.equal(qq.stats.queued >= 1, true, 'focus defer 应记 queued')
     const backlog = host.services.focus.backlog()
     const total = backlog.reduce((sum, row) => sum + row.count, 0)
     assert.equal(total >= 2, true, `focus 积压应包含两条来源，实际 ${JSON.stringify(backlog.map((r) => [r.focus, r.count]))}`)
