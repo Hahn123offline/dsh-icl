@@ -113,7 +113,7 @@ export function buildStructuredSnapshot({ status = {}, adapterSnapshot = null, i
  * express 静态页 + socket.io，把 world 的区块按 standalone 协议发给浏览器。
  * viewerRoot：装好 prismarine-viewer 的目录（内含 express/socket.io/prismarine-viewer）。
  */
-export async function startViewerServer({ viewerRoot, world, center, version, port = 3998, viewDistance = 3 }) {
+export async function startViewerServer({ viewerRoot, world, center, version, port = 3998, viewDistance = 3, cameraOffset = { x: 0, y: 20, z: 20 } } = {}) {
   const root = resolveViewerRoot(viewerRoot)
   if (!root) throw new Error('viewer 不可用：未找到 prismarine-viewer（设 MC_EYES_VIEWER_ROOT 并安装，见 docs/MC-EYES.md）')
   if (!world || typeof world.getColumn !== 'function') throw new Error('viewer 需要 prismarine-world（body 未连接或 bot.world 不可用）')
@@ -131,7 +131,9 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   let patchedPage = null
   try {
     const source = fs.readFileSync(pagePath, 'utf8')
-    const patched = source.replace('t.y>0&&s&&(', 's&&(')
+    let patched = source.replace('t.y>0&&s&&(', 's&&(')
+    patched = patched.replace('u.camera.position.set(t.x,t.y+20,t.z+20)', 'u.camera.position.set(t.x+(t.ox||0),t.y+(t.oy===undefined?20:t.oy),t.z+(t.oz||0))')
+    if (process.env.MC_EYES_DEBUG_VIEWER === '1') patched = patched.replace('let h=new THREE.OrbitControls(u.camera,l.domElement);', 'let h=new THREE.OrbitControls(u.camera,l.domElement);window.__mcViewer=u;window.__mcControls=h;window.__mcCam=u.camera;')
     if (patched !== source) patchedPage = patched
   } catch { /* 读不到就按原版 */ }
   if (patchedPage) {
@@ -143,9 +145,10 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   const server = http.createServer(app)
   const io = new Server(server)
   const fixedCenter = center instanceof Vec3 ? center : new Vec3(center.x, center.y, center.z)
-  // 已在上面的 /index.js 补丁里修好负 Y 相机：世界/坐标保持真实，不再做 y 偏移。
-  const yOffset = 0
-  const renderPos = fixedCenter.clone ? fixedCenter.clone() : new Vec3(fixedCenter.x, fixedCenter.y, fixedCenter.z)
+  // worldrenderer 只对 y=0..256 的 section 建网格（超平坦负 Y 的 section 永远不建）；把负 Y 世界整体上移 64 格，
+  // 同时 camera 位置也 +64，渲染后视觉坐标再减回去（截图用，不影响业务坐标）。
+  const yOffset = fixedCenter.y < 0 ? 64 : 0
+  const renderPos = new Vec3(fixedCenter.x, fixedCenter.y + yOffset, fixedCenter.z)
   const sockets = new Set()
   const stats = { chunksSent: 0, chunkErrors: 0, sampleError: null }
   async function sendChunks(socket) {
@@ -156,9 +159,15 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
         try {
           const chunk = await world.getColumn(x, z)
           if (!chunk) { stats.chunkErrors += 1; stats.sampleError = stats.sampleError ?? 'no chunk'; continue }
+          // worker 内部会 JSON.parse(chunk)：必须发**字符串**（mineflayer 1.21.4 的 toJson 是字符串；对象则 stringify）。
           let chunkJson = chunk.toJson()
-          if (typeof chunkJson === 'string') chunkJson = JSON.parse(chunkJson) // mineflayer 的 prismarine-chunk 版本 toJson 返回字符串
-          if (yOffset) chunkJson.minY = Number(chunkJson.minY ?? -64) + yOffset
+          if (typeof chunkJson !== 'string') chunkJson = JSON.stringify(chunkJson)
+          if (yOffset) {
+            // 只改 minY（sections 索引随之整体上移），让 0..256 的渲染循环能覆盖到
+            const parsed = JSON.parse(chunkJson)
+            parsed.minY = Number(parsed.minY ?? -64) + yOffset
+            chunkJson = JSON.stringify(parsed)
+          }
           socket.emit('loadChunk', { x: x * 16, z: z * 16, chunk: chunkJson })
           stats.chunksSent += 1
         } catch (error) { stats.chunkErrors += 1; stats.sampleError = stats.sampleError ?? String(error?.message ?? error) }
@@ -168,7 +177,8 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   io.on('connection', (socket) => {
     socket.emit('version', version)
     sockets.add(socket)
-    socket.emit('position', { pos: renderPos, addMesh: false })
+    const cameraPos = { x: renderPos.x, y: renderPos.y, z: renderPos.z, ox: Number(cameraOffset.x) || 0, oy: Number.isFinite(Number(cameraOffset.y)) ? Number(cameraOffset.y) : 20, oz: Number(cameraOffset.z) || 0 }
+    socket.emit('position', { pos: cameraPos, addMesh: false })
     void sendChunks(socket)
     socket.on('disconnect', () => sockets.delete(socket))
   })
@@ -179,6 +189,7 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   return {
     port,
     center: { x: fixedCenter.x, y: fixedCenter.y, z: fixedCenter.z },
+    cameraOffset,
     renderCenter: { x: renderPos.x, y: renderPos.y, z: renderPos.z },
     yOffset,
     version,
@@ -278,6 +289,11 @@ export async function captureScreenshot({
     killTree()
   }
 }
+
+
+
+
+
 
 
 
