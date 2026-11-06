@@ -104,3 +104,40 @@ S2 run `.state/lab/e2-20261106-soak`：
   3. 山坡地形自动挖/垫平（当前 `no-site` 让模型先挖平）；
   4. 门安装后自动“开门进入”（`use` door）；
   5. mc-link：`mcb_shelter`/`mcb_build` 工具 + `mcb_status.home`/`nearbyHostiles` 展示 + skills 写“盖房/回家/躲藏”。
+
+### 3.1 真服 result 里的 verify 示例（mc-link 渲染可直接取）
+
+成功（run10，3×3 橡木屋 done）：
+
+```json
+{
+  "ok": true,
+  "walls": { "ok": true, "missing": 0, "total": 14,
+    "faces": { "north": {"missing":[],"total":6}, "south": {"missing":[],"total":4}, "east": {"missing":[],"total":2}, "west": {"missing":[],"total":2} },
+    "missingFaces": [] },
+  "roof": { "ok": true, "missing": 0, "total": 9, "cells": [] },
+  "door": { "ok": true, "openCells": 2, "missing": 0 },
+  "interior": { "ok": true, "blocked": 0, "cells": [] },
+  "floor": { "ok": true, "missing": 0 },
+  "entry": { "ok": true, "outsideClear": true, "doorOutClear": true, "insideClear": true },
+  "summary": "结构完整：四面墙 + 屋顶 + 门洞 + 室内 2 格高 + 进出通路"
+}
+```
+
+失败（run5，屋顶缺 1 块）：
+
+```json
+{
+  "ok": false,
+  "walls": { "ok": true, "missing": 0, "total": 14, "missingFaces": [] },
+  "roof": { "ok": false, "missing": 1, "total": 9, "cells": [ { "x": 1, "y": 2, "z": 1 } ] },
+  "door": { "ok": true, "openCells": 2, "missing": 0 },
+  "interior": { "ok": true, "blocked": 0, "cells": [] },
+  "floor": { "ok": true, "missing": 0 },
+  "entry": { "ok": true, "outsideClear": true, "doorOutClear": true, "insideClear": true },
+  "summary": "屋顶缺 1 块"
+}
+```
+
+- “缺哪面”已在 `walls.missingFaces`（如 `[{face:"south",missing:4,total:6}]`）与 `summary` 里；需要更细可用 `walls.faces[face].missing` 的坐标列表、`roof.cells`、`interior.cells`。
+- `failures` 是建造过程失败明细（stage/x/y/z/reason），用于调试，不建议直接给模型看；给模型用 `verify.summary` 即可。
