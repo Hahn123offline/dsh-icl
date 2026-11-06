@@ -44,5 +44,8 @@ node tools/quality-run.mjs        # 固定素材 + 真模型，写本目录 <时
 
 - 可回忆块 = `event/person/slang` 的 `kind=block`；`day/log` 是 wash 原料、`dream-run` 是运行记录、`consume` 是备忘回收，三者都**不计入块大小**（旧口径把 138,778 字符的 day 原料误算成 p95 的教训）。
 - dream job 按 `run:/fail:/skip:` 三态统计（master 已让失败/跳过落 `dream-run`）；`index` 无嵌入时记 `skipped:no-embed`，不算失败。
+- **segmented 与 degraded 分开**：day log 分段（wash `parts>1`）记 `dream.segmented`，**不算 degraded**；只有真截断（`omittedLines>0` 或 `data.degraded=true`）进 `dream.degradedJobs`（MISC §6 / lead 拍板）。
+- `eager.injections` 是**累计快照**（含 dream 进行中的注入）；报告标签注明"累计快照"，与"睡眠完成后当前值"区分（misc 复核发现两套引用口径）。
+- `tools`：首请求 `request/header` 的 tools 数量 + 名字 hash + `hasMcbStop/hasRemember/album`，用于核对工具面（E2 实测 48 / hash 40da39f97ef8eb8f / remember=true / album=7；`mcb_stop` 在首请求头未出现，需用实际调用/后续 surface 复核）。
 - 槽健康：`slots.unmatched` 期望 `[]`（`icl.ready` 日志不可得时由 dream 模型 job 成功行/fail 行推断，`slots.source` 标注来源）。
-- 2026-11-06 lab 侧已给 `icl-lab` / `icl-mc-lab` 注入 `providers`（8088 llama-swap chat/embedding）；验证：dream `events` job `ran`、`blocks=1`、`event/block` 与 4 条 `mem_vec` 落库、无 `fail:` 行、eager-recall 注入 2 次。
+- 2026-11-06 lab 侧已给 `icl-lab` / `icl-mc-lab` 注入 `providers`（8088 llama-swap chat/embedding）；E2 smoke 实测：dream 七 job 三态齐全（6 ran + people skip no-notes）、5 event block、day 5 段、mem_vec=12、无 fail 行、醒来简报含 dream 回执与危险穿透。
