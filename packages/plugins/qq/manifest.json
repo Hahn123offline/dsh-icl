@@ -1,8 +1,19 @@
 {
   "id": "qq",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "entry": "./src/index.mjs",
-  "tools": ["qq_status", "qq_send"],
+  "tools": [
+    "qq_status",
+    "qq_help",
+    "qq_unread",
+    "qq_history",
+    "qq_replied",
+    "qq_mark_read",
+    "qq_send",
+    "qq_stickers",
+    "qq_sticker_note",
+    "qq_send_sticker"
+  ],
   "slots": [],
   "focus": {},
   "requires": {}
