@@ -457,7 +457,8 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 
 **视频/文件落盘约定（给 bili 的通用视频浏览器工具）：**
 - 根目录：`mediaInboxDir`（默认 `state 同级/media/inbox/qq`，推荐 `.state/media/inbox/qq`）；
-  文件：`<root>/<YYYY-MM-DD>/<messageId>-<sender>-<ISO时间戳>-<index>.<ext>`；同名冲突不覆盖（时间戳+序号）。
+  文件：`<root>/<YYYY-MM-DD>/<messageId>-<sender>-<ISO时间戳>-<index>.<ext>`；同名冲突不覆盖（时间戳+序号）；
+  **先写 `.part-*` 再 rename**（ffprobe/视频浏览器不会读到半截文件；失败会清掉 .part）。
 - 索引：`<root>/index.jsonl`，一行一个 JSON（字段如上）；视频浏览器按 **本地绝对路径** 接收输入
   （与 DSH `video_probe`/`video_storyboard` 的 `input` 约定一致）。
 - 正文里的 `[视频已保存：<path>]` 是模型能看到的路径；索引供工具/维护者检索，不要求模型读。
