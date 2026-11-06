@@ -18,7 +18,7 @@
 | **醒了要干什么？** | 唤醒消息、备注、标签、silent；睡眠/静音期间的积压 | `queue` + `spans` |
 | **接下来如何行动？** | `goals`（会话轴）：到点建目标、turn-end 续推、上限、取消 | `goals` + focus 租约 |
 | **更长期的日程？** | 每天/每周重复、编辑、取消、清单可读性 | 同 `schedules` |
-| **底线：醒着不允许静默等待** | `awakeTick` 清醒节拍：没有 goal/事件时，turn-end 后 `idleSec` 内自检一次，让模型持续有调用；sleep/mute/pause 是显式静止 | `heartbeat`（§13） |
+| **底线：醒着不允许静默等待** | `awakeTick` 清醒节拍：没有 goal/事件时，turn-end 后自检一次（normal `idleSec`；fast-play `mode:'immediate'` ~1s，§17）；sleep/mute/pause 是显式静止 | `heartbeat`（§13/§17） |
 
 时间必须是**进程外持久状态 + 定时器**：模型只在被投递消息时存在，两次唤醒之间没有执行体。
 
@@ -423,11 +423,11 @@ node tools/lab.mjs down --run "$RUN"
 
 1. 记录 `lastTurnEndAt`、`turnEnds`；
 2. 先跑 `resumeGoals()`（原有行为）；**如果本轮有目标续推，清醒节拍不叠加**（goal 本身就会拉起下一轮）；
-3. 否则 `armAwakeTick()`：若 `phase==='awake'` 且没有 `lock`（静音），把 `awakeTickDueAt = now + idleSec`；
+3. 否则 `armAwakeTick()`：若 `phase==='awake'` 且没有 `lock`（静音），把 `awakeTickDueAt = now + armDelay`（normal = `idleSec`；immediate = `minIdleSec`，默认 1s；immediate 另用独立 timer 保证 ~1s 精度，不依赖 15s tick 循环）；
 4. tick（默认 15s 一次）里 `maybeAwakeTick()`：到点且仍然醒着、仍不抑制时，发一条 `awake-tick` notice：
-   - 正文是**事实 + 可选下一步**，不是命令：`清醒节拍：距上次回合结束 N 秒；现在 HH:mm，醒着[；专注：X][；积压 N 条]。可以接着做手上的事，也可以看 time_status / world_status / focus_status 决定下一步。`
-     capped 后发短提示：`清醒节拍：醒着 N 秒没有回合；手上没事的话，看一眼状态再决定。`
-   - 发送成功 → 记 `lastAwakeTickAt`、`awakeTickSentAt`，下一次 due = 再 `idleSec`（如果模型因此起了一轮，turn-end 会重置）；
+   - 正文只给**事实 + 继续**，不教轮询：`清醒节拍：距上次回合结束 N 秒[；积压 N 条][；目标 g-…]。继续。`
+     capped 后发短提示：`清醒节拍：继续（醒着 N 秒，仍在等你）。`
+   - 发送成功 → 记 `lastAwakeTickAt`、`awakeTickSentAt`；normal 模式 due = 再 `idleSec`；immediate 模式把 due 置空、等这轮 turn-end 再 arm（避免 1s 空转）；
    - 发送失败（会话忙）→ `retrySec` 后重试，不静默放弃；
    - 超过 `maxPerHour`（软上限）→ **降频**到 `cappedSec` 检查一次；cap 后前 `cappedShortWindowSec` 分钟内最多发 `cappedShortMax` 条短提示，之后安静等滚动窗口释放，不刷屏；`awakeTickCappedAt` 留痕 + log warn。
 5. 抑制条件（不发自检）：`phase !== 'awake'`（sleeping/paused）、`lock`（静音）；
@@ -436,7 +436,7 @@ node tools/lab.mjs down --run "$RUN"
    那是 focus 的裁决结果，不是 time 的静默；`signals.stats().blocked` / `focus_backlog` 里能看到去向。
 6. 状态切换会重新 `armAwakeTick()`：醒来、`resume`（且已醒）、`unmute`、重启后若睡着已恢复。
    `pause`/`mute`/入睡会清掉 due。
-7. 可观测异常：醒着但 `now - lastTurnEndAt > idleSec * 1.5` 时 `heartbeat.state='overdue'`，
+7. 可观测异常：醒着但 `now - lastTurnEndAt > overdueSec`（normal=`idleSec*1.5`，immediate 默认 10s）时 `heartbeat.state='overdue'`，
    `time_status` 显示 `⚠ 心跳：…`，log warn 每 10 分钟最多一次。
 8. `turn-start`（bridge 在 `turn/start` 也 emit，tags:['turn-start']）只用于记录 `lastTurnStartAt`/
    `lastModelCallAt`：不进 prompt、不进历史、不改变缓存。
@@ -446,8 +446,14 @@ node tools/lab.mjs down --run "$RUN"
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | **true** | 关掉则完全回到旧行为（长跑/成本敏感场景可关） |
-| `idleSec` | **120** | turn-end 后多久没有新回合就自检；下限 15 |
-| `maxPerHour` | **60** | 每小时自检上限（软上限，超限停发并可观测） |
+| `idleSec` | **120** | normal 模式 turn-end 后多久没有新回合就自检；下限 15 |
+| `mode` | `normal` | `normal` 或 **`immediate`**：fast-play/游戏模式，turn-end 后 `minIdleSec`(~1s) 自检（§17） |
+| `minIdleSec` | **1** | immediate 模式的 arm 延迟（秒），下限 0.2 |
+| `immediateBackoffAfter` | **20** | immediate 连续 N 次自检都没有外部信号/任务事件 → 退避到 `backoffSec` |
+| `backoffSec` | **30** | 退避后的自检间隔；事件/任务一到达立刻恢复 immediate（`awake-recover`） |
+| `overdueSec` | normal=`idleSec*1.5` / immediate=**10** | 超过多久算 heartbeat overdue（immediate 不能用 1.5s 判） |
+| `timer` | **true**（immediate） | immediate 用独立 timer 保证 ~1s 精度；测试可 `false` 走 `api.tick()` |
+| `maxPerHour` | normal=**60** / immediate=**3600** | 每小时自检上限（软上限；immediate 默认等于不限） |
 | `retrySec` | **30** | 自检投递失败后的重试间隔 |
 | `cappedSec` | **600** | 命中 `maxPerHour` 后的降频检查间隔（10 分钟一次） |
 | `cappedShortWindowSec` | **1800** | cap 后允许发短提示的窗口（30 分钟） |
@@ -461,10 +467,13 @@ node tools/lab.mjs down --run "$RUN"
 ```json
 "heartbeat": {
   "enabled": true, "state": "awake|overdue|sleeping|paused|muted|suppressed",
-  "thresholdSec": 120, "idleSec": 37,
+  "mode": "normal|immediate", "thresholdSec": 120, "idleSec": 37,
+  "armDelaySec": 1, "minIdleSec": 1, "streak": 0, "backoff": false, "backoffSec": 30,
+  "lastActivityAt": 1793…,
   "lastTurnEndAt": 1793…, "lastTurnStartAt": 1793…, "lastModelCallAt": 1793…,
   "nextTickAt": 1793…, "lastAwakeTickAt": null,
-  "ticksLastHour": 0, "maxPerHour": 60, "capped": false,
+  "ticksLastHour": 0, "maxPerHour": 3600, "capped": false,
+  "decisionCycleSec": 2, "reactionLatencySec": 1, "reactionPendingAt": null,
   "pendingBacklog": 0, "turnEnds": 12
 }
 ```
@@ -675,3 +684,62 @@ node tools/lab.mjs down --run "$RUN"
 - 睡眠中 alarm 不叫醒、`priority:'alarm'`、醒来简报第一条且积压排序最前；
 - mute 默认连 alarm 也拦并记录；显式 `emergencyQuota` 才放行；
 - 暂停时保留 goal/focus 并输出"继续/离开"选项。
+
+---
+
+## 17. fast-play：immediate 清醒节拍（2026-11-06，用户最高优先级"慢"）
+
+> 用户要求："**玩游戏不该刻意等待；无等待，除非 agent 自愿等待**；操作结束或被异常打断后要立刻反应。"
+> 旧实现的问题：`awakeIdleSec` 下限 15s、`awakeMaxPerHour=60`、且只在 15s 一次的 tick 里检查 due
+> → 最快反应也是 15–135s，做不到"操作结束 ≤10s 决策"。
+
+### 17.1 设计
+
+- **模式**：`config.awakeTick.mode: 'normal' | 'immediate'`（默认 normal，不影响现有部署）。
+- **immediate 触发**：每个 `turn-end` 后 `armAwakeTick()` 的延迟 = `minIdleSec`（默认 **1s**，下限 0.2s）；
+  独立 `setTimeout`（`awakeTimer`，unref + dispose 清理）负责 ~1s 精度，不再依赖 15s tick 循环。
+- **一次自检=一次机会，不空转**：immediate 下发完 `awake-tick` 后把 `awakeTickDueAt=null`，等这轮
+  turn-start→turn-end 再 arm；若 bridge 没把 notice 变成回合，则没有后续自检（`heartbeat.state='overdue'` 可见）。
+- **安全退避**：连续 `immediateBackoffAfter`（默认 **20**）次 immediate 自检，期间没有任何
+  "外部信号 / 任务事件" → `awakeTick.backoff=true`，之后按 `backoffSec`（默认 **30s**）节拍；
+  记 `awake-backoff` 事件 + `warn` log，`heartbeat.backoff/streak/backoffSec` 可查。
+- **恢复 immediate**：以下任一发生即 `noteExternalActivity()` → streak 清零、backoff=false、记 `awake-recover`：
+  - gate 收到非 time 来源的信号（mc/qq/delivery 等，不论 accept 还是进积压）；
+  - goal 续推发出（`goal-resume`）；
+  - 安排到点触发（`schedule:<id>`）；
+  - 控制后门命令（`inbox:<cmd>`）。
+- **上限**：immediate 默认 `maxPerHour=3600`（≈不限）；normal 仍是 60。命中时保留原 capped 降频逻辑。
+- **overdue 口径**：immediate 下 `overdueSec` 默认 10s（不能用 `idleSec*1.5=1.5s` 判，会一直误报）。
+- **文案**：去掉"看 status 决定下一步"的教学；长文本 `清醒节拍：距上次回合结束 N 秒[；积压 N 条][；目标 g-…]。继续。`
+  短提示 `清醒节拍：继续（醒着 N 秒，仍在等你）。`
+- **反应时延可观测**：
+  - `heartbeat.decisionCycleSec` = 最近一次 `turn-end → 下一 turn/start` 的秒数（每次 turn-end 后第一次 start 记一次，写 `decision-cycle` 事件）；
+  - `heartbeat.reactionLatencySec` = 外部信号/task 到达（gate 层）→ 下一 turn/start 的秒数（写 `reaction-latency` 事件）；
+  - `heartbeat.reactionPendingAt` 表示"有信号到达但还没起回合"。
+  - `time-events.jsonl` 新增：`awake-tick`（含 mode/streak/backoff/decisionCycleSec）、`awake-backoff`、
+    `awake-recover`、`decision-cycle`、`reaction-latency`。
+
+### 17.2 preset（mc-lab 配，time 侧不改 preset）
+
+`icl-e2-fast` / `icl-e2-local` 用：
+```yaml
+pluginConfig:
+  time:
+    goalResumeMinGapSec: 0
+    awakeTick: { enabled: true, mode: immediate, minIdleSec: 1, immediateBackoffAfter: 20, backoffSec: 30, timer: true }
+```
+（`timer` 生产默认 true；测试/loop 脚本可 `timer:false` 用 `api.tick()` 得确定性。）
+
+### 17.3 测试
+
+`time-lock.test.mjs`：
+- immediate turn-end 后 ~1s 触发（500ms 不触发、1.2s 触发）、`maxPerHour` 默认 3600、文案含"继续"且不含 `time_status`/`决定下一步`；
+- 连续 20 次无事件 → `heartbeat.backoff=true`、due 推到 ~30s、退避期 1s 不自检；外部信号到达 → backoff=false、恢复 ~1s；
+- `decisionCycleSec`（turn-end→下一 start）与 `reactionLatencySec`（信号→下一 start）数值正确，且 `time-events` 有 `decision-cycle`/`reaction-latency`。
+
+### 17.4 风险与边界
+
+- immediate 会显著提高模型调用频率（本地模型可接受；云端注意成本）——退避 + 可 `enabled:false` 兜底。
+- `awake-tick` 仍可能被 focus gate 拦成 focus backlog（focus 语义，不是 time 静默）；`duringFocus:false` 可关专注期自检。
+- bridge 若没把 notice 变成回合，immediate 不会自我重试（等下一次真实 turn-end）；`heartbeat.overdue` 会暴露。
+- 计时精度依赖进程 event loop；timer `unref` 不影响宿主退出。
