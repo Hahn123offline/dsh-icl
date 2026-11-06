@@ -233,7 +233,14 @@ test('editor：写保护 ICL 自己的状态文件（记忆/日程/focus/原文�
   await host.enable('editor')
   const write = host.services.tools.list().find((d) => d.name === 'write_file')
   const read = host.services.tools.list().find((d) => d.name === 'read_file')
-  for (const rel of ['state/memory.db', 'time.json', 'focus.json', 'session-events.jsonl']) {
+  // 注册表逐类覆盖：记忆/time/eager/focus/raw/mc/qq/bili/loop/album
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('memory.db'))
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('time-events.jsonl'))
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('eager-recall.jsonl'))
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('qq-ledger.db'))
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('bili/bili_credential.json'))
+  assert.ok(editor.PROTECTED_STATE_FILES.includes('album/media.db'))
+  for (const rel of editor.PROTECTED_STATE_FILES) {
     const out = await write.execute({ path: rel, text: '毁掉' })
     assert.match(out.text, /状态文件/, `${rel} 应被拒绝，实际：${out.text}`)
   }

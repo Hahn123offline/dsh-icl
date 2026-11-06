@@ -69,10 +69,10 @@
 | 工具 | 作用 | 关键返回 |
 |---|---|---|
 | `album_import` | 从本地路径导入 1–32 个图片/视频（可带 library/source/caption/tags/private） | 每件 `#id path deduped:true/false`；失败逐条给原因；**不自动清理** |
-| `album_list` | 按库/类型/标签/来源/时间窗列（默认 20 条，倒序）；默认不含隐私项 | 一行一件：`#id 时间 类型 尺寸 大小 标签 描述 — 路径（隐私相册）`；空库说"还没导入"；`includePrivate:true` 才列隐私 |
+| `album_list` | 按库/类型/标签/来源/时间窗列（默认 20 条，倒序）；默认不含隐私项 | 一行一件：`#id 时间 类型 尺寸 大小 标签 描述 — 路径（隐私相册）`；空库说"还没导入"；隐私需 `includePrivate:true + allowPrivate:true`（与 search/show 同口径） |
 | `album_search` | 语义检索：`query` 文本（CLIP 中文图文空间）/ `image` 本地图片（图-图）+ tags/时间/隐私过滤；嵌入不可用时降级为描述/标签/文件名 | topK + 相似度 + 路径；**没有就说没有**，不凑数；隐私需 `includePrivate:true + allowPrivate:true` |
 | `album_collage` | 选 N 张图（id 列表或筛选条件）拼宫格 PNG（复用 storyboard 思路：cols × rows、cell 尺寸、留白）；默认不含隐私项 | `imagePath` + 文本清单（第 i 格=#id）；python/Pillow 缺失时给可操作错误 |
-| `album_show` | 单件详情（路径、尺寸、标签、来源、发送记录）；隐私项需 `allowPrivate:true` | 一行详情 + `imagePath`；隐私项未授权时只给拒绝理由、不给路径 |
+| `album_show` | 单件详情（路径、尺寸、标签、来源、发送记录）；隐私项需 `includePrivate:true + allowPrivate:true` | 一行详情 + `imagePath`；隐私项未授权时只给拒绝理由、不给路径 |
 | `album_prune` | **手动**清理（默认 dryRun=true；不自动跑）；隐私项默认跳过 | 计划/实际删除清单、释放字节数；`allowPrivate:true` 才可能清隐私 |
 | `album_status` | 相册体检：件数/总字节/库/来源/告警阈值/最近导入/向量覆盖 | 一段可读摘要；超 `warnBytes` 只提示"不会自动删"；报"向量：n/m 张图片（512d）" |
 | `album_reindex` | 批量为图片建/刷新 CLIP 512d 向量（CPU）；嵌入缺失/延迟导入后用 | 已建/失败数 + 覆盖率；默认跳过隐私，`allowPrivate:true` 才碰 |
@@ -112,10 +112,10 @@
 
 ## 5. 发送（本地文件 → 通道）
 
-- **本地文件是事实源**：`album.list`/`album_show` 给绝对路径（或 media 根相对路径 + 根目录），"能直接发送"指文件在本地真实存在、可被通道/用户取用。
-- **QQ 出站**：目前 phase1 只支持私聊文本（三把钥匙+审批+限速+审计，见 `docs/QQ.md`）；图片/文件出站需要新的媒体通道（同一套审批与限额），**本轮只留接口**：`album` 服务暴露 `exportFile(id)` → 返回 `{path, bytes, mime}`，由 qq 侧新增的媒体发送器消费；发送成功后回写 `sent_at`。
+- **本地文件是事实源**：`album.list`/`album_show` 给绝对路径（或 media 根相对路径 + 根目录），指文件在本地真实存在、可被通道/用户取用；**当前没有可用的发送通道**（见下）。
+- **QQ 出站（未交付）**：phase1 只支持私聊文本（三把钥匙+审批+限速+审计，见 `docs/QQ.md`）；图片/文件出站需要新的媒体通道（同一套审批与限额）。`album.exportFile(id)` 目前只是**设计接口，尚未实现/未暴露**；`album_send` 工具不存在。等 QQ 媒体通道+审批就绪后再交付，本文不再把"能直接发送"当已承诺能力。
 - **DSH 附件**：拼图/单图的 `imagePath` 已按 bili 的既有约定返回；接 DSH attachment 后即可"直接看到图"（届时 qq 图片通道与 DSH attachment 共用同一 attachment 上传器）。
-- 隐私与权限：任何"发出去"必须走用户/owner 批准 + 可见审计（谁、何时、哪件、多大）；`album_send` 不默认存在，等通道+审批就绪再加。
+- 隐私与权限：任何"发出去"必须走用户/owner 批准 + 可见审计（谁、何时、哪件、多大）；当前 `exportFile`/`album_send` 均未交付。
 
 ## 6. 与其它模块的接口
 
@@ -130,7 +130,7 @@
 ## 7. 隐私 / 安全
 
 - **隐私分区（用户 2026-11-06 拍板）**：`private` 标记 + 物理目录 `private/<library>/<yyyy-mm>/`；
-  默认列表/搜索/拼图**完全不展示**隐私项；`album_show` 与任何发送路径必须显式 `allowPrivate:true` 才给文件路径；
+  默认列表/搜索/拼图**完全不展示**隐私项；`album_list/search/show/collage` 统一要求 `includePrivate:true + allowPrivate:true` 双确认才给文件路径；
   工具描述与 sim 都写了"隐私相册里的东西不能随便发/展示，要发先有明确允许"。
 - 媒体根之外不写；导入只读显式给出的路径（不扫描全盘、不自动抓取）。
 - `origin` 只存"定位信息"（会话 id、消息 id、发送者 id、URL），不存消息正文/凭据。
@@ -181,7 +181,7 @@ system 1 append/0 replace、2296 字符/5764 字节（与上轮 2300 差 4 字�
 
 - **保留策略**：不自动删除；单文件默认 512 MiB；总量 >10 GiB 只软告警（`album_status` 提示），不做自动清理；清理只走手动 `album_prune`（默认 dryRun）。
 - **归档手动**：QQ 入站媒体只落 inbox 供当次使用，不自动进 album；要留就显式 `album_import`（与 qq 侧对齐）。
-- **隐私分区**：`private` 标记 + `private/` 物理子目录；默认列表/搜索/拼图不展示；`album_show`/发送需 `allowPrivate:true`；工具描述与 sim 写明"不能乱发"。
+- **隐私分区**：`private` 标记 + `private/` 物理子目录；默认列表/搜索/拼图不展示；`album_list/search/show/collage` 统一需 `includePrivate:true + allowPrivate:true`；发送未交付；工具描述与 sim 写明"不能乱发"。
 - **路径**：album root 跟随 `stateDir` 推导（当前 `<stateDir>/media`），整体迁移由 paths 子任务统一处理，插件内不硬编码。
 - 回归：`packages/core/test/album.test.mjs` 增加 3 条（隐私门槛/不自动清理/手清跳过隐私）；`npm test` 全绿。
 - **图片记忆（二阶段，2026-11-06）**：CLIP 512d CPU（0 VRAM）入库建向量；`album_search` 支持文字/图-图语义检索，隐私默认不返回；嵌入缺失降级标签并说明；`album_reindex` 批处理；`album_caption` 手动调本地 vision（不自动跑）。

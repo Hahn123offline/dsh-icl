@@ -4,6 +4,23 @@ import path from 'node:path'
 
 export const name = 'editor'
 
+/**
+ * 统一注册表：stateDir 下所有"谁写谁负责"的运行时状态文件。editor 只能读，不能写。
+ * 新增插件状态文件时在这里登记（测试会逐类检查），避免再出现漏项。
+ * 相对路径统一用 "/"，匹配时也归一化为 "/"。
+ */
+export const PROTECTED_STATE_FILES = Object.freeze([
+  'memory.db', 'state/memory.db',
+  'time.json', 'time.inbox.jsonl', 'time.outbox.jsonl', 'time-events.jsonl',
+  'eager-recall.jsonl',
+  'focus.json', 'rhythm.json',
+  'session-events.jsonl', 'mc-link.jsonl',
+  'qq-ledger.db', 'state/qq-ledger.db',
+  'bili/bili_credential.json', 'state/bili_credential.json',
+  'loop.inbox.jsonl', 'loop.outbox.jsonl', 'loop.state.json', 'state/loop.inbox.jsonl', 'state/loop.outbox.jsonl',
+  'album/media.db',
+])
+
 export function apply(ctx) {
   const root = path.resolve(String(ctx.config.root ?? process.cwd()))
   const maxBytes = Math.max(1024, Number(ctx.config.maxBytes ?? 256 * 1024))
@@ -18,13 +35,13 @@ export function apply(ctx) {
    * 读没问题（她本来就该能看见"我有多少记忆"），但写会直接毁掉记忆库/日程/focus/原文层，
    * 所以 write_file 对这几个文件明确拒绝，并告诉她这是什么——不是报 EACCES 让她猜。
    */
-  const PROTECTED = [
-    'memory.db', 'state/memory.db',
-    'time.json', 'focus.json', 'rhythm.json',
-    'session-events.jsonl', 'mc-link.jsonl',
-    'time.inbox.jsonl', 'time.outbox.jsonl',
-  ].map((rel) => path.resolve(root, rel))
-  const protectedHit = (full) => (PROTECTED.includes(full) ? path.basename(full) : null)
+  const PROTECTED = new Set(PROTECTED_STATE_FILES.map((rel) => path.resolve(root, rel)))
+  const relativeKey = (full) => path.relative(root, full).split(path.sep).join('/')
+  const protectedHit = (full) => {
+    if (PROTECTED.has(full)) return path.basename(full)
+    const rel = relativeKey(full)
+    return PROTECTED_STATE_FILES.includes(rel) ? path.basename(full) : null
+  }
 
   ctx.tools.register({
     name: 'read_file',
