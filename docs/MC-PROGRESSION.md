@@ -224,3 +224,12 @@
   - E6 `status.playable {ok,blockers}`（join 可玩布尔）；E7 `status.spawnLog`（spawn 位置/维度/来源/安全）。
 - **待别人**：mc-link 接 `mcb_stop`、gate 对 pierce 放行/记录、展示 reflex/playable/spawnLog；time `fd81f56` 的 pausedMode/alarm 积压与 body 事件对齐（只读，不改协议）。
 - **adapter 待补**：emergency 目前覆盖“脱离岩浆/火、吃、上浮、近怪逃/后退、回安全点”；**“垫脚”(pillar-up) 尚无专门动作**，建议作为 adapter 下一小项（需真服验证）。
+
+### 10.1 E2 集成验收 body 侧断言清单（2026-11-06，mc-link `ed03b84` / time `d3e1b1f` 对齐）
+
+- **alarm 三层**：`events` 中 `safety_stop/death/spawn_unsafe/kicked/reconnect_exhausted/quarantine/idle_disconnect/emergency/reflex` 与危险 `watchdog`（severity=danger）都应有 顶层 `priority:"alarm"`+`pierce:true`、`data.priority/pierce`、`data.meta.priority/pierce`。
+- **账本口径**：`status.safety.alarms{delivered,suppressed,redelivered,pending,lastAt}`；`suppressed>0` = body 15s 去重/待补投（≠漏收）；补投事件 `data.redelivered:true`。
+- **暂停**：`mcb_stop` → `paused=true`、`pausedReason="user-stop"`（恒规范值，原始原因在 `requestedReason`/`safety.requestedReason`）；回执 `task.note` 与 `body.note` 分开；`playable.blockers` 含 `paused:user-stop`；暂停中再次 stop 幂等、查询/look 放行、写动作 409；resume 后 `playable.ok=true` 且新任务可 done。
+- **reflex**：`status.safety.reflex{enabled,active,count,maxPerMinute,maxDurationMs,lastAt,lastReason,lastAction,lastDurationMs,lastTimedOut,lastEventSeq}`；暂停低血时 `lastReflex` 非空、`events` 有 `reflex`；限频时 `reflex_suppressed`；反射不自动 resume。
+- **E6/E7**：`status.playable{ok,blockers}`；`status.spawnLog` 最近条目含 position/dimension/source/safe。
+- **真服截图/证据**：`.state/lab/mc-body-soak/pause-smoke/`（mcb_stop/告警三层/resume 后任务 done）。
