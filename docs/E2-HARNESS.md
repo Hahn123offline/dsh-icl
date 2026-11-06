@@ -363,3 +363,5 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 - **world.json 可选**：当前 L1 断言基于录制的 ledger/events（结构结果已在 `task.result.verify`），不重放方块/物理，因此这两个示例**不需要** `world.json`；若后续要验证"世界实际结构（blockAt）"再补，格式见 `MC-INSTRUMENTATION §3.8`。
 - **单测**：`packages/core/test/mc-replay.test.mjs` 覆盖两个 PASS + terminal 不符、缺必须事件、缺 result 字段、eventAssertions min 不足、forbidden 命中、缺文件报错、world 可选、路径/where 匹配语义。
 - **限制**：`forbidden.when` 表达式暂不解释（显式 FAIL，不静默忽略）；`tool-replay`（L2/tool-calls）未实现，待 L2。
+
+> L2 分段 soak 实施设计见 [L2-SOAK-PLAN.md](L2-SOAK-PLAN.md)（3×30min、段前 replay dry-run、段内/段间 gate、硬 stop、报告模板；只设计，未跑 MC）。
