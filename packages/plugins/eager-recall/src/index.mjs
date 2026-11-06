@@ -32,28 +32,57 @@ export function apply(ctx) {
     try { embedded = Boolean(memory.stats?.()?.embedded) } catch { embedded = false }
     return { threshold: embedded ? minScore : Math.min(minScore, minScoreNoEmbed), embedded }
   }
+  // 用户批准（2026-11-06，首次 E2 实测）：同一条记忆短时间内别反复注入（实测 4 条 note 被注入 7–11 次）。
+  const cooldownMs = Math.max(0, Number(ctx.config.cooldownMs ?? 180_000))
+  const recentInjected = new Map() // item.id -> last injected at
+  /** 按句子边界截断（不要把"…别在"这种半句塞给模型）。 */
+  function clipLine(value, max) {
+    const body = String(value ?? '').replace(/\s+/g, ' ').trim()
+    if (body.length <= max) return body
+    const cut = body.slice(0, max)
+    const boundary = Math.max(
+      cut.lastIndexOf('。'), cut.lastIndexOf('；'), cut.lastIndexOf('，'), cut.lastIndexOf('！'), cut.lastIndexOf('？'),
+      cut.lastIndexOf('.'), cut.lastIndexOf(' '),
+    )
+    const head = boundary > Math.floor(max * 0.5) ? cut.slice(0, boundary + 1).trim() : cut.slice(0, max - 1).trimEnd()
+    return `${head}…`
+  }
 
   ctx.prompt.onTurn(async ({ message }) => {
-    if (!enabled) { recordCount({ enabled: false, queryChars: 0, hits: 0, injected: 0, chars: 0 }); return null }
+    if (!enabled) { recordCount({ enabled: false, queryChars: 0, hits: 0, injected: 0, chars: 0, suppressed: 0 }); return null }
     const query = String(message ?? '').trim()
     if (!query) return null
     const { threshold, embedded } = effectiveThreshold()
     const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore: threshold })
-    const picked = hits
+    const eligible = hits
       .filter((h) => Number(h.score) >= threshold)
       .filter((h) => h.item.kind !== 'cursor')
+    const nowMs = ctx.now()
+    const picked = eligible
+      .filter((h) => {
+        const last = recentInjected.get(h.item.id)
+        return last == null || nowMs - last >= cooldownMs
+      })
       .slice(0, maxItems)
-    const base = { queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, threshold, embedded }
+    const suppressed = eligible.length - picked.length
+    const base = { queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, suppressed, threshold, embedded }
     if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
-      return `· [${tag}] ${String(h.item.text).slice(0, 80)}`
+      return `· [${tag}] ${clipLine(h.item.text, 80)}`
     })
     let text = `你可能记得（检索结果，仅供参考）：\n${lines.join('\n')}`
     if (text.length > maxChars) text = text.slice(0, maxChars - 1).trimEnd() + '…'
+    for (const h of picked) {
+      recentInjected.set(h.item.id, nowMs)
+      if (recentInjected.size > 200) {
+        const oldest = [...recentInjected.entries()].sort((a, b) => a[1] - b[1])[0]
+        if (oldest) recentInjected.delete(oldest[0])
+      }
+    }
     recordCount({ ...base, chars: text.length })
     return text
   })
 
-  ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars })
+  ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars, cooldownMs })
 }

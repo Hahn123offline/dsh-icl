@@ -228,7 +228,7 @@ mc-lab 的 `tools/mc-quality.mjs` 现状快照字段（night-1 即由它产出�
 - 教学有效性本轮**不可判**：需要 E2 增加一个显式场景（例如"你还记得昨晚为什么死那么多次吗/上次搭的小屋在哪"），再记录 recall 调用；KPI 改成条件率（"过去指代消息中 recall 调用率"），否则任务驱动型长测永远是 0。
 - 顺带：eager 注入的 4 条 note 有**每条约 7–11 次重复**（同会话未消化前反复注入），且单条在 80 字处**截断到半句**（如"…别在"）。建议（P2）：eager 对同一条记忆做会话内冷却/去重；截断按句读或加"…"。
 
-### 6.4 `degraded:1` 归因：**分段被误标成降级**，不是预算也不是上游错误
+### 6.4 `degraded:1` 归因：**分段被误标成降级**，不是预算也不是上游错误（已修，见 §6.7）
 
 - `dream-result meta.degraded=1` 来源是 **wash**：jobWash 返回 `degraded = omittedLines>0 || parts>1`；本轮 wash **parts=5、omittedLines=0** → degraded=true。
 - events：`shards:3, failedShards:0, omittedShards:0, payloadChars:188876` → 没有失败/没有截断。
@@ -248,4 +248,17 @@ mc-lab 的 `tools/mc-quality.mjs` 现状快照字段（night-1 即由它产出�
 | **需小修（P1）** | ① wash 分段不得标 degraded（改文案/指标）；② cleanup 增加 near-duplicate block 合并（本轮 1 对重复）。 |
 | **可选（P2）** | evidence 去噪（重复连接状态行）；eager 重复/截断；time 简报截断；recall KPI 场景化。 |
 | **不需要** | 分块大小/分段上限/parts 机制本轮未被触发问题（body 97–228，无超长；day 5 段行号连续）；索引通路正常（4/4）。 |
+
+### 6.7 第二轮小修（已实施，2026-11-06）
+
+| # | 项 | 改动 | 测试 |
+|---|---|---|---|
+| P1-1 | wash degraded 语义 | `degraded` 只在 `omittedLines>0`（真截断）时为 true；分段单独返回 `segmented:parts`；`dream-result` 文案把"分片降级"改成"wash 分 N 段"，`meta.segmented` 单独计数（degraded 不再被正常分段触发） | `memory-blocks` day 分段用例断言 `degraded=false / segmented=parts` 且回执含"分 N 段"、不含"分片降级" |
+| P1-2 | cleanup 近似重复合并 | 确定性后处理 `mergeNearDuplicateBlocks`：同一天/时间重叠 + 规范化 body 包含（≥20 字）或 bigram Jaccard≥0.8 → 保留正文更全者、evidence 并集、`mergedFrom` 记录被吞 key、被吞块标 `superseded`；cleanup 返回值新增 `nearDuplicates` | `memory-blocks`：正文包含两块 → 恰好吞 1 块、evidence 并集、mergedFrom 对、无关块不合并 |
+| P2-3 | evidence 去噪 | events 写块前 `dedupeEvidence`：重复"MC 身体：已连接"类状态行只留最近 1 条（死/事件行保留） | `memory-blocks`：4 行 evidence 中 3 条连接行 → 只留 1 条 + 死亡行 |
+| P2-4 | eager 重复/截断 | 加会话内冷却 `cooldownMs`（默认 180s，同 note 不重复注入）；行级截断改为句读边界 + 省略号；计数新增 `suppressed` | `memory-blocks`：同消息二次调用返回空、计数器有 suppressed、单行 ≤82 字且以句读/… 结尾 |
+| P2-5 | 醒来简报截断 | time `clipBriefText` 按句子/分隔符边界截断（80/120 字）再补"…"；不再把 "cleanup" 切成 "cle）" | `time-lock`：长 dream 回执 → 简报含"…"且不含 `cle）` |
+| P2-5b | 报警文本口径（仅报告，未改） | E2 简报样例 `掉血：20 → 17（血18/20…）`：from/to 来自掉落事件，括号内 `血18/20` 是**格式化时的实时状态**（mc-link events 文本构造），合并/限流后会出现不同步；建议 mc-link 侧改成"事件时刻状态"或去掉实时状态，避免被误读 | 证据：E2 `e2-20261106-smoke` time.json lastSleepBrief.alarms.samples |
+
+> 结论更新：**首次成块链路达标**；第二轮只做上述小修（P1 两项 + P2 三项），分块大小/parts/索引/三态机制均保持。回归：受影响的 7 个测试文件 108/108；core（除已知 hang 的 mc-link.test）522/522。
 
