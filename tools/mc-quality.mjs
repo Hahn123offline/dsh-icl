@@ -124,6 +124,11 @@ function snapshot() {
   if (indexRow && indexRow.skipped === 'no-embed') slots.embedded = false
   else if (indexRow && Number(indexRow.indexed ?? 0) + Number(indexRow.missing ?? 0) > 0) slots.embedded = true
   else if (mem.vectors != null) slots.embedded = Number(mem.vectors) > 0
+  // 三态之外还要能看见"缺行"：ok:true 但没产出、也没 skip/fail 的 job 不会落 dream-run 行
+  // （dream 现实现只对成功产生块的 job / 失败 / 跳过记账）。E2 用 missing 单列，不误判为失败。
+  const expectedDreamJobs = ['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
+  dream.expectedJobs = expectedDreamJobs
+  dream.missing = expectedDreamJobs.filter((job) => !dream.jobs[job])
   const dayLog = rawRows.filter((row) => String(row.kind) === 'log')
   // events 侧 recall / remember / eager
   const events = readEvents()
@@ -171,6 +176,8 @@ function snapshot() {
   if (blockRows.length >= 10 && percentile(lengths, 50) < threshold.blockCharsP50) anomalies.push({ type: 'memory-blocks-too-small', value: percentile(lengths, 50), threshold: threshold.blockCharsP50 })
   if (blockRows.length >= 10 && percentile(lengths, 95) > threshold.blockCharsP95) anomalies.push({ type: 'memory-block-too-large', value: percentile(lengths, 95), threshold: threshold.blockCharsP95 })
   if (latencies.length && percentile(latencies, 95) > threshold.latencyP95Ms) anomalies.push({ type: 'event-to-memory-latency', value: percentile(latencies, 95), threshold: threshold.latencyP95Ms })
+  if (dream.runs + dream.failures > 0 && dream.missing.length) anomalies.push({ type: 'dream-job-missing', value: dream.missing, threshold: 0 })
+  if (dream.failures > 0) anomalies.push({ type: 'dream-job-failed', value: dream.failures, threshold: 0 })
   const bodyRows = fs.existsSync(bodyFile) ? readJsonl(bodyFile) : []
   const dupSeq = (() => {
     const seen = new Set()
@@ -195,7 +202,7 @@ function snapshot() {
       rawMaterial: { items: rawRows.length, chars: rawRows.reduce((sum, row) => sum + String(row.text ?? '').length, 0) },
       pendingNotes: noteRows.length,
     },
-    dream: { runs: dream.runs, jobs: dream.jobs, failures: dream.failures, days: dream.days, dayLogRows: dayLog.length, failRows: dream.failRows, skipRows: dream.skipRows, memoRecycle },
+    dream: { runs: dream.runs, jobs: dream.jobs, failures: dream.failures, days: dream.days, dayLogRows: dayLog.length, failRows: dream.failRows, skipRows: dream.skipRows, memoRecycle, expectedJobs: dream.expectedJobs, missing: dream.missing },
     slots,
     recall: { calls: recallCalls.length, empty: emptyRecall, emptyRate: recallEmptyRate, avgResultChars: recallCalls.length ? Math.round(recallChars / recallCalls.length) : null, noiseHits, remember: rememberCalls.length, forget: forgetCalls.length, samples: recallSamples },
     eager: { injections: eagerEvents.length, chars: eagerChars },
@@ -212,6 +219,7 @@ function renderReport(snap) {
   lines.push(`| 原料 day/log（不计入块大小） | ${snap.mem.rawMaterial.items} 条 / ${snap.mem.rawMaterial.chars} 字符 |`)
   lines.push(`| dream job 三态 ran/skipped/failed | ${JSON.stringify(snap.dream.jobs)} |`)
   lines.push(`| dream failures / fail 行 / skip 行 | ${snap.dream.failures} / ${snap.dream.failRows.length} / ${snap.dream.skipRows.length} |`)
+  lines.push(`| dream 缺行（既无 ran 也无 skip/fail） | ${JSON.stringify(snap.dream.missing ?? [])} |`)
   lines.push(`| 备忘回收 consume（不计块） | written=${snap.dream.memoRecycle.written} archived=${snap.dream.memoRecycle.archived} |`)
   lines.push(`| 槽健康 slots.unmatched / embedded | ${JSON.stringify(snap.slots.unmatched)} / ${snap.slots.embedded ?? 'n/a'}（${snap.slots.source}） |`)
   lines.push(`| recall 调用/空结果率 | ${snap.recall.calls} / ${snap.recall.emptyRate ?? 'n/a'} |`)
