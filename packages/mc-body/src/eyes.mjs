@@ -25,7 +25,7 @@ export function resolveViewerRoot(explicit = null) {
   const candidates = [
     explicit,
     process.env.MC_EYES_VIEWER_ROOT,
-    'C:/DSH/icl/.state/lab/mc-eyes-poc/viewer',
+    path.resolve(import.meta.dirname, '..', '..', '..', '.state', 'lab', 'mc-eyes-poc', 'viewer'),
   ].filter(Boolean)
   for (const candidate of candidates) {
     const root = path.resolve(String(candidate))
