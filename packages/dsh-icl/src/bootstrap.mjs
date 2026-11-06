@@ -22,6 +22,8 @@ export function configFor(id, cfg) {
     case 'loop-probe': return { inboxFile: path.join(cfg.stateDir, 'loop.inbox.jsonl'), outboxFile: path.join(cfg.stateDir, 'loop.outbox.jsonl') }
     case 'mc-link': return { baseUrl: cfg.mcBaseUrl, logFile: path.join(cfg.stateDir, 'mc-link.jsonl') }
     case 'album': return { root: path.join(cfg.stateDir, 'media') }
+    // 用户批准（2026-11-06）：eager-recall 的 hits/injected/chars 计数落盘，供 E2 质量快照读取。
+    case 'eager-recall': return { counterFile: path.join(cfg.stateDir, 'eager-recall.jsonl') }
     case 'bili': return { stateDir: cfg.stateDir }
     case 'video': return { stateDir: cfg.stateDir }
     case 'model-manager': return { providers: cfg.providers ?? [] }

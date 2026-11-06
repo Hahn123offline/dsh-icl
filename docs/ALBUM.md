@@ -41,6 +41,7 @@
 | `caption` | 文字描述（最小可用=用户/文件名；二阶段=视觉模型产出） |
 | `tags` | JSON 数组 |
 | `pinned` | 置顶，保留策略不删 |
+| `private` | 0=普通相册，1=隐私相册（物理在 `private/<library>/…`；默认列表/搜索/拼图不可见，发送/展示需显式允许） |
 | `sent_at` | 最近一次"被发出去"的时间（null=没发过） |
 | `created_at` / `imported_at` | 源时间（若有）/ 入库时间 |
 | `deleted_at` | 软删标记（行保留，文件已删；便于"我删过它"可追溯） |
@@ -48,23 +49,27 @@
 **去重**：`sha256` 唯一。重复导入返回**已有 id** + `deduped:true`，不重复占盘；允许顺带补 caption/tags/origin。
 **写入纪律**：先写 `tmp/`，校验哈希/尺寸后再原子 rename 到 `库/年-月/`；中途失败清 tmp，不留半文件。
 
-**保留策略（默认值，等用户确认上限）**：
-- `maxBytes = 2 GiB`（超出后从"最旧、未置顶"开始删，删前如已 pin 则跳过）
-- `retentionDays = 180`（`album_prune` 显式清；导入时只做体积上限，不静默按天删）
-- 单文件 `maxFileBytes = 200 MiB`
-- 被删除均为"软删 + 删文件"：DB 行留 `deleted_at`，`status` 能报"已清理 N 件"。
+**保留策略（用户 2026-11-06 拍板）**：
+- **不自动删除**：`retentionDays = 0`（关闭自动过期）；导入不再自动清理；遗留的旧项都保留。
+- 单文件 `maxFileBytes = 512 MiB`（用户日常 QQ 传输没见过 >200MB，512MiB 留余量）
+- 总量只做**软告警**：默认 `warnBytes = 10 GiB`，超过只在 `album_status` 提示（不自动删）
+- `album_prune` 仍是**手动**工具（默认 dryRun 预览；确认后才删）；隐私项默认跳过（`allowPrivate:true` 才可能清到）
+- 删除均为"软删 + 删文件"：DB 行留 `deleted_at`，`status` 能报"已清理 N 件"。
+
+**归档手动（用户拍板）**：QQ 入站媒体只落 inbox 供当次会话使用，**不自动进 album**；要留就显式 `album_import`。
+（与 qq 侧对齐：入站下载/缓冲区管理与相册解耦。）
 
 ## 2. 工具（最小可用，7 个）
 
 | 工具 | 作用 | 关键返回 |
 |---|---|---|
-| `album_import` | 从本地路径导入 1–32 个图片/视频（可带 library/source/caption/tags/origin） | 每件 `#id path deduped:true/false`；失败逐条给原因；超体积上限自动清理最旧未置顶 |
-| `album_list` | 按库/类型/标签/来源/时间窗列（默认 20 条，倒序） | 一行一件：`#id 时间 类型 尺寸 大小 标签 描述 — 路径`；空库说"还没导入" |
-| `album_search` | 按描述/标签/来源/路径做文字检索 | 命中 id/路径；**没有就说没有**（相册 N 件、关键词、建议换说法/放宽标签），不凑数 |
-| `album_collage` | 选 N 张图（id 列表或筛选条件）拼宫格 PNG（复用 storyboard 思路：cols × rows、cell 尺寸、留白） | `imagePath` + 文本清单（第 i 格=#id）；python/Pillow 缺失时给可操作错误 |
-| `album_show` | 单件详情（路径、尺寸、标签、来源、发送记录） | 一行详情 + `imagePath` |
-| `album_prune` | 保留策略（默认 dryRun=true） | 计划/实际删除清单、释放字节数 |
-| `album_status` | 相册体检：件数/总字节/库/来源/上限/最近导入 | 一段可读摘要 |
+| `album_import` | 从本地路径导入 1–32 个图片/视频（可带 library/source/caption/tags/private） | 每件 `#id path deduped:true/false`；失败逐条给原因；**不自动清理** |
+| `album_list` | 按库/类型/标签/来源/时间窗列（默认 20 条，倒序）；默认不含隐私项 | 一行一件：`#id 时间 类型 尺寸 大小 标签 描述 — 路径（隐私相册）`；空库说"还没导入"；`includePrivate:true` 才列隐私 |
+| `album_search` | 按描述/标签/来源/路径做文字检索；默认不含隐私项 | 命中 id/路径；**没有就说没有**（相册 N 件、关键词、建议换说法/放宽标签），不凑数；隐私需 `includePrivate:true + allowPrivate:true` |
+| `album_collage` | 选 N 张图（id 列表或筛选条件）拼宫格 PNG（复用 storyboard 思路：cols × rows、cell 尺寸、留白）；默认不含隐私项 | `imagePath` + 文本清单（第 i 格=#id）；python/Pillow 缺失时给可操作错误 |
+| `album_show` | 单件详情（路径、尺寸、标签、来源、发送记录）；隐私项需 `allowPrivate:true` | 一行详情 + `imagePath`；隐私项未授权时只给拒绝理由、不给路径 |
+| `album_prune` | **手动**清理（默认 dryRun=true；不自动跑）；隐私项默认跳过 | 计划/实际删除清单、释放字节数；`allowPrivate:true` 才可能清隐私 |
+| `album_status` | 相册体检：件数/总字节/库/来源/告警阈值/最近导入 | 一段可读摘要；超 `warnBytes` 只提示"不会自动删" |
 
 **状态行不写进 system/facts**：相册信息只在工具返回里；如果以后要在醒来简报里提"相册新增 N 张"，走 runtime-context facts（与 cache 的 `icl:facts` 同一机制，≤1 条/轮），**绝不进静态段**。
 
@@ -110,9 +115,12 @@
 
 ## 7. 隐私 / 安全
 
+- **隐私分区（用户 2026-11-06 拍板）**：`private` 标记 + 物理目录 `private/<library>/<yyyy-mm>/`；
+  默认列表/搜索/拼图**完全不展示**隐私项；`album_show` 与任何发送路径必须显式 `allowPrivate:true` 才给文件路径；
+  工具描述与 sim 都写了"隐私相册里的东西不能随便发/展示，要发先有明确允许"。
 - 媒体根之外不写；导入只读显式给出的路径（不扫描全盘、不自动抓取）。
 - `origin` 只存"定位信息"（会话 id、消息 id、发送者 id、URL），不存消息正文/凭据。
-- 软删 + 物理删除；`pin` 的东西不会被自动清理。
+- 软删 + 物理删除；`pin` 的东西不会被自动清理；**没有任何自动清理**（除非显式 `album_prune {dryRun:false}`）。
 - 发送必须有审批；日志记录 `album.send`（谁/哪件/多大/结果）。
 - 不进静态 system/facts（cache 红线）；图片只走 attachment/文件路径。
 
@@ -156,4 +164,12 @@ tools **41 / 23,286 字符 / hash `6a5eee138aab`**（旧 34 / 19,760 / `38dfbee1
 system 1 append/0 replace、2296 字符/5764 字节（与上轮 2300 差 4 字符 = run 目录名长度，cwd 在 system 里，非布局漂移）；
 `systemHasDynamicFacts=false`、facts 1 快照/5 轮、sections 含 `icl:facts`、`image/offload=0`。
 指纹演进与复核记录见 `docs/CACHE-NIGHT-2026-11-06.md §9.1/§9.2`（历史不回改）。
+
+## 11. 用户拍板记录（2026-11-06）
+
+- **保留策略**：不自动删除；单文件默认 512 MiB；总量 >10 GiB 只软告警（`album_status` 提示），不做自动清理；清理只走手动 `album_prune`（默认 dryRun）。
+- **归档手动**：QQ 入站媒体只落 inbox 供当次使用，不自动进 album；要留就显式 `album_import`（与 qq 侧对齐）。
+- **隐私分区**：`private` 标记 + `private/` 物理子目录；默认列表/搜索/拼图不展示；`album_show`/发送需 `allowPrivate:true`；工具描述与 sim 写明"不能乱发"。
+- **路径**：album root 跟随 `stateDir` 推导（当前 `<stateDir>/media`），整体迁移由 paths 子任务统一处理，插件内不硬编码。
+- 回归：`packages/core/test/album.test.mjs` 增加 3 条（隐私门槛/不自动清理/手清跳过隐私）；`npm test` 全绿。
 

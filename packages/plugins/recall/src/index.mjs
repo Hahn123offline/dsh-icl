@@ -183,7 +183,11 @@ export function apply(ctx) {
     recall: {
       name: 'recall',
       summary: 'Bring back what you remember about events and things that happened - not for looking up people.',
-      when: ['someone asks about the past', 'you need context that is no longer in the window'],
+      when: [
+        'someone asks about the past / "上次" / "以前" / "那个事"',
+        'you need an old detail that is no longer in the window',
+        'before answering something you are not sure about - check memory instead of guessing',
+      ],
       avoid: ['looking up who a person is - use whois for identity, accounts and closeness'],
       description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. If nothing relevant is found it says so explicitly - with the scope searched and a next step - and never pads with unrelated notes. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
       parameters: {
