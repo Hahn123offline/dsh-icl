@@ -130,3 +130,31 @@ test('focus_enter 显式 activity：标签原样、不出现自动提示', async
   assert.doesNotMatch(out.text, /自动/)
   host.disable('focus')
 })
+
+/* ───────── 重放回执：focus backlog 释放后按 activity 推 QQ delivered ───────── */
+
+test('focus backlog 重放回执：释放后按 activity 推 delivered，不推 attended', () => {
+  const host = createHost({ log: () => {} })
+  const calls = []
+  host.shared.set('qq', {
+    noteDeliveredSeqs(input = {}) {
+      calls.push(input)
+      return { ok: true, accepted: Array.isArray(input.seqs) ? input.seqs.length : 0, skipped: 0 }
+    },
+  })
+  const lease = host.services.focus.enter({ label: 'act:write', title: '写东西', owner: 'focus' })
+  const out = host.services.signals.offer({
+    id: 'focus-replay-1', from: { plugin: 'qq' }, kind: 'content', text: '被 focus 拦下', focus: 'qq:private:1',
+    meta: { qq: { ledger: { activity: 'qq:private:1', seq: 3 } } },
+  })
+  assert.equal(out.accepted, true, 'signals.offer 对 focus 积压仍算已接收（内容进 backlog）')
+  assert.equal(host.services.focus.backlog().reduce((n, row) => n + row.count, 0), 1)
+  assert.equal(calls.length, 0, '进 backlog 时不算 delivered')
+  lease.release()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].activity, 'qq:private:1')
+  assert.deepEqual(calls[0].seqs, [3])
+  assert.equal(calls[0].via, 'focus-backlog')
+  // 摘要确实进入投递管道
+  assert.match(host.services.delivery.drain('session').map((batch) => batch.text).join('\n'), /积压了 1 条/)
+})

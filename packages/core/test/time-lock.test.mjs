@@ -166,14 +166,16 @@ test('time_status 四态一行可读：醒着/睡着/计时暂停/静音/积压'
 
 /* ───────────────────────── 防穿透 ───────────────────────── */
 
-test('ctx.delivery.push 直投也被拦（delivery push-time gate）', async () => {
+test('ctx.delivery.push 直投也被拦（C6 先 focus 空间闸门：睡眠的 focus 租约把它收进 focus backlog）', async () => {
   const { host, api } = await boot()
   api.sleep({ message: '睡', durationMin: 60 })
   const direct = host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: '绕过 signals 的直投' } })
   assert.equal(direct.accepted, false)
   assert.equal(direct.blocked, true)
-  assert.equal(api.status().backlog, 1, '直投也要进静音积压，不能消失')
-  assert.equal(api.queue()[0].text, '绕过 signals 的直投')
+  assert.match(String(direct.reason), /focus/, '直投先被空间闸门（睡眠 focus 租约 sacred）拦下')
+  assert.equal(host.services.focus.backlog().reduce((n, row) => n + row.count, 0), 1, '内容进 focus backlog，不能消失')
+  assert.equal(api.status().backlog, 0, '还没轮到 time 队列（focus 先拦）')
+  assert.equal(host.services.focus.backlog()[0]?.lastText, '绕过 signals 的直投')
   assert.ok(host.services.delivery.blockedCount() >= 1)
   api.wake()
   assert.match(drainText(host), /绕过 signals 的直投/)
@@ -1034,4 +1036,83 @@ test('immediate 指标：decisionCycleSec（turn-end→下一 start）与 reacti
   assert.ok(events.includes('reaction-latency'))
   const tickEvent = readTimeEvents(root).find((event) => event.type === 'awake-tick')
   assert.ok(tickEvent == null || tickEvent.mode === 'immediate')
+})
+
+/* ───────────────────── C1/C6：直投裁决 + 重放回执 ───────────────────── */
+
+function fakeQqService(host) {
+  const calls = []
+  host.shared.set('qq', {
+    noteDeliveredSeqs(input = {}) {
+      calls.push(input)
+      return { ok: true, accepted: Array.isArray(input.seqs) ? input.seqs.length : 0, skipped: 0 }
+    },
+  })
+  return calls
+}
+
+test('C1 直投带 tags/priority：暂停 alarm 穿透；睡眠 alarm 最高优先级积压、醒来可见', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  const delivery = host.services.delivery
+  api.pause('mcb_stop')
+  const pierce = delivery.push({ source: { plugin: 'mc', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', meta: { pierce: true } }, content: { text: '危险：掉血' } })
+  assert.equal(pierce.accepted, true, '暂停中直投 alarm 必须穿透')
+  assert.match(delivery.drain('session').map((batch) => batch.text).join(''), /危险：掉血/)
+  api.resume()
+
+  api.sleep({ message: '睡', durationMin: 5 })
+  drainText(host)
+  const queued = delivery.push({ source: { plugin: 'mc', tags: ['mc', 'safety', 'alarm'], priority: 'alarm', pierce: true }, content: { text: '睡眠危险' } })
+  assert.equal(queued.blocked, true)
+  assert.equal(api.queue()[0]?.priority, 'alarm', '睡眠期直投 alarm 进最高优先级积压')
+  assert.equal(delivery.drain('session').length, 0, '睡眠中不叫醒')
+  api.wake()
+  const wakeText = drainText(host)
+  assert.match(wakeText, /睡眠危险/)
+  assert.match(wakeText, /危险\/紧急事件/)
+})
+
+test('C1 直投 alarm 在静音默认也拦（记录 lastBlockedAlarm），显式 allow 才放行', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  const delivery = host.services.delivery
+  api.mute({ minutes: 5 })
+  const blocked = delivery.push({ source: { plugin: 'mc', tags: ['safety', 'alarm'] }, content: { text: '静音中的危险' } })
+  assert.equal(blocked.blocked, true)
+  assert.equal(api.status().lastBlockedAlarm?.reason, 'muted')
+  assert.equal(api.queue()[0]?.priority, 'alarm')
+})
+
+test('time backlog 重放回执：QQ 只在真正释放后推 delivered（不推 attended）', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  const calls = fakeQqService(host)
+  api.mute({ minutes: 5 })
+  const offered = host.services.signals.offer({
+    id: 'qq-replay-1',
+    from: { plugin: 'qq' },
+    kind: 'content',
+    text: 'QQ 消息',
+    focus: 'qq:private:1',
+    meta: { qq: { ledger: { activity: 'qq:private:1', seq: 7 } } },
+  })
+  assert.equal(offered.blocked, true)
+  assert.equal(calls.length, 0, '入队/拦截时不算 delivered')
+  api.unmute('manual')
+  assert.equal(api.queue().length, 0)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].activity, 'qq:private:1')
+  assert.deepEqual(calls[0].seqs, [7])
+  assert.equal(calls[0].via, 'time-backlog')
+})
+
+test('time backlog 重放回执：不同 peer 的 seq 按 activity 分组，各自只推自己的', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  const calls = fakeQqService(host)
+  api.mute({ minutes: 5 })
+  host.services.signals.offer({ id: 'qq-a', from: { plugin: 'qq' }, kind: 'content', text: 'A1', focus: 'qq:private:1', meta: { qq: { ledger: { activity: 'qq:private:1', seq: 3 } } } })
+  host.services.signals.offer({ id: 'qq-b', from: { plugin: 'qq' }, kind: 'content', text: 'B1', focus: 'qq:private:2', meta: { qq: { ledger: { activity: 'qq:private:2', seq: 5 } } } })
+  api.unmute('manual')
+  assert.equal(calls.length, 2)
+  const byActivity = Object.fromEntries(calls.map((call) => [call.activity, call.seqs]))
+  assert.deepEqual(byActivity['qq:private:1'], [3])
+  assert.deepEqual(byActivity['qq:private:2'], [5])
 })

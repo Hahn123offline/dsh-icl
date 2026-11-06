@@ -485,10 +485,13 @@ export function createFocusService({ now = () => Date.now() } = {}) {
       const key = String(signal.focus ?? '(ambient)')
       const at = now()
       const row = backlog.get(key) ?? { focus: key, count: 0, oldestAt: at, lastAt: at, lastText: '', items: [] }
+      // 留住每条信号的来源身份：重放时 QQ 需要按 seq 补"已交付"回执（只推 delivered，不推 attended）。
+      const ledger = signal.meta?.qq?.ledger
+      const qq = ledger && Number(ledger.seq) > 0 ? { activity: String(ledger.activity ?? key), seq: Number(ledger.seq) } : null
       row.count += 1
       row.lastAt = at
       row.lastText = String(signal.text ?? '').slice(0, 200)
-      row.items.push({ plugin: String(signal.from?.plugin ?? ''), text: String(signal.text ?? '').slice(0, 200), at })
+      row.items.push({ plugin: String(signal.from?.plugin ?? ''), text: String(signal.text ?? '').slice(0, 200), at, signalId: signal.id == null ? null : String(signal.id), qq })
       if (row.items.length > 20) row.items.shift()
       backlog.set(key, row)
       backlogChanged()
@@ -589,7 +592,17 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
         const entry = {
           to: String(to),
           channel: String(channel),
-          source: { plugin: String(source.plugin ?? ''), activity: String(source.activity ?? ''), seq: Number.isFinite(Number(source.seq)) ? Number(source.seq) : null },
+          // 直投也要把"这条消息有多急/属于哪个空间"带进裁决层（C1/C6）。
+          source: {
+            plugin: String(source.plugin ?? ''),
+            activity: String(source.activity ?? ''),
+            seq: Number.isFinite(Number(source.seq)) ? Number(source.seq) : null,
+            tags: Array.isArray(source.tags) ? source.tags.map(String) : [],
+            focus: source.focus == null ? null : String(source.focus),
+            priority: source.priority == null ? (source.meta?.priority ?? null) : String(source.priority),
+            pierce: source.pierce === true || source.meta?.pierce === true,
+            meta: source.meta && typeof source.meta === 'object' ? source.meta : null,
+          },
           content: { text: String(content.text ?? '') },
           batchKey: batchKey == null ? null : String(batchKey),
         }

@@ -883,6 +883,18 @@ export function apply(ctx) {
     return tags.some((tag) => protectTags.includes(tag)) ? 1 : 0
   }
 
+  /** 从信号里抽出 QQ 回执需要的 (activity, seq)；只认 qq 自己的 ledger 信息。 */
+  function signalQq(signal) {
+    const ledger = signal?.meta?.qq?.ledger
+    if (!ledger || Number(ledger.seq) <= 0) return null
+    return { activity: String(ledger.activity ?? signal?.focus ?? ''), seq: Number(ledger.seq) }
+  }
+
+  function signalReplayQq(signal) {
+    const rows = Array.isArray(signal?.meta?.replayQq) ? signal.meta.replayQq : []
+    return rows.filter((row) => row && Number(row.seq) > 0).map((row) => ({ activity: String(row.activity ?? ''), seq: Number(row.seq) }))
+  }
+
   function enqueue(signal, reason, { priority = 'normal' } = {}) {
     // 同一个信号 id 被重复 offer（blocked 不占 id，调用方可能重试）时不要重复入队。
     if (signal.id != null && state.queue.some((item) => item.signalId === signal.id)) return
@@ -907,6 +919,9 @@ export function apply(ctx) {
       focus: signal.focus ?? null,
       reason,
       priority,
+      // 重放回执：QQ 消息按 (activity,seq) 记录；focus backlog 摘要带 replayQq 列表。
+      qq: signalQq(signal),
+      replayQq: signalReplayQq(signal),
       at: nowTime(),
       createdAt: signal.createdAt ?? null,
       expiresAt: signal.expiresAt ?? null,
@@ -961,9 +976,39 @@ export function apply(ctx) {
       persist()
       return 0
     }
+    // 重放回执：这批消息真正重新进入投递管道后，给 QQ 推 delivered（不推 attended）。
+    notifyQqReplayed(fresh, 'time-backlog')
     state.queue = []
     persist()
     return fresh.length
+  }
+
+  /** 把队列里 QQ 信号的 (activity,seq)（含 focus backlog 摘要携带的 replayQq）按活动通知 QQ。 */
+  function notifyQqReplayed(items, via) {
+    const byActivity = new Map()
+    const add = (row) => {
+      if (!row || Number(row.seq) <= 0) return
+      const activity = String(row.activity ?? '')
+      if (!activity) return
+      const set = byActivity.get(activity) ?? new Set()
+      set.add(Number(row.seq))
+      byActivity.set(activity, set)
+    }
+    for (const item of items) {
+      add(item.qq)
+      for (const row of Array.isArray(item.replayQq) ? item.replayQq : []) add(row)
+    }
+    if (!byActivity.size) return 0
+    const qq = ctx.services.get('qq')
+    if (!qq || typeof qq.noteDeliveredSeqs !== 'function') return 0
+    let accepted = 0
+    for (const [activity, seqs] of byActivity) {
+      try {
+        const out = qq.noteDeliveredSeqs({ activity, seqs: [...seqs], via, at: nowTime() })
+        accepted += Number(out?.accepted ?? 0)
+      } catch (error) { log('warn', 'time.qq-receipt', { error: String(error?.message ?? error) }) }
+    }
+    return accepted
   }
 
   function activeSleepSpan() {
@@ -2316,7 +2361,21 @@ export function apply(ctx) {
       // signals 已经过 gate 的投递（channel:'signal'）不再拦第二遍，否则紧急配额会被
       // 计数两次、放行的消息又被打回积压。直接 ctx.delivery.push 的其它 channel 才在这里拦。
       if (entry.channel === 'signal') return { accept: true }
-      const decision = gate({ from: { plugin }, kind: 'notice', text: String(entry.content?.text ?? entry.text ?? ''), focus: null, tags: [] })
+      // C1：直投也带上 source 的 tags/priority/pierce/meta，alarm 的判定与 signal 路径一致
+      // （暂停穿透；睡眠/静音按最高优先级进 time 队列，内容不丢）。
+      const tags = Array.isArray(source?.tags) ? source.tags.map(String) : []
+      const meta = source?.meta && typeof source.meta === 'object' ? { ...source.meta } : {}
+      if (source?.priority != null && meta.priority == null) meta.priority = String(source.priority)
+      if (source?.pierce === true) meta.pierce = true
+      const pseudo = {
+        from: { plugin, activity: source?.activity ?? null },
+        kind: 'notice',
+        text: String(entry.content?.text ?? entry.text ?? ''),
+        focus: source?.focus == null ? null : String(source.focus),
+        tags,
+        meta: Object.keys(meta).length ? meta : null,
+      }
+      const decision = gate(pseudo)
       if (decision.accept) return { accept: true }
       return { accept: false, reason: decision.reason ?? 'blocked' }
     }
