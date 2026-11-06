@@ -30,8 +30,9 @@ function hasFfmpeg() {
 }
 
 /** 现场生成 2 秒样例片（testsrc + sine）。 */
-function makeSample(root) {
-  const clip = path.join(root, 'sample.mp4')
+function makeSample(root, name = 'sample.mp4') {
+  const clip = path.join(root, name)
+  fs.mkdirSync(path.dirname(clip), { recursive: true })
   execFileSync(process.env.ICL_FFMPEG || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=25:duration=2',
@@ -87,14 +88,16 @@ test('video_open：目录 → 列视频并给下一步；文件不存在/远程�
   const dir = path.join(root, 'clips')
   fs.mkdirSync(dir)
   fs.writeFileSync(path.join(dir, 'a.mp4'), Buffer.from('not-a-real-video'))
+  fs.writeFileSync(path.join(dir, '带 空格 的 视频.webm'), Buffer.from('EBML fake'))
   fs.writeFileSync(path.join(dir, 'b.txt'), 'ignore me')
   const host = hostWith({ stateDir: root })
   await host.enable('video')
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
 
   const listed = await tools.video_open.execute({ path: dir, overview: false })
-  assert.match(listed.text, /找到 1 个视频/)
+  assert.match(listed.text, /找到 2 个视频/)
   assert.match(listed.text, /a\.mp4/)
+  assert.match(listed.text, /带 空格 的 视频\.webm/)
 
   const missing = await tools.video_open.execute({ path: path.join(root, 'nope.mp4') })
   assert.match(missing.text, /E_NOT_FOUND/)
@@ -162,5 +165,29 @@ test('video_frames / video_probe：真实 ffmpeg 样例视频（缺依赖则 ski
   assert.equal(many.images.length, 1)
   assert.match(many.text, /#1=00:00\.20/)
   assert.match(many.text, /#3=00:01\.80/)
+  await host.disable('video')
+})
+
+test('路径带空格/中文 + 刚 rename 完立刻调用（QQ 落盘场景，缺 ffmpeg 则 skip）', async (t) => {
+  if (!hasFfmpeg()) {
+    t.skip('本机没有 ffmpeg/ffprobe')
+    return
+  }
+  const root = tempRoot('qq-path')
+  const dir = path.join(root, '带 空格 的目录')
+  fs.mkdirSync(dir, { recursive: true })
+  // 模拟 QQ：先写 .part-*，再 rename 到最终路径；调用方不等任何索引。
+  const part = makeSample(dir, '.part-abc123.mp4')
+  const final = path.join(dir, '样例 视频.mp4')
+  fs.renameSync(part, final)
+  const host = hostWith({ stateDir: root })
+  await host.enable('video')
+  const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
+
+  const probed = await tools.video_probe.execute({ path: final })
+  assert.match(probed.text, /时长 2\.0/)
+  assert.ok(probed.text.includes('样例 视频.mp4'))
+  const opened = await tools.video_open.execute({ path: final, overview: false })
+  assert.match(opened.text, /时长 2\.0/)
   await host.disable('video')
 })
