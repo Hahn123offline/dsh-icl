@@ -201,9 +201,9 @@
   - `video_zoom`（必填 `path`+`from`+`to`；`cells`/`minGap`）→ 更少更大的格子（窗口 ≤180s）；
   - `video_locate`（必填 `path`+`query`；`from`/`to`/`max`/`transcriptFile`）→ 命中格位/时间码/台词（不出图）；
   - `video_frames`（必填 `path`；`times` 1–6 个秒数或 `at` 单个秒数）→ 单帧/多帧拼图。
-- **配置**：`stateDir`（`bootstrap.configFor('video')`）、`storyboardCli`、`ffmpeg`/`ffprobe`、`maxFileBytes`（默认 8 GiB）、`overviewSeconds`（240）、`maxTextChars`。
-- **依赖**：`dsh-video-storyboard` 的 `bin/storyboard.mjs`（分镜/切点/选帧/ASR/缓存）、ffmpeg/ffprobe；不依赖 network。图片经桥接层 `ctx.attachments.saveImage()` 进模型（与 qq 图片通道同一机制）。
-- **状态**：可用待调 —— 最小实现 + 契约测试已落地；详见 `docs/VIDEO-EYES.md`。已知缺口：MC 录屏落盘约定、album 索引、长片 `--batch` 暴露、无字幕视频的 ASR 配置入口。
+- **配置**：`stateDir`（`bootstrap.configFor('video')`）、`storyboardCli`、`ffmpeg`/`ffprobe`、`maxFileBytes`（默认 8 GiB）、`overviewSeconds`（240）、`maxTextChars`、`asr`（`false` 强制关闭转写；`true`/`asrBaseUrl` 标记已配置）。
+- **依赖**：`dsh-video-storyboard` 的 `bin/storyboard.mjs`（分镜/切点/选帧/ASR/缓存）、ffmpeg/ffprobe；图片经桥接层 `ctx.attachments.saveImage()` 进模型（与 qq 图片通道同一机制）。本地工具不出网；**只有显式配置了 ASR**（`DSH_ASR_BASE_URL` / `$DSH_HOME/asr.json` / `config.asrBaseUrl`）时才会转写，否则 `video_locate` 直接短接、不碰远程默认 ASR。
+- **状态**：可用待调 —— 最小实现 + 契约测试已落地；ASR 经 8088 `whisper-asr` 验证（冷 9.0 s / 热 0.25 s；本机 `asr.json` 是既有的，本轮未写）；端到端耗时/尺寸见 `docs/VIDEO-EYES.md §8.1/§11.2`。已知缺口：MC 录屏落盘约定、album 索引、长片 `--batch` 暴露；whisper-asr 返回无 `segments`，locate 只有整段精度（用 `transcriptFile` 补）。
 
 ## 6. 依赖与硬编码清单
 
