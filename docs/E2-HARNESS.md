@@ -169,3 +169,8 @@ local3 的失败证明：24h 盲跑不能回答“她是否会生活/会建房/�
 3. 段长：30 vs 60 vs 120min，按模型延迟/成本先 30min；
 4. 指标阈值需在 L2 第一轮后校准（当前是研究建议，不是拍板）；
 5. 是否允许“从 checkpoint 继续”计入 24h：建议允许，但报告中独立分段。
+
+## 10.9 配套格式
+
+- `path_stuck` v2 字段、L1/L2 checkpoint/回放输入 JSON schema：见 [`MC-INSTRUMENTATION.md`](MC-INSTRUMENTATION.md)；
+- 研究对照：[`MC-RESEARCH.md`](MC-RESEARCH.md)；local3 数据：[`MC-LOCAL3-FORENSICS.md`](MC-LOCAL3-FORENSICS.md)。
