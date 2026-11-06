@@ -149,7 +149,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 - **用户 2026-11-06 拍板：静音默认连危险消息也拦**（`emergencyQuota` 默认 0），但会记录（`lastBlockedAlarm` + `time-events alarm-blocked`），恢复/醒来时可见。危险消息 = 带 `emergencyTags`（默认 `alarm/safety/emergency`）；`emergencyFrom` 可把来源收敛成显式插件白名单。要 opt-in 放行危险：`emergencyQuota:N` 或 `allow:[{tags:['alarm']}]`。
 - 可查：`time_status` / `status().lock` / `status().lastBlockedAlarm` / `inbox lock`；可恢复：`time_unmute` / inbox `unmute`。
 - 状态与积压摘要里 **sleep 与 mute 可区分**：`phase` 与 `lock` 分开、积压条目带 `reason` 与 `priority`、`time_list` 显示 `（sleeping）/（muted）`。
-- 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。
+- 对外接口（QQ/MC 等来源）：gate 返回 `{accept:false}` 之前内容已经 `enqueue()` + `persist()`，不存在"offer 说 blocked 但没落盘"的窗口；来源侧**不需要自己兜底暂存，也不要重试被拦信号**（重复 offer 会按 `signalId` 去重）。重放时保留 `[plugin/activity]` 前缀。**判定规则**：`offer` 返回 `blocked:true` 且 `reason` 为 `sleeping/muted/paused` → 内容已在 time 积压里，等醒来/恢复统一释放，**来源不得再补投**（否则醒来重复一条）；只有 `offer` 抛异常/进程重启丢信号才需要来源侧重试。mc-link 的 `pendingAlarms` 只应覆盖后者，不能把 gate-blocked 的 alarm 再投一次。
 - 静音期间 time 自己的闹钟与目标续推照常（"静音只关外部打扰"）；玩家在 DSH GUI 里直接说话不经过 signals，仍能直达。
 
 ### 4.2 穿透与伪造：风险边界
@@ -664,7 +664,7 @@ node tools/lab.mjs down --run "$RUN"
 - `time-events.jsonl` 新类型：`pause-on` / `paused-mode-on|off` / `pause-pierce` / `alarm-blocked` / `sleep-alarm-buffered` / `wake-brief`（含 alarms 计数）。
 - `time_status` 暂停行、`lastSleepBrief.alarms = {count, sources, samples}` 可查。
 - **识别口径（与 mc-body 对齐）**：危险 = tags 命中 `emergencyTags` **或** `meta.pierce === true` **或** `meta.priority === 'alarm'`。mc-body 的事件 payload 带 `priority:'alarm'`/`pierce:true`，即使来源没打 alarm tags，暂停也会穿透、睡眠也会进最高优先级积压。
-- **与 mc-body 对账字段**：body `status.safety.alarms = {delivered,suppressed,redelivered,pending}` ↔ time `lastPierce`/`lastBlockedAlarm`。body 对危险事件有 15s 去重：被拦会在 `alarm_suppressed` 计数并在窗口后补投（`redelivered:true`）——所以 body `suppressed > 0` 不等于 time 漏收，以补投后的 `delivered` 为准。
+- **补投边界（与 mc-link `pendingAlarms` 对齐）**：time 对 blocked 的 alarm 已持久化（sleep 进最高优先级积压、mute 记录 lastBlockedAlarm），来源侧**不要**把被 time gate 拦下的 alarm 再补投一次；`mcb_status` 的"危险补投：N 条"只应反映 offer 异常/重启丢信号，否则醒来会出现"积压一条 + 补投一条"两份。\n- **与 mc-body 对账字段**：body `status.safety.alarms = {delivered,suppressed,redelivered,pending}` ↔ time `lastPierce`/`lastBlockedAlarm`。body 对危险事件有 15s 去重：被拦会在 `alarm_suppressed` 计数并在窗口后补投（`redelivered:true`）——所以 body `suppressed > 0` 不等于 time 漏收，以补投后的 `delivered` 为准。
 - body 暂停时 `pausedReason:'user-stop'` ↔ time `pausedMode.source/reason`；body 的 `status.safety.reflex`、`status.playable`、`status.spawnLog` 是只读对齐字段，time 不复制它们，避免两套口径。
 
 ### 16.5 测试
