@@ -23,7 +23,7 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 605 pass | `npm test` |
+| 全量测试 | ✅ 739 pass | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
@@ -32,6 +32,9 @@
 | **P1 账本工具（qq_unread / qq_history / qq_replied）** | ✅ 已实现（水位/历史/已回，fake 5 条） | §7.7、`ledger.mjs`、`qq-ledger-tools.test.mjs` |
 | **P1 出站引用回复（reply 段）** | ✅ 已实现（单条、账本内目标校验、审计 replyTo） | §7.2、`outbound.mjs`、`qq-send`/`qq-ledger-tools` 测试 |
 | **P1 表情包（本地库列表 + 发送本地图片）** | ✅ 已实现（路径/大小/格式校验，不下载远程） | §7.8、`send-tool.mjs`、`qq-stickers.test.mjs` |
+| **P1 唤醒矩阵（replyCheck/proactive/nudge，只生成 signal）** | ✅ 已实现（默认 proactive 关；预算/去重/冷却；`qq_status.wake`） | §7.9、`wake.mjs`、`qq-wake.test.mjs` |
+| **P1 `qq_mark_read`（只推本地水位，不发消息）** | ✅ 已实现（只私聊账本；不改已回/不碰投递） | §7.7、`qq-ledger-tools.test.mjs` |
+| **P1 表情知识库（tags/描述/来源/使用次数）** | ✅ 已实现（本地 `library.json`；不下载/不上传；`qq_sticker_note`） | §7.8、`sticker-store.mjs`、`qq-stickers.test.mjs` |
 | **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
 | **F1/F3 QQ 策略进 sim（按需，不进静态 system）** | ✅ `qq_help` 工具 + `skills/reply.md`；qq_status/qq_send 描述承载边界 | §7.5、`src/index.mjs`、`skills/reply.md` |
 | **A2/B1/B2 说话人信封（QQ 部分）** | ✅ 正文前缀 + `meta.qq.envelope`；bridge 侧剩余项见 §7.5 | `src/index.mjs`、`qq-envelope.test.mjs` |
@@ -510,22 +513,46 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：所有有记录的私聊（水位/最后/未读约数）；填 peer：水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]` 等标记）。 |
 | `qq_history` | `peer?`, `afterSeq?`, `beforeSeq?`, `limit?` | 按 seq 补看历史（升序）；不填 peer 用最近一个私聊。补课消息正文自带 `[补课]`。 |
 | `qq_replied` | `peer?`, `messageId?` | 填 messageId：该条是否已回 + seq/时间；不填：最后 seq、已回到哪、未回条数。 |
+| `qq_mark_read` | `peer?`, `throughSeq?` | 手动把水位推进到某条（不填=最后一条；超过 lastSeq 自动夹住）。只改本地水位，**不发消息、不自动回复、不标记已回**；返回推进量/剩余未读。 |
 
 **水位/已回口径（必须写清）**：
 - 水位 = `signals.offer` 被接受（进投递队列、未被 time/focus 拦下）；被拦下的仍在水位之后。插件看不到 focus defer/bridge ack，所以"未读"不等于"用户没看到"。
 - 已回 = **成功发出** QQ 回复时，把"发送前账本里的所有消息"标为已回（quoted reply 至少标到被引用那条的 seq）；
   发送失败/unknown/被拒绝不会标记。`qq_replied` 只反映这个账本事实，不是送达回执。
+- 已读 = 手动 `qq_mark_read` 才推进水位；它**不会**自动发消息/不会把消息标成已回。`qq_unread` 的未读条数就是"水位之后、还没被处理"的账本口径。
 - 补课消息与普通消息同一套账本；`qq_history` 里能看到 `[补课]` 标记。
 
-### 7.8 P1 表情包：本地库列表 + 发送本地图片
+### 7.8 P1 表情包：本地库列表 + 发送本地图片 + 知识库
 
 - 目录：`stickerDir`（默认 state 同级 `media/stickers`；显式配置优先）；只扫描**单层普通文件**，扩展名 png/jpeg/jpg/gif/webp。
-- `qq_stickers {query?, limit?}`：只读列表（文件名/大小），不读图、不下载、不执行；目录为空/未配置会明确说明。
+- `qq_stickers {query?, sort?, limit?}`：只读列表（文件名/大小/标签/描述/来源/使用次数），不读图、不下载、不执行；
+  `query` 匹配文件名/标签/描述；`sort=name|recent|used`；目录为空/未配置会明确说明。
+- 知识库：`stickerDir/library.json`（可用 `stickerLibraryFile` 覆盖），每条本地文件可带 `tags/description/source/useCount/lastUsedAt`；
+  `qq_sticker_note {id, tags?, description?, source?}` 只写这个本地 json，**不复制/不下载/不上传**任何图片。
+  库文件损坏时只读列表降级并拒绝写回（避免一次坏文件清空索引）。
 - `qq_send_sticker {id, to?}`：
   - 只接受库内单层文件名（`path.basename`、拒绝 `..`、拒绝目录/符号链接）；`lstat` + 大小上限（默认 10MB）+ 魔数嗅探（png/jpeg/gif/webp）。
   - 发送为 OneBot `send_private_msg` 的 `image` 段，`file: "base64://…"`；**正文/审计不含本地路径或图片字节**。
   - 与 `qq_send` 共享：owner/白名单目标、三把钥匙、每轮上限、同 peer 最小间隔/每分钟/每小时、`turn-end` 重置。
-- **收藏**：当前只支持"把文件放进 `stickerDir`"（运维/用户本地操作），不做远程下载/自动收藏；后续 P1 再考虑入站表情收集。
+- **收藏**：只支持"把文件放进 `stickerDir`" + 可选 `qq_sticker_note` 写标签/描述/来源；**不自动下载第三方表情/不上传**。
+  入站表情自动收集留后续（需要单独评审"下载即收藏"的隐私/版权边界）。
+- **唤醒矩阵（见 §7.9）不会把表情/图片当成新用户消息**：提醒信号有单独 tags 和"这不是对方新消息"的正文。
+
+### 7.9 P1 唤醒矩阵：replyCheck / proactive / nudge（只生成 signal）
+
+`src/wake.mjs` 只做**规划**：生成 `{kind, activity, text, tags}` 后由 index 走 `ctx.signals.offer`；
+**不直接调用 delivery、不改 focus/time 策略**，投不投、什么时候投由 time/focus 决定。
+
+| 类型 | 触发 | 去重/限额 | tags |
+|---|---|---|---|
+| `replyCheck` | 成功发出 QQ 回复后延迟 `replyCheckDelayMs`（默认 30s） | 一次 outbound 只一次；新 inbound 到达即取消；小时总预算 | `qq/private/wake/replyCheck` |
+| `proactive` | 私聊安静 ≥`proactiveIdleMs` 且概率命中（默认**关闭**） | 概率 + 冷却 + 空闲门槛；同一时段不重复 | `qq/private/wake/proactive` |
+| `nudge` | 账本未读 >0 且安静 ≥`nudgeSoftMs` | 未读数变化或冷却到期才再提醒；独立小时上限 | `qq/private/wake/nudge` |
+
+- 正文明确写"[QQ主动检查]/[QQ主动提醒]/[QQ积压提醒]…（这不是对方发来的消息）"，**不会伪装成用户消息**；
+  结构化字段 `meta.qq.wake = {kind, reason, unread?}`；`qq_status.wake` 暴露配置/已发/预算跳过/本小时次数。
+- `wakeEnabled` 总开关（默认 true）；`proactiveEnabled` 默认 false（不主动打扰，用户可显式开）。
+- 与 `qq_mark_read` 的关系：mark_read 推进水位后，下一次 poll 的 `unreadCount=0` → 不再 nudge。
 
 ## 8. 权限与开关
 
@@ -578,8 +605,15 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `mediaInboxDir` | `''` | 媒体落盘目录 | 显式配置优先；等 paths 的 `ICL_ROOT` 推导落地后默认改用它 |
 | `mediaFetchImpl` | `null` | 测试注入 fetch | 生产不填 |
 | `stickerDir` | `''` | 本地表情库目录 | 空：state 同级 `media/stickers`；只接受单层图片文件，不下载远程 |
+| `stickerLibraryFile` | `''` | 表情知识库 json | 空：`stickerDir/library.json`；只写本地标签/描述/来源，不下载/上传 |
 | `maxStickerBytes` | `10485760` | 单张表情大小上限 | 超限拒绝发送 |
 | `stickerListLimit` | `100` | `qq_stickers`/状态里的列表上限 | 只影响展示，不影响发送 |
+| `wakeEnabled` | `true` | 唤醒矩阵总开关 | 关掉后不生成 replyCheck/proactive/nudge |
+| `replyCheckEnabled` / `replyCheckDelayMs` | `true` / `30000` | 回复后检查 | 新 inbound 会取消；只生成 signal |
+| `proactiveEnabled` | `false` | 主动机会 | 默认关；开启后按概率/冷却/空闲生成提醒 signal |
+| `proactiveMinMs` / `proactiveMaxMs` / `proactiveIdleMs` / `proactiveProbability` / `proactiveCooldownMs` | `1800000` / `5400000` / `900000` / `0.3` / `1800000` | 主动机会参数 | 都只是规划参数；不直接投递 |
+| `nudgeEnabled` / `nudgeSoftMs` / `nudgeCooldownMs` / `nudgeMaxPerHour` | `true` / `600000` / `600000` / `6` | 积压提醒 | 未读变化或冷却才再提醒；mark_read 后停止 |
+| `wakeMaxPerHour` / `wakeTickMs` | `12` / `5000` | 小时总预算 / poll 间隔 | 预算跳过计数在 `qq_status.wake.skippedBudget` |
 | `sensitivePatterns` | `null`（用内置 pattern） | 发送前敏感信息拦截 | 命中 → "没发出去：内容含敏感信息" |
 | `webSocketImpl` | `null` | 测试注入 | 生产不填 |
 
@@ -839,7 +873,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 605 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 739 pass / 0 fail
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
@@ -848,7 +882,8 @@ node --test packages/core/test/qq-rich.test.mjs        # 11 pass（富段/引用
 node --test packages/core/test/qq-envelope.test.mjs    # 5 pass（说话人信封/qq_help/工具描述边界）
 node --test packages/core/test/qq-media.test.mjs       # 5 pass（图片字节/视频文件落盘/降级/安全）
 node --test packages/core/test/qq-ledger-tools.test.mjs  # 5 pass（账本工具/引用回复/已回）
-node --test packages/core/test/qq-stickers.test.mjs    # 4 pass（本地表情库/发送/安全边界）
+node --test packages/core/test/qq-stickers.test.mjs    # 6 pass（本地表情库/发送/知识库/安全边界）
+node --test packages/core/test/qq-wake.test.mjs        # 6 pass（唤醒矩阵：规划/去重/预算/集成）
 node --test packages/core/test/qq-mc-concurrent.test.mjs  # 3 pass（T1–T3）
 node --test packages/core/test/qq-preflight.test.mjs   # 13 pass（判定 + 陈旧 shadow 文件不误报 + 用户一页说明 + phase1 模式）
 ```
@@ -1005,7 +1040,7 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 
 ### 13.10 入站媒体/图片通道（2026-11-06）
 
-`node --test packages/core/test/qq-media.test.mjs` → **5 pass**：
+`node --test packages/core/test/qq-media.test.mjs` → **9 pass**：
 - 纯函数：视频魔数（mp4/webm）、坏类型拒绝、文件名/日期目录、`index.jsonl` 记录、保留默认值。
 - 图片：`signal.images`（data/mediaType）进 delivery；正文无 URL/base64；本地留一份 + index。
 - 视频/文件：落 `<mediaInboxDir>/<date>/`，正文是 `[视频已保存：<绝对路径>]` / `[文件已保存：<绝对路径>]`；
@@ -1017,12 +1052,23 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 
 ### 13.11 P1 账本工具 / 引用回复 / 表情包（fake 已验证）
 
-- `qq-ledger-tools.test.mjs` → **5 pass**：SQLite 账本 `messages/unread/markReplied/replyState` 与重启保留；
-  `qq_unread`（水位/汇总/afterSeq）、`qq_history`（分段补看）、`qq_replied`（单条与聚合）；
+- `qq-ledger-tools.test.mjs` → **6 pass**：SQLite 账本 `messages/unread/markReplied/replyState/markRead` 与重启保留；
+  `qq_unread`（水位/汇总/afterSeq）、`qq_history`（分段补看）、`qq_replied`（单条与聚合）、`qq_mark_read`（只推水位/不发消息/不改已回）；
   引用回复：`reply` 段 + messageId、审计 `replyTo`、成功发送后账本标记已回；不在账本里的 id / 多气泡带引用都拒绝且零帧。
-- `qq-stickers.test.mjs` → **4 pass**：列表（扩展名/普通文件/query）、发送本地 PNG（`base64://` 段、无本地路径/字节进审计）、
-  路径穿越/目录/坏格式/超大/不存在拒绝、非白名单目标拒绝、与文字发送共享限速/每轮。
+- `qq-stickers.test.mjs` → **6 pass**：列表（扩展名/普通文件/query/sort）、发送本地 PNG（`base64://` 段、无本地路径/字节进审计）、
+  路径穿越/目录/坏格式/超大/不存在拒绝、非白名单目标拒绝、与文字发送共享限速/每轮；
+  知识库 `qq_sticker_note`（tags/描述/来源/使用次数）与损坏库只读不写回。
 - 引用回复边界：只支持单条文本；目标必须在本私聊账本里（防跨会话/伪造）；表情发送只接受 `stickerDir` 单层文件。
+
+### 13.12 P1 唤醒矩阵 + 离线媒体契约（2026-11-06）
+
+- `qq-wake.test.mjs` → **6 pass**：
+  - 规划器（假时钟）：replyCheck 到点只一次、新 inbound 取消；proactive 空闲+概率+冷却；nudge 未读变化/冷却；
+    小时预算超了跳过并计数。
+  - 集成：`qq_send` 后生成 `[QQ主动检查]`（不是用户消息）、新 inbound 取消未发检查、proactive 默认关/开启后生成 `[QQ主动提醒]`。
+- `qq-media.test.mjs` → **9 pass**：新增"本地样例 PNG/MP4 文件读字节→落盘/index、无 `.part-*` 残留"离线契约；
+  以及媒体策略默认（不自动删/不进 album/512MiB/软上限只告警）。
+- 全部提醒都走 `ctx.signals.offer`，测试从 delivery 侧看到的是 time/focus 允许后的结果；插件没有直接 `delivery.push`。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 
