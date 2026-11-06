@@ -150,3 +150,9 @@ S2 run `.state/lab/e2-20261106-soak`：
   - mineflayer 的 `chunk.toJson()` 在 1.21.4 返回**字符串**，viewer 服务已改为 parse 后再发（原先字符串可能不被 worker 接受）；
   - prismarine-viewer 页面只在 `position.pos.y > 0` 时初始化相机（超平坦世界 y=-60 会永远不回相机）→ 尝试把负 Y 世界整体 +64（chunk `minY` 与相机 position 同步），仍未渲染。
 - 结论：**chunk 已到浏览器，问题在 viewer 页面/worker 对 1.21.4 超平坦负 Y 世界的渲染/相机初始化**，不是 body 没发数据。下一步可：给 viewer bundle 打 patch（负 Y 相机/超平坦）或用离线 world 快照渲染（把 body 世界导出成 prismarine-world 后离线截图）。
+
+### 5.2 进一步结论（2026-11-06 下午）
+
+- 找到并修掉了“负 Y 不初始化相机”的直接原因：prismarine-viewer 页面里 `if (pos.y > 0 && firstPositionUpdate) { controls.target...; camera... }`。现在在静态路由前挂一个**只去掉 `pos.y > 0` 条件的 `/index.js` 补丁**（不动 node_modules），世界坐标保持真实、不再做 y 偏移。
+- 但真服 dev 截图**仍然只有天空**（chunksSent 49/49、0 错误；页面已连上并收到 version/position）。说明卡点不在“相机初始化条件”、也不在 chunk 传输，而在 **1.21.4 超平坦 live world 的 chunk JSON → viewer worker 解析/渲染**（或 headless WebGL 对 63MB worker 的处理）。
+- 下一步：用 CDP 抓页面 console/worker 异常（`Runtime.exceptionThrown` / `Log.entryAdded`），对比离线 1.16.4 世界（同一 viewer 能出图）与 live 1.21.4 的 chunk JSON 差异；定位后再决定是否换离线快照渲染。

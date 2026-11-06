@@ -124,14 +124,28 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   const http = requireViewer('http')
   const { Vec3 } = requireViewer('vec3')
   const app = express()
+  // prismarine-viewer 页面里相机初始化被 `if (pos.y > 0 && firstPositionUpdate)` 限制，负 Y（超平坦）世界永远不初始化相机。
+  // 在静态路由之前挂一个打过补丁的 /index.js：仅去掉 pos.y > 0 条件，其它逻辑保持原样（不动 node_modules）。
+  const viewerPkgDir = path.join(path.dirname(requireViewer.resolve('prismarine-viewer/package.json')), 'public')
+  const pagePath = path.join(viewerPkgDir, 'index.js')
+  let patchedPage = null
+  try {
+    const source = fs.readFileSync(pagePath, 'utf8')
+    const patched = source.replace('t.y>0&&s&&(', 's&&(')
+    if (patched !== source) patchedPage = patched
+  } catch { /* 读不到就按原版 */ }
+  if (patchedPage) {
+    app.get('/index.js', (req, res) => {
+      res.type('application/javascript').send(patchedPage)
+    })
+  }
   setupRoutes(app, '')
   const server = http.createServer(app)
   const io = new Server(server)
   const fixedCenter = center instanceof Vec3 ? center : new Vec3(center.x, center.y, center.z)
-  // prismarine-viewer 的页面只在 pos.y > 0 时初始化相机；负 Y（超平坦世界常见）会导致只看到天空。
-  // 把负 Y 世界整体上移 64 格（改 chunk JSON 的 minY + 相机 position），渲染后坐标再减回去。
-  const yOffset = fixedCenter.y < 0 ? 64 : 0
-  const renderPos = new Vec3(fixedCenter.x, fixedCenter.y + yOffset, fixedCenter.z)
+  // 已在上面的 /index.js 补丁里修好负 Y 相机：世界/坐标保持真实，不再做 y 偏移。
+  const yOffset = 0
+  const renderPos = fixedCenter.clone ? fixedCenter.clone() : new Vec3(fixedCenter.x, fixedCenter.y, fixedCenter.z)
   const sockets = new Set()
   const stats = { chunksSent: 0, chunkErrors: 0, sampleError: null }
   async function sendChunks(socket) {
