@@ -737,10 +737,12 @@ function hasProgress(events) {
 /** 前 90 分钟的"照抄式 playbook"（弱模型需要确切调用，不要原则）。 */
 const PLAYBOOK = [
   { id: 'join', text: '第一步：先 mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。' },
-  { id: 'logs', text: '第二步：就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。' },
+  { id: 'collect', text: '第二步（用宏，别逐方块）：mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count":8,"radius":24}}]}；完成后 mcb_inventory 看净增。' },
   { id: 'planks', text: '第三步：把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}。若报没有配方，先 mcb_inventory，别用原参数重试。' },
   { id: 'table', text: '第四步：做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。' },
-  { id: 'explore', text: '第五步：在出生点 30 格内看看周围（mcb_map / mcb_scan 附近方块），把看到的东西 remember 记一笔；天黑了就回安全点。' },
+  { id: 'shelter', text: '第五步（宏）：用 mcb_do {"steps":[{"op":"task","kind":"shelter","params":{"size":3,"height":3}}]} 搭一个能站进去的庇护所（四面墙+门+屋顶）；完成后报告"四面墙/门/屋顶/能否站进去"，失败要报缺哪一面。' },
+  { id: 'combat', text: '如果附近有 hostile 怪先保命：mcb_combat {"mode":"hunt","target":"nearest_hostile","radius":16} 猎杀；血低或苦力怕近身用 {"mode":"flee"}。不要 mcb_attack 逐只手动。' },
+  { id: 'explore', text: '再看看周围（mcb_map / mcb_scan），把看到的东西 remember 记一笔；天黑了回安全点。' },
 ]
 
 /** 生存模式/降级后的单步指令：一次只给一个 op，做完再下一步（弱模型成功率更高）。 */
@@ -966,10 +968,12 @@ function initialInstruction() {
   return [
     '今晚这段时间你自己安排，不用等我吩咐。先按下面这条链一步步来（每一步做成了再做下一步；报错就先 mcb_status/换简单动作，别用原参数重试）：',
     '① mcb_servers，然后 mcb_join {"server":"survival"}；连上后 mcb_status 看一下自己在哪。',
-    '② 就近砍木头：mcb_do {"steps":[{"op":"mine","params":{"name":"oak_log","count":8}}]}；做完 mcb_inventory 看背包。',
+    '② 就近砍木头（用宏，别逐方块）：mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count":8,"radius":24}}]}；做完 mcb_inventory 看背包。',
     '③ 把木头做成木板：mcb_do {"steps":[{"op":"craft","params":{"name":"oak_planks","count":16}}]}；报没有配方就先 mcb_inventory。',
     '④ 做工作台并放下：先 mcb_do {"steps":[{"op":"craft","params":{"name":"crafting_table","count":1}}]}，成功后再 mcb_do {"steps":[{"op":"place","params":{"name":"crafting_table"}}]}。',
-    '⑤ 在出生点 30 格内看看周围（mcb_map/mcb_scan），把看到的东西 remember 记一笔。',
+    '⑤ 搭庇护所（宏）：mcb_do {"steps":[{"op":"task","kind":"shelter","params":{"size":3,"height":3}}]}，做完报告"四面墙/门/屋顶/能站进去"，失败说缺哪面。',
+    '⑥ 遇到 hostile 怪：mcb_combat {"mode":"hunt","target":"nearest_hostile","radius":16}；血低/苦力怕近身 → {"mode":"flee"}。**优先宏，不要逐只 mcb_attack**。',
+    '⑦ 再看看周围（mcb_map/mcb_scan），把看到的东西 remember 记一笔。',
     '',
     '规矩：**同一个动作连续失败 3 次就换做法**（先 mcb_status、换目标、或回安全点），禁止原参数硬撞；',
     '前 90 分钟只做低风险的事（就近采集/整理/探索/看时间），不下矿、不长途、不打架；',
