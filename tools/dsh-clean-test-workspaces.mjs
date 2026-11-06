@@ -35,6 +35,11 @@ const DIRS = [/icl-wt-/i, /state-lab-/i, /her-lab-workspace/i, /state-live2/i]
 const args = new Set(process.argv.slice(2))
 const APPLY = args.has('--apply')
 const JSON_OUT = args.has('--json')
+// 只清指定 workspace（lab down 自动调用时用；仍要求它落在测试路径白名单内）
+const ONLY = (() => {
+  const i = process.argv.indexOf('--workspace')
+  return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : null
+})()
 
 function encodedName(workspacePath) {
   // lab 的 session 目录名：--C-DSH-icl-wt-...-workspace--（去掉盘符冒号、反斜杠变 -）
@@ -56,13 +61,14 @@ if (!fs.existsSync(WORKSPACE_JSON)) {
 
 const store = readJson(WORKSPACE_JSON)
 const ws = store?.tables?.workspaces ?? {}
-const matched = Object.entries(ws).filter(([, w]) => underTestPath(w.path))
+const samePath = (a, b) => path.resolve(String(a || '')).toLowerCase() === path.resolve(String(b || '')).toLowerCase()
+const matched = Object.entries(ws).filter(([, w]) => underTestPath(w.path) && (!ONLY || samePath(w.path, ONLY)))
 const matchedIds = new Set(matched.map(([id]) => id))
 const matchedSessionIds = new Set()
 for (const [, w] of matched) for (const id of w.sessionIds ?? []) matchedSessionIds.add(id)
 
 const sessionDirs = fs.existsSync(SESSIONS)
-  ? fs.readdirSync(SESSIONS, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).filter((name) => DIRS.some((re) => re.test(name)))
+  ? fs.readdirSync(SESSIONS, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).filter((name) => (ONLY ? name === encodedName(ONLY) : DIRS.some((re) => re.test(name))))
   : []
 
 const projFiles = fs.existsSync(PROJCACHE)
