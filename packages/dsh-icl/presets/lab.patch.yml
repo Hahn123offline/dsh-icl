@@ -73,21 +73,18 @@
                 time:
                   # 测试/复核用：允许 inbox clock 命令平移 time 看到的时钟（跨小时前缀复核）。
                   testClock: true
-<<<<<<< HEAD
-              # C renderTail（lab-only，A/B 用；产品 preset 不写）：
-              # 给动作类工具结果尾部 append 一行状态；ICL_RENDERTAIL=0 可跑 baseline 而不用改 preset。
-              renderTail:
-                enabled: true
-                maxPerTurn: 6
-                maxCharsPerTurn: 360
-=======
                   # B compactWake A/B 用（lab-only；默认 false，`lab.mjs up --compact-wake` 才开）。
                   compactWake:
                     enabled: __LAB_COMPACT_WAKE__
                     after: 1
                     maxChars: 400
                     fullEvery: 20
->>>>>>> wt/time
+              # C renderTail（lab-only，A/B 用；产品 preset 不写）：
+              # 给动作类工具结果尾部 append 一行状态；ICL_RENDERTAIL=0 可跑 baseline 而不用改 preset。
+              renderTail:
+                enabled: true
+                maxPerTurn: 6
+                maxCharsPerTurn: 360
               # dream-chat / embed-text 插槽必须有 providers，否则 dream 的 events/people/lexicon/cleanup
               # 等需要模型的 job 会整段缺席（night-1 事故：只有 wash/consume/index）。
               # lab 复用 8088 llama-swap（chat: qwen35-9b / embedding: embed-bge-m3(1024d) / clip-zh(512d, CPU，用于 album 图片记忆)），零成本、无 API key。
