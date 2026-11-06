@@ -91,6 +91,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     agent: null,
     releaseClaim: null,
     tools: new Map(),          // name -> { off, def }
+    // 兼容旧 DSH：0.2.0-rc.2 不接受 image output schema，会抛错并丢掉全部工具。
+    // 一旦注册失败就整体切 text-only（图片以路径文本返回），并只告警一次。
+    outputFallback: false,
     sectionOff: null,
     factsOff: null,
     offSurface: null,
@@ -162,11 +165,32 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         try { prev.off() } catch (error) { report(`tool.off:${name}`, error) }
         state.tools.delete(name)
       }
+      const build = (imageOutput) => toDshToolDefinition(def, { saveImage, imageOutput })
       try {
-        const off = ctx.tools.register(toDshToolDefinition(def, { saveImage }))
+        const off = ctx.tools.register(build(!state.outputFallback))
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
         added.push(name)
       } catch (error) {
+        // 兼容回退：老宿主（DSH 0.2.0-rc.2）只认 text-only output schema。
+        // 先整体切 text-only 重试一次；成功则后续工具直接走 text-only，并留一条可查的告警。
+        if (!state.outputFallback) {
+          state.outputFallback = true
+          log({
+            msg: 'icl.tool-output-fallback',
+            level: 'warn',
+            reason: String(error?.message ?? error),
+            note: 'DSH 不接受 image output schema：全部工具改用 text-only output（图片仍以路径文本返回，不会假装已进上下文）',
+          })
+          try {
+            const off = ctx.tools.register(build(false))
+            state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
+            added.push(name)
+            continue
+          } catch (retryError) {
+            report(`tool.register:${name}:text-only-retry`, retryError)
+            continue
+          }
+        }
         report(`tool.register:${name}`, error)
       }
     }

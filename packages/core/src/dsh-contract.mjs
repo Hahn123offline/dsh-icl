@@ -25,14 +25,20 @@ export const TEXT_OUTPUT_SCHEMA = Object.freeze({
  * 图片**不是**路径：路径在 execute 阶段已经被 `ctx.attachments.saveImage()` 换成
  * 不可变引用（ref），这里只负责把它渲染成 DSH 的 image content block。
  * `images` 可选：绝大多数 ICL 工具仍然只回文本。
+ *
+ * 注意：这里必须是**合法 JSON Schema**。旧版 DSH（0.2.0-rc.2）不接受
+ * `items: { type: 'json' }`（非标准类型），会让 `ctx.tools.register` 抛错、
+ * 进而静默丢掉全部 ICL 工具（见 docs/E2-BLOCKER-tool-registration.md）。
+ * 图片能力本身还有 bridge 的运行时回退（text-only），见 bridge.syncTools。
  */
 export const IMAGE_OUTPUT_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
   properties: {
-    text: { type: 'string', required: true },
-    images: { type: 'array', items: { type: 'json' } },
+    text: { type: 'string' },
+    images: { type: 'array', items: { type: 'object', additionalProperties: true } },
   },
+  required: ['text'],
 })
 
 /** 规范化 ICL 的 JSON Schema 参数：对象必须显式 additionalProperties。 */
@@ -112,7 +118,7 @@ export async function normalizeToolResult(result, { saveImage = null } = {}) {
  * @param {object} definition
  * @param {{ execute?: Function | null, saveImage?: ((file: string) => Promise<unknown>) | null }} [options]
  */
-export function toDshToolDefinition(definition, { execute = null, saveImage = null } = {}) {
+export function toDshToolDefinition(definition, { execute = null, saveImage = null, imageOutput = true } = {}) {
   const name = String(definition?.name ?? '')
   if (!name) throw new Error('DSH 工具缺少 name')
   if (typeof definition.execute !== 'function' && typeof execute !== 'function') {
@@ -122,18 +128,25 @@ export function toDshToolDefinition(definition, { execute = null, saveImage = nu
     name,
     description: String(definition.description ?? definition.summary ?? ''),
     parameters: normalizeParameters(definition.parameters),
-    output: {
-      schema: IMAGE_OUTPUT_SCHEMA,
-      render: (_args, value) => {
-        const images = Array.isArray(value?.images) ? value.images : []
-        const blocks = images.map((attachment) => ({ type: 'image', attachment }))
-        blocks.push({ type: 'text', text: String(value?.text ?? '') })
-        return blocks
-      },
-    },
+    output: imageOutput
+      ? {
+          schema: IMAGE_OUTPUT_SCHEMA,
+          render: (_args, value) => {
+            const images = Array.isArray(value?.images) ? value.images : []
+            const blocks = images.map((attachment) => ({ type: 'image', attachment }))
+            blocks.push({ type: 'text', text: String(value?.text ?? '') })
+            return blocks
+          },
+        }
+      : {
+          // 兼容旧 DSH：只声明文本输出；图片以"（图片文件：路径）"文本返回，不假装已进上下文。
+          schema: TEXT_OUTPUT_SCHEMA,
+          render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+        },
     async execute(args, exec) {
       const out = await (execute ?? definition.execute)(args, exec)
-      return normalizeToolResult(out, { saveImage })
+      // 回退到 text-only 时不要提交附件（output schema 不声明 images，提交了反而可能被宿主拒绝）。
+      return normalizeToolResult(out, { saveImage: imageOutput ? saveImage : null })
     },
   }
 }

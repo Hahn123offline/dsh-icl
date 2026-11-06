@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import {
-  toDshToolDefinition, toDshUserMessage, normalizeParameters, textOfSessionEvent,
+  toDshToolDefinition, toDshUserMessage, normalizeParameters, textOfSessionEvent, IMAGE_OUTPUT_SCHEMA,
 } from '../src/index.mjs'
 import { createDshBridge } from '../../dsh-icl/src/bridge.mjs'
 import { createIclPlugin } from '../../dsh-icl/src/plugin.mjs'
@@ -22,7 +22,7 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import noteManifest from '../../plugins/note/manifest.json' with { type: 'json' }
 
-function fakeCtx({ withContext = true, attachments = null } = {}) {
+function fakeCtx({ withContext = true, attachments = null, rejectImageOutput = false } = {}) {
   const tools = new Map()
   const sections = new Map()
   const contexts = new Map()
@@ -43,6 +43,10 @@ function fakeCtx({ withContext = true, attachments = null } = {}) {
         assert.equal(typeof def.parameters, 'object')
         assert.equal(def.parameters.type, 'object')
         assert.ok(Object.hasOwn(def.parameters, 'additionalProperties'), `${def.name} 参数必须是闭合对象`)
+        // 模拟旧 DSH 0.2.0-rc.2：不接受声明 images 的 output schema（会 throw）。
+        if (rejectImageOutput && def.output?.schema?.properties?.images) {
+          throw new Error(`unsupported output schema for ${def.name}: images`)
+        }
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -211,6 +215,56 @@ test('桥：插件回图片路径 → 宿主附件服务 → image block（真�
     assert.equal(saved.length, 1)
     assert.equal(saved[0].mediaType, 'image/png')
     assert.deepEqual(def.output.render({}, out)[0], { type: 'image', attachment: out.images[0] })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('IMAGE_OUTPUT_SCHEMA 是合法 JSON Schema（不能用 type:json，旧 DSH 会拒）', () => {
+  const item = IMAGE_OUTPUT_SCHEMA.properties?.images?.items
+  assert.ok(item && item.type === 'object', `images.items 必须是对象 schema：${JSON.stringify(item)}`)
+  assert.notEqual(item.type, 'json')
+  assert.deepEqual(IMAGE_OUTPUT_SCHEMA.required, ['text'])
+})
+
+test('旧 DSH 拒绝 image output schema 时，bridge 自动回退 text-only 且工具不丢（P0 回归）', async () => {
+  const root = tempRoot('tool-output-fallback')
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(
+    { id: 'fake-tools', version: '0.0.1', entry: './x.mjs', tools: ['fake_shot', 'plain_text'] },
+    {
+      apply(pluginCtx) {
+        pluginCtx.tools.register({
+          name: 'fake_shot',
+          summary: '一张假截图',
+          parameters: { type: 'object', properties: {} },
+          async execute() { return { text: '截图好了', images: ['C:/x.png'] } },
+        })
+        pluginCtx.tools.register({
+          name: 'plain_text',
+          summary: '纯文本工具',
+          parameters: { type: 'object', properties: {} },
+          async execute() { return 'ok' },
+        })
+        return () => {}
+      },
+    },
+    {},
+  )
+  await host.enable('fake-tools')
+  const logs = []
+  const ctx = fakeCtx({ rejectImageOutput: true })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') }, log: (entry) => logs.push(entry) })
+  bridge.start()
+  try {
+    assert.ok(ctx.tools_.has('fake_shot') && ctx.tools_.has('plain_text'), `工具不能丢：${[...ctx.tools_.keys()]}`)
+    for (const [name, def] of ctx.tools_) {
+      assert.equal(def.output?.schema?.properties?.images, undefined, `${name} 应回退到 text-only output schema`)
+    }
+    assert.ok(logs.some((entry) => entry?.msg === 'icl.tool-output-fallback'), `应留回退告警：${JSON.stringify(logs.slice(0, 6))}`)
+    const out = await ctx.tools_.get('fake_shot').execute({})
+    assert.match(out.text, /C:\/x\.png/)
+    assert.equal(out.images, undefined, '回退时不能提交 images（schema 没声明）')
   } finally {
     bridge.dispose()
   }
