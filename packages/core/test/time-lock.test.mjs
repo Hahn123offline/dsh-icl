@@ -539,7 +539,7 @@ test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再�
   api.tick()
   const text = drainText(host)
   assert.match(text, /清醒节拍/)
-  assert.match(text, /time_status/, '自检消息要告诉她下一步可以查什么')
+  assert.match(text, /继续。/, '自检消息只给事实+继续，不教轮询')
   const heartbeat = api.heartbeat()
   assert.ok(heartbeat.idleSec >= 61)
   assert.equal(heartbeat.ticksLastHour, 1)
@@ -788,7 +788,7 @@ test('清醒节拍 capped 后降频：短提示有上限、之后安静等窗口
   api.tick()
   const short = drainText(host)
   assert.match(short, /清醒节拍/)
-  assert.match(short, /醒着 \d+ 秒没有回合；手上没事的话/, 'capped 后发短提示')
+  assert.match(short, /清醒节拍：继续（醒着 \d+ 秒/, 'capped 后发短提示')
   virtualNow += 61_000
   api.tick()
   assert.doesNotMatch(drainText(host), /清醒节拍/, '短提示达到上限后不再刷')
@@ -945,4 +945,72 @@ test('危险识别兼容 mc-body meta：priority:alarm 在睡眠中进最高优�
   const text = drainText(host)
   assert.match(text, /⚠ 睡眠期间有 1 条危险\/紧急事件（mc）/)
   assert.match(text, /body: death/)
+})
+
+/* ───────────────────── immediate 清醒节拍（无等待 fast-play） ───────────────────── */
+
+test('immediate 模式：turn-end 后 ~1s 自检（idleSec 下限不再锁 15s），文案只说继续', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, mode: 'immediate', minIdleSec: 1, timer: false } } })
+  emitTurnEnd(host)
+  const hb = api.heartbeat()
+  assert.equal(hb.mode, 'immediate')
+  assert.equal(hb.maxPerHour, 3600, 'immediate 默认不受 60/h 限制')
+  assert.ok(hb.nextTickAt <= virtualNow + 1_500, '应在 ~1s 后安排自检')
+  virtualNow += 500
+  api.tick()
+  assert.doesNotMatch(drainText(host), /清醒节拍/, '不到 minIdleSec 不触发')
+  virtualNow += 700
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /清醒节拍/)
+  assert.match(text, /继续。/)
+  assert.doesNotMatch(text, /time_status|决定下一步/, '不教轮询，也不要"看 status 决定下一步"')
+  assert.equal(api.heartbeat().streak, 1)
+})
+
+test('immediate 连续 20 次无外部事件后退避 30s；有事件立刻恢复 immediate', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, mode: 'immediate', minIdleSec: 1, immediateBackoffAfter: 20, backoffSec: 30, timer: false } } })
+  for (let i = 0; i < 20; i += 1) {
+    emitTurnEnd(host, i + 1)
+    virtualNow += 1_100
+    api.tick()
+    drainText(host)
+  }
+  const hb = api.heartbeat()
+  assert.equal(hb.streak, 20)
+  assert.equal(hb.backoff, true, '连续 20 次无事件应退避')
+  assert.ok(hb.nextTickAt >= virtualNow + 29_000, '退避到 ~30s 节拍')
+  // 退避期间 1s 后不再触发
+  emitTurnEnd(host, 21)
+  virtualNow += 1_100
+  api.tick()
+  assert.doesNotMatch(drainText(host), /清醒节拍/, '退避期间不按 1s 空转')
+  // 外部事件到达 → 立刻恢复 immediate
+  host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'MC 位置更新' })
+  assert.equal(api.heartbeat().backoff, false, '外部事件到达要重置退避')
+  emitTurnEnd(host, 22)
+  assert.ok(api.heartbeat().nextTickAt <= virtualNow + 1_500, '恢复 ~1s 节拍')
+})
+
+test('immediate 指标：decisionCycleSec（turn-end→下一 start）与 reactionLatencySec（信号→下一 start）', async () => {
+  let virtualNow = MON_0900
+  const { host, root, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, mode: 'immediate', minIdleSec: 1, timer: false } } })
+  emitTurnEnd(host, 1)
+  virtualNow += 2_000
+  emitTurnStart(host, 2)
+  assert.equal(api.heartbeat().decisionCycleSec, 2)
+  // 信号到达 → 下一 turn-start 的反应时延
+  virtualNow += 5_000
+  emitTurnEnd(host, 3)
+  host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '有人找你' })
+  virtualNow += 1_000
+  emitTurnStart(host, 4)
+  assert.equal(api.heartbeat().reactionLatencySec, 1)
+  const events = readTimeEvents(root).map((event) => event.type)
+  assert.ok(events.includes('decision-cycle'))
+  assert.ok(events.includes('reaction-latency'))
+  const tickEvent = readTimeEvents(root).find((event) => event.type === 'awake-tick')
+  assert.ok(tickEvent == null || tickEvent.mode === 'immediate')
 })

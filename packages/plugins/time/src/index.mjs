@@ -421,8 +421,22 @@ export function apply(ctx) {
   // 没有目标续推就安排下一次自检，避免"无事可做就静默等事件"的分钟级假死。
   const awakeCfg = ctx.config.awakeTick && typeof ctx.config.awakeTick === 'object' ? ctx.config.awakeTick : {}
   const awakeTickEnabled = awakeCfg.enabled !== false
-  const awakeIdleSec = Math.max(15, Number(awakeCfg.idleSec ?? 120))
-  const awakeMaxPerHour = Math.max(1, Number(awakeCfg.maxPerHour ?? 60))
+  // immediate：玩游戏的快节奏模式（用户要求"无等待，除非 agent 自愿等待"）。
+  // turn-end 后 minIdleSec(~1s) 就自检；连续 N 次没有任何外部信号/任务事件后
+  // 退避到 backoffSec，事件一到立刻恢复 immediate。
+  const awakeImmediate = String(awakeCfg.mode ?? 'normal').toLowerCase() === 'immediate'
+  const awakeMinIdleSec = Math.max(0.2, Number(awakeCfg.minIdleSec ?? 1))
+  const awakeIdleSec = awakeImmediate
+    ? Math.max(0.2, Number(awakeCfg.idleSec ?? awakeMinIdleSec))
+    : Math.max(15, Number(awakeCfg.idleSec ?? 120))
+  const awakeArmDelaySec = awakeImmediate ? Math.max(0.2, awakeMinIdleSec) : awakeIdleSec
+  const awakeMaxPerHour = awakeImmediate
+    ? Math.max(1, Number(awakeCfg.maxPerHour ?? 3600))
+    : Math.max(1, Number(awakeCfg.maxPerHour ?? 60))
+  const awakeBackoffAfter = Math.max(1, Number(awakeCfg.immediateBackoffAfter ?? 20))
+  const awakeBackoffSec = Math.max(5, Number(awakeCfg.backoffSec ?? 30))
+  const awakeOverdueSec = awakeImmediate ? Math.max(10, Number(awakeCfg.overdueSec ?? 10)) : awakeIdleSec * 1.5
+  const awakeTimerEnabled = awakeImmediate && awakeCfg.timer !== false
   const awakeRetrySec = Math.max(5, Number(awakeCfg.retrySec ?? 30))
   const awakeDuringFocus = awakeCfg.duringFocus !== false
   const awakeCappedSec = Math.max(60, Number(awakeCfg.cappedSec ?? 600))
@@ -474,6 +488,16 @@ export function apply(ctx) {
     awakeTickSentAt: [],
     awakeTickShortSentAt: [],
     awakeTickCappedAt: null,
+    // immediate 模式的连续自检计数/退避/最近外部活动
+    awakeTickStreak: 0,
+    awakeTickBackoff: false,
+    awakeTickBackoffAt: null,
+    awakeTickLastActivityAt: null,
+    // 反应时延指标
+    lastDecisionCycleSec: null,
+    lastReactionLatencySec: null,
+    reactionPendingAt: null,
+    reactionPendingFrom: null,
     sleepBoundary: null,
     lastSleepBoundary: null,
     sleepBrief: null,
@@ -510,9 +534,14 @@ export function apply(ctx) {
       state.stats = { ...blank().stats, ...(saved.stats && typeof saved.stats === 'object' ? saved.stats : {}) }
       state.awakeTickSentAt = Array.isArray(saved.awakeTickSentAt) ? saved.awakeTickSentAt.map(Number).filter(Number.isFinite).slice(-120) : []
       state.awakeTickShortSentAt = Array.isArray(saved.awakeTickShortSentAt) ? saved.awakeTickShortSentAt.map(Number).filter(Number.isFinite).slice(-20) : []
-      for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt']) {
+      for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt', 'awakeTickBackoffAt', 'awakeTickLastActivityAt', 'reactionPendingAt']) {
         state[key] = Number(saved[key]) > 0 ? Number(saved[key]) : null
       }
+      state.awakeTickStreak = Number(saved.awakeTickStreak) > 0 ? Number(saved.awakeTickStreak) : 0
+      state.awakeTickBackoff = saved.awakeTickBackoff === true
+      state.lastDecisionCycleSec = Number(saved.lastDecisionCycleSec) > 0 ? Number(saved.lastDecisionCycleSec) : null
+      state.lastReactionLatencySec = Number(saved.lastReactionLatencySec) > 0 ? Number(saved.lastReactionLatencySec) : null
+      state.reactionPendingFrom = saved.reactionPendingFrom == null ? null : String(saved.reactionPendingFrom)
       state.turnEnds = Number(saved.turnEnds) > 0 ? Number(saved.turnEnds) : 0
       state.sleepBoundary = saved.sleepBoundary && typeof saved.sleepBoundary === 'object' ? saved.sleepBoundary : null
       state.lastSleepBoundary = saved.lastSleepBoundary && typeof saved.lastSleepBoundary === 'object' ? saved.lastSleepBoundary : null
@@ -678,38 +707,92 @@ export function apply(ctx) {
     return false
   }
 
-  /** 安排/重置一次清醒节拍；delayMs 默认 idleSec。 */
-  function armAwakeTick(delayMs = awakeIdleSec * 1000) {
-    if (!awakeTickEnabled) { state.awakeTickDueAt = null; return }
-    if (awakeSuppressed()) { state.awakeTickDueAt = null; return }
-    state.awakeTickDueAt = nowTime() + Math.max(1000, Number(delayMs) || awakeIdleSec * 1000)
+  /** 外部信号/任务事件：重置 immediate 退避，并记录反应时延起点。 */
+  function noteExternalActivity(at = nowTime(), from = 'signal') {
+    state.awakeTickLastActivityAt = at
+    if (state.awakeTickStreak || state.awakeTickBackoff) {
+      state.awakeTickStreak = 0
+      state.awakeTickBackoff = false
+      state.awakeTickBackoffAt = null
+      recordEvent('awake-recover', { at, from })
+      log('info', 'time.awake-tick.recover', { from })
+    }
+    const inTurn = state.lastTurnStartAt != null && (state.lastTurnEndAt == null || Number(state.lastTurnStartAt) > Number(state.lastTurnEndAt))
+    if (!inTurn && state.reactionPendingAt == null) {
+      state.reactionPendingAt = at
+      state.reactionPendingFrom = String(from ?? 'signal')
+    }
+    dirty = true
+  }
+
+  /** task/信号到达后第一次 turn-start：算出 reactionLatencySec。 */
+  function noteReaction(at) {
+    if (state.reactionPendingAt == null) return
+    const latency = Math.max(0, Math.round((at - Number(state.reactionPendingAt)) / 1000))
+    state.lastReactionLatencySec = latency
+    recordEvent('reaction-latency', { sec: latency, from: state.reactionPendingFrom ?? 'signal' })
+    state.reactionPendingAt = null
+    state.reactionPendingFrom = null
+    dirty = true
+  }
+
+  // immediate 模式需要 ~1s 精度：独立 timer；普通模式仍靠 tick 循环。
+  let awakeTimer = null
+  function syncAwakeTimer() {
+    if (awakeTimer) { clearTimeout(awakeTimer); awakeTimer = null }
+    if (!awakeTimerEnabled || !awakeTickEnabled || state.awakeTickDueAt == null) return
+    const wait = Math.max(50, Math.min(Number(state.awakeTickDueAt) - nowTime(), 3_600_000))
+    awakeTimer = setTimeout(() => {
+      awakeTimer = null
+      try {
+        const at = nowTime()
+        if (state.awakeTickDueAt != null && at >= Number(state.awakeTickDueAt)) {
+          maybeAwakeTick(at)
+          persist()
+        }
+      } catch (error) { log('warn', 'time.awake-timer', { error: String(error?.message ?? error) }) }
+      syncAwakeTimer()
+    }, wait)
+    if (typeof awakeTimer.unref === 'function') awakeTimer.unref()
+  }
+
+  /** 安排/重置一次清醒节拍；immediate 模式默认 minIdleSec（~1s），退避中则 backoffSec。 */
+  function armAwakeTick(delayMs = null) {
+    if (!awakeTickEnabled) { state.awakeTickDueAt = null; syncAwakeTimer(); return }
+    if (awakeSuppressed()) { state.awakeTickDueAt = null; syncAwakeTimer(); return }
+    const delay = delayMs != null
+      ? Number(delayMs)
+      : (state.awakeTickBackoff ? awakeBackoffSec : awakeArmDelaySec) * 1000
+    state.awakeTickDueAt = nowTime() + Math.max(100, Number(delay) || awakeArmDelaySec * 1000)
+    dirty = true
+    syncAwakeTimer()
   }
 
   function clearAwakeTick() {
     if (state.awakeTickDueAt != null) { state.awakeTickDueAt = null; dirty = true }
+    syncAwakeTimer()
   }
 
   function awakeTickText(at, { short = false } = {}) {
     const idleSec = state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null
-    if (short) return `清醒节拍：醒着 ${idleSec ?? '?'} 秒没有回合；手上没事的话，看一眼状态再决定。`
+    // 用户明确讨厌"看 status 决定下一步"这种教轮询的文案：只给事实 + 继续。
+    if (short) return `清醒节拍：继续（醒着 ${idleSec ?? '?'} 秒，仍在等你）。`
     const bits = [`清醒节拍：距上次回合结束 ${idleSec ?? '?'} 秒`]
-    bits.push(`现在 ${stampAt(at, timeZone)}，醒着`)
-    const focusLease = focusApi?.current?.()
-    if (focusLease) bits.push(`专注：${focusLease.title ?? focusLease.label ?? '?'}`)
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条`)
-    // 只给事实 + 可选的下一步，不用命令式措辞，也不催她重复同一个动作。
-    return `${bits.join('；')}。可以接着做手上的事，也可以看 time_status / world_status / focus_status 决定下一步。`
+    if (state.goals.length) bits.push(`目标 ${state.goals.map((goal) => goal.id).join('、')}`)
+    return `${bits.join('；')}。继续。`
   }
 
-  /** tick 里调用：到点就发一次清醒节拍（每轮 turn-end 会重置 dueAt）。 */
+  /** tick / timer 里调用：到点就发一次清醒节拍；immediate 的节奏与退避见 §17。 */
   function maybeAwakeTick(at) {
     if (!awakeTickEnabled) return false
-    if (awakeSuppressed()) { state.awakeTickDueAt = null; return false }
+    if (awakeSuppressed()) { state.awakeTickDueAt = null; syncAwakeTimer(); return false }
     if (state.awakeTickDueAt == null) return false
     if (at < Number(state.awakeTickDueAt)) return false
-    // 上限：最近一小时的节拍次数
+    // 上限：最近一小时的节拍次数（immediate 默认 3600/h，等于不限）
     const hourAgo = at - 3_600_000
-    state.awakeTickSentAt = (Array.isArray(state.awakeTickSentAt) ? state.awakeTickSentAt : []).filter((ts) => Number(ts) > hourAgo)
+    const cap = Math.max(120, Math.min(4000, awakeMaxPerHour * 2))
+    state.awakeTickSentAt = (Array.isArray(state.awakeTickSentAt) ? state.awakeTickSentAt : []).filter((ts) => Number(ts) > hourAgo).slice(-cap)
     if (state.awakeTickSentAt.length >= awakeMaxPerHour) {
       if (!state.awakeTickCappedAt) {
         state.awakeTickCappedAt = at
@@ -723,6 +806,7 @@ export function apply(ctx) {
           const outcome = send({ kind: 'notice', text: awakeTickText(at, { short: true }), tags: ['awake-tick', 'heartbeat', 'short'] })
           if (outcome && outcome.accepted === false) {
             state.awakeTickDueAt = at + awakeRetrySec * 1000
+            syncAwakeTimer()
             return false
           }
           state.awakeTickShortSentAt = [...state.awakeTickShortSentAt, at].slice(-20)
@@ -730,6 +814,7 @@ export function apply(ctx) {
       }
       state.awakeTickDueAt = at + awakeCappedSec * 1000
       dirty = true
+      syncAwakeTimer()
       return false
     }
     // 滚动窗口释放后恢复正常节拍
@@ -739,13 +824,35 @@ export function apply(ctx) {
       // 投递失败（会话忙）：短重试，不静默放弃
       state.awakeTickDueAt = at + awakeRetrySec * 1000
       log('warn', 'time.awake-tick.failed', { reason: outcome.reason ?? outcome.error ?? 'unknown' })
+      syncAwakeTimer()
       return false
     }
     state.lastAwakeTickAt = at
-    state.awakeTickSentAt = [...state.awakeTickSentAt, at].slice(-120)
-    state.awakeTickDueAt = at + awakeIdleSec * 1000
+    state.awakeTickSentAt = [...state.awakeTickSentAt, at].slice(-cap)
+    if (awakeImmediate) {
+      const streak = Number(state.awakeTickStreak ?? 0) + 1
+      state.awakeTickStreak = streak
+      if (!state.awakeTickBackoff && streak >= awakeBackoffAfter) {
+        // 连续 N 次自检都没有外部信号/任务事件：退避到 backoffSec，事件一到立刻恢复。
+        state.awakeTickBackoff = true
+        state.awakeTickBackoffAt = at
+        state.awakeTickDueAt = at + awakeBackoffSec * 1000
+        recordEvent('awake-backoff', { streak, backoffSec: awakeBackoffSec })
+        log('warn', 'time.awake-tick.backoff', { streak, backoffSec: awakeBackoffSec })
+      } else if (state.awakeTickBackoff) {
+        state.awakeTickDueAt = at + awakeBackoffSec * 1000
+      } else {
+        // 等这一轮 turn-end 再 arm，避免 1s 空转。
+        state.awakeTickDueAt = null
+      }
+    } else {
+      state.awakeTickDueAt = at + awakeIdleSec * 1000
+    }
     dirty = true
-    log('info', 'time.awake-tick', { idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+    const idleSec = state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null
+    recordEvent('awake-tick', { idleSec, streak: state.awakeTickStreak, backoff: state.awakeTickBackoff, mode: awakeImmediate ? 'immediate' : 'normal', decisionCycleSec: state.lastDecisionCycleSec })
+    log('info', 'time.awake-tick', { idleSec, streak: state.awakeTickStreak, backoff: state.awakeTickBackoff, mode: awakeImmediate ? 'immediate' : 'normal' })
+    syncAwakeTimer()
     return true
   }
 
@@ -905,6 +1012,8 @@ export function apply(ctx) {
     // 她自己的闹钟/结束语/目标续推：静音不关自己的闹钟（FOCUS.md §1.6）。
     if (signal.from?.plugin === 'time') return { accept: true }
     const alarm = isEmergency(signal)
+    // 外部信号到达 = 有活动：immediate 退避立刻恢复，并给反应时延记起点。
+    if (signal.from?.plugin !== 'time' && state.phase === 'awake') noteExternalActivity(nowTime(), `plugin:${signal.from?.plugin ?? '?'}`)
     // 1) 静音（显式沉默）优先：连 alarm 也拦（默认 quota=0），但记录；显式 allow/配额可 opt-in 放行。
     if (state.lock) {
       if (allowMatch(state.lock.allow, signal)) { if (alarm) recordPierce(signal, 'mute-allow'); return { accept: true } }
@@ -1102,6 +1211,7 @@ export function apply(ctx) {
     goal.lastResumeAt = at
     goal.resumeDueAt = null
     send({ kind: 'goal', text: goalMessage(goal, { resume: true }), tags: ['goal', 'resume'], focus: goal.focus })
+    noteExternalActivity(at, 'goal-resume')
     return true
   }
 
@@ -1344,6 +1454,7 @@ export function apply(ctx) {
     // 00:05 才跑到）时记到昨天，今晚 23:55 还能正常响。
     const point = occurrenceAt(parsed, now, timeZone) ?? now
     state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
+    noteExternalActivity(now, `schedule:${schedule.id}`)
     persist()
     return outcome
   }
@@ -1610,11 +1721,11 @@ export function apply(ctx) {
       // 醒着长时间没有 turn 活动 = 可观测异常（自检本该在 idleSec 内把它救回来）。
       if (awakeTickEnabled && !awakeSuppressed() && state.lastTurnEndAt != null) {
         const idleSec = (at - Number(state.lastTurnEndAt)) / 1000
-        if (idleSec > awakeIdleSec * 1.5) {
+        if (idleSec > awakeOverdueSec) {
           if (!state.heartbeatOverdueLoggedAt || at - Number(state.heartbeatOverdueLoggedAt) > 10 * 60_000) {
             state.heartbeatOverdueLoggedAt = at
             dirty = true
-            log('warn', 'time.heartbeat.overdue', { idleSec: Math.round(idleSec), thresholdSec: awakeIdleSec, queued: state.queue.length })
+            log('warn', 'time.heartbeat.overdue', { idleSec: Math.round(idleSec), thresholdSec: awakeOverdueSec, queued: state.queue.length })
           }
         }
       }
@@ -1669,6 +1780,7 @@ export function apply(ctx) {
         fs.mkdirSync(dir, { recursive: true })
         fs.appendFileSync(outboxFile, `${JSON.stringify({ id: request?.id ?? null, at: nowTime(), ...result })}\n`, 'utf8')
       } catch (error) { log('warn', 'time.outbox.write', { error: String(error?.message ?? error) }) }
+      if (result?.ok !== false) noteExternalActivity(nowTime(), `inbox:${request?.cmd}`)
       processed += 1
     }
     state.inboxOffset = inboxOffset
@@ -1765,20 +1877,32 @@ export function apply(ctx) {
     else if (state.phase === 'paused') heartbeatState = 'paused'
     else if (state.lock) heartbeatState = 'muted'
     else if (suppressed) heartbeatState = 'suppressed'
-    else if (idleSec != null && idleSec > awakeIdleSec * 1.5) heartbeatState = 'overdue'
+    else if (idleSec != null && idleSec > awakeOverdueSec) heartbeatState = 'overdue'
     return {
       enabled: awakeTickEnabled,
       state: heartbeatState,
+      mode: awakeImmediate ? 'immediate' : 'normal',
       thresholdSec: awakeIdleSec,
+      overdueSec: awakeOverdueSec,
+      idleSec,
+      armDelaySec: state.awakeTickBackoff ? awakeBackoffSec : awakeArmDelaySec,
+      minIdleSec: awakeImmediate ? awakeMinIdleSec : null,
+      streak: Number(state.awakeTickStreak ?? 0),
+      backoff: Boolean(state.awakeTickBackoff),
+      backoffSec: awakeBackoffSec,
+      lastActivityAt: state.awakeTickLastActivityAt ?? null,
       lastTurnEndAt,
       lastTurnStartAt: state.lastTurnStartAt ?? null,
       lastModelCallAt: state.lastTurnStartAt ?? lastTurnEndAt,
-      idleSec,
       nextTickAt: state.awakeTickDueAt ?? null,
       lastAwakeTickAt: state.lastAwakeTickAt ?? null,
       ticksLastHour: lastHour.length,
       maxPerHour: awakeMaxPerHour,
       capped: Boolean(state.awakeTickCappedAt && now - Number(state.awakeTickCappedAt) < 3_600_000),
+      // 反应时延：turn-end→下一 turn/start；task/信号到达→下一 turn/start。
+      decisionCycleSec: state.lastDecisionCycleSec ?? null,
+      reactionLatencySec: state.lastReactionLatencySec ?? null,
+      reactionPendingAt: state.reactionPendingAt ?? null,
       pendingBacklog: state.queue.length,
       turnEnds: Number(state.turnEnds ?? 0),
     }
@@ -2163,6 +2287,7 @@ export function apply(ctx) {
     ctx.onDispose(() => { try { signals.setGate(null) } catch { /* 已经卸下 */ } })
   }
   ctx.onDispose(() => clearInterval(timer))
+  ctx.onDispose(() => { if (awakeTimer) { clearTimeout(awakeTimer); awakeTimer = null } })
 
   // delivery 层 gate：堵住插件直接 ctx.delivery.push 绕过 signals 的结构性缺口。
   // core 提供 addGate 时用组合式，卸载只摘自己那层；只有 setGate 时退化为旧接口。
@@ -2195,7 +2320,16 @@ export function apply(ctx) {
   // 睡眠期出现新 turn（边界 turn 已结束后又起来）= 直接注入的嫌疑，记事件供 validity 统计。
   ctx.signals.on({ tags: ['turn-start'] }, (signal) => {
     try {
-      state.lastTurnStartAt = nowTime()
+      const at = nowTime()
+      // 决策循环：turn-end → 下一 turn/start（只在 turn-end 后的第一次 start 记一次）。
+      const firstStartAfterEnd = state.lastTurnEndAt != null && (state.lastTurnStartAt == null || Number(state.lastTurnStartAt) <= Number(state.lastTurnEndAt))
+      if (firstStartAfterEnd) {
+        const cycleSec = Math.max(0, Math.round((at - Number(state.lastTurnEndAt)) / 1000))
+        state.lastDecisionCycleSec = cycleSec
+        recordEvent('decision-cycle', { sec: cycleSec })
+      }
+      noteReaction(at)
+      state.lastTurnStartAt = at
       const seq = Number(signal?.meta?.seq)
       if (Number.isFinite(seq)) state.lastTurnSeq = seq
       if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt != null && !state.sleepBoundary.postSleepTurn) {
