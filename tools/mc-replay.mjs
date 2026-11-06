@@ -98,14 +98,19 @@ export function replayCheckpoint(dir, { adapterFactory = createFakeAdapter } = {
   const errors = []
   const notes = []
   if (!pkg.world) notes.push('未提供 world.json：L1 task-replay 只断言录制的 tasks/events，不做方块/物理重放（断言不依赖 world；若后续做结构重放再补）')
-  if (pkg.meta?.phase && pkg.meta.phase !== 'L1') notes.push(`meta.phase=${pkg.meta.phase}（本回放器面向 L1；L2 请用分段回放）`)
+  if (pkg.meta?.phase === 'L3') notes.push('meta.phase=L3：本回放器做 L1 task-replay；L3 报告请叠加分段检查')
 
   const taskAssertions = []
   for (const assertion of expected.taskAssertions ?? []) {
     const diffs = []
-    const task = adapter.taskById(assertion.taskId)
+    const byId = assertion.taskId ? adapter.taskById(assertion.taskId) : null
+    const byKind = !byId && assertion.kind
+      ? adapter.tasks().filter((candidate) => candidate.kind === assertion.kind).sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0))
+      : []
+    const task = byId ?? byKind[0] ?? null
+    const taskLabel = assertion.taskId ? `taskId=${assertion.taskId}` : `kind=${assertion.kind}`
     if (!task) {
-      diffs.push(`找不到 taskId=${assertion.taskId}（ledger 有 ${adapter.tasks().map((t) => t.id).join(',') || '空'}）`)
+      diffs.push(`找不到 ${taskLabel}（ledger 有 ${adapter.tasks().map((t) => t.id).join(',') || '空'}）`)
     } else {
       if (assertion.kind && task.kind !== assertion.kind) diffs.push(`kind 期望 ${assertion.kind}，实际 ${task.kind}`)
       if (assertion.terminal !== undefined) {
@@ -128,12 +133,14 @@ export function replayCheckpoint(dir, { adapterFactory = createFakeAdapter } = {
         else if (!deepEqual(got.value, expectedValue)) diffs.push(`result.${dotted} 期望 ${JSON.stringify(expectedValue)}，实际 ${JSON.stringify(got.value)}`)
       }
       for (const type of assertion.events ?? []) {
-        const matched = pkg.events.some((event) => event?.type === type && (eventTaskId(event) === null || eventTaskId(event) === assertion.taskId))
-        if (!matched) diffs.push(`任务事件缺 ${type}（taskId=${assertion.taskId} 或全局）`)
+        const expectedTaskId = task?.id ?? assertion.taskId ?? null
+        const matched = pkg.events.some((event) => event?.type === type && (eventTaskId(event) === null || eventTaskId(event) === expectedTaskId))
+        if (!matched) diffs.push(`任务事件缺 ${type}（taskId=${expectedTaskId ?? assertion.kind} 或全局）`)
       }
     }
-    taskAssertions.push({ taskId: assertion.taskId, pass: diffs.length === 0, diffs })
-    errors.push(...diffs.map((diff) => `task ${assertion.taskId}: ${diff}`))
+    const resolvedTaskId = assertion.taskId ?? task?.id ?? null
+    taskAssertions.push({ taskId: resolvedTaskId, kind: assertion.kind ?? null, pass: diffs.length === 0, diffs })
+    errors.push(...diffs.map((diff) => `task ${resolvedTaskId ?? `kind:${assertion.kind}`}: ${diff}`))
   }
 
   const eventAssertions = []
