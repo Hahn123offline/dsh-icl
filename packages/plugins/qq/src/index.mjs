@@ -568,18 +568,35 @@ export async function apply(ctx) {
     return cfg.ownerQQ != null && String(peer) === String(cfg.ownerQQ) ? `主人（${peer}）` : `QQ ${peer}`
   }
 
+  /** time.compactWake 服务（可选）：旧版 time 没有 wake 属性时安全降级为全量、不 bump。 */
+  function timeWakeApi() {
+    try { return ctx.services?.get?.('time')?.wake ?? null } catch { return null }
+  }
+
+  function timeWakeCompact(wake) {
+    try { return Boolean(wake && typeof wake.enabled === 'function' && wake.enabled() && typeof wake.shouldCompact === 'function' && wake.shouldCompact()) } catch { return false }
+  }
+
   /** 唤醒矩阵的提醒只生成 signal（给 time 决定投递），不直接碰 delivery/focus。 */
   function emitWake(emission) {
     if (!emission?.activity) return false
     const peer = peerLabelOf(emission.activity)
+    const wakeApi = timeWakeApi()
+    const compact = timeWakeCompact(wakeApi)
     let text
     if (emission.kind === 'replyCheck') {
-      text = `[QQ主动检查] 你刚回过 ${peer} 的私聊，过了一小会儿了；想确认对方接没接话，所以来看看。（这不是对方刚发来的消息）`
+      text = compact
+        ? `[QQ主动检查·紧凑] ${peer} · 私聊\n你刚回过，确认一下有没有新回复。\n这不是对方刚发来的消息。`
+        : `[QQ主动检查] 你刚回过 ${peer} 的私聊，过了一小会儿了；想确认对方接没接话，所以来看看。（这不是对方刚发来的消息）`
     } else if (emission.kind === 'proactive') {
       const minutes = Math.max(1, Math.round((Number(emission.idleMs) || 0) / 60000))
-      text = `[QQ主动提醒] 你和 ${peer} 的私聊已经安静约 ${minutes} 分钟，你刚好有点空，可以想想有没有想分享的、或顺着上次的话题冒个泡。（这不是对方发来的消息；要不要现在打扰由 time/focus 决定）`
+      text = compact
+        ? `[QQ主动提醒·紧凑] ${peer} · 私聊\n安静约 ${minutes} 分钟，刚好有空。\n这不是对方发来的消息（是否打扰由 time/focus 决定）。`
+        : `[QQ主动提醒] 你和 ${peer} 的私聊已经安静约 ${minutes} 分钟，你刚好有点空，可以想想有没有想分享的、或顺着上次的话题冒个泡。（这不是对方发来的消息；要不要现在打扰由 time/focus 决定）`
     } else if (emission.kind === 'nudge') {
-      text = `[QQ积压提醒] 你离开这会儿，${peer} 那边又攒了 ${emission.unread ?? '几'} 条还没处理的私聊；怕你忘了，先把最该看的一小段列在下面。（这是提醒，不是新推送）`
+      text = compact
+        ? `[QQ积压提醒·紧凑] ${peer} · 私聊\n${emission.unread ?? '几'} 条未处理（账本水位之后）。\n这是提醒，不是新推送。`
+        : `[QQ积压提醒] 你离开这会儿，${peer} 那边又攒了 ${emission.unread ?? '几'} 条还没处理的私聊；怕你忘了，先把最该看的一小段列在下面。（这是提醒，不是新推送）`
     } else {
       return false
     }
@@ -608,6 +625,7 @@ export async function apply(ctx) {
         qq: {
           wake: {
             kind: emission.kind,
+            compact,
             reason: emission.reason ?? null,
             unread: emission.unread ?? null,
             snapshot: { included: snapshot.included, partial: snapshot.partial, readThroughSeq: snapshot.readThroughSeq },
@@ -617,6 +635,12 @@ export async function apply(ctx) {
     }
     try {
       const out = ctx.signals.offer(signal)
+      // compactWake：只有真正进管道（accepted 且未 queued）才计一次 wake；blocked/queued 不计。
+      if (out?.accepted && out?.queued !== true) {
+        try { wakeApi?.bump?.() } catch (error) {
+          ctx.log({ level: 'warn', msg: 'qq.wake.bump-fail', error: String(error?.message ?? error) })
+        }
+      }
       if (out?.accepted && (out.queued === true || out.delivered === false)) { stats.wakeQueued = (stats.wakeQueued ?? 0) + 1; return false }
       if (out?.accepted) { stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1; return true }
       if (out?.blocked) { stats.wakeBlocked = (stats.wakeBlocked ?? 0) + 1; return false }
