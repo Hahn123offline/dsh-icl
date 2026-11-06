@@ -134,19 +134,28 @@ node tools/cache-longrun.mjs `
 
 night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 事件块，`dream-run` 无 success 记录——这是要报的异常，不是缓存问题。
 
-## 9. layout 审计新基线（2026-11-06，master `84c28d8`，云端 5 轮）
+## 9. layout 审计新基线（2026-11-06）
 
-sanctioned cloud lab（`--preset icl-lab --model flash`，57104，`run cache-layout-20261106b`，5 轮含工具调用）审计结果：
+### 9.1 当前基线（master `c7b590d`，album 已挂载，cloud 5 轮）
+
+sanctioned cloud lab `cache-layout-album`（`--preset icl-lab --model flash`，57104，5 轮含工具调用）：
 
 | 项 | 值 | 判定 |
 |---|---|---|
-| system | 1 次 append / **0 次 replace**、相邻 turn `firstDiff=-1`；**2300 字符 / 5768 字节**；首行 `你是小千。`；无 harness identity/工程脚手架；`systemHasDynamicFacts=false` | ✅ 布局未变 |
-| 工具数 | **34**（见下方异常） | ⚠️ 预期 41 未达成 |
-| toolsChars / toolsHash | **19760 字符 / `38dfbee1cd9b`**（旧基准 18910 / `7047e6c4f3e8`） | ✅ 变化来自 memory/recall 描述更新（D1/D2/D4），计数不变 |
-| facts 布局 | 1 条快照 / 5 轮（0.2/轮）；sections = `[sandbox:policy, approval:policy, icl:facts]` | ✅ `icl:facts` 仍在 runtime-context |
-| `image/offload` 事件 | **0**；image block 0（本轮无图片投递） | ✅ 预期 |
+| system | 1 次 append / **0 次 replace**、相邻 turn `firstDiff=-1`；**2296 字符 / 5764 字节**；首行 `你是小千。`；无身份/脚手架；`systemHasDynamicFacts=false` | ✅ |
+| 工具数 | **41**（7 个 `album_*` 全在：import/list/search/collage/show/prune/status；本轮第 2 轮实际调用了 `album_list`） | ✅ 预期达成 |
+| toolsChars / toolsHash | **23286 字符 / `6a5eee138aab`** | ✅ 新基准 |
+| facts 布局 | 1 条快照 / 5 轮（0.2/轮）；sections = `[sandbox:policy, approval:policy, icl:facts]` | ✅ |
+| `image/offload` / image block | **0 / 0**（本轮无图片投递） | ✅ |
 
-**异常/待办（重要）**：`album` 已在 `DEFAULT_PLUGINS`（`packages/dsh-icl/src/config.mjs`），但 **`presets/icl.patch.yml` 与 `presets/lab.patch.yml` 的显式 `plugins:` 列表里没有 `album`** → 实际工具仍是 **34**，没有 7 个 `album_*`（本轮模型在第 2/3 轮想调 `album_list`/`mcb_status` 时因工具不存在而改用 `list_dir`/`world_status`）。要达成"41 工具"基线，需要把 `album` 加进 preset 的 plugins 列表（建议先 lab preset；产品 preset 按 lead/用户批准再动）。
+### 9.2 指纹演进（历史不回改）
 
-> 历史 34 工具指纹（`7047e6c4f3e8`，firstscreen 时代）**不回改**，它是"当时部署版本"的指纹；新基准以上表为准。
-> system 字符数会随 run 目录路径长度 ±1–2 字符（cwd 在 system 里），不是布局漂移。
+| 阶段 | 工具数 | toolsChars | toolsHash | 说明 |
+|---|---|---|---|---|
+| firstscreen 时代 | 34 | 18910 | `7047e6c4f3e8` | 首屏净化后、memory/recall 改前 |
+| memory/recall D1–D4 后 | 34 | 19760 | `38dfbee1cd9b` | 描述更新；album 未挂载（发现异常） |
+| **album 挂载后（当前）** | **41** | **23286** | **`6a5eee138aab`** | `misc 88570f2` 修复后 |
+
+> `album` 曾进了 `DEFAULT_PLUGINS` 但不在 preset 显式 `plugins:` 列表 → 工具仍是 34（模型只能改用 `list_dir`）。
+> `88570f2` 已修：两个 lab preset 都显式挂 `album`，加 `preset-plugins.test.mjs` 防再犯；**产品 preset 未动**（等用户批）。
+> system 字符数随 run 目录路径长度 ±1–4 字符（cwd 在 system 里），不是布局漂移。

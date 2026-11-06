@@ -351,7 +351,7 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 
 详见 `docs/CACHE-NIGHT-2026-11-06.md`（含睡眠/清醒分窗、冷启动逐条、复算命令 `tools/cache-longrun.mjs`）。
 
-**新基线（2026-11-06，master `84c28d8`）**：tools **34 / 19760 字符 / `38dfbee1cd9b`**（memory/recall 描述更新；album 因 preset 未启用未生效）、system **2300 字符 / 5768 字节**、facts 快照 0.2/轮；详见 `CACHE-NIGHT §9`。
+**新基线（2026-11-06，master `c7b590d`，album 已挂载）**：tools **41 / 23286 字符 / `6a5eee138aab`**（7 个 `album_*`；历史 34 工具指纹 `7047e6c4f3e8`/`38dfbee1cd9b` 不回改）、system **2296 字符 / 5764 字节**、facts 快照 0.2/轮、`image/offload=0`；详见 `CACHE-NIGHT §9`。
 
 **结论**：节流**不降低 hit%（两者都 91.2%）**，prefill 略降（-1.4%），首轮冷启动后的请求全部 `private_endpoint` 命中。
 本 scenario 每轮 facts 只变一次，所以节流只省 1 条快照（2705 vs 3163 字符）；**真正的收益在 step-heavy 场景**
