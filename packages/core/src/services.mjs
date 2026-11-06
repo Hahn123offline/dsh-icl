@@ -602,6 +602,10 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
             priority: source.priority == null ? (source.meta?.priority ?? null) : String(source.priority),
             pierce: source.pierce === true || source.meta?.pierce === true,
             meta: source.meta && typeof source.meta === 'object' ? source.meta : null,
+            // P3：time 在 delivery 层裁决时需要原信号的 id/过期身份（去重与过期计数）。
+            signalId: source.signalId == null ? null : String(source.signalId),
+            createdAt: Number(source.createdAt) > 0 ? Number(source.createdAt) : null,
+            expiresAt: Number(source.expiresAt) > 0 ? Number(source.expiresAt) : null,
           },
           content: { text: String(content.text ?? '') },
           batchKey: batchKey == null ? null : String(batchKey),

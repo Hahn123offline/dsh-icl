@@ -39,19 +39,37 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
   const model = createModelClient({ fetchImpl, now })
   signals.setDeliver((signal) => {
     // 注意力闸门：别处的事先问 focus，能不能现在进来。
-    const decision = focus.admit(signal)
+    const decision = focusDecision(signal)
     if (!decision.deliver) {
       focus.defer(signal)
       return { queued: true, reason: decision.reason, focus: decision.focus }
     }
-    delivery.push({
+    // P3：signals 层不再有 time gate；时间裁决只在 delivery 层的 time gate 做一次。
+    // 被 time 拦下时 delivery.push 返回 blocked（内容已进 time 队列），这里要如实报 queued，
+    // 不能仍报 delivered:true。
+    const pushed = delivery.push({
       to: 'session',
       channel: 'signal',
-      source: { plugin: signal.from.plugin, activity: signal.from.activity ?? 'signal', seq: null },
+      source: {
+        plugin: signal.from.plugin,
+        activity: signal.from.activity ?? 'signal',
+        seq: null,
+        // P3：时间闸门已移到 delivery 层，这里必须把信号的"急迫度/空间/账本身份"
+        // 一起带过去，否则 alarm/priority/seq 会在 delivery 层丢失。
+        tags: Array.isArray(signal.tags) ? signal.tags : [],
+        focus: signal.focus ?? null,
+        priority: signal.meta?.priority ?? null,
+        pierce: signal.meta?.pierce === true,
+        meta: signal.meta ?? null,
+        signalId: signal.id,
+        createdAt: signal.createdAt,
+        expiresAt: signal.expiresAt,
+      },
       content: { text: signal.text, images: Array.isArray(signal.images) ? signal.images : [] },
       batchKey: `signal:${signal.from.plugin}:${signal.focus ?? ''}`,
       exactlyOnce: false,
     })
+    if (pushed && pushed.blocked) return { queued: true, blocked: true, reason: pushed.reason ?? 'delivery-gate' }
     return { delivered: true, reason: decision.reason }
   })
   // 焦点释放/切换：把积压一次性交给她（不是逐条推送）。
@@ -74,7 +92,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       // 若被 time 拦下，摘要会带着这些 seq 进 time 队列，在真正释放时再补推 QQ。
       meta: qqSeqs.length ? { replayQq: qqSeqs.map((row) => ({ activity: row.activity, seq: row.seq })) } : null,
     })
-    if (qqSeqs.length && (outcome?.accepted || outcome?.deduped)) noteQqDelivered(qqSeqs, 'focus-backlog')
+    if (qqSeqs.length && (outcome?.accepted || outcome?.deduped) && outcome?.queued !== true) noteQqDelivered(qqSeqs, 'focus-backlog')
   })
 
   /** id -> { manifest, module, apply, dispose:Function[], enabled:boolean } */
@@ -106,6 +124,17 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     return accepted
   }
 
+  /**
+   * 空间裁决（含睡眠租约例外）：`sleep` 是 time 的时间锁标记（owner=time/kind=idle/label=sleep），
+   * 不是"她正在做的事"；跳过它，让 delivery 层的 time gate 决定睡眠积压（否则正常消息会被
+   * sacred 的睡眠租约收进 focus backlog，破坏 sleep backlog 语义）。
+   */
+  function focusDecision(signal) {
+    const cur = focus.current()
+    if (cur && cur.owner === 'time' && cur.label === 'sleep' && cur.kind === 'idle') return { deliver: true, reason: 'sleep-marker' }
+    return focus.admit(signal)
+  }
+
   // C6：直投 delivery 也要先过 focus（空间闸门）；time 的时间闸门在插件启用后追加，
   // 所以 gate 顺序是 focus → time。显式 bypass：from.plugin==='time'、tags admin/alarm、
   // 或 source.meta.bypassFocus===true（只有结构性用途，不改变真实消息路径）。
@@ -124,7 +153,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       tags,
       meta,
     }
-    const decision = focus.admit(signal)
+    const decision = focusDecision(signal)
     if (decision.deliver) return { accept: true }
     focus.defer(signal)
     return { accept: false, reason: decision.reason ?? 'focus' }

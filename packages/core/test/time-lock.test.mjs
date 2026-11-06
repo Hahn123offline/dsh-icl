@@ -166,16 +166,16 @@ test('time_status 四态一行可读：醒着/睡着/计时暂停/静音/积压'
 
 /* ───────────────────────── 防穿透 ───────────────────────── */
 
-test('ctx.delivery.push 直投也被拦（C6 先 focus 空间闸门：睡眠的 focus 租约把它收进 focus backlog）', async () => {
+test('ctx.delivery.push 直投也被拦（P3：睡眠租约是时间标记，不走 focus，进 time 队列）', async () => {
   const { host, api } = await boot()
   api.sleep({ message: '睡', durationMin: 60 })
   const direct = host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: '绕过 signals 的直投' } })
   assert.equal(direct.accepted, false)
   assert.equal(direct.blocked, true)
-  assert.match(String(direct.reason), /focus/, '直投先被空间闸门（睡眠 focus 租约 sacred）拦下')
-  assert.equal(host.services.focus.backlog().reduce((n, row) => n + row.count, 0), 1, '内容进 focus backlog，不能消失')
-  assert.equal(api.status().backlog, 0, '还没轮到 time 队列（focus 先拦）')
-  assert.equal(host.services.focus.backlog()[0]?.lastText, '绕过 signals 的直投')
+  assert.equal(direct.reason, 'sleeping')
+  assert.equal(api.status().backlog, 1, '直投也要进 time 积压，不能消失')
+  assert.equal(api.queue()[0].text, '绕过 signals 的直投')
+
   assert.ok(host.services.delivery.blockedCount() >= 1)
   api.wake()
   assert.match(drainText(host), /绕过 signals 的直投/)
@@ -1115,4 +1115,28 @@ test('time backlog 重放回执：不同 peer 的 seq 按 activity 分组，各�
   const byActivity = Object.fromEntries(calls.map((call) => [call.activity, call.seqs]))
   assert.deepEqual(byActivity['qq:private:1'], [3])
   assert.deepEqual(byActivity['qq:private:2'], [5])
+})
+
+/* ───────────────────── P3：统一为 focus→time（time 只在 delivery 层裁决一次） ───────────────────── */
+
+test('P3 signals 层不再装 time gate；time 只在 delivery 层（focus 空间闸门 + time 时间闸门）', async () => {
+  const { host } = await boot()
+  assert.equal(host.services.signals.gates().length, 0, 'time 不再往 signals 装 gate')
+  assert.equal(host.services.delivery.gateCount(), 2, 'delivery 上是 focus 空间闸门 + time 时间闸门')
+})
+
+test('P3 同一消息只被时间 gate 计一次：配额按消息消耗、重复 offer 不重复计数', async () => {
+  const { host, api } = await boot()
+  api.mute({ minutes: 5, emergencyQuota: 1 })
+  const signal = { id: 'p3-alarm-1', from: { plugin: 'mc' }, kind: 'event', text: '危险一', tags: ['safety', 'alarm'] }
+  const first = host.services.signals.offer(signal)
+  assert.equal(first.accepted, true, '配额内放行')
+  assert.equal(api.status().lock.emergency.used, 1, '一条消息只消耗一次配额')
+  const dup = host.services.signals.offer(signal)
+  assert.equal(dup.deduped, true, '同 id 重复 offer 去重')
+  assert.equal(api.status().lock.emergency.used, 1, '重复 offer 不重复计数')
+  const second = host.services.signals.offer({ id: 'p3-alarm-2', from: { plugin: 'mc' }, kind: 'event', text: '危险二', tags: ['safety', 'alarm'] })
+  assert.equal(second.blocked, true)
+  assert.equal(api.status().lock.emergency.used, 1, '超配额后不再计数')
+  assert.equal(api.queue()[0]?.priority, 'alarm')
 })
