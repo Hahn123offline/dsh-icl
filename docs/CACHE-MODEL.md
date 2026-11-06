@@ -351,10 +351,10 @@ preset `icl`，provider `ninfer`，coder390-27b-q3-df2-4x500，MC 场景）：
 
 详见 `docs/CACHE-NIGHT-2026-11-06.md`（含睡眠/清醒分窗、冷启动逐条、复算命令 `tools/cache-longrun.mjs`）。
 
-**新基线（2026-11-06 16:45，master `6d2c518`）**：
-- `icl-lab`：tools **54 / 39350 字符 / `c1df0e849a9f`**、system **4195 字符 / 8256 字节**、facts 快照 0.2/轮、`image/offload=0`；
+**新基线（2026-11-07 02:17，master `d0b2b77`）**：
+- `icl-lab`：tools **56 / 41577 字符 / `1ac40db7d8d0`**、system **4195 字符 / 8256 字节**、facts 快照 0.2/轮、`image/offload=0`；
 - `icl-mc-lab`（allowlist）：tools **27 / 21459 字符 / `c91bce1e703b`**、system 2920 字符、facts 快照 0.33/轮；
-- 体积上涨来自新挂载插件（video/DSH 原生工具/sim seed），全部静态、非 cache 回归；prefill 硬数字需本地 run。
+- 产品 `icl`（A1，离线 bootstrap）：ICL 面 **51 工具 / 34101 字符**、无 `mcb_*`、purifySections 4 段就位、ICL system 2899 字符（DSH 层 live 待需时补）。
 详见 `CACHE-NIGHT §9.1/§9.2`（历史指纹不回改）。
 
 **结论**：节流**不降低 hit%（两者都 91.2%）**，prefill 略降（-1.4%），首轮冷启动后的请求全部 `private_endpoint` 命中。
