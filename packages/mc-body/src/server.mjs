@@ -63,8 +63,9 @@ export function createHttpServer(body, { host = '127.0.0.1', port = 54836 } = {}
         return json(res, 200, { ok: true })
       }
       if (req.method === 'POST' && url.pathname === '/v1/safety/stop') {
+        // mcb_stop 对应的 body 行为：cancel+反射+报告；暂停中也可调用，不需要先 resume。
         const input = await readJson(req).catch(() => ({}))
-        return json(res, 200, { ok: true, ...body.safetyStop(input.reason ?? 'manual') })
+        return json(res, 200, body.stopAll(input.reason ?? 'manual'))
       }
       if (req.method === 'POST' && url.pathname === '/v1/safety/resume') {
         const input = await readJson(req).catch(() => ({}))

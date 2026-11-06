@@ -397,7 +397,7 @@ export function createMineflayerAdapter({
         reconnectExhausted = false
         reconnectNextDelayMs = null
         lastError = null
-        emit('spawn', { position: currentPosition() })
+        emit('spawn', { position: currentPosition(), dimension: b.game?.dimension ?? null })
         if (hasSpawnedBefore) emit('reconnected', { position: currentPosition() })
         hasSpawnedBefore = true
         settle(resolve, undefined)
@@ -2334,6 +2334,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp }
 }
+
 
 
 
