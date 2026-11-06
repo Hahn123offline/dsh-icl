@@ -193,6 +193,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       if (Number.isFinite(date.getTime())) parts.push(`${twoDigit(date.getHours())}:${twoDigit(date.getMinutes())}`)
       const phase = String(status?.phase ?? '')
       if (phase) parts.push(phase === 'awake' ? '醒着' : phase === 'sleeping' ? '睡' : phase === 'paused' ? '暂停' : phase)
+      // 下一安排：让 tail 能替代频繁 time_list/time_status（lab A/B 首轮发现只给"时间+醒着"信息太弱）。
+      const schedules = Array.isArray(status?.schedules) ? status.schedules : []
+      const nextAt = schedules.map((row) => Number(row?.at)).filter((when) => Number.isFinite(when) && when > at).sort((x, y) => x - y)[0]
+      if (Number.isFinite(nextAt)) { const nextDate = new Date(nextAt); if (Number.isFinite(nextDate.getTime())) parts.push(`下一${twoDigit(nextDate.getHours())}:${twoDigit(nextDate.getMinutes())}`) }
       let focus = null
       try { focus = host.services.focus.current() } catch { focus = null }
       if (focus) {
