@@ -516,14 +516,18 @@ function turnGapBreakdown(events) {
   for (const end of ends) {
     const next = starts.find((start) => Number(start.time) > Number(end.time))
     if (!next) continue
-    const between = events.filter((event) => Number(event.time) > Number(end.time) && Number(event.time) <= Number(next.time) && event.type === 'user/message')
+    const between = events.filter((event) => Number(event.time) > Number(end.time) && Number(event.time) <= Number(next.time) && (event.type === 'user/message' || event.type === 'agent/inbox/spliced'))
     let source = 'idle'
     for (const message of between) {
-      const text = String(message.data?.content?.[0]?.text ?? '')
-      const kind = String(message.data?.source?.kind ?? 'user')
-      if (/^清醒节拍/.test(text)) source = 'awake-tick'
-      else if (supervisorTexts.some((candidate) => text.includes(candidate.slice(0, 24)))) source = 'supervisor'
-      else if (kind !== 'runtime-context' && kind !== 'plugin:time') source = 'external'
+      const texts = message.type === 'agent/inbox/spliced'
+        ? (message.data?.inserted ?? []).flatMap((item) => (item?.content ?? []).map((block) => String(block?.text ?? '')))
+        : [String(message.data?.content?.[0]?.text ?? '')]
+      const kind = String(message.data?.source?.kind ?? message.data?.inserted?.[0]?.source?.kind ?? 'user')
+      for (const text of texts) {
+        if (/^清醒节拍/.test(text)) source = 'awake-tick'
+        else if (supervisorTexts.some((candidate) => text.includes(candidate.slice(0, 24)))) source = 'supervisor'
+        else if (kind !== 'runtime-context' && kind !== 'plugin:time') source = 'external'
+      }
     }
     const sec = Math.round((Number(next.time) - Number(end.time)) / 1000)
     gaps.push(sec)

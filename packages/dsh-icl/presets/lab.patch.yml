@@ -184,6 +184,12 @@
                 - memo_commit
                 - memos
               pluginConfig:
+                time:
+                  # E2 时序收敛（用户/lead 批准）：清醒节拍 120s→30s，goal 续推 60s→30s。
+                  # 目标：turn-gap p95 从 121s 降到 ≤40s（S1 实测 121/154s）。
+                  awakeTick:
+                    idleSec: 30
+                  goalResumeMinGapSec: 30
                 mc-link:
                   listenPort: __LAB_MC_PORT__
                   # 默认 username 是 ICL；lab 用占位符，白天验收 ICL-mclab-1、夜间长测 ICL-night-1。
