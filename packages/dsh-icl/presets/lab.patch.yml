@@ -60,6 +60,7 @@
                 - dream
                 - editor
                 - bili
+                - album
                 - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
@@ -125,6 +126,7 @@
                 - dream
                 - editor
                 - mc-link
+                - album
                 - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
