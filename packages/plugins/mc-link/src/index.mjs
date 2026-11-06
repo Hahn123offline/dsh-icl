@@ -850,6 +850,21 @@ export function apply(ctx) {
       return `[resume] ${lastStatus?.paused ? `仍暂停（${REASON_TEXT[lastStatus.pausedReason] ?? lastStatus.pausedReason}）` : '已恢复'}`
     }
     if (op === 'cancel') return `[cancel] ${result?.id ?? row?.taskId ?? '?'} ${result?.state ?? ''}`.trim()
+    if (op === 'attack') {
+      // 不能只回名字：必须说清命中/伤害/目标血量。旧 body 只回 {attacked} 时要显式标"无法确认命中"。
+      const target = result?.target && typeof result.target === 'object' ? result.target : null
+      const name = target?.name ?? result?.targetName ?? result?.attacked ?? (typeof result?.target === 'string' ? result.target : '目标')
+      const hit = result?.hit ?? result?.hitResult ?? result?.landed
+      const damage = result?.damage ?? result?.dealtDamage ?? result?.dealt
+      const health = result?.targetHealth ?? result?.health ?? target?.health
+      if (hit === false || (result?.reason && damage == null && health == null)) {
+        return `[attack] 没打中 ${name}（${result?.reason ?? '目标已死/太远/被挡住'}）；换目标或先 goto 到 3 格内再打。`
+      }
+      if (damage != null || health != null) {
+        return `[attack] 命中 ${name}${damage != null ? `，造成 ${damage} 伤害` : ''}${health != null ? `，目标剩余 ${health} 血` : ''}`
+      }
+      return `[attack] 打了 ${name}，但 body 没返回伤害/目标血量——**无法确认命中**（不要当成打赢）；先 mcb_look 看目标还在不在，或等 body 升级返回字段。`
+    }
     if (op === 'pickup') {
       const picked = result?.picked ?? 0
       const names = Array.isArray(result?.items) ? result.items : []
@@ -938,7 +953,12 @@ export function apply(ctx) {
       // wait 的 body 参数叫 ms；模型常写 durationMs，这里做一次容错，避免"等了 8 秒"实际只等 500ms。
       if (op === 'wait') {
         const params = raw.params && typeof raw.params === 'object' ? raw.params : {}
-        step.params = { ...params, ms: params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs }
+        const requested = Number(params.ms ?? params.durationMs ?? raw.ms ?? raw.durationMs)
+        const ms = Number.isFinite(requested) ? Math.max(0, Math.min(30_000, requested)) : (params.ms ?? 500)
+        step.params = { ...params, ms }
+        if (Number.isFinite(requested) && requested > 30_000) {
+          notes.push(`wait 单次最多 30s（你要了 ${Math.round(requested / 1000)}s，已截断）；长任务不要用 wait 轮询，完成/失败会作为事件回来`)
+        }
       }
       if (op === 'events' && raw.since == null) step.since = lastSeq
       // 坐标容错：params.pos / params.target 或顶层 pos/target，可以写 [x,y,z] 也可以写 {x,y,z}。
@@ -971,44 +991,72 @@ export function apply(ctx) {
     return `mcb_do 在 ${Math.round(timeoutMs / 1000)}s 内没有返回：steps 里的长动作（goto/mine/explore 这类单步 op）可能还在跑。先 mcb_status 看位置/任务，或 {"steps":[{"op":"tasks"}]} 查台账；不要原样重试。长任务请用 {"op":"task"} 提交，立即拿 taskId。`
   }
 
+  /** 暂停原因 → 可操作建议（别只说"先 resume"：不处理原因会被再次暂停）。 */
+  const PAUSE_ADVICE = {
+    'low-health': '先吃/撤到安全点（eat 或 goto 掩体），血回上去再 resume；不处理会一直被暂停',
+    'health-drop': '先撤到安全点/吃，血稳住再 resume；继续硬拼会反复被暂停',
+    'low-oxygen': '先回水面/离开水下，氧气回来再 resume',
+    'spawn-unsafe': '先 goto 到安全位置，再 resume',
+    death: '复活后先 goto 安全点再 resume；旧任务不会续跑',
+    quarantine: '连续死亡隔离：先离开危险区/等隔离结束，再 resume',
+    disconnect: '等 body 重连；重连后身体仍是暂停态，要显式 resume',
+    stuck: '先 mcb_map 看地形、goto 脱困，再 resume',
+    'user-stop': '你让它停的：直接 {"op":"resume"} 继续，或 mcb_leave 离开；不会自动恢复',
+    emergency: '紧急规避中：先 mcb_look 确认脱离危险，再 resume',
+  }
+  function pauseAdvice(reason) {
+    return PAUSE_ADVICE[String(reason ?? '')] ?? '先看清原因/环境再 resume；只 resume 不处理原因会被再次暂停'
+  }
+
   async function runDo(steps, safety = null) {
     const { steps: normalized, notes } = normalizeSteps(steps)
     const noteText = notes.length ? `（参数处理：${notes.join('；')}）` : ''
     const timeoutMs = Number(raw.doTimeoutMs) || 120_000
-    try {
-      const body = await call('/v1/do', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ steps: normalized, safety }),
-        timeoutMs,
-      })
-      lastStatus = await refreshStatus() ?? lastStatus
-      const parts = (body.results ?? []).map(renderRow)
-      // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
-      if (normalized.some((step) => step.op === 'resume')) {
-        const cleared = setTimePausedMode(false)
-        if (cleared) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
+    // 逐步执行（而不是一次发整批）：一步失败也能把**已执行步骤的结果**带回来，
+    // 失败归因到具体第几步；task 语义保持"提交后立即返回、后面的步骤不执行"。
+    const parts = []
+    let task = null
+    let failed = null
+    for (let index = 0; index < normalized.length; index += 1) {
+      const step = normalized[index]
+      try {
+        const body = await call('/v1/do', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ steps: [step], safety }),
+          timeoutMs,
+        })
+        lastStatus = await refreshStatus() ?? lastStatus
+        for (const row of body.results ?? []) parts.push(renderRow({ ...row, index }))
+        // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
+        if (step.op === 'resume' && setTimePausedMode(false)) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
+        if (body.task) { task = body.task; break }
+      } catch (error) {
+        if (isTimeoutError(error) || error?.code === 'timeout') {
+          return { text: [...parts, doTimeoutText(timeoutMs)].filter(Boolean).join('\n\n') }
+        }
+        failed = { index, op: step.op, error }
+        break
       }
-      if (noteText) parts.push(noteText)
-      if (body.task) {
-        // task 会让 body 立即返回；同一次里 task 之前的步骤（cancel/wait/say…）的结果也要给她看，
-        // 否则"取消 + 下新任务"只显示新任务，她不知道旧的取消了没有。
-        const head = `任务 ${body.task.id}（${body.task.kind}）已接受，状态 ${body.task.state}。用 mcb_status 看进度；完成/失败/中断会作为事件通知回来。`
-        return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
-      }
-      return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
-    } catch (error) {
-      if (isTimeoutError(error) || error?.code === 'timeout') return { text: doTimeoutText(timeoutMs) }
-      const message = String(error?.message ?? error)
-      // body 的错误本身通常可操作（"身体已暂停（death）；先 resume"）；再补一句"下一步"。
-      const hint = /暂停/.test(message) ? '；恢复：{"steps":[{"op":"resume"}]}，任务被挂起就带 taskId，或 mcb_leave 收尾'
+    }
+    if (failed) {
+      const message = String(failed.error?.message ?? failed.error)
+      const pausedReason = (/暂停（([^）]+)）/.exec(message) ?? [])[1] ?? null
+      const hint = /暂停/.test(message) ? `；${pauseAdvice(pausedReason)}。暂停期间仍可用 look/inventory/map/scan/move/eat/cancel/tasks/events/resume/stop`
         : /未允许|403/.test(message) ? '；body 启动参数没开这个能力（--allow-task/--allow-say），需要重起 body'
           : /offline|未连接|断线/.test(message) ? '；身体不在线：先 mcb_status，必要时 mcb_join；重连后身体仍暂停，要显式 resume'
             : /队列已满|429|409|上一个 do 动作还在执行/.test(message) ? '；先 {"steps":[{"op":"tasks"}]} 看有什么在跑；长动作一律用 {"op":"task"} 提交，别并发单步 op'
               : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
                 : ''
-      throw new Error(`${message}${hint}`)
+      const done = parts.length ? `\n\n已完成的前序步骤：\n${parts.join('\n\n')}` : '\n\n失败前没有已完成的步骤。'
+      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}${hint}${done}`)
     }
+    if (noteText) parts.push(noteText)
+    if (task) {
+      const head = `任务 ${task.id}（${task.kind}）已接受，状态 ${task.state}。完成/失败/中断会作为事件通知回来，**不要循环 mcb_status/tasks 查**（需要时看一眼即可）。`
+      return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+    }
+    return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
   }
 
   const tools = [
@@ -1038,7 +1086,7 @@ export function apply(ctx) {
     {
       name: 'mcb_join',
       summary: '连接 MC 服务器：必要时启动 mc-body 进程，并等到真正连上；只负责连接，不建 focus/goal。',
-      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服唯一；默认 ICL）。成功返回服务器与连接状态，之后 mcb_status 复核。失败给可读原因：进程退出码 + body 日志、端口被占、服务器没开/端口错、同名 bot 被踢；失败不留半死进程，可再 join。想认真投入：连上后 focus_enter 带 activity:"mc"，再 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾 mcb_leave {cleanup:true}。',
+      description: '参数：server（mcb_servers/mcb_lan 里的名字）或 host + port（默认 25565），username 可选（≤16 字符，同服唯一；默认 ICL）。成功返回服务器与连接状态，之后 mcb_status 复核。失败给可读原因（退出码/日志/端口/服务器/同名被踢）；可再 join。想认真投入：连上后 focus_enter 带 activity:"mc"，再 time_arrange {mode:"goal",focus:"mc"} 建持续目标；收尾 mcb_leave {cleanup:true}。',
       when: ['被叫去玩，或她自己想玩', 'mcb_status 显示未连接、服务器已经开着'],
       avoid: ['body 已经连在另一台服务器：先 mcb_leave', '只想随便玩一小会儿：连上直接玩，不必建 focus/goal'],
       parameters: {
@@ -1071,7 +1119,7 @@ export function apply(ctx) {
     {
       name: 'mcb_leave',
       summary: '退出 MC：安全停止并结束本会话启动的 body；可选 cleanup 一并清 focus/goal。',
-      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部 body 只安全停止、不杀进程（返回里说明）。返回报告：安全停止是否成功、进程怎么结束、还挂着什么 focus/goal。默认只停 body；不想被持续叫醒带 cleanup：释放模型 focus、取消 MC 相关 time 目标（按 activity/主题/服务器别名识别）。幂等。离开世界=结束 body；只想停任务用 mcb_stop（暂停≠离开）。',
+      description: '先安全停止（当前任务标 interrupted），再对"本会话自己 spawn 的"进程 SIGTERM→SIGKILL；外部 body 只安全停止、不杀进程（返回里说明）。返回报告：安全停止是否成功、进程怎么结束、还挂着什么 focus/goal。默认只停 body；不想被持续叫醒带 cleanup：释放模型 focus、取消 MC 相关 time 目标。幂等。离开世界=结束 body；只想停任务用 mcb_stop（暂停≠离开）。',
       when: ['不想玩了/要收尾', 'body 卡死、需要重起（先 leave 再 join）', '收工：想同时清掉 focus 和 MC 持续目标'],
       avoid: ['只离开游戏但想保留持续目标：默认 leave 就行，别带 cleanup'],
       parameters: {
@@ -1160,7 +1208,7 @@ export function apply(ctx) {
     {
       name: 'mcb_status',
       summary: '查看身体当前事实：连接/服务器/位置/生命/饥饿/背包/当前任务与队列/暂停原因/重连/body 进程状态。只读。',
-      description: '返回多行事实。连接行以 body 顶层 connected 为准（不会假在线），离线附原因/重连。任务行 kind/state：paused=断线挂起（{"op":"resume","taskId":"t-x"} 继续）、unknown=超时未知（先看背包/位置）、failed 带 error。暂停行给原因与安全反射；暂停=停任务，身体仍在世界，解除用 {"op":"resume"}。危险补投行说明被 pause/睡眠拦下、等待补投的 alarm。任务历史用 {"steps":[{"op":"tasks"}]}。',
+      description: '返回多行事实。**只在需要时查一次，不要轮询**（任务进度会作为事件回来）。连接行以 body 顶层 connected 为准（不会假在线），离线附原因/重连。任务行 kind/state：paused=断线挂起（{"op":"resume","taskId":"t-x"} 继续）、unknown=超时未知（先看背包/位置）、failed 带 error。暂停行给原因 + 可操作建议（吃/撤/换位置/何时再 resume），暂停=停任务、身体仍在世界。危险补投行说明被 pause/睡眠拦下、等待补投的 alarm。',
       when: ['行动前确认位置/血量/任务', '任务事件之后核对真实结果', '怀疑掉线/卡死'],
       parameters: { type: 'object', properties: {} },
       async execute() {
@@ -1213,7 +1261,7 @@ export function apply(ctx) {
         // time 的睡眠边界事实（下一版才有；旧版无字段就静默）：只读展示，不做 cancel。
         const boundary = timeSleepBoundary()
         if (boundary) lines.push(boundary.text)
-        if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}（任务已中断；resume 前先看环境）`)
+        if (status.paused) lines.push(`暂停：${REASON_TEXT[status.pausedReason] ?? status.pausedReason}——${pauseAdvice(status.pausedReason)}`)
         // 暂停 ≠ 离开：把 body 的安全反射状态与时间相位都摆出来，并说明危险仍会穿透。
         const safetyState = status.safety ?? {}
         const reflex = safetyState.reflex ?? null
@@ -1225,8 +1273,7 @@ export function apply(ctx) {
           lines.push(`安全反射：${reflex.enabled ? '开启' : '关闭'}（≤${Math.round((reflex.maxDurationMs ?? 10000) / 1000)}s/次、≤${reflex.maxPerMinute ?? 2} 次/分）${reflex.active ? `；正在规避（${reflex.count ?? 0} 次）` : ''}${lastText}`)
         }
         if (safetyState.paused) {
-          const reflexReason = REASON_TEXT[safetyState.reason] ?? safetyState.reason ?? status.pausedReason ?? '安全'
-          lines.push(`暂停：${reflexReason}——任务停/不接活，但身体仍在世界（会掉落/受伤/被推）；继续用 {"op":"resume"}，离开世界用 mcb_leave`)
+          lines.push('暂停语义：任务停/不接活，但身体仍在世界（会掉落/受伤/被推）；不处理原因会被再次暂停；离开世界用 mcb_leave')
         }
         if (status.playable && typeof status.playable.ok === 'boolean') {
           const blockerText = {
@@ -1417,9 +1464,9 @@ export function apply(ctx) {
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
 宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
-重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动工具/寻路/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
-单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（阻塞到完成，最长~120s；pickup 捡附近掉落 {radius,max} → picked/items/left，别 goto 自己脚下；sleep 夜里/雷暴+有床）。坐标写 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内。
-失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）。示例用 mcb_help collect/tunnel。`,
+重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动找/换工具/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（最长~120s；**wait 单次≤30s，长任务别 wait 轮询**，结果作为事件回来；pickup 捡掉落 {radius,max} → picked/items/left，别 goto 脚下；sleep 夜里/雷暴+有床）。坐标 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内；attack 看命中/伤害/血量，没带=无法确认。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）；示例用 mcb_help。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
       avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
       safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],

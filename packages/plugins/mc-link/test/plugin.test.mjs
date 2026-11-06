@@ -150,6 +150,7 @@ async function startFakeBody({ connected = true } = {}) {
         if (state.doError) return send(409, { ok: false, error: state.doError })
         const results = []
         for (const step of input.steps ?? []) {
+          if (state.doFailOnOp && step.op === state.doFailOnOp) return send(409, { ok: false, error: state.doFailError ?? '挖不动（测试）' })
           // 模拟真 body：task 之前的 steps 结果一并返回，然后立即返回 taskId。
           if (step.op === 'task') return send(200, { ok: true, results, task: { id: 't-1', kind: step.kind, state: 'queued' } })
           if (step.op === 'events') results.push({ index: results.length, op: 'events', result: { events: state.events, seq: state.seq } })
@@ -162,6 +163,8 @@ async function startFakeBody({ connected = true } = {}) {
           }
           else if (step.op === 'say') results.push({ index: results.length, op: 'say', result: { ok: true } })
           else if (step.op === 'pickup') results.push({ index: results.length, op: 'pickup', result: { picked: 2, items: ['dirt', 'oak_log'], radius: 8, left: 1 } })
+          else if (step.op === 'attack') results.push({ index: results.length, op: 'attack', result: state.attackResult ?? { attacked: 'chicken' } })
+          else if (step.op === 'wait') results.push({ index: results.length, op: 'wait', result: { ok: true, ms: step.params?.ms } })
           else if (step.op === 'dig') results.push({ index: results.length, op: 'dig', result: { dug: 'dirt', pos: { x: 12.6, y: -59.6, z: 14.4 } } })
           else results.push({ index: results.length, op: step.op, result: { text: `did:${step.op}` } })
         }
@@ -441,13 +444,85 @@ test('口径统一：look/status/inventory 的位置、血量、背包同源同�
   }
 })
 
+test('mcb_do：攻击结果必须能判断命中（新字段命中/伤害/剩余血；旧 body 只回名字要显式说"无法确认"）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    // 旧 body：只回 {attacked:"chicken"} → 不能当成功
+    body.state.attackResult = { attacked: 'chicken' }
+    const old = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'chicken' } }] })
+    assert.match(old.text, /无法确认命中/)
+    assert.doesNotMatch(old.text, /命中 chicken/)
+    // 新 body：命中 + 伤害 + 目标剩余血
+    body.state.attackResult = { attacked: 'chicken', hit: true, damage: 3, target: { name: 'chicken', health: 1 } }
+    const hit = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'chicken' } }] })
+    assert.match(hit.text, /\[attack\] 命中 chicken/)
+    assert.match(hit.text, /造成 3 伤害/)
+    assert.match(hit.text, /目标剩余 1 血/)
+    // 明确未命中 → 可读原因
+    body.state.attackResult = { attacked: 'chicken', hit: false, reason: '太远' }
+    const miss = await link.tools.mcb_do.execute({ steps: [{ op: 'attack', params: { target: 'chicken' } }] })
+    assert.match(miss.text, /没打中 chicken（太远）/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：批处理一步失败也带回已执行步骤的结果（失败归因到第几步）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.doFailOnOp = 'dig'
+    await assert.rejects(
+      () => link.tools.mcb_do.execute({ steps: [{ op: 'look' }, { op: 'dig', params: { pos: { x: 1, y: 2, z: 3 } } }, { op: 'say', text: '不该执行' }] }),
+      /第 2 步（dig）失败[\s\S]*已完成的前序步骤[\s\S]*did:look/,
+    )
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：wait 单次 ≤30s（超了截断并提示长任务别轮询）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_do.execute({ steps: [{ op: 'wait', params: { durationMs: 120_000 } }] })
+    const sent = body.state.requests.at(-1).steps[0]
+    assert.equal(sent.params.ms, 30_000, 'wait 必须截断到 30s')
+    assert.match(out.text, /参数处理：.*wait 单次最多 30s.*长任务不要用 wait 轮询/)
+    const short = await link.tools.mcb_do.execute({ steps: [{ op: 'wait', params: { ms: 2_000 } }] })
+    assert.equal(body.state.requests.at(-1).steps[0].params.ms, 2_000)
+    assert.doesNotMatch(short.text, /参数处理/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_do：任务提交回执明确"不要循环查"；暂停报错给可操作建议而不是只说先 resume', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const task = await link.tools.mcb_do.execute({ steps: [{ op: 'task', kind: 'mine', params: { block: 'dirt', count: 2 } }] })
+    assert.match(task.text, /已接受/)
+    assert.match(task.text, /不要循环 mcb_status\/tasks 查/)
+    body.state.doError = '身体已暂停（low-health）；先 /v1/safety/resume，或只用 look/inventory'
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }), /先吃|撤到安全点|再次暂停/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('mcb_do：body 报"已暂停"时补上恢复路径', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     await link.api.poll()
     body.state.doError = '身体已暂停（death）；先 resume，或只用 look/inventory'
-    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }), /恢复/)
+    await assert.rejects(() => link.tools.mcb_do.execute({ steps: [{ op: 'dig', params: { name: 'dirt' } }] }), /复活|再次暂停|resume/)
   } finally {
     await link.cleanup()
     await body.close()
@@ -839,7 +914,9 @@ test('mcb_status：暂停时显示安全反射与时间相位（暂停≠离开�
   try {
     const status = await link.tools.mcb_status.execute({})
     assert.match(status.text, /安全反射：开启（≤10s\/次、≤2 次\/分）/)
-    assert.match(status.text, /暂停：血量过低——任务停\/不接活/)
+    assert.match(status.text, /暂停：血量过低——先吃\/撤到安全点/)
+    assert.match(status.text, /暂停语义：任务停\/不接活，但身体仍在世界/)
+    assert.match(status.text, /不处理原因会被再次暂停/)
     assert.match(status.text, /可玩：否（暂停中（血量过低））/)
     assert.match(status.text, /最近 spawn：358,-60,114 · overworld · 来源 initial/)
     assert.match(status.text, /身体仍在世界/)

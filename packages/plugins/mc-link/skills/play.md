@@ -72,7 +72,23 @@
   `mcb_inventory`/`mcb_scan`/`mcb_map` 规划下一步（这些不会催任务，也不会重置进度）。
 - 任务中途卡住：body 会发 `[MC] 走不过去…`，但**单次**只是重算路线，常随后就成功；连续多次或真的
   `task_failed` 再换目标（别看到一条就 cancel）。
-- 想知道进度就查一次 `{"op":"tasks"}`；不要为了刷进度反复 `wait`。
+- 想知道进度就查一次 `{"op":"tasks"}`；不要为了刷进度反复 `wait`，**也不要循环 `mcb_status`/`tasks`**（E2 审计里 wait 104 次/49 分钟、tasks 61 次/29 分钟就是这么来的）。只在需要决策时查一次。
+
+## 暂停了怎么办（别只说 resume）
+
+暂停=停任务/不接活，身体仍在世界；**不处理原因直接 resume 会被再次暂停**。按 pausedReason 处理：
+
+| pausedReason | 先做什么 | 再 |
+|---|---|---|
+| `low-health` / `health-drop` | `eat` 或 `goto` 掩体/安全点，血回上去 | `{"op":"resume"}` |
+| `low-oxygen` | 回水面/离开水下 | resume |
+| `spawn-unsafe` | `goto` 到安全位置 | resume |
+| `death` / `quarantine` | 复活后 `goto` 安全点 / 等隔离结束 | resume（旧任务不会续跑） |
+| `disconnect` | 等 body 重连 | 重连后仍暂停，显式 resume |
+| `stuck` | `mcb_map` 看地形 + `goto` 脱困 | resume |
+| `user-stop`（mcb_stop） | 直接 resume 继续，或 mcb_leave 离开 | — |
+
+暂停期间仍可用：`look`/`inventory`/`map`/`scan`/`move`/`eat`/`cancel`/`tasks`/`events`/`resume`/`stop`。
 
 ## 睡觉（sleep）
 
