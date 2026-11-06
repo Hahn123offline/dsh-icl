@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { toDshToolDefinition, toDshPromptSection, toDshUserMessage } from '../../core/src/dsh-contract.mjs'
+import { TEXT_OUTPUT_SCHEMA, toDshToolDefinition, toDshPromptSection, toDshUserMessage } from '../../core/src/dsh-contract.mjs'
 
 const RAW_ID = 'dsh-session'
 const CTX_PREFIX = 'icl-ctx-'
@@ -163,7 +163,18 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         state.tools.delete(name)
       }
       try {
-        const off = ctx.tools.register(toDshToolDefinition(def, { saveImage }))
+        // 兼容旧 DSH（0.2.0-rc.2）：IMAGE_OUTPUT_SCHEMA 里的 `items:{type:'json'}` 会被拒，
+        // 且拒绝是静默的——所有 ICL 工具会从模型工具面整体消失。失败时用 text-only schema 重试。
+        const definition = toDshToolDefinition(def, { saveImage })
+        let off
+        try {
+          off = ctx.tools.register(definition)
+        } catch (error) {
+          report(`tool.register:${name}`, error)
+          const fallback = { ...definition, output: { ...(definition.output ?? {}), schema: TEXT_OUTPUT_SCHEMA } }
+          off = ctx.tools.register(fallback)
+          report(`tool.register-fallback:${name}`, null)
+        }
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
         added.push(name)
       } catch (error) {
