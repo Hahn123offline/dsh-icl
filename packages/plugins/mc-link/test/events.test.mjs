@@ -297,6 +297,23 @@ test('失败码：collect: no-resources 提示先 explore/换 item；shelter nee
   assert.match(material, /材料诊断：材料 oak_planks；需要 27；现有 12；缺 15/)
   assert.match(material, /可用替代：dirt×64/)
   assert.match(material, /把 material 改成 "dirt" 重试/)
+  // 资源枯竭：带扫描半径/试过的方块 + body suggestion
+  const dryDetail = taskEventText('task_failed', {
+    task: {
+      id: 't-3', kind: 'collect', error: 'collect: no-resources',
+      result: {
+        item: 'oak_log', scannedRadius: 48, triedBlocks: ['oak_log'],
+        suggestion: '附近 48 格内没找到 oak_log；先 explore 去有树/石的地方，别原地连续重试。',
+      },
+    },
+  })
+  assert.match(dryDetail, /诊断：扫到 48 格，试过 oak_log/)
+  assert.match(dryDetail, /建议：附近 48 格内没找到 oak_log/)
+  // 其它失败码：result.suggestion 直接带出（不用她猜下一步）
+  const suggested = taskEventText('task_failed', {
+    task: { id: 't-4', kind: 'mine', error: 'mine: no-path', result: { suggestion: '走近一点再下任务，或调 radius' } },
+  })
+  assert.match(suggested, /建议：走近一点再下任务/)
 })
 
 test('宏：collect/tunnel 的 task_done 说人话（收集 N 个 / 通道 N 格 + 火把 + stairs）', () => {
