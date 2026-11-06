@@ -60,6 +60,8 @@ const supervisorArgs = [
   '--server-name', serverName, '--server-port', String(serverPort), '--server-dir', serverDir,
   '--mc-user', mcUser, '--mc-port', String(mcPort), '--port', String(labPort),
   '--checkpoint-min', '12', '--nudge-min', '45', '--turn-timeout-min', '10', '--stall-sec', '180',
+  // E2 复杂度收敛（misc COMPLEXITY-AUDIT）：steer 预算 ≤10 条/2h，死亡/暂停提示压成一句。
+  '--terse-prompts', '--playbook-min', '6', '--playbook-idle-sec', '90',
 ]
 const qualityArgs = ['tools/mc-quality.mjs', '--run', runId, '--interval', '60', '--preset', 'icl-mc-lab']
 
