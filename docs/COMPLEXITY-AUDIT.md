@@ -23,7 +23,7 @@
 | 工具执行总时长 | **68.7 分钟（57%）** | 764 次调用；`mcb_do` 435 次占 68.5 分钟 |
 | — 含 `wait` 的调用 | **104 次 / 49.4 分钟** | 请求 wait 30–240s，实际每次约 30s 返回（240s 也被截到 30s） |
 | — 含 `tasks` 轮询 | **61 次 / 28.9 分钟** | 模型用 `wait + tasks` 轮询长任务，而不是等事件 |
-| 静默空档（无任何模型可见事件） | **≥20.7 分钟（17%）**，10 段 ≥60s | 其中 9 段是 120–121s：回合结束后等"清醒节拍" |
+| 静默空档（无任何模型可见事件） | **≥20.7 分钟（17%）**，10 段 ≥60s；`latency.json`：turn-end→下一 turn **p95 121s / max 154s，>20s 有 15 轮** | 其中 9 段是 120–121s：回合结束后等"清醒节拍"（43 条 / 120min） |
 | 模型/重试/其他 | ~30 分钟 | `assistant/attempt` 7 次：**6 次是 `Insufficient Balance`**（deepseek 账户余额不足，外部环境问题，造成连续重试等待）+1 次正常 |
 | 回合/步/调用 | 54 轮 / 729 step / 764 调用 | **13.5 step/轮、14.1 调用/轮**；turn p50 5.3s、p90 **412s**、max **773s**（turn/start→turn/end 粗配对，含跨轮空档） |
 
@@ -53,11 +53,12 @@
 | 9 | `no-path: 走不过去…` | 寻路失败（body 侧 path_stuck 76 次） |
 | 8 | `place: 目标下方没有支撑（air）…autoSupport:true` | 放置语义 |
 | 6 | `place: 没有可附着的面…` | 同上 |
-| 5 | `mine: no-target` | 目标选择 |
+| 5 | `mine: no-target`（seq 52/58/307/313） | 目标选择；**错误文本只有 22 字符、无下一步**（对比其它错误都有"改用 mine/换目标"提示）→ 她只能自己猜 |
 | 5 | `附近没有箱子` | 依赖前置 |
 | 5 | `身体已暂停（low-health）；先 resume…` | 暂停死锁（见 §3） |
 | 4 | `tool call aborted` | 回合/steer 打断 |
 | 1 | `Cannot read properties of null (reading 'entities')` | **attack/pickup 代码崩**（seq 2213） |
+| — | `mcb_help` 的"# 宏操作总览"**单条 1,583 字符**（seq 345）作为 tool result 注入 | 宏教学体积；她一共调了 5 次 help |
 
 ### 1.4 上下文与工具面（每次请求都带）
 
@@ -106,6 +107,13 @@
 ### C5. 每次请求 48 工具/2.9 万字符 + 13 万字符消息（其中 9.1 万是重复 runtime-context）
 - 证据：§1.4；另外 **eager 注入 41 次**、**游戏事件 134 条**、`reasoningEffort=high`、maxTokens 256k；turn p90 412s、max 773s。
 - 推断：模型每次要在 48 个工具（**37 个非 `mcb_*`**，其中 31 个一次没调用）、节拍/事件/重复上下文里选择；每轮 13.5 step，"慢"首先是**环境给的信息太多、且多数重复**。`runtime-context` 里 134 条全部含 DSH 文件策略样板（91k 字符），完全可以在 MC lab 关掉（`includeRuntimeContext:false`），facts 也应压到 ≤1 条/轮。
+
+### C5 补充观察（与 mc-lab `e2-report.md` 对照；S1 专属代际）
+- `mine: no-target` 出现在开头 4 次（seq 52/58/307/313，02:52–02:56Z）；错误文本只有 `Error: mine: no-target`（22 字符），**没有"附近没找到/先 scan/换目标"的下一步**——与其它错误（no-path/place/craft 都有下一步）不一致，建议补齐（P1-8 的同类问题）。
+- `mcb_help` 的"# 宏操作总览"单条 **1,583 字符**（seq 345）作为 tool result 注入；她共调 5 次 help——教学体积不小，建议把宏总览放 skills/按需读，不进默认 result。
+- **`mcb_stop` 不在工具面是代际问题**：S1 于 10:52 启动，早于 mc-link `ed03b84`（11:04 合并），不是 bug；S2 复验。
+- S2 计划（mc-lab）：awakeTick.idleSec=30、goalResumeMinGapSec=30、turn-gap 指标、过去指代 recall 场景、mcb_stop/hunt/flee 场景；第二轮记忆修复（cleanup 近重复/evidence 去噪/eager 冷却/简报截断/segmented-degraded）作为 S2 复验点。
+- 交叉证据：同目录 `e2-report.md`、`memory-block-proof.md`、`quality-report.md`、`latency.json`、`transcript.md`（本审计只读引用）。
 
 ## 3. 她的自述 vs 实际状态（不是"以为没工具"）
 
