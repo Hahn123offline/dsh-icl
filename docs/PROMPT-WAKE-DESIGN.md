@@ -136,3 +136,10 @@ pluginConfig:
 - 不改 facts runtime-context 条数（cache §7.7）。
 - 不压缩 MC/QQ 事件本身（那是 payload；已有事件合并/限流）。
 - 不在产品 preset 开任何默认值。
+
+## 9. cache 复核约束（接线前确认，2026-11-07）
+
+cache 已确认：
+1. compact 走 **投递消息 / `agent/pre-step <icl-context>`（append-only）** → 缓存安全；若走 `icl:facts` 快照文本变化 → 也只是 ≤1/轮快照文本变，不影响 system。
+2. **不得改 `prompts/sim.md` / `prompts/persona.md` 等静态段**；若未来确需改，先给 cache commit，由 cache 重记 system 字符数（1 分钟，不用 lab）。
+3. 本设计不新增工具/不改 tools schema → `toolsHash` 不动；若接线出现 tools/system 变化，按 `CACHE-MODEL §7 附录 B` 三场景 + `cache-layout-audit` 复核，**先报异常再改文档**。

@@ -119,3 +119,12 @@ renderTail:
 - 不改静态 system/facts、不新增工具/schema。
 - 不替代 mcb_look/inventory 这类 payload 工具；只替代"一行状态"的重复查询。
 - 不在产品 preset 默认开启；不改 cache 基线。
+
+## 10. cache 复核约束（接线前确认，2026-11-07）
+
+cache 已确认：**只改 tool/result 文本内容 = append-only 缓存安全；但接线时必须做到**——
+1. **不新增 system section / facts 段**，不把状态提示塞进 system/facts；tail 只读现有服务、只 append 到 tool result 文本。
+2. **只 append 新 tool result，不改旧消息**（不重写历史 tool/result；DSH 前缀不动）。
+3. **每轮上限/去重不依赖随机 id**：用 turn 号 + tail 文本内容比较（可重复、可审计）；同一轮相同 tail 跳过。
+4. `toolsHash` / system 基线**不应变**；cache 侧只记"tool result 平均长度变化"作为成本指标，不计为缓存回归。
+5. 若实现中意外出现 schema/system 变化，立即停、报 cache（按 `CACHE-MODEL §7 附录 B` 三场景 + `cache-layout-audit` 复核），不要自行改基线。
