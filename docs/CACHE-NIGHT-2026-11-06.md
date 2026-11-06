@@ -127,7 +127,26 @@ node tools/cache-longrun.mjs `
 | **槽健康 `slots.unmatched`** | `host.services.slots.unmatched()`（model-manager 也暴露 `unmatched()`）；或 lab `status.json` / morning-report 里的槽绑定信息 | 返回未绑定 provider 的插槽 `[{id,kind,requires}]`。**夜晚 dream 槽未绑定 = dream 整晚 0 事件块**，必须报到；正常应为 0 个核心槽未匹配 |
 | **dream job 三态** | memory 命名空间 `dream-run`（`kind='run'`，`key=runKey(day,job)`，`data` 里含 ok/skipped 原因）；或 mc-lab morning-report 的 dream 节 | 三态 = **success / skipped（already-ran、no-raw、nothing-clean…）/ failed**；某天某 job 缺失也记 skipped 以外的一类，单独标红 |
 
-> 口径来源：`slots.unmatched()` 见 `packages/core/src/services.mjs:840`；dream 记录见 `packages/plugins/dream/src/index.mjs`
-> （`dream-run` 命名空间、`recordRun()`）。mc-lab 会补一版正式口径，届时以它为准；本表先固定"必须报这两行"。
+> **口径（misc `109c894` 正式版）**：
+> - 槽健康：`icl.ready` 日志带 `slots.unmatched` 数组；未绑定时另有 `icl.slots-unmatched`（error）。**`slots.unmatched==[]` 才算绑定 OK**；night-1 预期 `["embed-text","dream-chat"]`（lab patch 无 providers）。
+> - dream 三态：`dream-run` 里成功 `run:<day>:<job>`、跳过 `skip:<day>:<job>`（`data.skipped`）、失败 `fail:<day>:<job>`（`data.ok=false,error`）；`mc-quality` 按 key 尾段取 job、按 `data.error` 计 `dream.failures`，无需改解析器。另有 `dream.jobs` / `dream.days[job]`（含 `skipped`/`error`）。
+> - 判定：`dream.failures==0` 且当日实际进入 run 的 job 都有 `run:`/`skip:` 行 → 健康；有 `fail:` 行或缺行 → 标红。index 覆盖：有 embed 看 `dream.days.index.indexed/missing`，无 embed 应见 `skip:...:index` 且 `data.skipped='no-embed'`。
 
 night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 事件块，`dream-run` 无 success 记录——这是要报的异常，不是缓存问题。
+
+## 9. layout 审计新基线（2026-11-06，master `84c28d8`，云端 5 轮）
+
+sanctioned cloud lab（`--preset icl-lab --model flash`，57104，`run cache-layout-20261106b`，5 轮含工具调用）审计结果：
+
+| 项 | 值 | 判定 |
+|---|---|---|
+| system | 1 次 append / **0 次 replace**、相邻 turn `firstDiff=-1`；**2300 字符 / 5768 字节**；首行 `你是小千。`；无 harness identity/工程脚手架；`systemHasDynamicFacts=false` | ✅ 布局未变 |
+| 工具数 | **34**（见下方异常） | ⚠️ 预期 41 未达成 |
+| toolsChars / toolsHash | **19760 字符 / `38dfbee1cd9b`**（旧基准 18910 / `7047e6c4f3e8`） | ✅ 变化来自 memory/recall 描述更新（D1/D2/D4），计数不变 |
+| facts 布局 | 1 条快照 / 5 轮（0.2/轮）；sections = `[sandbox:policy, approval:policy, icl:facts]` | ✅ `icl:facts` 仍在 runtime-context |
+| `image/offload` 事件 | **0**；image block 0（本轮无图片投递） | ✅ 预期 |
+
+**异常/待办（重要）**：`album` 已在 `DEFAULT_PLUGINS`（`packages/dsh-icl/src/config.mjs`），但 **`presets/icl.patch.yml` 与 `presets/lab.patch.yml` 的显式 `plugins:` 列表里没有 `album`** → 实际工具仍是 **34**，没有 7 个 `album_*`（本轮模型在第 2/3 轮想调 `album_list`/`mcb_status` 时因工具不存在而改用 `list_dir`/`world_status`）。要达成"41 工具"基线，需要把 `album` 加进 preset 的 plugins 列表（建议先 lab preset；产品 preset 按 lead/用户批准再动）。
+
+> 历史 34 工具指纹（`7047e6c4f3e8`，firstscreen 时代）**不回改**，它是"当时部署版本"的指纹；新基准以上表为准。
+> system 字符数会随 run 目录路径长度 ±1–2 字符（cwd 在 system 里），不是布局漂移。
