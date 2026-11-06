@@ -190,7 +190,7 @@
   - `bili_login_start` → 二维码 PNG（attachment）+ `key`；`bili_login_poll`（必填 `key`）→ 成功后原子写凭证。
 - **配置**：`stateDir`（由 `bootstrap.configFor('bili')` 注入 ICL 的 stateDir）、`maxChars`（`6000`）、`timeoutMs`（`90_000`），以及路径覆盖 `pythonPath` / `runnerPath` / `vendorDir` / `storyboardCli` / `legacyBiliDir` / `credentialFile`（测试用 `fetchImpl`）。
 - **依赖**：repo 内 `vendor/bilibili-mcp/`（MIT，见 `NOTICE.md` / `PATCHES.md`）、`tools/bili-run.py` 只读桥、`execFile`、storyboard CLI（仅 `bili_frames`）、Python venv（bilibili-api-python / aiohttp / mcp<2 / qrcode）。插件**不直接发 HTTP**：扫码登录走 host 的 `ctx.fetch`。
-- **状态**：可用待调 —— C 路线最小可跑已落地（2026-11-06，含收尾）：repo 自持 vendor、只读白名单、凭证从旧家目录一次性迁移到 `<stateDir>/bili/`、热门/排行接出、错误归一化（`E_AUTH`/`E_RATE_LIMIT`/`E_NETWORK`/`E_TOOL`…）、**解释器优先 ICL 自己的 venv（旧 venv 兼容回退；2026-11-06 已实建，`pythonSource=icl`；`tools/bili-venv.mjs` 迁移）**、**只读调用串行 + 最小间隔 + 指数退避重试**、**切帧 cookies 到期/匿名降级的显式提示**。已知待办：storyboard cookies 需在 12-01 前重新导出（runbook 见 `docs/VIDEO-EYES.md §10`）；ASR 只有设计（§11，不落桌面配置）。
+- **状态**：可用待调 —— C 路线最小可跑已落地（2026-11-06，含收尾）：repo 自持 vendor、只读白名单、凭证从旧家目录一次性迁移到 `<stateDir>/bili/`、热门/排行接出、错误归一化（`E_AUTH`/`E_RATE_LIMIT`/`E_NETWORK`/`E_TOOL`…）、**解释器优先 ICL 自己的 venv（旧 venv 兼容回退；2026-11-06 已实建，`pythonSource=icl`；`tools/bili-venv.mjs` 迁移）**、**只读调用串行 + 最小间隔 + 指数退避重试**、**切帧 cookies 到期/匿名降级的显式提示**、**临时格图在 `<stateDir>/bili/work` 且附件提交后清理（2026-11-07 审计修）**。已知待办：storyboard cookies 需在 12-01 前重新导出（runbook 见 `docs/VIDEO-EYES.md §10`）；ASR 只有设计（§11，不落桌面配置）；album 不自动归档。
 
 ### video
 

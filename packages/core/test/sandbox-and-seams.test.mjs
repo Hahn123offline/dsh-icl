@@ -10,6 +10,18 @@ import * as bili from '../../plugins/bili/src/index.mjs'
 import editorManifest from '../../plugins/editor/manifest.json' with { type: 'json' }
 import biliManifest from '../../plugins/bili/manifest.json' with { type: 'json' }
 
+const tempRoots = []
+function tmpDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  tempRoots.push(dir)
+  return dir
+}
+process.on('exit', () => {
+  for (const dir of tempRoots) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响测试结论 */ }
+  }
+})
+
 function host_(root) {
   const host = createHost({ log: () => {} })
   host.registerPlugin(editorManifest, editor, { config: { root } })
@@ -18,7 +30,7 @@ function host_(root) {
 }
 
 test('编辑器拒绝写出工作区', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-editor-'))
+  const root = tmpDir('icl-editor-')
   const host = host_(root)
   await host.enable('editor')
   const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
@@ -34,7 +46,7 @@ test('编辑器拒绝写出工作区', async () => {
 })
 
 test('bili 接缝注册了只读工具，且没有发评论的工具', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-bili-'))
+  const root = tmpDir('icl-bili-')
   const host = host_(root)
   await host.enable('bili')
   const names = host.services.tools.names().sort()

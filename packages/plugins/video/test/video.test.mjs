@@ -15,9 +15,18 @@ import manifest from '../manifest.json' with { type: 'json' }
 
 const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
+const tempRoots = []
 function tempRoot(tag) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `icl-video-${tag}-`))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `icl-video-${tag}-`))
+  tempRoots.push(dir)
+  return dir
 }
+// 测试进程退出时清掉自己建的临时目录（同步；不依赖 after 钩子调度）。
+process.on('exit', () => {
+  for (const dir of tempRoots) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响测试结论 */ }
+  }
+})
 
 function hasFfmpeg() {
   try {

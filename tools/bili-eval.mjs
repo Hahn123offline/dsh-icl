@@ -33,6 +33,12 @@ const opt = (name, fallback = null) => {
 const REPO = path.resolve(import.meta.dirname, '..')
 const LEGACY = process.env.BILI_DIR ?? path.join(os.homedir(), '.dsh', 'bili-duty')
 const STATE = process.env.ICL_BILI_STATE ?? fs.mkdtempSync(path.join(os.tmpdir(), 'icl-bili-eval-'))
+const STATE_IS_TEMP = !process.env.ICL_BILI_STATE
+// 评估用的临时 stateDir 退出时删掉（用户显式给了 ICL_BILI_STATE 就不动它）。
+process.on('exit', () => {
+  if (!STATE_IS_TEMP) return
+  try { fs.rmSync(STATE, { recursive: true, force: true }) } catch { /* 清不掉就留给系统 */ }
+})
 // 与插件同一套解析：显式 config/env > ICL stateDir venv > 旧 venv 兼容回退。
 const cfg = resolveConfig({ config: { stateDir: STATE, legacyBiliDir: LEGACY } })
 const PY = cfg.pythonPath
@@ -121,7 +127,15 @@ const call = async (name, args) => {
   const t0 = Date.now()
   const out = await tools[name].execute(args)
   const text = String(out?.text ?? '')
-  return { text, images: out?.images ?? [], ms: Date.now() - t0 }
+  const images = (out?.images ?? []).map((file) => ({
+    file,
+    bytes: (() => { try { return fs.statSync(file).size } catch { return 0 } })(),
+  }))
+  // 工具可能带 cleanup（例如 bili_frames 的临时格图）：读完/量完再清，不能提前删。
+  if (typeof out?.cleanup === 'function') {
+    try { await out.cleanup() } catch { /* 清理失败不影响检查 */ }
+  }
+  return { text, images, ms: Date.now() - t0 }
 }
 const first = (text) => text.split('\n')[0].slice(0, 120)
 
@@ -155,7 +169,7 @@ if (framesTarget) {
     const r = await call('bili_frames', {
       target: framesTarget, from: Number(opt('--from', 0)), to: Number(opt('--to', 10)), cells: Number(opt('--cells', 4)),
     })
-    const size = r.images[0] ? fs.statSync(r.images[0]).size : 0
+    const size = r.images[0]?.bytes ?? 0
     record('bili_frames', size > 0, `${r.ms}ms, sheet=${size} B`)
   } catch (error) { record('bili_frames', false, String(error?.message ?? error)) }
 }
