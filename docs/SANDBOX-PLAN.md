@@ -1,8 +1,11 @@
 # SANDBOX-PLAN — 让她有自己的电脑（DSH 原生沙箱可行性 + 试点设计）
 
-> 状态：研究稿，**未改任何产品代码**。本 worktree（`C:\DSH\icl-wt\sandbox`，分支 `wt/sandbox`，基线 `e3fd594`）的改动只有 `docs/SANDBOX-PLAN.md`；实验脚本与证据都在 gitignored 的 `.state/lab/sandbox-*`。
-> 日期：2026-11-06（Asia/Hong_Kong）。环境：Windows 11（`DESKTOP-1OSPUAS`），Node v26.12.1，全局安装 `@deepseek-ai/dsh`，实验模型 `deepseek-account/deepseek-flash`（云端，未占 GPU）。
-> 纪律：没有重启/修改 desktop、没有改 desktop profile、没有碰 57101/54838、没有修改用户既有文件。实验新建的临时目录（`C:\Users\ai_admin\ICL-lab`、`C:\DSH\her-lab`）已删除；DSH 自动写的实验会话日志仍留在 `~/.dsh/sessions`。
+> 状态：**Phase 1 lab 试点已落地**（2026-11-06）。研究结论见 §0-§6；本轮实际改动只限 lab 夹具与测试：
+> `packages/dsh-icl/presets/lab.patch.yml`（icl-lab 加原生工具、去 editor；整个 lab 进程默认 `workspace-write`）、
+> `packages/core/test/dsh-bundle.test.mjs`（试点断言）、本文件 §7。**没有**改产品 `icl` preset、
+> **没有**改 desktop profile、**没有**重启 desktop、**没有**碰 MC/QQ/bili。产品化仍待用户/lead 批准（§7.7）。
+> 日期：2026-11-06（Asia/Hong_Kong）。环境：Windows 11（`DESKTOP-1OSPUAS`），Node v26.12.1，全局安装 `@deepseek-ai/dsh@0.2.0-rc.2`，实验模型 `deepseek-account/deepseek-flash`（云端，未占 GPU）。
+> 纪律：没有重启/修改 desktop、没有改 desktop profile、没有碰 57101/54838、没有修改用户既有文件。实验新建的临时目录（`C:\Users\ai_admin\ICL-lab`、`C:\DSH\her-lab`）已删除；`C:\DSH\her` 是本次按方案新建的试点工作区（§7.2）。DSH 自动写的实验会话日志仍留在 `~/.dsh/sessions`。
 
 ---
 
@@ -273,7 +276,7 @@ tool call（write/edit/pwsh）
 | — | `pwsh` | **"能跑命令"的关键**；受 `pwsh-sandbox` 约束 |
 | — | `read_image`（可选） | 她需要看 `bili_frames` 生成的 storyboard 图；需要附件服务 + 模型声明 image 输入 |
 
-成本：6 个原生工具 schema 合计 ~7.2KB，替换 editor 的 3 个（~1.1KB），**净增 ~6.1KB/请求（约 1.5k tokens）**；工具数 34 → 37。standard preset 的对照是 26 个工具 / 21.8KB，所以 37 个仍在正常范围。
+成本：6 个原生工具 schema 合计 ~7.2KB，替换 editor 的 3 个（~1.1KB），**净增 ~6.1KB/请求（约 1.5k tokens）**；工具数 34 → 37。standard preset 的对照是 26 个工具 / 21.8KB，所以 37 个仍在正常范围。**实测修正（§7.4）**：`read_image` 随 `dsh-tool-fs` 自动注册，所以实际是 34 → **38**、schema **18,910 → 25,381 字符（+6,471）**。
 
 注意：preset 的工具面**只来自 preset 自己列出的插件**（实测 ICL 会话 34 个工具里没有任何 host 级原生工具）。所以"host 已经挂了 `tool-fs`"不等于"她能用"；必须在 ICL preset 的 `plugins:` 里显式加。
 
@@ -485,6 +488,138 @@ whoami                    # 确认运行 DSH 的账号就是这个用户
 13. **专用 Windows 用户/WSL 未实测**：本文对二者的结论来自 DSH 文档与 Windows/WSL 的通用边界，不是本机实验；真要走 Phase 2，先做 0.5-1 天的可行性验证（尤其是 GUI/凭据/QQ 端口）。
 
 ---
+
+## 7. 试点实现与证据（Phase 1 lab，2026-11-06）
+
+> **范围**：只在 `wt/sandbox` 的 lab 夹具里落地。产品 `icl` preset、desktop profile、desktop 进程、MC/QQ/bili 均未改；产品化步骤见 §7.7，需用户/lead 批准。
+
+### 7.1 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `packages/dsh-icl/presets/lab.patch.yml` | 顶层加 `sandbox-policy`（`mode: workspace-write`、`workspaceRoot: C:/DSH/her`）与 `permission`（`defaultPreset: workspace-write`，三个 preset 写全，保留 `danger-full-access` 作回滚）；`icl-lab` 的内层插件列表去掉 `editor`；preset 层加 `tool-fs`、`tool-fs-search`、`tool-pwsh` 三行 |
+| `packages/core/test/dsh-bundle.test.mjs` | 新增 2 条试点断言：lab 的 sandbox/permission 覆盖、icl-lab 的原生工具与 editor 下线（同时锁住"MC 预设不动"） |
+| `docs/SANDBOX-PLAN.md` | 本节 + 头部状态 |
+
+没有改：`presets/icl.patch.yml`（产品 preset）、`src/config.mjs` 的 `DEFAULT_PLUGINS`、`packages/plugins/editor/**`、`C:\Users\ai_admin\.dsh\profiles\desktop\**`、`tools/lab.mjs`。
+
+**为什么 `sandbox-policy`/`permission` 放在 patch 顶层而不是 preset 里**：`permission.defaultPreset` 是进程级设置，`sandbox/mode` 在 `session/created` 时由它钉住；`dsh-agent-preset` 的声明里没有 per-preset 的 sandbox 字段。代价是同一个 lab 进程里的 `icl-mc-lab` 会话也会默认 `workspace-write`（本轮未测、未改它的工具面；仅 lab 夹具，产品不受影响）。
+
+**为什么 `workspaceRoot` 不是会话边界**：会话的写边界是 `SessionHeader.cwd`（`tools/lab.mjs up --workspace C:\DSH\her` 传入）。`workspaceRoot` 只兜底"没有会话 cwd 的调用"。两者都写成 `C:/DSH/her`，避免口径分叉。
+
+### 7.2 前置：workspace 与 ACL
+
+```powershell
+New-Item -ItemType Directory -Force C:\DSH\her
+icacls C:\DSH\her /grant 'ai_admin:(OI)(CI)F'
+(Get-Acl C:\DSH\her).Owner          # DESKTOP-1OSPUAS\ai_admin
+```
+
+`C:\DSH\her` 此前不存在；本次新建，里面只有试点文件（`notes/pilot-note.md`、`notes/pilot-pwsh.txt`），没有用户数据。
+
+### 7.3 启动（独立 lab，不碰 desktop）
+
+```powershell
+node tools/lab.mjs up --preset icl-lab --port 57111 --workspace C:\DSH\her --model flash --run sandbox-pilot
+# 期望：permission/preset=workspace-write、sandbox/mode=workspace-write
+```
+
+模型被显式 `selectModel` 到 `deepseek-account/deepseek-flash`（云端，未占 GPU）。会话 `session-fae21e62-e1b4-46da-8e4d-7a50a49ed27d`，8 个回合。
+
+### 7.4 验收结果（全部实测）
+
+| # | 场景 | 结果 | 证据（event seq） |
+|---|---|---|---|
+| P1 | 原生 `write` 写 `C:\DSH\her\notes\pilot-note.md` | 成功：`Created file`；文件 52 字节 | 19/20 |
+| P2 | 原生 `read` 读回 | 成功：带行号原文 | 35/36 |
+| P3 | 原生 `edit` 改一行 | 成功：`pilot-line-1` → `pilot-line-2` | 50/51 |
+| P4 | 原生 `glob` 找 `C:\DSH\her` 下 `**/*.md` | 成功：`notes\pilot-note.md` | 66/67 |
+| P5 | 原生 `grep` 搜 `pilot-line` | 成功：1 处匹配 | 81/82 |
+| P6 | 原生 `write` 写 `C:\DSH\icl\SANDBOX-PILOT-SHOULD-NOT-EXIST.txt` | **拒绝**：`error.code=FS_SANDBOX_DENIED`、`FsError`、`isError=true`；文本含 `[sandbox: file access denied under workspace-write mode]` + 升权提示；文件不存在 | 96/97 |
+| P7 | `pwsh` 写 workspace 内 + 打印环境 | 成功：文件存在；`TEMP=C:\Users\ai_admin\AppData\Local\Temp\dsh-GO6caN`（每会话私有）；`LANG=FullLanguage` | 111/112 |
+| P8 | `pwsh` 写 `C:\DSH\icl\...` | **拒绝**：stderr `Access to the path ... is denied.` + 拒绝标记 + `[exit code: 1]`；文件不存在。注意：该 `tool/result` 的 **`isError=false`**（见 §7.8-1） | 126/127 |
+| P9 | editor 下线 | 工具面里没有 `read_file`/`write_file`/`list_dir`；`icl-lab` 有效配置无 `editor` | header seq 11；`effective-config.yml` |
+| P10 | 原生 7 件套可用 | `read`/`write`/`edit`/`glob`/`grep`/`pwsh`/`read_image` 全部在工具面；P1-P8 实际调用了前 6 个 | header seq 11 |
+| P11 | 权限钉住 | `permission/preset=workspace-write` → `sandbox/mode=workspace-write` | 0/1 |
+| P12 | 没有意外的升权 | 全程 0 条审批请求（`pilot-approvals.jsonl` 为空） | — |
+
+工具面（`request/header`；DSH 每会话只记一条 header，见 AUDIT §0.3）：
+
+| 指标 | 基线（sandbox-1 ICL 会话，editor 工具面） | 试点（icl-lab，原生工具面） | 变化 |
+|---|---|---|---|
+| 工具数 | 34 | **38** | +4 |
+| tools schema 字符 | 18,910 | **25,381** | **+6,471（+34.2%）** |
+| `toolsHash`（sha1 前 12） | `7047e6c4f3e8` | **`565f411a02e4`** | 变了（缓存会全量失效一次） |
+
+38 = 34 − 3（`read_file`/`write_file`/`list_dir`）+ 7（`read`/`write`/`edit`/`glob`/`grep`/`pwsh`/`read_image`）。§4.2 的"34 → 37"是按 6 个原生工具估的；`read_image` 随 `dsh-tool-fs` 自动注册（web profile 有 `attachments`），所以实际 38。
+
+### 7.5 cache 复核（只记录，不改 cache 代码）
+
+**system 仍是 1 append / 0 replace。**
+
+- `system/message` 事件：**1 条**（seq 8，6,243 字符）；8 个回合、16 个模型请求里没有第二条。按本仓库既有口径（CACHE-MODEL / AUDIT §0.4）即 **1 次 append、0 次 replace**。
+- 静态 system 布局**没有被改**：与基线 `sandbox-1` 的 ICL system 对比，首行、开头 400 字符、11 个 `##` 段标题完全一致；首个差异在**第 2,260 字符**，新增 **1,236 字符**，内容是原生工具的指导段（`read`/`write`/`edit`/`glob`/`grep`/`pwsh`），插在"工具的共同规矩"之后、DSH 公共尾段之前。人格 → 仿真 → 事实的布局不变。
+- facts 快照：基线 525 字符 → 试点 478 字符；**段名与顺序完全一致**（`sandbox:policy, approval:policy, icl:facts`）。差值来自 `sandbox:policy` 的文案（`workspace-write` 会写 workspace 路径，`danger-full-access` 不写），不是布局变化。
+
+**稳态 cache hit 没有掉**（口径：`assistant/message.usage` 的 `cacheReadTokens / (inputTokens + cacheReadTokens)`，云端 provider 计数）：
+
+| 口径 | 基线（sandbox-1 ICL） | 试点（icl-lab） |
+|---|---|---|
+| 稳态（去掉首请求） | 5 请求，**97.91%** | 15 请求，**98.04%** |
+| 全部请求 | 6 请求，85.93% | 16 请求，98.01% |
+
+首请求不是冷启动证据：试点开始前有一次同 preset、同 system+工具前缀的探测会话（02:11 第一次启动，02:17 重启），provider 的前缀 cache 被它预热，所以试点首请求已是 97.6%。**产品切换后的第一个请求应预期一次全量 miss（toolsHash + system 同时变）**，之后按上表的稳态判断。
+
+### 7.6 回滚
+
+按影响面从小到大：
+
+1. **停 lab**：`node tools/lab.mjs down`（只杀本 run 记录的 dsh/observer）。
+2. **工具面/默认值**：`git checkout -- packages/dsh-icl/presets/lab.patch.yml packages/core/test/dsh-bundle.test.mjs`；preset 改动要**新进程/新会话**才生效。已经建好的会话保持原工具面。
+3. **单会话回到旧行为**：`/permission danger-full-access`（无需重启；本试点没删这个 preset）。
+4. **workspace**：`C:\DSH\her` 是试点新建的目录，可直接 `Remove-Item -Recurse C:\DSH\her`（确认里面没有要留的东西）。若要保留目录但清掉常驻 ACL 副作用，按实际 `icacls` 输出逐条去除：
+   ```powershell
+   icacls C:\DSH\her /remove:d Everyone
+   icacls C:\DSH\her /remove "*S-1-4-614177251-1001953937"   # 用实际输出的 capability SID
+   icacls C:\DSH\her /setintegritylevel Medium
+   icacls C:\DSH\her
+   ```
+5. **desktop / 产品**：本轮未动，无需回滚；她的 ICL 状态（`~/.dsh/icl/state`）始终在 workspace 外，不需要迁移。
+
+### 7.7 产品化步骤（**均需用户/lead 批准**）
+
+1. **产品 preset**：把 §7.1 的 3 个原生工具行 + `editor` 下线同步到 `packages/dsh-icl/presets/icl.patch.yml`；`src/config.mjs` 的 `DEFAULT_PLUGINS` 去掉 `'editor'`（`bootstrap.mjs` 的 `case 'editor'` 可留到删包时一起清）。`lab.patch.yml` 本轮已改，产品 preset 仍未改。
+2. **desktop profile（用户/lead 执行）**：`permission.defaultPreset: workspace-write` + `sandbox-policy.workspaceRoot`。**不要删** `danger-full-access`（回滚路径）。改完必须重启 desktop，只对新会话生效。
+3. **审批通道**：产品默认 `ask`；没有应答者时升权会 `unavailable`。QQ 应答器（§5.4-6）是上线 `ask` 的前置，本轮 lab 用自动 `rejected` 兜底、没有真实审批流程。
+4. **切换窗口**：preset/profile 改动按保守假设需要新进程/新会话；切换后第一个模型请求会全量 miss 一次，之后看稳态 hit 是否 ≥ 基线（本轮 98.04% vs 97.91%）。
+5. **生产验收**：用 `C:\DSH\her` 新建 ICL 会话，重跑 A17/A18；确认 `~/.dsh/icl/state` 的 mtime/哈希未变、没有新增 capability ACE / Low 标签（§7.2 的 workspace 与 state 必须分开）。
+6. **观察一周**：再删 `editor` 包与其测试（或先保留包、只从 preset 移除）。`plugins/editor` 本轮未动。
+7. **Phase 2 分水岭不变**：本方案仍只限制写；读、网络、进程可见性不限制。若"她不能读我的文件"是硬要求，直接排专用 Windows 用户/WSL（§3）。
+
+### 7.8 试点新发现 / 待决
+
+1. **pwsh 越界的 `isError` 是 false**（P8）：文本里有 `[exit code: 1]` 和拒绝标记，文件也确实没写出去，但 `tool/result.message.isError=false`，没有 `error.code`。`write` 越界则正确给出 `FS_SANDBOX_DENIED` + `isError=true`。任何按 `isError` 判断失败的消费方（审批器、统计、QQ 回执）会把 pwsh 越界当成功。与 E8"非终止错误不分类"相关但不同：这里退出码已经是 1。需要产品决策（修 pwsh 执行器分类，或在消费方检查文本标记）。
+2. **ACL 残留是真实的**：跑完后 `icacls C:\DSH\her` 多了 `Everyone:(CI)(DENY)(DC)`、capability SID `S-1-4-614177251-1001953937:(OI)(CI)(W,D,DC)`、`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，并传播到子目录/文件。`dispose()` 只回收临时授权，workspace ACE/Low 标签常驻；§7.6-4 是清理路径。
+3. **`permission` 覆盖是进程级**：同一 lab 里的 `icl-mc-lab` 也会默认 `workspace-write`（本轮未跑 MC，未验证其工具面；产品不受影响）。
+4. **lab 默认 workspace 仍不可用**：`.state/lab/<run>/workspace` 在 `C:\DSH` 子树下，ACL 继承不满足（E9）。lab 必须显式 `--workspace C:\DSH\her`；`tools/lab.mjs` 本轮未改（避免扩大改动面）。
+5. **首请求命中受预热影响**：见 §7.5；不要把 98.01% 当成"冷启动也 98%"。
+6. **`read_image` 未实测执行**：工具在面上，但 `deepseek-flash` 是否声明 image 输入未确认（§6-12）；P1-P8 没有调用它。
+
+### 7.9 证据路径（gitignored，未提交）
+
+`.state/lab/sandbox-pilot/`：
+
+- `lab.patch.yml` — 本次实际喂给 dsh 的物化 patch（占位符已替换）
+- `effective-config.yml` — `--dump-config` 的有效配置（用于确认 icl-lab 里没有 editor、原生工具行在）
+- `events.jsonl` — observer 的权威事件流（含 seq、request/header、system/message、facts、tool 往返）
+- `pilot-events.jsonl` — 探针直接抓的同一会话事件（交叉核对）
+- `probe-report.md` — 逐 Step 工具调用/结果原文
+- `tool-face.json` / `cache-face.json` / `analysis.json` — 工具面、system/facts/cache、基线对比的机器可读汇总
+- `file-checks.txt` — 写内/写外/文件是否存在的侧证
+- `probe.log` / `pilot-approvals.jsonl` — 探针日志与审批记录（后者为空）
+- `context/system-8.txt` — 本会话 system 提示词快照（与 `../sandbox-1/context/system-8.txt` 做前缀 diff）
+
+复跑：`node tools/lab.mjs up --preset icl-lab --port 57111 --workspace C:\DSH\her --model flash --run sandbox-pilot`，再 `node .state/lab/sandbox-pilot/probe2.mjs` 与 `analyze.mjs`。
 
 ## 附录 A：复现与证据路径
 

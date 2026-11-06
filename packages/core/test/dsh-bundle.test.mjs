@@ -7,6 +7,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import yaml from 'js-yaml'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..', 'dsh-icl')
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8')
@@ -58,3 +59,35 @@ test('包内文件清单覆盖运行时会读到的文件', () => {
     assert.ok(files.includes(required), `files 缺少 ${required}`)
   }
 })
+
+// SANDBOX-PLAN §7 试点：lab 是唯一允许带 workspace-write 的实验夹具；desktop/产品默认值不在本测试范围。
+const labRows = yaml.load(read('presets/lab.patch.yml'))
+const labPreset = (id) => labRows
+  .flatMap((row) => row.insert ?? [])
+  .find((row) => row.id === id)
+
+test('lab 试点：整个 lab 进程默认 workspace-write，工作区是 C:/DSH/her', () => {
+  const sandbox = labRows.find((row) => row.id === 'sandbox-policy')
+  assert.equal(sandbox?.config?.mode, 'workspace-write')
+  assert.equal(sandbox?.config?.workspaceRoot, 'C:/DSH/her')
+  const permission = labRows.find((row) => row.id === 'permission')
+  assert.equal(permission?.config?.defaultPreset, 'workspace-write')
+  // danger-full-access 必须保留为回滚路径。
+  assert.ok(permission.config.presets['danger-full-access'])
+})
+
+test('lab 试点：icl-lab 用原生工具替换 editor，MC 预设不动', () => {
+  const row = labPreset('preset-icl-lab')
+  const ids = row.config.plugins.map((plugin) => plugin.id)
+  for (const id of ['tool-fs', 'tool-fs-search', 'tool-pwsh']) {
+    assert.ok(ids.includes(id), `icl-lab 缺少原生工具行 ${id}`)
+  }
+  const core = row.config.plugins.find((plugin) => plugin.id === 'icl-lab-core')
+  assert.ok(!core.config.plugins.includes('editor'), 'icl-lab 不应再启用 editor')
+  assert.ok(core.config.plugins.includes('bili'), '只移除 editor，其余 ICL 插件保持')
+
+  const mc = labPreset('preset-icl-mc-lab')
+  const mcCore = mc.config.plugins.find((plugin) => plugin.id === 'icl-mc-lab-core')
+  assert.ok(mcCore.config.plugins.includes('editor'), '本轮试点不碰 MC 预设')
+})
+
