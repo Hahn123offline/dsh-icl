@@ -330,7 +330,18 @@ export function taskEventText(type, data = {}, status = null) {
     const materialText = /needs-material/.test(error) || (task.kind === 'shelter' && task.result?.deficit != null)
       ? shelterMaterialDetail(task.result)
       : ''
-    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${materialText ? `；材料诊断：${materialText}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${progress}${suffix}`
+    // 资源枯竭：带上扫过的半径/试过的方块，避免她以为"再多试一次就有"。
+    const dryText = /no-resources/.test(error)
+      ? [
+        task.result?.scannedRadius != null ? `扫到 ${task.result.scannedRadius} 格` : '',
+        Array.isArray(task.result?.triedBlocks) && task.result.triedBlocks.length ? `试过 ${task.result.triedBlocks.slice(0, 4).join('/')}` : '',
+      ].filter(Boolean).join('，')
+      : ''
+    // 其它失败：body 的 suggestion 是直接写给模型的下一步（材料诊断里已含 suggestion 时不重复）。
+    const suggestionText = !materialText && task.result?.suggestion
+      ? `；建议：${cut(String(task.result.suggestion), 180)}`
+      : ''
+    return `[MC] 任务失败：${label}${params ? `（${params}）` : ''} — ${error}${why ? `：${why}` : ''}${dryText ? `；诊断：${dryText}` : ''}${materialText ? `；材料诊断：${materialText}` : ''}${verifyText ? `；结构验收：${verifyText}` : ''}${suggestionText}${progress}${suffix}`
   }
   if (type === 'task_unknown') {
     return `[MC] 任务超时，结果未知：${label}${progress} — 动作可能已经生效，不能当成失败。先 mcb_status / mcb_inventory 复核，再决定要不要重下同一个任务。${suffix}`
