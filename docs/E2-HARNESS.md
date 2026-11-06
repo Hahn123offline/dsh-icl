@@ -114,3 +114,18 @@ node tools/mc-quality.mjs --run e2-<date> --interval 60
 - eager-recall 在 night-1 0 次注入（kind 未命中）——E2 观察是否有 `<icl-context>` 及命中质量。
 - eyes/B站、QQ 私聊尚未接；S3 等设备/工具可用 + 用户同意；QQ 只做偶发私聊介入，不发群。
 - 产品 preset 首屏 purify 仍需用户批准（lab preset 已开）。
+
+## 9. S2 24h soak 实施细则（2026-11-06 用户/lead 拍板）
+
+- **主模型**：云端 `deepseek-flash`（用户已批准）；`--model flash`，不占本地 GPU。
+- **preset**：`icl-mc-lab`（lab-only）+ 新调参：`time.awakeTick.idleSec=30`、`time.goalResumeMinGapSec=30`、`toolAllowlist`（mcb_* + time_status/time_arrange + remember/recall/forget/memo*）→ 工具面 48→~32。
+- **supervisor**：`mc-e2 --phase soak --hours 24`（自动 `--terse-prompts --playbook-min 6 --playbook-idle-sec 90`，steer ≤10 条/2h）；quality 监控同跑。
+- **场景（必须注入）**：
+  1. 每 ~2h 一次"过去指代"消息（"你还记得昨晚为什么死那么多次？/上次小屋在哪？"）→ KPI：过去指代消息的 recall 调用率、返回块相关度。
+  2. `hunt/flee`：夜间怪围攻触发 `mcb_combat {mode:'hunt'|'defend'|'flee'}`，验收击伤/击杀/逃跑、低血撤退、死亡数下降。
+  3. `mcb_stop` 复验：surface 含 `mcb_stop`；stop→resume 断言（任务停/身体在世界/time pausedMode 开→关/危险穿透）。
+  4. attack 真伤害：`mcb_attack` 对 mob 造成伤害并结算；自动躲避（creeper/hostiles 近身）验证。
+  5. 第二轮记忆修复复验：cleanup 近重复合并（block 数减/merged+1）、evidence 去噪、eager 冷却、简报截断、segmented/degraded 语义。
+  6. latency 指标：turn-gap p50/p95/max + 来源分类（awake-tick/supervisor/external/idle）；wait/tasks 次数；工具耗时 p50/p95 + >60s 告警。
+- **gate**：起跑前写 `.state/lab/E2-GATE.json`（phase=`soak`，userNotifiedAt=通知时间，approvedBy=`user-standing-approval-2026-11-06`）；起跑即刻发 lead `started`（含 54838 地址），由 lead 转用户。
+- **资源**：54838（survival）+ lab 57101 + body 54902；结束停服/关 lab/释放锁；coder390 保持不动（S2 主模型 cloud，dream 才短暂用 8088）。
