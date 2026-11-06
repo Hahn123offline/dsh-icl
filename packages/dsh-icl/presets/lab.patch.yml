@@ -288,6 +288,8 @@
                 - time
                 - dream
                 - mc-link
+                # album 只加载服务；e2 的 toolAllowlist 不暴露 album_* 工具。
+                - album
                 - loop-probe
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'

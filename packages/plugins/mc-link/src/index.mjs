@@ -29,6 +29,7 @@ const STATUS_LINE_MAX = 120
 const SKILLS = [
   { id: 'escape', title: '脱困', when: (s) => ['failed', 'interrupted'].includes(s?.task?.state) || s?.paused || ['stuck', 'health-drop', 'low-health'].includes(s?.pausedReason), summary: '任务卡住/中断' },
   { id: 'flee', title: '逃跑/战斗', when: (s) => Number(s?.adapter?.health ?? 20) <= 12, summary: '血量偏低' },
+  { id: 'combat', title: '战斗/逃跑/自动躲避', when: (s) => Array.isArray(s?.adapter?.nearbyHostiles) && s.adapter.nearbyHostiles.length > 0, summary: '附近有敌对：mcb_combat（hunt/flee/guard），别逐次 attack' },
   { id: 'trade', title: '村民交易', when: (s) => Number(s?.adapter?.nearby?.villager ?? 0) > 0, summary: '附近有村民' },
   { id: 'furnace', title: '熔炼', when: (s) => Number(s?.adapter?.nearby?.furnace ?? 0) > 0, summary: '附近有熔炉' },
   { id: 'chest', title: '箱子', when: (s) => Number(s?.adapter?.nearby?.chest ?? 0) > 0, summary: '附近有箱子' },
@@ -36,7 +37,6 @@ const SKILLS = [
   { id: 'macro', title: '宏操作总览', when: () => false, summary: '8 个宏、参数、失败码、别逐方块' },
   { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
   { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
-  { id: 'combat', title: '战斗/逃跑/自动躲避', when: () => false, summary: '打/跑/守、低血中断与恢复宽限' },
   { id: 'eyes', title: '眼睛：快照/截图', when: () => false, summary: '先 snapshot 后 screenshot；成本/quota/失败处理' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
   { id: 'endgame', title: '通关参考', when: () => false, summary: '长期主线' },
@@ -1022,6 +1022,11 @@ export function apply(ctx) {
     return PAUSE_ADVICE[String(reason ?? '')] ?? '先看清原因/环境再 resume；只 resume 不处理原因会被再次暂停'
   }
 
+  /** 单步重复动作的宏提示：不拒绝，只在节流窗口内提一次（每 2 分钟）。 */
+  let lastMacroHintAt = 0
+  const MACRO_HINT_OPS = new Set(['mine', 'dig', 'place', 'goto', 'move', 'attack'])
+  const MACRO_HINT = '（提示：这类重复动作可用宏——采集 collect、挖通道 tunnel、建造 build/shelter、打架 mcb_combat、补刀 mcb_attack；单步适合少量/精确动作。此提示每 2 分钟最多一次，不用回复它。）'
+
   async function runDo(steps, safety = null) {
     const { steps: normalized, notes } = normalizeSteps(steps)
     const noteText = notes.length ? `（参数处理：${notes.join('；')}）` : ''
@@ -1069,6 +1074,12 @@ export function apply(ctx) {
     if (task) {
       const head = `任务 ${task.id}（${task.kind}）已接受，状态 ${task.state}。完成/失败/中断会作为事件通知回来，**不要循环 mcb_status/tasks 查**（需要时看一眼即可）。`
       return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+    }
+    // 用单步做重复动作时提示宏（不拒绝、节流 2 分钟）：S2 实测 mcb_do 121 次、combat 5、attack 0，
+    // 说明模型仍在用单步硬刷，需要在回执里把我们教的宏再提一次。
+    if (normalized.some((step) => MACRO_HINT_OPS.has(step.op)) && Date.now() - lastMacroHintAt > 120_000) {
+      lastMacroHintAt = Date.now()
+      parts.push(MACRO_HINT)
     }
     return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
   }
@@ -1222,7 +1233,7 @@ export function apply(ctx) {
     {
       name: 'mcb_combat',
       summary: '战斗宏：hunt 猎杀 / defend 防御 / flee 逃跑 / guard 守卫（自动选武器/走位/低血中断）。',
-      description: '一条 task 完成整场战斗，别逐次手动 attack。mode=hunt|defend|flee|guard；参数 target（默认 nearest_hostile；hunt 可 "chicken"/"zombie"/"nearest:villager"）、radius(16)、attackRange(3)、lostTargetMs(10s)、maxDurationMs（guard120s/flee30s/其他60s）、lowHealth(10)、maxHostiles(3)、creeperDistance(5)、safeDistance(24)。立即返回 taskId；progress 有 mode/state/target/targetHealth/distance/attacks/health/hostiles；可 {"op":"cancel"}。危机（低血/苦力怕近身/敌人过多）会先自动躲避再 task_failed(combat: reason)——按提示先吃/躲或改 flee；打死目标后用 pickup 捡掉落。',
+      description: '一条 task 完成整场战斗，别逐次手动 attack。mode=hunt|defend|flee|guard（省略默认 hunt）；target 可省略（默认 nearest_hostile；hunt 可 "chicken"/"zombie"/"nearest:villager"；flee/guard 不需要）、radius(16)、attackRange(3)、lostTargetMs(10s)、maxDurationMs（guard120s/flee30s/其他60s）、lowHealth(10)、maxHostiles(3)、creeperDistance(5)、safeDistance(24)。立即返回 taskId；progress 有 mode/state/target/targetHealth/distance/attacks/health/hostiles；可 {"op":"cancel"}。危机（低血/苦力怕近身/敌人过多）会先自动躲避再 task_failed(combat: reason)——按提示先吃/躲或改 flee；打死目标后用 pickup 捡掉落。',
       when: ['要打怪/防守基地/从怪群逃跑/站岗', '多只敌人或持久战（单只补刀用 mcb_attack）'],
       avoid: ['只想打一下面前一只：mcb_attack 更直接', '没武器/护甲：先 craft 或跑，别硬刚'],
       parameters: {
@@ -1240,16 +1251,22 @@ export function apply(ctx) {
           creeperDistance: { type: 'number', description: '苦力怕多近算危险（2–12，默认 5）。' },
           safeDistance: { type: 'number', description: 'flee 跑到多远算安全（8–48，默认 24）。' },
         },
-        required: ['mode'],
+        required: [],
       },
       async execute(args = {}) {
-        const mode = String(args.mode ?? '').trim()
-        if (!['hunt', 'defend', 'flee', 'guard'].includes(mode)) throw new Error(`mcb_combat 需要 mode：hunt/defend/flee/guard（收到 ${mode || '(空)'}）；单只补刀用 mcb_attack。`)
+        // 默认可用：不给 mode 时按 hunt（打附近敌对）执行，并在回执里说明；给错才报错并给示例。
+        const defaulted = args.mode == null
+        const mode = String(args.mode ?? 'hunt').trim()
+        if (!['hunt', 'defend', 'flee', 'guard'].includes(mode)) {
+          throw new Error(`mcb_combat 的 mode 只能是 hunt/defend/flee/guard（收到 ${mode || '(空)'}）。例：{"mode":"hunt","target":"nearest_hostile"}、{"mode":"flee"}、{"mode":"guard"}；单只补刀用 mcb_attack {target:"zombie"}。`)
+        }
         const params = {}
         for (const key of ['target', 'radius', 'attackRange', 'lostTargetMs', 'maxDurationMs', 'lowHealth', 'maxHostiles', 'creeperDistance', 'safeDistance']) {
           if (args[key] != null) params[key] = args[key]
         }
-        return runDo([{ op: 'task', kind: mode, params }])
+        const out = await runDo([{ op: 'task', kind: mode, params }])
+        if (defaulted) out.text = `${out.text}\n（没指定 mode，默认按 hunt 打附近敌对；想逃跑用 mode:"flee"，守卫用 mode:"guard"，指定目标用 target。）`
+        return out
       },
     },
     {
@@ -1550,11 +1567,12 @@ export function apply(ctx) {
     {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
-      description: `steps 按顺序执行，任一 op 失败即停。
-宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s，用 tasks/events 查）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
-重复劳动用宏（beta，别逐方块刷）：collect{item,count,radius}（自动找/换工具/计数/拾取）、tunnel{direction|dx,dz,length,height,torchEvery,stairs:true 仅向下}、bridge/build/shelter/sort/deposit/farm（build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
-单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（最长~120s；**wait 单次≤30s，长任务别 wait 轮询**，结果作为事件回来；pickup 捡掉落 {radius,max} → picked/items/left，别 goto 脚下；sleep 夜里/雷暴+有床）。坐标 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内；attack 看命中/伤害/血量，没带=无法确认。
-失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）；示例用 mcb_help。`,
+      description: `想打架/追怪→mcb_combat；补刀→mcb_attack；采集/建造→本工具 task 宏（collect/tunnel/build/shelter/farm…）。
+steps 按顺序执行，任一 op 失败即停（失败也带回已完成步骤）。
+宏/长任务：{"op":"task","kind":"<kind>","params":{...}} 立即返回 taskId；progress 限频（5–10%/10s）；cancel taskId 断、resume [taskId] 续；别 wait 轮询；长动作一律用 task，别并发单步 op（409）。
+宏（别逐方块刷）：collect/tunnel/bridge/build/shelter/sort/deposit/farm（参数见 mcb_help macro；build 用 blueprint）。原语 kind：mine|goto|patrol|explore|follow|routine|chat。
+单步：dig|place|use|equip|toss|pickup|attack|eat|face|sleep|wait|craft|furnace|chest|trade|move|goto|patrol|explore|follow|mine（最长~120s；wait 单次≤30s，长任务别轮询；pickup 捡掉落 {radius,max} → picked/items/left；sleep 夜里+有床）。坐标 {x,y,z} 或 [x,y,z]；attack/use 先走到 3-4 格内；attack 看命中/伤害/血量，没带=无法确认。
+失败码：no-target|no-path|dig-failed|needs-tool|inventory-full|needs-material|blocked|unsafe|partial（按码处理）；示例见 mcb_help。`,
       when: ['要动身体：原语动作或下宏任务', '查台账/事件、取消、解除暂停、说话'],
       avoid: ['只想知道状态用 mcb_status/mcb_look；参数不确定先 mcb_help play'],
       safety: ['同一件事别连发多个 task：先 tasks 看有没有在跑的'],
