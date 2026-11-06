@@ -1147,7 +1147,7 @@ export function createBody({
         ts: new Date().toISOString(),
         runId: run,
         requestedKind: kind,
-        viewer: { port: viewer.port, version: viewer.version, center: viewer.center },
+        viewer: { port: viewer.port, version: viewer.version, center: viewer.center, stats: viewer.stats ?? null },
         viewport: { width, height },
         waitMs,
         frames,
@@ -1393,6 +1393,7 @@ export function createBody({
     safetyStop, stopAll, resume, ingest, inspect, eyesSnapshot, eyesScreenshot, doPlan, chat, push, watchdogTick, shutdownRequest,
   }
 }
+
 
 
 

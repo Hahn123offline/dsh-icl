@@ -128,7 +128,12 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   const server = http.createServer(app)
   const io = new Server(server)
   const fixedCenter = center instanceof Vec3 ? center : new Vec3(center.x, center.y, center.z)
+  // prismarine-viewer 的页面只在 pos.y > 0 时初始化相机；负 Y（超平坦世界常见）会导致只看到天空。
+  // 把负 Y 世界整体上移 64 格（改 chunk JSON 的 minY + 相机 position），渲染后坐标再减回去。
+  const yOffset = fixedCenter.y < 0 ? 64 : 0
+  const renderPos = new Vec3(fixedCenter.x, fixedCenter.y + yOffset, fixedCenter.z)
   const sockets = new Set()
+  const stats = { chunksSent: 0, chunkErrors: 0, sampleError: null }
   async function sendChunks(socket) {
     const cx = Math.floor(fixedCenter.x / 16)
     const cz = Math.floor(fixedCenter.z / 16)
@@ -136,16 +141,20 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
       for (let z = cz - viewDistance; z <= cz + viewDistance; z += 1) {
         try {
           const chunk = await world.getColumn(x, z)
-          if (!chunk) continue
-          socket.emit('loadChunk', { x: x * 16, z: z * 16, chunk: chunk.toJson() })
-        } catch { /* 单列失败不阻塞 */ }
+          if (!chunk) { stats.chunkErrors += 1; stats.sampleError = stats.sampleError ?? 'no chunk'; continue }
+          let chunkJson = chunk.toJson()
+          if (typeof chunkJson === 'string') chunkJson = JSON.parse(chunkJson) // mineflayer 的 prismarine-chunk 版本 toJson 返回字符串
+          if (yOffset) chunkJson.minY = Number(chunkJson.minY ?? -64) + yOffset
+          socket.emit('loadChunk', { x: x * 16, z: z * 16, chunk: chunkJson })
+          stats.chunksSent += 1
+        } catch (error) { stats.chunkErrors += 1; stats.sampleError = stats.sampleError ?? String(error?.message ?? error) }
       }
     }
   }
   io.on('connection', (socket) => {
     socket.emit('version', version)
     sockets.add(socket)
-    socket.emit('position', { pos: fixedCenter, addMesh: false })
+    socket.emit('position', { pos: renderPos, addMesh: false })
     void sendChunks(socket)
     socket.on('disconnect', () => sockets.delete(socket))
   })
@@ -156,7 +165,10 @@ export async function startViewerServer({ viewerRoot, world, center, version, po
   return {
     port,
     center: { x: fixedCenter.x, y: fixedCenter.y, z: fixedCenter.z },
+    renderCenter: { x: renderPos.x, y: renderPos.y, z: renderPos.z },
+    yOffset,
     version,
+    stats,
     close: () => new Promise((resolve) => {
       for (const socket of sockets) { try { socket.disconnect(true) } catch { /* ignore */ } }
       try { io.close() } catch { /* ignore */ }
@@ -252,5 +264,8 @@ export async function captureScreenshot({
     killTree()
   }
 }
+
+
+
 
 

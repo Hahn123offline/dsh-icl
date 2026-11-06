@@ -141,3 +141,12 @@ S2 run `.state/lab/e2-20261106-soak`：
 
 - “缺哪面”已在 `walls.missingFaces`（如 `[{face:"south",missing:4,total:6}]`）与 `summary` 里；需要更细可用 `walls.faces[face].missing` 的坐标列表、`roof.cells`、`interior.cells`。
 - `failures` 是建造过程失败明细（stage/x/y/z/reason），用于调试，不建议直接给模型看；给模型用 `verify.summary` 即可。
+
+### 5.1 排查进展（2026-11-06）
+
+- 已加 viewer 诊断计数（`startViewerServer().stats = {chunksSent, chunkErrors, sampleError}`，body screenshot meta 里带 `viewer.stats`）。
+- 真服 dev 实测：**49 个区块全部发送、0 错误**（`chunksSent:49`），说明 body → viewer 的 chunk 数据通道正常；但浏览器画面仍是天空（PNG ~2KB）。
+- 已排除/试过：
+  - mineflayer 的 `chunk.toJson()` 在 1.21.4 返回**字符串**，viewer 服务已改为 parse 后再发（原先字符串可能不被 worker 接受）；
+  - prismarine-viewer 页面只在 `position.pos.y > 0` 时初始化相机（超平坦世界 y=-60 会永远不回相机）→ 尝试把负 Y 世界整体 +64（chunk `minY` 与相机 position 同步），仍未渲染。
+- 结论：**chunk 已到浏览器，问题在 viewer 页面/worker 对 1.21.4 超平坦负 Y 世界的渲染/相机初始化**，不是 body 没发数据。下一步可：给 viewer bundle 打 patch（负 Y 相机/超平坦）或用离线 world 快照渲染（把 body 世界导出成 prismarine-world 后离线截图）。

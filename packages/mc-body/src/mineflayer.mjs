@@ -333,7 +333,7 @@ export function createMineflayerAdapter({
           world: bot.world, center, version: bot.version, port, viewDistance,
         })
         screenshotViewer = viewer
-        return { port: viewer.port, center: viewer.center, version: bot.version }
+        return { port: viewer.port, center: viewer.center, version: bot.version, stats: viewer.stats }
       } catch (error) {
         lastError = error
         if (!/EADDRINUSE/i.test(String(error?.message))) break
@@ -2879,6 +2879,7 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
 
 
 
