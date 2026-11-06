@@ -171,6 +171,10 @@ night-1 已知：dream 槽从未绑定（lab patch 无 providers）→ 整晚 0 
 
 > **限制**：产品 preset 没有 live DSH 运行（`lab.mjs` 的 preset 白名单只有 icl-lab/icl-mc-lab/icl-e2/icl-fast）；若要 DSH 层的"产品首屏真实 system 字符 + 4 段净化生效 + header 工具数（含 DSH 原生工具，会比 51 高）"，需要自定义 patch 起一次 lab，lead 要的话我再做（不改 lab.mjs）。
 
+**待测下一基线（尚未实测，历史不回改）**：misc 5bbdd52（album 隐私双确认参数）合并后，预期
+icl-lab 56 / 41,802 字符（旧 41,577 +225）、产品 A1 51 / 34,326（数组口径）/ 34,274（Σ 口径）、icl-mc-lab 27 / 21,459 不变；
+等下一次 sanctioned run / A1 live 复核后再写正式基线，当前 9.1 数字保持为 4ba9ebc 之前实测值。
+
 ### 9.2 指纹演进（历史不回改）
 
 | 时间/阶段 | preset | 工具数 | toolsChars | toolsHash | system 字符 | 说明 |
