@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "shelter-3x3-local3-t106",
+  "description": "local3 recorded shelter failure: 平地/材料足够但结构 incomplete；用于核对 L1 taskAssertions/eventAssertions",
+  "setup": {
+    "position": {
+      "x": 43.57,
+      "y": 76,
+      "z": -47.5
+    },
+    "health": 17.166667938232422,
+    "food": 16,
+    "inventory": {
+      "dirt": 27,
+      "oak_door": 1
+    },
+    "inventoryPolicy": "minimum",
+    "timeOfDay": null,
+    "weather": null,
+    "difficulty": null,
+    "note": "position from task progress; dirt>=27 inferred from task passing material gate; exact inventory not recorded in events"
+  },
+  "taskSequence": [
+    {
+      "id": "t-106",
+      "kind": "shelter",
+      "params": {
+        "size": 3,
+        "material": "dirt"
+      }
+    }
+  ],
+  "threats": [],
+  "stopRules": {
+    "maxDeaths": 1,
+    "maxRepeatToolCalls": 2,
+    "maxSayPerHour": 2,
+    "maxShelterFailStreak": 2,
+    "maxPathStuck": 5
+  },
+  "acceptance": {
+    "taskId": "t-106",
+    "terminal": "failed",
+    "error": "shelter: incomplete",
+    "verify.ok": false,
+    "verify.walls.missing": 9,
+    "verify.roof.missing": 6
+  },
+  "note": "recorded failure; not a success fixture"
+}

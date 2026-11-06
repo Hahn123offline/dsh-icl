@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "taskAssertions": [
+    {
+      "taskId": "t-106",
+      "kind": "shelter",
+      "terminal": "failed",
+      "error": "shelter: incomplete",
+      "result": {
+        "require": [
+          "verify"
+        ],
+        "verify.ok": false,
+        "verify.walls.missing": 9,
+        "verify.roof.missing": 6,
+        "verify.summary": "墙缺 9 块（north:6、south:1、west:2）；屋顶缺 6 块"
+      },
+      "events": [
+        "task_queued",
+        "task_started",
+        "shelter_incomplete",
+        "task_failed"
+      ]
+    }
+  ],
+  "eventAssertions": [
+    {
+      "type": "shelter_place_fail",
+      "where": {
+        "stage": "repair-walls"
+      },
+      "min": 1
+    },
+    {
+      "type": "shelter_incomplete",
+      "where": {},
+      "min": 1
+    }
+  ],
+  "forbidden": [],
+  "note": "result.entryOk is absent on failure (recorded); assert only recorded fields"
+}

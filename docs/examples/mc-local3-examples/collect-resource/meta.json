@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "runId": "e2-20261106-local3",
+  "segmentId": "collect-resource",
+  "createdAt": "2026-11-06T08:53:06.146Z",
+  "phase": "L1",
+  "source": "recorded-local3",
+  "commits": {
+    "body": "cbb37f8",
+    "mcLink": "unknown",
+    "mcLab": "unknown"
+  },
+  "versions": {
+    "node": "26",
+    "minecraft": "unknown",
+    "body": "mc-body/v1"
+  },
+  "model": {
+    "provider": "local",
+    "name": "coder390",
+    "temperature": 0
+  },
+  "world": {
+    "levelName": null,
+    "seed": null,
+    "dimension": "overworld",
+    "timeOfDay": null,
+    "weather": null,
+    "difficulty": null,
+    "snapshot": null,
+    "note": "minimal example: world snapshot omitted; full structural replay needs world.json"
+  },
+  "clock": {
+    "startAt": null,
+    "stopBeforeMs": null
+  },
+  "scenarioIds": [
+    "collect-resource-local3-t1"
+  ],
+  "limits": {
+    "maxDeaths": 6,
+    "maxSteps": 2000,
+    "maxWallMs": 3600000
+  },
+  "freeze": {
+    "name": "MC-FREEZE-2026-11-06",
+    "approvedBy": "lead"
+  },
+  "note": "minimal L1 fixture from local3; read-only; world snapshot omitted; commits partially unknown"
+}
