@@ -152,3 +152,78 @@ plugins:
 - QQ 媒体发送/DSH attachment：album §2 已留接口，需通道+审批，另行批准。
 - MC 长跑/`attack`/pause 死锁：P0 归 mc-body/mc-link（`COMPLEXITY-AUDIT §4`）。
 - desktop 进程/插件安装/重启：本任务一律不碰；本文件只是清单。
+
+## 实施（A1 产品 preset patch，2026-11-06，已落 branch wt/mc-lab，未应用 desktop）
+
+> 状态：**代码/测试已就绪，等 lead 按发布清单应用并重启 desktop**。本实施**未碰 desktop/profile、未重启、未跑 MC**。
+> 目标：产品 `preset-icl` 显式 16 插件白名单（去 mc-link）+ 4 段首屏净化；工具面 **66/44,316 → 49/31,824**，`systemHasDynamicFacts=false`（facts 仍走 runtime-context）。
+
+### 实施 1：`packages/dsh-icl/presets/icl.patch.yml`（preset-icl.icl-core.config）
+
+```yaml
+purifySections:
+  - 'harness:identity'
+  - 'ui:deliverable-file-references'
+  - 'harness:source'
+  - 'app:web-surface'
+plugins:
+  - memory
+  - world-state
+  - recall
+  - note
+  - lexicon
+  - whois
+  - persona
+  - focus
+  - eager-recall
+  - model-manager
+  - time
+  - dream
+  - editor
+  - bili
+  - video
+  - album
+```
+
+- 这是 **16 个显式白名单 = DEFAULT 17 − mc-link**；工具面实测 **49 / 31,824 字符**（A1 目标一致）。
+- 与 `PRODUCT-RESURFACE` 的"15 插件（A2 去 mc-link/editor）"区分：A1 保留 editor，故 16 个；若用户要 15/A2，再删 `editor` 一行 → 46/30,699。
+- `purifySections` 只 shadow 上述 4 个工程段，不碰 `icl:core` / `icl:facts`；facts 语义不变，仍由 runtime-context 提供（首屏无动态 facts）。
+
+### 实施 2：测试断言（已绿）
+
+| 文件 | 断言 |
+|---|---|
+| `packages/core/test/product-surface.test.mjs`（新） | YAML 物化后：16 个显式插件、无 mc-link、相对 DEFAULT 只差 mc-link；4 段 purify 且不含 icl:facts/core；bootstrap 后 **49 工具 / 31,824 字符**、无 `mcb_*` |
+| `packages/core/test/preset-plugins.test.mjs`（改） | 产品 preset 从"允许缺 album/video"改为 **A1 显式 16 插件白名单**；缺项仅 `mc-link` |
+| `packages/core/test/first-screen.test.mjs`（改） | 产品 preset 必须开 4 段净化；不得把 `icl:facts`/`icl:core` 一起 shadow（`systemHasDynamicFacts=false` 的配置前提） |
+
+### 实施 3：验证命令与结果（不启 desktop）
+
+```powershell
+cd C:\DSH\icl-wt\mc-lab
+node --test packages/core/test/product-surface.test.mjs packages/core/test/preset-plugins.test.mjs packages/core/test/first-screen.test.mjs   # 13/13 pass
+npm test   # 748/748 pass（A1 前 745，+3 新测试）
+node tools/calc-product-surface.mjs  # {"tools":49,"chars":31824,"names":[...]}
+node tools/lab.mjs status  # 无 lab；不启动 desktop/profile
+```
+
+- 物化方式：`yaml.load(icl.patch.yml)` 取 `preset-icl` → `normalizeConfig + bootstrapHost`（只读、no desktop/no lab server）。
+- 首屏字符：lab 实测 5011→2294（`docs/FIRST-SCREEN.md`）；产品侧需重启后用 cache 复核（新会话，不复用旧会话）。
+- 工具面/字符量级：49/31,824，无 `mcb_*`；album/video/bili/editor 保留（A1 不砍生活功能）。
+
+### 实施 4：应用与回滚（lead/用户，本任务不执行）
+
+1. lead 合并本 branch（含 `presets/icl.patch.yml` + 测试/文档；不含 desktop profile）。
+2. 用户批准发布范围；lead 应用产品 preset patch（只 diff 该 YAML + 测试/文档）。
+3. 用户重启 desktop（不自动重启）；新建 ICL 会话（不复用旧会话）。
+4. cache 复核：tools 数/字符/hash、system 字符、facts 快照条数、`systemHasDynamicFacts=false`。
+5. 验收清单：首行 `你是小千。`；工程脚手架 4 段消失；tools≈49；facts ≤1 条/轮且 `icl:facts` 在；album/video 工具可见；无 `mcb_*`（MC 走 icl-mc）；旧会话/state 未变。
+6. **回滚**：git revert 本次 preset 提交或删 `purifySections`/改回插件清单；`purifySections: []` 即关首屏；重启 desktop 后恢复。产品代码/desktop profile/sandbox 未动，回滚只影响 preset。
+
+### 实施 5：风险与未决
+
+- **插件数口径**：lead 说 A1 15 个；按 49/31,824 目标 A1 是 16 个（保留 editor）。15 个对应 A2（去 editor → 46/30,699），需用户/lead 确认。
+- MC 从产品生活会话移除：用户要玩 MC 走 `icl-mc` preset（已有）。
+- 首屏 deliverable/file 指引消失；若未来做文件交付，可只保留 `ui:deliverable-file-references`。
+- 产品 album/video 仍在（默认已生效，显式化不改行为）；隐私/发送边界仍按 ALBUM 文档待批准项。
+- 未改 desktop profile/sandbox（B 草案独立批准，不可与 A1 混在同一个 diff）。
