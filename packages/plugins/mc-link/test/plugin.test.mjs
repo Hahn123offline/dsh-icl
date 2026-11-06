@@ -70,11 +70,51 @@ async function startFakeBody({ connected = true } = {}) {
     doDelay: 0,
     statusError: null,
     doError: null,
+    eyesScreenshot: 'ok',
   }
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
     const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
     const read = (fn) => { let raw = ''; req.on('data', (chunk) => { raw += chunk }); req.on('end', () => fn(raw ? JSON.parse(raw) : {})) }
+    if (url.pathname === '/v1/eyes/snapshot' && req.method === 'GET') {
+      return send(200, {
+        ok: true,
+        captureMs: 3,
+        snapshot: {
+          version: 1, kind: 'structured', ts: new Date().toISOString(), radius: Number(url.searchParams.get('radius') ?? 8),
+          position: { x: 12.5, y: 64, z: -8.5 }, dimension: 'overworld', health: 20, food: 18, oxygen: null,
+          time: { label: 'day 3 06:00' }, sleeping: false,
+          held: { name: 'stone_pickaxe', count: 1, toolFor: 'pickaxe' },
+          hotbar: [{ slot: 1, name: 'stone_pickaxe', count: 1, selected: true }],
+          inventory: { used: 2, emptySlots: 34, counts: { dirt: 12, oak_log: 3 } },
+          lookingAt: null,
+          map: '# # . .\n# # . .',
+          nearbyBlocks: { stone: 8, dirt: 5 },
+          entities: [{ name: 'zombie', distance: 12.5, position: { x: 1, y: 64, z: 2 } }],
+          nearbyHostiles: [{ name: 'zombie', distance: 12.5 }],
+          task: { id: 't-1', kind: 'mine', state: 'running' },
+          queue: [],
+          safety: { paused: false, reflex: { enabled: true, active: false }, alarms: { delivered: 1, suppressed: 0 } },
+          playable: { ok: true, blockers: [] },
+          recentEvents: [{ seq: 9, type: 'task_started', at: Date.now() }],
+        },
+      })
+    }
+    if (url.pathname === '/v1/eyes/screenshot' && req.method === 'POST') {
+      state.eyesRequests = state.eyesRequests ?? []
+      return read((input) => {
+        state.eyesRequests.push(input)
+        if (state.eyesScreenshot === '501') return send(501, { ok: false, error: 'body 未配置截图能力（需要 adapter viewer + Edge；见 docs/MC-EYES.md）' })
+        if (state.eyesScreenshot === '429') return send(429, { ok: false, error: '截图限频：距上次 5s；至少 15s 一次（成本高）' })
+        if (state.eyesScreenshot === '500') return send(500, { ok: false, error: '截图失败：Edge 没开 DevTools' })
+        const file = path.join(os.tmpdir(), 'mc-eyes-test', '2026-11-06T04-00-00-000Z-manual.png')
+        return send(200, {
+          ok: true, outBase: file.replace(/\.png$/, ''), files: [{ file, bytes: 267000, at: new Date().toISOString() }],
+          captureMs: 7100,
+          meta: { viewport: { width: 1280, height: 720 }, position: { x: 12.5, y: 64, z: -8.5 }, task: { kind: 'mine', state: 'running' }, safety: { paused: false } },
+        })
+      })
+    }
     if (url.pathname === '/v1/status') {
       if (state.statusError) return send(500, { ok: false, error: state.statusError })
       return send(200, statusBody(state))
@@ -186,19 +226,20 @@ function openPort() {
   })
 }
 
-test('工具面：12 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
+test('工具面：14 个 mcb_*，描述自足且不超预算；提示词只有事实段（无 mc:play/mc:interaction）', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
   try {
     const names = Object.keys(link.tools).sort()
-    assert.deepEqual(names, ['mcb_do', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_status', 'mcb_stop'])
+    assert.deepEqual(names, ['mcb_do', 'mcb_eyes', 'mcb_help', 'mcb_inventory', 'mcb_join', 'mcb_lan', 'mcb_leave', 'mcb_look', 'mcb_map', 'mcb_scan', 'mcb_servers', 'mcb_snapshot', 'mcb_status', 'mcb_stop'])
     let total = 0
     for (const tool of Object.values(link.tools)) {
       assert.ok(tool.description.length > 60, `${tool.name} 描述太短`)
       assert.ok(tool.description.length <= 900, `${tool.name} 描述超 900 预算：${tool.description.length}`)
       total += tool.description.length
     }
-    assert.ok(total <= 4000, `工具描述总量 ${total} 超预算`)
+    // 12→14 个工具（眼睛 P0/P1）后总量上调；每工具 900 预算不变（composeToolDescription 强制）
+    assert.ok(total <= 4800, `工具描述总量 ${total} 超预算`)
     // 操作教学必须在工具描述里，而不是全局提示词段里。
     assert.match(link.tools.mcb_join.description, /server|host/)
     assert.match(link.tools.mcb_do.description, /tasks|op/)
@@ -934,6 +975,63 @@ test('门控：普通任务事件在 focus 里进积压，安全 alarm 能打断
   }
 })
 
+test('mcb_snapshot：结构化快照渲染成可读文本 + JSON 尾巴（日常先 snapshot）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_snapshot.execute({ radius: 6 })
+    assert.match(out.text, /场景快照（3ms；radius 6）/)
+    assert.match(out.text, /13,64,-8/)
+    assert.match(out.text, /生命\/饥饿\/氧气：20\/20，18\/20/)
+    assert.match(out.text, /手持：stone_pickaxe×1/)
+    assert.match(out.text, /脚下方块图：/)
+    assert.match(out.text, /zombie/)
+    assert.match(out.text, /可玩：是/)
+    assert.match(out.text, /JSON（\d+ 字）：\{/)
+    // mcb_eyes mode="snapshot" 复用同一渲染
+    const again = await link.tools.mcb_eyes.execute({ mode: 'snapshot' })
+    assert.match(again.text, /场景快照/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_eyes：截图成功返回 PNG 图片附件 + 路径/meta 摘要', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    const out = await link.tools.mcb_eyes.execute({ kind: 'milestone', frames: 1 })
+    const expected = path.join(os.tmpdir(), 'mc-eyes-test', '2026-11-06T04-00-00-000Z-manual.png')
+    assert.deepEqual(out.images, [expected], '首张 PNG 必须作为图片附件返回')
+    assert.match(out.text, /截图完成（7100ms；视口 1280×720；1 张）/)
+    assert.match(out.text, /mc-eyes-test/)
+    assert.match(out.text, /首张图已作为图片附件/)
+    const sent = body.state.eyesRequests.at(-1)
+    assert.equal(sent.kind, 'milestone')
+    assert.equal(sent.frames, 1)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
+test('mcb_eyes：501/429/500 给可读原因与替代路径（不是裸错误）', async () => {
+  const body = await startFakeBody()
+  const link = await mountLink({ port: body.port })
+  try {
+    body.state.eyesScreenshot = '501'
+    await assert.rejects(() => link.tools.mcb_eyes.execute({}), /没配置|viewer|Edge[\s\S]*mcb_snapshot/)
+    body.state.eyesScreenshot = '429'
+    await assert.rejects(() => link.tools.mcb_eyes.execute({}), /15s|限频[\s\S]*mcb_snapshot/)
+    body.state.eyesScreenshot = '500'
+    await assert.rejects(() => link.tools.mcb_eyes.execute({}), /重试|失败[\s\S]*mcb_snapshot/)
+  } finally {
+    await link.cleanup()
+    await body.close()
+  }
+})
+
 test('mcb_map：返回里注明"只显示脚下一层"，避免把单层地图当整个工地', async () => {
   const body = await startFakeBody()
   const link = await mountLink({ port: body.port })
@@ -1090,6 +1188,7 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     assert.match(list.text, /collect/)
     assert.match(list.text, /tunnel/)
     assert.match(list.text, /macro/)
+    assert.match(list.text, /eyes/)
     const play = await link.tools.mcb_help.execute({ skill: 'play' })
     assert.match(play.text, /开一局/)
     assert.match(play.text, /mcb_leave/)
@@ -1103,6 +1202,9 @@ test('mcb_help：play 是主入口；空参数列全部；模糊名能匹配', a
     const macro = await link.tools.mcb_help.execute({ skill: 'mac' })
     assert.match(macro.text, /宏操作总览/)
     assert.match(macro.text, /needs-tool/)
+    const eyes = await link.tools.mcb_help.execute({ skill: 'eye' })
+    assert.match(eyes.text, /MC 眼睛/)
+    assert.match(eyes.text, /先.*snapshot.*后.*screenshot|日常看场景先用/)
     const none = await link.tools.mcb_help.execute({ skill: 'nope-nope' })
     assert.match(none.text, /没有这个技能/)
   } finally {

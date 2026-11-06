@@ -20,7 +20,7 @@
 | `dream` | 995 | 0 | — | 可用待调 | 7 个默认 job 的夜间整理流水线（另有废弃的 `slang`） |
 | `rhythm` | 109 | 0 | — | 遗留兼容 | 旧 nightly 时钟；默认不启用，time 接管 |
 | `loop-probe` | 90 | 0 | — | 测试接缝 | 闭环外部信号注入；只在 `icl-loop` preset 启用 |
-| `mc-link` | 380 | 12 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_stop` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → 工具面 + signals（不注册 world source）；默认不启用，`icl-mc`/`icl-mc-lab` preset |
+| `mc-link` | 380 | 14 | `mcb_servers` `mcb_lan` `mcb_join` `mcb_leave` `mcb_stop` `mcb_status` `mcb_look` `mcb_scan` `mcb_map` `mcb_snapshot` `mcb_eyes` `mcb_inventory` `mcb_do` `mcb_help` | 实验接缝 | MC body 契约适配器 → 工具面 + signals（不注册 world source）；默认不启用，`icl-mc`/`icl-mc-lab` preset |
 | `time` | 618 | 7 | `time_status` `time_arrange` `time_list` `time_edit` `time_cancel` `time_pause` `time_resume` | 可用待调 | 日程、睡眠、目标的时钟 |
 | `compaction` | 77 | 0 | — | 可用待调 | 把早前对话压成摘要再注入 |
 | `persona` | 85 | 0 | — | 可用待调 | 人格卡与版本历史 |
@@ -143,7 +143,9 @@
 
 ### mc-link（实验接缝，默认不启用）
 
-- **工具**：12 个 —— `mcb_servers`、`mcb_lan`、`mcb_join`、`mcb_leave`、`mcb_stop`、`mcb_status`、`mcb_look`、`mcb_scan`、`mcb_map`、`mcb_inventory`、`mcb_do`、`mcb_help`。
+- **工具**：14 个 —— `mcb_servers`、`mcb_lan`、`mcb_join`、`mcb_leave`、`mcb_stop`、`mcb_status`、`mcb_look`、`mcb_scan`、`mcb_map`、`mcb_snapshot`、`mcb_eyes`、`mcb_inventory`、`mcb_do`、`mcb_help`。
+  `mcb_snapshot` = 结构化场景快照（毫秒级，日常先看它）；`mcb_eyes` = 按需截图（Edge headless，约 7–8s/1.3GB，
+  quota 15s；PNG 通过 `{images:[路径]}` 作为图片附件，501=body 未配置 viewer）。
   `mcb_join` 会 spawn/复用 `mc-body` 子进程并等到真连接；`mcb_leave` 只杀本会话 spawn 的进程。
   `mcb_stop` = 停任务+安全反射但**不离开世界**（同步 time 暂停模式；暂停≠离开），`mcb_leave` 才是结束 body；
   长任务/单步动作/任务台账/事件/取消/恢复/发言都走 `mcb_do` 的 steps op（`task`/`dig`/`tasks`/`events`/`cancel`/`resume`/`say`…）；

@@ -36,6 +36,7 @@ const SKILLS = [
   { id: 'macro', title: '宏操作总览', when: () => false, summary: '8 个宏、参数、失败码、别逐方块' },
   { id: 'collect', title: '批量采集（宏）', when: () => false, summary: '重复挖矿/砍树用宏，别逐方块' },
   { id: 'tunnel', title: '挖隧道（宏）', when: () => false, summary: '直线通道/下矿通道用宏' },
+  { id: 'eyes', title: '眼睛：快照/截图', when: () => false, summary: '先 snapshot 后 screenshot；成本/quota/失败处理' },
   { id: 'play', title: '开一局/操作手册', when: () => false, summary: '连接、任务、事件、失败处理' },
   { id: 'endgame', title: '通关参考', when: () => false, summary: '长期主线' },
 ]
@@ -719,6 +720,46 @@ export function apply(ctx) {
     return Number.isFinite(number) ? String(Math.round(number)) : '?'
   }
 
+  /** 结构化快照（/v1/eyes/snapshot）→ 紧凑可读文本 + JSON 尾巴。 */
+  function renderSnapshotText(body = {}) {
+    const snapshot = body?.snapshot ?? {}
+    const inventory = snapshot.inventory ?? {}
+    const counts = inventory.counts && typeof inventory.counts === 'object' ? inventory.counts : null
+    const topItems = counts
+      ? Object.entries(counts).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 8).map(([name, count]) => `${name}×${count}`).join('、')
+      : null
+    const held = snapshot.held ? `${snapshot.held.name ?? '?'}${snapshot.held.count != null ? `×${snapshot.held.count}` : ''}${snapshot.held.toolFor ? `（${snapshot.held.toolFor}）` : ''}` : '空'
+    const hotbar = Array.isArray(snapshot.hotbar) ? snapshot.hotbar.filter((slot) => slot?.name).map((slot) => `${slot.slot}:${slot.name}${slot.selected ? '★' : ''}`).slice(0, 9).join(' ') : ''
+    const entities = Array.isArray(snapshot.entities) ? snapshot.entities.slice(0, 8).map((row) => `${row.name ?? row.type ?? '?'}（${row.distance != null ? `${row.distance}m` : '?'}${row.position ? ` @ ${fmtPosition(row.position)}` : ''}）`).join('、') : ''
+    const hostiles = Array.isArray(snapshot.nearbyHostiles) ? (snapshot.nearbyHostiles.length ? snapshot.nearbyHostiles.slice(0, 6).map((row) => `${row.name ?? row.type ?? '?'}${row.distance != null ? `(${row.distance}m)` : ''}`).join('、') : '无') : (snapshot.nearbyHostiles ? JSON.stringify(snapshot.nearbyHostiles) : '无')
+    const time = snapshot.time && typeof snapshot.time === 'object' ? (snapshot.time.label ?? snapshot.time.clock ?? JSON.stringify(snapshot.time)) : (snapshot.time ?? '?')
+    const map = snapshot.map ? String(snapshot.map).slice(0, 1200) : '（无脚下方块图）'
+    const playable = snapshot.playable ? `可玩：${snapshot.playable.ok ? '是' : `否（${(snapshot.playable.blockers ?? []).join('、')}）`}` : null
+    const safety = snapshot.safety ?? {}
+    const safetyBits = [safety.paused ? `暂停中（${REASON_TEXT[safety.pausedReason] ?? safety.pausedReason ?? '安全'}）` : '未暂停']
+    if (safety.reflex) safetyBits.push(`反射${safety.reflex.enabled ? '开' : '关'}${safety.reflex.active ? '/进行中' : ''}`)
+    if (safety.alarms) safetyBits.push(`alarm 送达${safety.alarms.delivered ?? 0}/去重${safety.alarms.suppressed ?? 0}`)
+    const queue = Array.isArray(snapshot.queue) && snapshot.queue.length ? `；队列 ${snapshot.queue.map((row) => `${row.kind ?? ''} ${row.state ?? ''}`.trim()).join('、')}` : ''
+    const task = snapshot.task ? `任务：${snapshot.task.kind ?? ''} ${snapshot.task.state ?? ''}${queue}` : `任务：空闲${queue}`
+    const events = Array.isArray(snapshot.recentEvents) && snapshot.recentEvents.length ? `最近事件：${snapshot.recentEvents.slice(-5).map((row) => `#${row.seq} ${row.type}`).join(' / ')}` : '最近事件：无'
+    const lines = [
+      `场景快照（${body?.captureMs ?? '?'}ms；radius ${snapshot.radius ?? '?'}）：${snapshot.position ? fmtPosition(snapshot.position) : '未知'} · ${snapshot.dimension ?? '?'} · 时间 ${time}`,
+      `生命/饥饿/氧气：${fmtVital(snapshot.health)}/20，${fmtVital(snapshot.food)}/20，${snapshot.oxygen == null ? '?' : fmtVital(snapshot.oxygen)}${snapshot.sleeping ? '；正在睡' : ''}`,
+      `手持：${held}${hotbar ? `；快捷栏 ${hotbar}` : ''}`,
+      `背包：${inventory.used ?? '?'} 格${inventory.emptySlots != null ? `（空 ${inventory.emptySlots}）` : ''}${topItems ? `；${topItems}` : ''}`,
+      `脚下方块图：\n${map}`,
+      ...(snapshot.nearbyBlocks ? [`附近方块：${JSON.stringify(snapshot.nearbyBlocks).slice(0, 220)}`] : []),
+      ...(entities ? [`实体：${entities}`] : []),
+      `敌对：${hostiles}`,
+      `${task}${playable ? `；${playable}` : ''}`,
+      `安全：${safetyBits.join('；')}`,
+      events,
+    ]
+    const json = JSON.stringify(snapshot)
+    lines.push(`JSON（${json.length} 字）：${json.length > 3500 ? `${json.slice(0, 3500)}…（截断，完整在 body /v1/eyes/snapshot）` : json}`)
+    return lines.join('\n')
+  }
+
   /** body 的 look 文本里有原始小数（health 17.8333…）：用同一取整口径重写成"18/18/0"。 */
   function normalizeLookText(text, data = {}) {
     const lines = String(text ?? '').split('\n')
@@ -1299,6 +1340,79 @@ export function apply(ctx) {
       },
     },
     {
+      name: 'mcb_snapshot',
+      summary: '结构化场景快照：位置/血/背包/脚下方块图/实体/任务/安全（毫秒级，日常先看它）。',
+      description: 'GET /v1/eyes/snapshot；参数 radius（3–16，默认 8），控制脚下方块图/附近统计范围。返回可读摘要 + 紧凑 JSON（含 captureMs）。毫秒级、零依赖，暂停/离线也能出基础快照；**日常看场景先用它，不要一上来截图**（截图贵且慢）。',
+      when: ['要看清楚周围地形/实体/背包再决定下一步', '写 checkpoint、任务前后取证', '觉得自己"看不见"或位置可疑'],
+      avoid: ['只是要位置/血/任务：mcb_status 更便宜', '想给用户看画面：mcb_eyes 截图（仅里程碑/告警时）'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { radius: { type: 'number', description: '快照半径（格），3–16，默认 8。' } },
+      },
+      async execute({ radius } = {}) {
+        const query = radius == null ? '' : `?radius=${encodeURIComponent(String(radius))}`
+        const body = await call(`/v1/eyes/snapshot${query}`, { timeoutMs: 6000 })
+        sessionTouchedMc = true
+        return { text: renderSnapshotText(body) }
+      },
+    },
+    {
+      name: 'mcb_eyes',
+      summary: '按需截图（Edge headless，成本高）：返回 PNG 图片附件 + 落盘路径；可用 mode:"snapshot" 复用结构化快照。',
+      description: 'POST /v1/eyes/screenshot；参数 mode（screenshot 默认/snapshot）、kind、frames(1–8)、width/height、waitMs(3–10s)。成本约 7–8s/张、Edge 峰值 ~1.3GB（CPU 软渲染，不占 GPU 锁）；quota：同时 1 个、间隔 ≥15s。仅里程碑/告警取证/用户明确要看画面时用，日常用 mcb_snapshot。返回 PNG 附件 + JSON meta；429 太频繁、501 未配置 viewer/Edge（改用 snapshot）、500 可重试一次。',
+      when: ['里程碑/告警要留画面证据', '用户明确要求"看一眼/截个图"', '画面相关判断（建筑外观、地形大局）'],
+      avoid: ['日常看场景/找方块：mcb_snapshot 更快更便宜', '需要精确坐标/数量：用结构化快照，别靠看图'],
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', description: 'screenshot（默认）或 snapshot（等同 mcb_snapshot）。' },
+          kind: { type: 'string', description: '截图用途标签：milestone/alert/manual…（写进文件名/meta）。' },
+          frames: { type: 'number', description: '帧数 1–8，默认 1；>1 返回 -f001.png…（给 album/video 用，默认不开）。' },
+          width: { type: 'number', description: '视口宽 640–1600，默认 1280。' },
+          height: { type: 'number', description: '视口高 360–900，默认 720。' },
+          waitMs: { type: 'number', description: '渲染等待 3000–10000ms，默认 7000；太短会截到没加载完的画面。' },
+        },
+      },
+      async execute({ mode = 'screenshot', kind = null, frames = null, width = null, height = null, waitMs = null } = {}) {
+        if (mode === 'snapshot') {
+          const body = await call('/v1/eyes/snapshot', { timeoutMs: 6000 })
+          sessionTouchedMc = true
+          return { text: renderSnapshotText(body) }
+        }
+        const payload = {}
+        if (kind != null) payload.kind = String(kind)
+        if (frames != null) payload.frames = Number(frames)
+        if (width != null) payload.width = Number(width)
+        if (height != null) payload.height = Number(height)
+        if (waitMs != null) payload.waitMs = Number(waitMs)
+        const timeoutMs = Math.max(30_000, Number(payload.waitMs ?? 7000) + 45_000)
+        let body
+        try {
+          body = await call('/v1/eyes/screenshot', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), timeoutMs,
+          })
+        } catch (error) {
+          const message = String(error?.message ?? error)
+          const hint = /501|未配置|viewer|Edge/i.test(message) ? '；body 没配置截图能力（需要 viewer+Edge）——改用 mcb_snapshot 看场景'
+            : /429|限频|进行中/.test(message) ? '；截图较贵：等 15s 后再试，或改用 mcb_snapshot'
+              : '；本次截图失败，可重试一次；还不行就用 mcb_snapshot'
+          throw new Error(`${message}${hint}`)
+        }
+        const files = Array.isArray(body?.files) ? body.files : []
+        const images = files[0]?.file ? [files[0].file] : []
+        const meta = body?.meta ?? {}
+        const summary = [
+          `截图完成（${body?.captureMs ?? meta.captureMs ?? '?'}ms；视口 ${meta.viewport?.width ?? '?'}×${meta.viewport?.height ?? '?'}；${files.length} 张）`,
+          files.length ? `文件：${files.map((row) => `${row.file}（${Math.round((Number(row.bytes) || 0) / 1024)}KB）`).join('；')}` : '没有返回文件',
+          `位置：${meta.position ? fmtPosition(meta.position) : (meta.viewer?.center ? fmtPosition(meta.viewer.center) : '未知')}${meta.task ? `；任务：${meta.task.kind ?? ''} ${meta.task.state ?? ''}`.trimEnd() : ''}${meta.safety?.paused ? '；身体暂停中' : ''}`,
+          images.length ? '（首张图已作为图片附件给你看；其余帧在落盘路径，可给 album/video 用）' : '（旧宿主没有图片附件：按上面的路径手动查看）',
+        ]
+        return images.length ? { text: summary.join('\n'), images } : { text: summary.join('\n') }
+      },
+    },
+    {
       name: 'mcb_do',
       summary: '执行 MC 动作：单步动作、长任务、任务台账、事件、发言都走这一个工具。',
       description: `steps 按顺序执行，任一 op 失败即停。
@@ -1354,7 +1468,7 @@ export function apply(ctx) {
     {
       name: 'mcb_help',
       summary: '读 MC 的深层操作文档（按需，不常驻）。不带参数列出全部；参数 skill 指定一篇。',
-      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
+      description: '文档很短：流程/参数示例/失败怎么办，不进每轮提示词。play=开一局与任务/事件/失败全流程；eyes=快照/截图与成本；macro=8 个宏总览；collect/tunnel=宏细节；escape=卡住；flee=低血逃生；craft/furnace/chest/trade=各系统；endgame=长期主线。名字可模糊匹配（trad→trade）。',
       when: ['准备做一整件事（合成、熔炼、交易、脱困、长期发展）', 'mcb_do 报了不懂的错'],
       parameters: {
         type: 'object',
