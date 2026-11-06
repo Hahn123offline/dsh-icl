@@ -922,3 +922,27 @@ test('暂停时保留目标/专注并给继续与离开选项（不静默清空�
   assert.equal(api.goals().length, 1, '暂停不清空 goal')
   assert.ok(host.services.focus.list().some((lease) => lease.label === 'mc'), '暂停不清空 focus')
 })
+
+test('危险识别兼容 mc-body meta：pierce:true 即使没有 alarm tags 也穿透', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  api.pause('mcb_stop')
+  const out = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'body: safety_stop', tags: ['mc', 'body'], meta: { pierce: true, priority: 'alarm' } })
+  assert.equal(out.accepted, true, 'body 的 pierce 标记要能穿透暂停')
+  assert.match(drainText(host), /safety_stop/)
+  assert.equal(api.status().lastPierce?.context, 'pause')
+})
+
+test('危险识别兼容 mc-body meta：priority:alarm 在睡眠中进最高优先级积压', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  api.sleep({ message: '睡', durationMin: 30 })
+  drainText(host)
+  const out = host.services.signals.offer({ from: { plugin: 'mc' }, kind: 'event', text: 'body: death', tags: ['mc', 'body'], meta: { priority: 'alarm', pierce: true } })
+  assert.equal(out.blocked, true)
+  assert.equal(api.queue()[0].priority, 'alarm')
+  virtualNow += 30 * 60_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /⚠ 睡眠期间有 1 条危险\/紧急事件（mc）/)
+  assert.match(text, /body: death/)
+})
