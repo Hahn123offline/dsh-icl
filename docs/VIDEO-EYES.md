@@ -142,7 +142,7 @@ DSH ImageAttachmentRef → 模型收到 image content block（和 qq 图片通�
 | **focus** | 看视频是一种可专注的 Activity（`docs/FOCUS.md:17-19` 已把"刷 B 站"当例子）。视频工具**不自动** enter/leave focus；操作层约定：用户说"一起看/看这个"时可 `focus_enter({kind:'video', title:'看视频'})`，看完 `focus_leave`。 | 设计约定，无代码耦合 |
 | **time** | 本插件不排程、不唤醒、不发信号；只是被调用时干活。夜间长测要看视频，由 `time` 的唤醒/目标或用户消息触发。 | 无耦合 |
 | **album（媒体库）** | 仓库里**没有** album 实现（QQ 侧只有"群相册"概念，未做）。约定：本插件**只登记路径与元数据**，不复制视频字节；未来 album 若要索引，读 `video_open` 的同一路径即可，不要另存一份。 | 📋 预留 |
-| **qq 图片通道** | 图片进模型走同一套 `ctx.attachments.saveImage` → image block；qq 的入站图片目前仍是文本占位（`docs/QQ.md` 的"待 DSH attachment"），接上时复用本节的桥接层即可。 | 机制已通，qq 侧未接 |
+| **qq 图片通道** | qq 侧已走 DSH attachment：入站图片字节 → bridge → `ctx.attachments.saveImages` → ImageBlock（正文无 URL/base64，失败降级文字）。本插件的图片是**工具结果**入口（`{text, images:[png 路径]}` → `saveImage`），两条入口互不冲突、不重复设计。 | ✅ 机制一致 |
 | **记忆/做梦** | 工具结果不进 ICL 原文层（`docs/DSH-INTEGRATION.md:146-154`）；看完要留痕，由模型自己 `memo_append`/`remember` 写一句。 | 约定 |
 | **提示词分层** | 工具用法只在 description；`prompts/sim.md` 的"看视频"纪律保持 4 行不变（`docs/PROMPT-CONTRACT.md:7-20`）。 | ✅ 不改提示词 |
 
