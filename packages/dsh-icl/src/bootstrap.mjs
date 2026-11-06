@@ -7,7 +7,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { REPO_ROOT } from './paths.mjs'
 
-/** 每个插件的配置；只写和插件默认不同的部分。 */
+/** 每个插件的配置；只写和插件默认不同的部分。
+ *  可写目录一律来自 cfg.paths（ICL_ROOT 解析结果），插件自己的默认值只在独立运行时兜底。 */
 export function configFor(id, cfg) {
   switch (id) {
     case 'memory': return { root: cfg.stateDir }
@@ -21,11 +22,12 @@ export function configFor(id, cfg) {
     case 'compaction': return { persona: cfg.persona, keepRecent: 16, triggerChars: cfg.compactionTriggerChars }
     case 'loop-probe': return { inboxFile: path.join(cfg.stateDir, 'loop.inbox.jsonl'), outboxFile: path.join(cfg.stateDir, 'loop.outbox.jsonl') }
     case 'mc-link': return { baseUrl: cfg.mcBaseUrl, logFile: path.join(cfg.stateDir, 'mc-link.jsonl') }
-    case 'album': return { root: path.join(cfg.stateDir, 'media') }
+    case 'album': return { root: cfg.albumDir ?? path.join(cfg.stateDir, 'media') }
     // 用户批准（2026-11-06）：eager-recall 的 hits/injected/chars 计数落盘，供 E2 质量快照读取。
     case 'eager-recall': return { counterFile: path.join(cfg.stateDir, 'eager-recall.jsonl') }
+    case 'qq': return { mediaInboxDir: cfg.qqInboxDir, stickerDir: cfg.stickersDir }
     case 'bili': return { stateDir: cfg.stateDir }
-    case 'video': return { stateDir: cfg.stateDir }
+    case 'video': return { stateDir: cfg.videoTmpDir ?? cfg.stateDir }
     case 'model-manager': return { providers: cfg.providers ?? [] }
     default: return {}
   }

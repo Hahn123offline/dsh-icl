@@ -5,6 +5,7 @@
     - id: dsh-icl
       name: ./index.mjs
       config:
-        stateDir: ./.state/headless
+        # 相对 ICL_ROOT 解析（默认 <REPO_ROOT>/.state），不写盘符。
+        stateDir: headless
         tickMs: 500
         timeTickMs: 1000

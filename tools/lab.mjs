@@ -131,7 +131,7 @@ function llamaLockPath() {
     }
     return path.join(REPO_ROOT, '.state', 'locks', 'llama.lock')
   } catch {
-    return 'C:/DSH/icl/.state/locks/llama.lock'
+    return path.join(REPO_ROOT, '.state', 'locks', 'llama.lock')
   }
 }
 
@@ -198,8 +198,10 @@ async function up() {
 
   const runDir = ensureDir(runDirOf(runId))
   ensureDir(path.join(runDir, 'state'))
-  const patch = materializePatch({ runDir, mcPort, mcUser, servers })
+  // workspace 先算出来：sandbox-policy.workspaceRoot 与会话 cwd 必须是同一个目录，
+  // patch 里的 __LAB_WORKSPACE__ 用这个值物化（不再写死某个盘符）。
   const workspace = path.resolve(String(arg('--workspace', path.join(runDir, 'workspace'))))
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace })
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,

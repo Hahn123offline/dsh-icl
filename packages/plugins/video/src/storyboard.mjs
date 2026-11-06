@@ -7,11 +7,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { runProcess } from './exec.mjs'
+import { dshHome } from '../../../core/src/icl-paths.mjs'
 
-export const DEFAULT_STORYBOARD_CLI = 'C:\\Users\\ai_admin\\.dsh\\profiles\\desktop\\node_modules\\dsh-video-storyboard\\bin\\storyboard.mjs'
+/** 默认 CLI 位置从 DSH_HOME 推（换机/换用户名不用改代码）；ICL_STORYBOARD_CLI 仍可覆盖。 */
+export function defaultStoryboardCli(env = process.env) {
+  return path.join(dshHome(env), 'profiles', 'desktop', 'node_modules', 'dsh-video-storyboard', 'bin', 'storyboard.mjs')
+}
 
 export function resolveStoryboardCli(value) {
-  const cli = String(value || process.env.ICL_STORYBOARD_CLI || DEFAULT_STORYBOARD_CLI)
+  const cli = String(value || process.env.ICL_STORYBOARD_CLI || defaultStoryboardCli())
   try {
     if (fs.statSync(cli).isFile()) return cli
   } catch { /* 下面给出可操作错误 */ }

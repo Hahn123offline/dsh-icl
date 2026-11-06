@@ -66,10 +66,11 @@ const labPreset = (id) => labRows
   .flatMap((row) => row.insert ?? [])
   .find((row) => row.id === id)
 
-test('lab 试点：整个 lab 进程默认 workspace-write，工作区是 C:/DSH/her', () => {
+test('lab 试点：整个 lab 进程默认 workspace-write，workspaceRoot 由 lab 按 --workspace 物化', () => {
   const sandbox = labRows.find((row) => row.id === 'sandbox-policy')
   assert.equal(sandbox?.config?.mode, 'workspace-write')
-  assert.equal(sandbox?.config?.workspaceRoot, 'C:/DSH/her')
+  // 不写死盘符：模板里是占位符，tools/lab.mjs 用同一轮 --workspace 的绝对路径替换。
+  assert.equal(sandbox?.config?.workspaceRoot, '__LAB_WORKSPACE__')
   const permission = labRows.find((row) => row.id === 'permission')
   assert.equal(permission?.config?.defaultPreset, 'workspace-write')
   // danger-full-access 必须保留为回滚路径。

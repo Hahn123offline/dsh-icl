@@ -15,6 +15,7 @@ import { closest as closestIn } from './closest.mjs'
 import { EXIT_REASON_TEXT, exitReasonText, sameReasonAdvice } from './exit.mjs'
 import { createBodySupervisor, describeExit } from './lifecycle.mjs'
 import { createEventGate, eventLine, OPS, TASK_KINDS, REASON_TEXT } from './events.mjs'
+import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'mc-link'
 
@@ -67,8 +68,9 @@ export function apply(ctx) {
   // bot 名：配置优先；lab 里用环境变量按 owner 区分（两个都叫 ICL 会被服务器互踢）。
   const botName = String(raw.username ?? process.env.ICL_MC_BOT_NAME ?? 'ICL').slice(0, 16)
   // body 的 tasks/事件/日志落盘目录：跟着 mc-link 自己的日志走（dsh-icl 给的是 run stateDir），
-  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起。
-  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : 'C:/DSH/icl/.state/mc-live')))
+  // 不写仓库根的 .state/mc-live，避免多个 run/多个 owner 的证据混在一起；
+  // 没有 logFile 也没有显式 stateDir 时才用 ICL_ROOT/state/mc-live 兜底。
+  const stateDir = path.resolve(String(raw.stateDir ?? (raw.logFile ? path.dirname(String(raw.logFile)) : path.join(iclPaths().stateDir, 'mc-live'))))
   const bodyEntry = String(raw.bodyEntry ?? process.env.ICL_MC_BODY_ENTRY ?? path.join(PLUGIN_DIR, '..', '..', 'mc-body', 'src', 'cli.mjs'))
   const logFile = raw.logFile ? String(raw.logFile) : null
   const fetchImpl = typeof ctx.fetch === 'function' ? ctx.fetch : (...args) => fetch(...args)

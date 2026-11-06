@@ -10,12 +10,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
+import { dshHome, iclPaths } from '../../../core/src/icl-paths.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = path.resolve(HERE, '..')
 const REPO_ROOT = path.resolve(PLUGIN_ROOT, '..', '..', '..')
 
-const DEFAULT_STORYBOARD_CLI = 'C:\\Users\\ai_admin\\.dsh\\profiles\\desktop\\node_modules\\dsh-video-storyboard\\bin\\storyboard.mjs'
+/** desktop profile 里的 storyboard CLI；从 DSH_HOME 推，不写死用户名/盘符。 */
+function defaultStoryboardCli(env = process.env) {
+  return path.join(dshHome(env), 'profiles', 'desktop', 'node_modules', 'dsh-video-storyboard', 'bin', 'storyboard.mjs')
+}
 
 /** 旧插件家目录：只在"迁移凭证"时读一次，之后不再依赖。 */
 function legacyHome(config) {
@@ -24,7 +28,8 @@ function legacyHome(config) {
 
 export function resolveConfig(ctx) {
   const config = ctx?.config && typeof ctx.config === 'object' ? ctx.config : {}
-  const stateDir = String(config.stateDir ?? path.join(os.tmpdir(), 'icl-bili'))
+  // 凭证/状态归 ICL：显式 stateDir > ICL_ROOT/state；不再落到系统 temp。
+  const stateDir = String(config.stateDir ?? iclPaths().stateDir)
   const biliDir = path.join(stateDir, 'bili')
   const legacy = legacyHome(config)
   return {
@@ -37,7 +42,7 @@ export function resolveConfig(ctx) {
     pythonPath: String(config.pythonPath ?? process.env.BILI_PYTHON ?? path.join(legacy, '.venv', 'Scripts', 'python.exe')),
     runnerPath: String(config.runnerPath ?? process.env.BILI_RUNNER ?? path.join(REPO_ROOT, 'tools', 'bili-run.py')),
     vendorDir: String(config.vendorDir ?? path.join(PLUGIN_ROOT, 'vendor', 'bilibili-mcp')),
-    storyboardCli: String(config.storyboardCli ?? process.env.STORYBOARD_CLI ?? DEFAULT_STORYBOARD_CLI),
+    storyboardCli: String(config.storyboardCli ?? process.env.STORYBOARD_CLI ?? defaultStoryboardCli()),
     maxChars: Math.max(500, Number(config.maxChars) || 6000),
     timeoutMs: Math.max(5_000, Number(config.timeoutMs) || 90_000),
     // 插件不直接发请求：走 ICL host 的统一 HTTP 出口（ctx.fetch）。

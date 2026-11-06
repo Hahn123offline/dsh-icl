@@ -3,15 +3,16 @@
 // 只读：不连服务器、不 spawn bot、不写 run 目录（可选 --history 追加到自己的文件）。
 //
 // 用法：
-//   node packages/mc-body/tools/night-watch.mjs [--root C:/DSH/icl-wt/mc-lab/.state/lab]
+//   node packages/mc-body/tools/night-watch.mjs [--root <ICL_ROOT>/lab]
 //     [--run night-1] [--history out.jsonl] [--json]
 import fs from 'node:fs'
 import path from 'node:path'
+import { iclPaths } from '../../core/src/icl-paths.mjs'
 
 const args = process.argv.slice(2)
 const arg = (name, fallback = null) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback }
 const flag = (name) => args.includes(name)
-const root = path.resolve(String(arg('--root', 'C:/DSH/icl-wt/mc-lab/.state/lab')))
+const root = path.resolve(String(arg('--root', path.join(iclPaths().root, 'lab'))))
 const wantRun = arg('--run', null)
 const history = arg('--history', null)
 const asJson = flag('--json')

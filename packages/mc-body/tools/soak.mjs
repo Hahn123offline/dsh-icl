@@ -1,12 +1,13 @@
 // mc-body 真实 soak：起 body 子进程 → routine 采集 → 收事件/状态 → 干净停掉 → report/metrics。
 // 用法：
 //   node packages/mc-body/tools/soak.mjs --port 54837 --listen 54902 --name ICL-mcbody-1 --minutes 30 \
-//     --out C:/DSH/icl/.state/lab/mc-body-soak/<run>
+//     --out <ICL_ROOT>/lab/mc-body-soak/<run>
 // 产物：body.log / body-events.jsonl / events.jsonl / timeline.jsonl / metrics.json / report.md
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { iclPaths } from '../../core/src/icl-paths.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const bodyCli = path.resolve(here, '..', 'src', 'cli.mjs')
@@ -21,7 +22,7 @@ const listen = Number(arg('--listen', 54902))
 const name = String(arg('--name', 'ICL-mcbody-1'))
 const blocks = String(arg('--blocks', 'oak_log,spruce_log,birch_log,stone,dirt')).split(',').map((value) => value.trim()).filter(Boolean)
 const radius = Number(arg('--radius', 12))
-const out = path.resolve(String(arg('--out', path.join('C:/DSH/icl/.state/lab/mc-body-soak', new Date().toISOString().replace(/[:.]/g, '-')))))
+const out = path.resolve(String(arg('--out', path.join(iclPaths().root, 'lab', 'mc-body-soak', new Date().toISOString().replace(/[:.]/g, '-')))))
 const stoppedBy = flag('--keep-events') ? 'keep-events' : 'safety-stop-and-sigterm'
 fs.mkdirSync(out, { recursive: true })
 

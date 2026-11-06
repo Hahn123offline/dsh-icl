@@ -7,6 +7,7 @@ import path from 'node:path'
 import { createBody } from './body.mjs'
 import { createHttpServer } from './server.mjs'
 import { createMineflayerAdapter } from './mineflayer.mjs'
+import { iclPaths } from '../../core/src/icl-paths.mjs'
 
 const args = process.argv.slice(2)
 const arg = (name, fallback = null) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback }
@@ -20,8 +21,10 @@ const username = rawUsername.slice(0, 16)
 if (username !== rawUsername) console.error(`[mc-body] name "${rawUsername}" 超过 16 字符，截断为 "${username}"（MC 用户名上限）`)
 const allowTask = flag('--allow-task')
 const allowSay = flag('--allow-say')
-const logFile = path.resolve(String(arg('--log', path.join('C:/DSH/icl/.state/mc-body/events.jsonl'))))
-const stateFile = path.resolve(String(arg('--state', path.join('C:/DSH/icl/.state/mc-body/tasks.json'))))
+// 默认落盘位置从 ICL_ROOT 推（ICL_ROOT/state/mc-body）；显式 --log/--state 仍然优先。
+const defaultBodyDir = path.join(iclPaths().stateDir, 'mc-body')
+const logFile = path.resolve(String(arg('--log', path.join(defaultBodyDir, 'events.jsonl'))))
+const stateFile = path.resolve(String(arg('--state', path.join(defaultBodyDir, 'tasks.json'))))
 const pausedDisconnectMs = Number(arg('--paused-disconnect-ms', 120_000))
 const watchdogMs = Number(arg('--watchdog-ms', 2000))
 const heartbeatMs = Number(arg('--heartbeat-ms', 60_000))

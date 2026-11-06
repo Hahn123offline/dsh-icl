@@ -26,7 +26,7 @@ desktop profile 由 Electron 独占管理，`dsh plugin --profile desktop add` �
 安装时 `target` 填本目录：
 
 ```
-C:/DSH/icl/packages/dsh-icl
+<仓库根>/packages/dsh-icl
 ```
 
 安装会把包链接进 profile，并应用 bundle patch（preset `icl`）。新建会话选 **ICL**。
@@ -37,18 +37,26 @@ C:/DSH/icl/packages/dsh-icl
 ## 冒烟（不动用户 profile）
 
 ```bash
-dsh --profile headless --patch C:/DSH/icl/packages/dsh-icl/cordis.patch.yml "用一句话说你好"
+dsh --profile headless --patch <仓库根>/packages/dsh-icl/cordis.patch.yml "用一句话说你好"
 ```
 
-`cordis.patch.yml` 把插件作为 Host 行插入，状态写到仓库内 `.state/headless`。
+`cordis.patch.yml` 把插件作为 Host 行插入，状态写到 `<ICL_ROOT>/headless`（默认即仓库内 `.state/headless`）。
 
 ## 配置
 
-preset 里的 `config` 全部可选：
+preset 里的 `config` 全部可选。**路径默认值只有一个来源**：`config.iclRoot` / env `ICL_ROOT` /
+默认 `<仓库根>/.state`；每一类还可以单独覆盖。完整优先级、目录表、整体迁移步骤见
+[`docs/PATHS.md`](../../docs/PATHS.md)。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `stateDir` | `$DSH_HOME/icl/state` | 记忆库、`time.json`、原文 JSONL |
+| `iclRoot` | `$ICL_ROOT` 或 `<仓库根>/.state` | 所有可写目录的根 |
+| `stateDir` | `<iclRoot>/state` | 记忆库、`time.json`、原文 JSONL（旧 `$DSH_HOME/icl/state` 仍可读） |
+| `albumDir` | `<iclRoot>/album` | 相册根（旧 `<stateDir>/media` 仍可读） |
+| `qqInboxDir` | `<iclRoot>/inbox/qq` | QQ 入站图片/视频/文件 |
+| `videoTmpDir` | `<iclRoot>/video-tmp` | 视频分镜/取帧临时产物 |
+| `homeDir` | `<iclRoot>/home` | 她的"家"；sandbox workspaceRoot 默认 |
+| `sandboxWorkspaceRoot` | `<iclRoot>/home` | lab 的 `sandbox-policy.workspaceRoot`（由 `--workspace` 物化） |
 | `personaFile` | 仓库 `prompts/persona.md` | 人格卡（她是谁、怎么说话；不含工具教学） |
 | `simulationFile` | 仓库 `prompts/sim.md` | 仿真纪律（怎么生活、这些工具如何配合；见 `docs/PROMPT-CONTRACT.md`） |
 | `dreamPersonaFile` | 仓库 `prompts/dream.md` | 做梦提示词 |
@@ -61,6 +69,10 @@ preset 里的 `config` 全部可选：
 | `tickMs` | 500 | delivery → followup 的轮询 |
 | `timeTickMs` | 15000 | 时间模块的 tick |
 | `rawFile` | `<stateDir>/session-events.jsonl` | 原文层落盘 |
+
+每类路径也可用 env 覆盖：`ICL_STATE_DIR`、`ICL_ALBUM_DIR`、`ICL_QQ_INBOX_DIR`、
+`ICL_VIDEO_TMP_DIR`、`ICL_HOME_DIR`、`ICL_MEDIA_DIR`、`ICL_STICKERS_DIR`、`ICL_LOCKS_DIR`、
+`ICL_SANDBOX_WORKSPACE`。
 
 调试：`ICL_BRIDGE_DEBUG=<file>` 会把 `agent/pre-step` 的决策与注入长度写到该文件（默认关闭）。
 
