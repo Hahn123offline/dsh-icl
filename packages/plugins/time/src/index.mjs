@@ -458,6 +458,14 @@ export function apply(ctx) {
   const awakeCappedSec = Math.max(60, Number(awakeCfg.cappedSec ?? 600))
   const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
   const awakeCappedShortMax = Math.max(0, Number(awakeCfg.cappedShortMax ?? 3))
+  // B：渐进式唤醒（compactWake）。lab-only，默认关；只压"唤醒提示的 orientation"，
+  // payload（未读/积压/危险/sleep brief）原样保留。用户已批 fullEvery=20。
+  const compactWakeCfg = ctx.config.compactWake && typeof ctx.config.compactWake === 'object' ? ctx.config.compactWake : {}
+  const compactWakeEnabled = compactWakeCfg.enabled === true
+  const compactWakeAfter = Math.max(1, Number(compactWakeCfg.after ?? 1))
+  const compactWakeMaxChars = Math.max(120, Number(compactWakeCfg.maxChars ?? 400))
+  const compactWakeFullEvery = Math.max(0, Number(compactWakeCfg.fullEvery ?? 20))
+  const compactWakeAllowPayload = compactWakeCfg.allowPayload !== false
   // 睡眠边界：入睡瞬间可能还有在飞回合（"把手里这轮收个尾"）。允许它自然结束，
   // 超过 sleepGraceSec 仍在跑就发 sleep-boundary-overrun 事件（driver 可订阅后 cancel）。
   const sleepGraceSec = Math.max(0, Number(ctx.config.sleepGraceSec ?? 120))
@@ -519,6 +527,10 @@ export function apply(ctx) {
     sleepBrief: null,
     lastSleepBrief: null,
     lastDreamResult: null,
+    // B compactWake：本清醒周期已发送的 wake-class 次数与分桶统计
+    wakeCount: 0,
+    wakeStats: { sent: 0, full: 0, compact: 0, chars: 0 },
+    lastWakeAt: null,
     // 暂停模式（用户语义：任务停止、世界继续、危险穿透）；phase='paused' 是 time 自己的计时冻结。
     pausedMode: { active: false, reason: null, since: null, source: null },
     lastPierce: null,
@@ -564,6 +576,9 @@ export function apply(ctx) {
       state.sleepBrief = saved.sleepBrief && typeof saved.sleepBrief === 'object' ? saved.sleepBrief : null
       state.lastSleepBrief = saved.lastSleepBrief && typeof saved.lastSleepBrief === 'object' ? saved.lastSleepBrief : null
       state.lastDreamResult = saved.lastDreamResult && typeof saved.lastDreamResult === 'object' ? saved.lastDreamResult : null
+      state.wakeCount = Number(saved.wakeCount) > 0 ? Number(saved.wakeCount) : 0
+      state.wakeStats = saved.wakeStats && typeof saved.wakeStats === 'object' ? { ...blank().wakeStats, ...saved.wakeStats } : blank().wakeStats
+      state.lastWakeAt = Number(saved.lastWakeAt) > 0 ? Number(saved.lastWakeAt) : null
       state.pausedMode = saved.pausedMode && typeof saved.pausedMode === 'object' ? { active: false, reason: null, since: null, source: null, ...saved.pausedMode } : { active: false, reason: null, since: null, source: null }
       state.lastPierce = saved.lastPierce && typeof saved.lastPierce === 'object' ? saved.lastPierce : null
       state.lastBlockedAlarm = saved.lastBlockedAlarm && typeof saved.lastBlockedAlarm === 'object' ? saved.lastBlockedAlarm : null
@@ -707,6 +722,82 @@ export function apply(ctx) {
     return signals.offer({ from: { plugin: 'time', activity: 'schedule' }, kind, text, focus: target, tags })
   }
 
+  /* ── B：渐进式唤醒（compactWake，lab-only） ──
+   * wakeCount = 本清醒周期已发送的 wake-class 次数（schedule wake / 睡醒 / goal resume /
+   * awake tick / QQ 实际投递由 qq 通过 api.wake.bump() 计入）。
+   * wakeCount=0（首次/睡醒后第一声）→ full；之后 compact 6 行；fullEvery=N 时每 N 次插一次 full。
+   * 只压 orientation，payload（未读/积压/危险/sleep brief）原样附在 `---` 后。
+   */
+  function phaseWord() {
+    if (state.phase === 'sleeping') return '睡眠中'
+    if (state.phase === 'paused') return '暂停'
+    return '醒着'
+  }
+
+  function compactWakeMode() {
+    if (!compactWakeEnabled) return 'full'
+    const count = Number(state.wakeCount ?? 0)
+    if (count <= 0 || count < compactWakeAfter) return 'full'
+    if (compactWakeFullEvery > 0 && count % compactWakeFullEvery === 0) return 'full'
+    return 'compact'
+  }
+
+  function compactOrientation(at, { lastText = null } = {}) {
+    const p = partsOf(at, timeZone)
+    const hour = p.h < 6 ? '凌晨' : p.h < 12 ? '上午' : p.h < 18 ? '下午' : p.h < 23 ? '晚上' : '深夜'
+    const focusLease = focusApi?.current?.()
+    const goal = state.goals[0]
+    const alarms = state.queue.filter((item) => item.priority === 'alarm').length
+    const last = lastText == null ? '刚醒/刚连上' : String(lastText).replace(/\s+/g, ' ').slice(0, 80)
+    const lines = [
+      '〔提醒〕你在 ICL（小千）。',
+      `现在：${p.y}-${pad2(p.m)}-${pad2(p.d)} 周${WEEKDAYS_ZH[isoWeekday(at, timeZone) - 1]} ${hour}，${phaseWord()}。`,
+      `焦点：${focusLease?.title ?? focusLease?.label ?? '无'}；目标：${goal ? `${goal.id}（${goal.theme}）` : '无'}。`,
+      `积压：${state.queue.length} 条（危险 ${alarms} 条已置顶）。`,
+      `上次：${last}。`,
+      '继续；下面的新内容优先。',
+    ]
+    let text = lines.join('\n')
+    if (text.length > compactWakeMaxChars) text = `${text.slice(0, compactWakeMaxChars - 1)}…`
+    return text
+  }
+
+  function noteWakeSent(mode, chars, producer, at) {
+    state.wakeCount = Number(state.wakeCount ?? 0) + 1
+    state.lastWakeAt = at
+    state.wakeStats.sent = Number(state.wakeStats.sent ?? 0) + 1
+    state.wakeStats[mode] = Number(state.wakeStats[mode] ?? 0) + 1
+    state.wakeStats.chars = Number(state.wakeStats.chars ?? 0) + chars
+    dirty = true
+    persist()
+    recordEvent('wake-class', { producer, mode, chars, count: state.wakeCount })
+  }
+
+  /**
+   * 发一条 wake-class 消息：按 wakeCount 选择 full/compact。
+   * @param {object} input { text(full), payload(compact 时原样保留), producer, kind, tags, focus, lastText }
+   */
+  function sendWake({ text, payload = '', producer = 'time', kind = 'wake', tags = ['wake'], focus = null, lastText = null }) {
+    const mode = compactWakeMode()
+    let body = text
+    if (mode === 'compact') {
+      const orientation = compactOrientation(nowTime(), { lastText })
+      body = payload && compactWakeAllowPayload ? `${orientation}\n---\n${payload}` : orientation
+    }
+    const outcome = send({ kind, text: body, focus, tags })
+    if (!(outcome && outcome.accepted === false)) noteWakeSent(mode, body.length, producer, nowTime())
+    return outcome
+  }
+
+  /** 睡醒第一声按 full 处理：先 reset，再发（sendWake 会 bump 到 1）。 */
+  function resetWakeCount(reason = 'sleep-end') {
+    if (state.wakeCount || state.wakeStats.sent) {
+      state.wakeCount = 0
+      dirty = true
+      recordEvent('wake-reset', { reason })
+    }
+  }
+
   /* ── 清醒节拍（awake heartbeat） ──
    *
    * 问题：turn-end 之后如果没有任何目标/事件，会话就静止了——模型只在被投递消息时存在，
@@ -819,7 +910,7 @@ export function apply(ctx) {
       if (at - Number(state.awakeTickCappedAt) <= awakeCappedShortWindowSec * 1000) {
         state.awakeTickShortSentAt = (Array.isArray(state.awakeTickShortSentAt) ? state.awakeTickShortSentAt : []).filter((ts) => at - Number(ts) <= awakeCappedShortWindowSec * 1000)
         if (state.awakeTickShortSentAt.length < awakeCappedShortMax) {
-          const outcome = send({ kind: 'notice', text: awakeTickText(at, { short: true }), tags: ['awake-tick', 'heartbeat', 'short'] })
+          const outcome = sendWake({ text: awakeTickText(at, { short: true }), producer: 'awake-tick', kind: 'notice', tags: ['awake-tick', 'heartbeat', 'short'] })
           if (outcome && outcome.accepted === false) {
             state.awakeTickDueAt = at + awakeRetrySec * 1000
             syncAwakeTimer()
@@ -835,7 +926,7 @@ export function apply(ctx) {
     }
     // 滚动窗口释放后恢复正常节拍
     if (state.awakeTickCappedAt && at - state.awakeTickCappedAt > 3_600_000) state.awakeTickCappedAt = null
-    const outcome = send({ kind: 'notice', text: awakeTickText(at), tags: ['awake-tick', 'heartbeat'] })
+    const outcome = sendWake({ text: awakeTickText(at), producer: 'awake-tick', kind: 'notice', tags: ['awake-tick', 'heartbeat'] })
     if (outcome && outcome.accepted === false) {
       // 投递失败（会话忙）：短重试，不静默放弃
       state.awakeTickDueAt = at + awakeRetrySec * 1000
@@ -950,6 +1041,11 @@ export function apply(ctx) {
     if (more > 0) body += `\n…还有 ${more} 条（${reasonCounts()}）`
     if (body.length > backlogMaxChars) body = `${body.slice(0, backlogMaxChars - 1)}…`
     const expiredNote = expired > 0 ? `；另有 ${expired} 条已过期` : ''
+    // compactWake：只压 preamble；每条积压/危险正文原样（payload 不压）。
+    if (compactWakeEnabled && compactWakeMode() === 'compact') {
+      const alarms = ordered.filter((item) => item.priority === 'alarm').length
+      return `（${reason}）积压 ${ordered.length} 条${alarms ? `（危险 ${alarms} 条置顶）` : ''}${expiredNote}：\n${body}`
+    }
     return `（${reason}）积压了 ${ordered.length} 条消息${expiredNote}：\n${body}`
   }
 
@@ -1181,6 +1277,15 @@ export function apply(ctx) {
     return `你在目标内：${goal.theme}${tail}。id=${goal.id}，不用时用 time_cancel 取消，别留着空跑。`
   }
 
+  /** compact goal 的 payload：只保留目标定位（不压掉 payload 本身）。 */
+  function goalCompactPayload(goal) {
+    const bits = [`id=${goal.id}`, String(goal.theme)]
+    if (goal.turnLimit != null) bits.push(`还剩 ${goal.turnLimit} 轮`)
+    if (goal.until != null) bits.push(`到 ${stampAt(goal.until, timeZone)}`)
+    if (goal.resumes != null) bits.push(`第 ${goal.resumes} 次`)
+    return `目标续推：${bits.join('，')}`
+  }
+
   function goalExpired(goal, reason) {
     send({ kind: 'goal', text: `目标结束：${goal.theme}（${goal.id}${reason ? `，${reason}` : ''}）。`, tags: ['goal', 'ended'], focus: goal.focus })
     removeGoal(goal.id)
@@ -1271,7 +1376,7 @@ export function apply(ctx) {
     if (at - Number(goal.createdAt ?? at) > goalMaxAgeMs) { goalExpired(goal, '目标存在时间过久'); return false }
     goal.lastResumeAt = at
     goal.resumeDueAt = null
-    send({ kind: 'goal', text: goalMessage(goal, { resume: true }), tags: ['goal', 'resume'], focus: goal.focus })
+    sendWake({ text: goalMessage(goal, { resume: true }), payload: goalCompactPayload(goal), producer: 'goal-resume', kind: 'goal', tags: ['goal', 'resume'], focus: goal.focus })
     noteExternalActivity(at, 'goal-resume')
     return true
   }
@@ -1481,7 +1586,7 @@ export function apply(ctx) {
           const text = schedule.message || (schedule.sleep
             ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
             : `开始了：${schedule.id}`)
-          const sent = send({ kind: 'wake', text, tags: [schedule.sleep ? 'sleep' : 'span'] })
+          const sent = sendWake({ text, payload: text, producer: `schedule:${schedule.id}`, kind: 'wake', tags: [schedule.sleep ? 'sleep' : 'span'] })
           if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
         }
         state.spans.push({
@@ -1507,7 +1612,8 @@ export function apply(ctx) {
         outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
       }
     } else if (!schedule.silent) {
-      const sent = send({ kind: 'wake', text: schedule.message || `到点了：${schedule.id}`, tags: ['wake'] })
+      const text = schedule.message || `到点了：${schedule.id}`
+      const sent = sendWake({ text, payload: text, producer: `schedule:${schedule.id}`, kind: 'wake', tags: ['wake'] })
       if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
       outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
     }
@@ -1600,9 +1706,12 @@ export function apply(ctx) {
       if (wakeBrief) state.lastSleepBrief = { ...wakeBrief, endedAt: nowTime() }
       state.sleepBrief = null
       emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-end', tags: ['sleep'] })
+      // 睡醒第一声：reset 后按 full（compactWake 生命周期）
+      resetWakeCount('sleep-end')
       if (!span.silent) {
         const text = wakeBrief ? `${span.endMessage}\n${wakeBrief.text}` : span.endMessage
-        send({ kind: 'wake', text, tags: wakeBrief ? ['wake', 'wake-brief'] : ['wake'] })
+        const payload = wakeBrief ? wakeBrief.text : span.endMessage
+        sendWake({ text, payload, producer: 'sleep-end', kind: 'wake', tags: wakeBrief ? ['wake', 'wake-brief'] : ['wake'] })
       }
       const released = flushQueue('你睡觉时')
       recordEvent('sleep-end', { sleepingId: span.id, released, boundary: state.lastSleepBoundary ? { inFlight: Boolean(state.lastSleepBoundary.inFlight), turnEndedAfterSec: state.lastSleepBoundary.turnEndedAfterSec ?? null, postSleepTurn: Boolean(state.lastSleepBoundary.postSleepTurn), overrun: Boolean(state.lastSleepBoundary.overrun) } : null })
@@ -1693,7 +1802,8 @@ export function apply(ctx) {
         state.sleepBoundary = null
       }
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
-      send({ kind: 'wake', text: '你醒了。', tags: ['wake'] })
+      resetWakeCount('manual-wake')
+      sendWake({ text: '你醒了。', payload: '你醒了。', producer: 'manual-wake', kind: 'wake', tags: ['wake'] })
       armAwakeTick()
       return { ended: true, released: flushQueue('你睡觉时') }
     }
@@ -1992,6 +2102,14 @@ export function apply(ctx) {
       },
       lastPierce: state.lastPierce ? { ...state.lastPierce } : null,
       lastBlockedAlarm: state.lastBlockedAlarm ? { ...state.lastBlockedAlarm } : null,
+      wake: {
+        enabled: compactWakeEnabled,
+        count: Number(state.wakeCount ?? 0),
+        nextMode: compactWakeMode(),
+        stats: { ...state.wakeStats },
+        lastWakeAt: state.lastWakeAt ?? null,
+        config: { after: compactWakeAfter, maxChars: compactWakeMaxChars, fullEvery: compactWakeFullEvery, allowPayload: compactWakeAllowPayload },
+      },
       goalResumeMinGapSec,
       missed: state.stats.missed,
       dropped: state.stats.dropped,
@@ -2123,6 +2241,26 @@ export function apply(ctx) {
   }
 
   /* ── 对外 API ── */
+
+  // 兼容：wake() 仍是"手动结束睡眠"的函数，同时挂 compactWake 共享计数（qq 等生产者用）。
+  wake.count = () => Number(state.wakeCount ?? 0)
+  wake.bump = () => {
+    state.wakeCount = Number(state.wakeCount ?? 0) + 1
+    dirty = true
+    persist()
+    return state.wakeCount
+  }
+  wake.reset = () => {
+    state.wakeCount = 0
+    dirty = true
+    persist()
+    return 0
+  }
+  wake.stats = () => ({ ...state.wakeStats })
+  wake.enabled = () => compactWakeEnabled
+  wake.mode = () => compactWakeMode()
+  wake.shouldCompact = () => compactWakeMode() === 'compact'
+  wake.config = () => ({ after: compactWakeAfter, maxChars: compactWakeMaxChars, fullEvery: compactWakeFullEvery })
 
   const api = {
     now: () => nowTime(),

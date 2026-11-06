@@ -746,3 +746,21 @@ pluginConfig:
 - `awake-tick` 仍可能被 focus gate 拦成 focus backlog（focus 语义，不是 time 静默）；`duringFocus:false` 可关专注期自检。
 - bridge 若没把 notice 变成回合，immediate 不会自我重试（等下一次真实 turn-end）；`heartbeat.overdue` 会暴露。
 - 计时精度依赖进程 event loop；timer `unref` 不影响宿主退出。
+
+---
+
+## 18. 渐进式唤醒（compactWake，lab-only，2026-11-07）
+
+> 用户批准 B（含 QQ 唤醒纳入、`fullEvery=20`）；设计细节 `docs/PROMPT-WAKE-DESIGN.md`。
+> lab-only、默认关闭；只压"唤醒提示 orientation"，**payload 一律原样保留**（未读/积压/危险/sleep brief）。
+
+- 配置：`time.compactWake = { enabled:false, after:1, maxChars:400, fullEvery:20, allowPayload:true }`。
+- `wakeCount`（time state）：schedule wake（含睡醒）、goal resume、awake tick、manual wake 实际投递后自增；QQ 唤醒由 qq 通过 `ctx.services.get('time').wake.bump()` 计入。
+- 模式：`wakeCount=0`（首次/睡醒后第一声）→ **full**；之后 → **compact**；`fullEvery>0` 时 `wakeCount % fullEvery === 0` 再插一次 full（默认 20，防漂移）。
+- 睡醒：`endSpan` 先 `resetWakeCount()`，第一声 full（重置语义与"早上重新定向"一致）。
+- compact 模板（6 行 ≤`maxChars`）：`〔提醒〕你在 ICL（小千）。/ 现在：…，… / 焦点：…；目标：… / 积压：N 条（危险 M 条已置顶）/ 上次：… / 继续；下面的新内容优先。`，末尾 `\n---\n` + 原样 payload。
+- 积压释放只压 preamble（`（reason）积压 N 条（危险 M 条置顶）：`），条目正文与 ⚠ 置顶不变。
+- 可观测：`status().wake={enabled,count,nextMode,stats,lastWakeAt,config}`；`time-events` 的 `wake-class {producer,mode,chars,count}` / `wake-reset`。
+- 共享 API：`time.wake.count/bump/reset/stats/enabled/mode/shouldCompact/config`；`time.wake()` 仍是手动结束睡眠的函数（兼容）。
+- 测试：`packages/core/test/compact-wake.test.mjs`（默认关、首次 full、6 行 ≤400、payload 原样、fullEvery=20、睡醒 reset、goal payload、backlog preamble、事件/API）。
+- 已知限制：time 看不到 assistant 原文，time 生产的 compact 里"上次"只能写"刚醒/刚连上"；真实 assistant 摘要需 bridge/qq 传入（A/B 结果里标注）。

@@ -1,6 +1,6 @@
 # 渐进式唤醒提示（B）设计 · 2026-11-07
 
-> 状态：**设计稿，未接线**。用户尚未批准；本文件只写改动点、开关、回滚与验收，不改代码/preset。
+> 状态：**已接线（2026-11-07，用户批准 B + fullEvery=20）**；lab-only、默认关闭；实现见 §10，A/B 结果见 `docs/PROMPT-WAKE-RESULT.md`。
 > 旧项目依据：`dsh-qq/src/core-runner.js:161` —— `const text = (compact && wakeCount > 0) ? buildCompactPrompt(reason, note) : buildPrompt(reason, note)`；首次唤醒全量，之后 6 行紧凑版。参见 `docs/MODERNIZATION-CANDIDATES.md` §1 B、`docs/OLD-QWENSTUFF-ENGINEERING.md` §"渐进式提示"。
 > 缓存红线：**不能按轮缩短静态 system**；能缩的只有**投递消息/唤醒提示**（append-only 的历史消息）。facts 仍走 runtime-context、仍 ≤1 条/轮，本设计不动它。
 
@@ -143,3 +143,22 @@ cache 已确认：
 1. compact 走 **投递消息 / `agent/pre-step <icl-context>`（append-only）** → 缓存安全；若走 `icl:facts` 快照文本变化 → 也只是 ≤1/轮快照文本变，不影响 system。
 2. **不得改 `prompts/sim.md` / `prompts/persona.md` 等静态段**；若未来确需改，先给 cache commit，由 cache 重记 system 字符数（1 分钟，不用 lab）。
 3. 本设计不新增工具/不改 tools schema → `toolsHash` 不动；若接线出现 tools/system 变化，按 `CACHE-MODEL §7 附录 B` 三场景 + `cache-layout-audit` 复核，**先报异常再改文档**。
+
+## 10. 实现记录（2026-11-07）
+
+用户批准 B（含 QQ 唤醒纳入、`fullEvery=20`）。time 侧已实现，qq 侧待接（接口已给 `time.wake`）。
+
+| 项 | 实现 |
+|---|---|
+| 开关 | `time.compactWake = {enabled:false(默认), after:1, maxChars:400, fullEvery:20, allowPayload:true}` |
+| wakeCount | time state `wakeCount`；full/compact 由 `compactWakeMode()` 统一算：`0→full`；`fullEvery>0 && count%fullEvery===0 → full`；否则 compact |
+| 计数点 | schedule wake（含 sleep 唤醒）、goal resume、awake tick、manual wake；QQ 唤醒由 qq 在实际投递后调 `time.wake.bump()` |
+| 重置 | 睡醒（`endSpan` active sleep）与手动 `wake()` 先 `resetWakeCount()`，第一声 full |
+| 模板 | compact = 6 行 orientation（〔提醒〕/现在/焦点+目标/积压+危险数/上次/继续）+ `\n---\n` + 原样 payload；orientation ≤`maxChars`；payload（sleep brief、goal 定位、积压条目）不压 |
+| 积压释放 | 只压 preamble（`（reason）积压 N 条（危险 M 条置顶）：`），每条积压原文与 ⚠ 置顶不变 |
+| 不计数 | 普通投递（MC/QQ 新消息本身）、dream 回执、backlog 释放 |
+| 可观测 | `status().wake = {enabled,count,nextMode,stats,lastWakeAt,config}`；`time-events`：`wake-class {producer,mode,chars,count}` / `wake-reset` |
+| 共享 API | `ctx.services.get('time').wake`：`count/bump/reset/stats/enabled/mode/shouldCompact/config`；`wake` 本身仍是手动结束睡眠的函数（兼容旧调用） |
+| 测试 | `packages/core/test/compact-wake.test.mjs`：默认关/首次full/6行≤400/payload原文/fullEvery=20/睡醒reset/goal payload/backlog preamble/事件与 API |
+
+**已知边界**：time 看不到 assistant 文本，compact 的"上次"在 time 生产的消息里只能写"刚醒/刚连上"；要真实"上一条 assistant 摘要"需 bridge/qq 传（当前未做，A/B 时记录为限制）。
