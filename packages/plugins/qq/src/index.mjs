@@ -274,6 +274,10 @@ export async function apply(ctx) {
     dedupedAtSignals: 0,
     blocked: 0,
     blockedReasons: {},
+    // P3：focus 积压（accepted+queued+delivered:false）只是进了 focus backlog，不算已交付；
+    // 等 focus/time 重放后的 noteDeliveredSeqs 回执再推 delivered。
+    queued: 0,
+    queuedReasons: {},
     expired: 0,
     retryQueued: 0,
     retryDropped: 0,
@@ -286,7 +290,7 @@ export async function apply(ctx) {
     // time/focus 重放回执的补推统计：via -> {accepted,skipped,calls,lastAt}
     deliveredVia: {},
     // 只读观测：最近一条进来的私聊 / 最近一次丢弃 / 最近一次被 time 锁拦下
-    recent: { lastAccepted: null, lastDropped: null, lastBlocked: null },
+    recent: { lastAccepted: null, lastDropped: null, lastBlocked: null, lastQueued: null },
   }
   let connector = null
   let endpoint = null
@@ -613,6 +617,7 @@ export async function apply(ctx) {
     }
     try {
       const out = ctx.signals.offer(signal)
+      if (out?.accepted && (out.queued === true || out.delivered === false)) { stats.wakeQueued = (stats.wakeQueued ?? 0) + 1; return false }
       if (out?.accepted) { stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1; return true }
       if (out?.blocked) { stats.wakeBlocked = (stats.wakeBlocked ?? 0) + 1; return false }
       if (out?.deduped) { stats.wakeDeduped = (stats.wakeDeduped ?? 0) + 1; return false }
@@ -643,6 +648,30 @@ export async function apply(ctx) {
     try { wakePlanner?.noteOutbound(activity) } catch { /* 唤醒矩阵坏了不影响出站 */ }
   }
 
+  /** 统一判定 signals.offer 结果：queued ≠ delivered（focus backlog 还没进模型）。 */
+  function classifyOfferOutcome(out) {
+    if (!out || typeof out !== 'object') return 'retry'
+    if (out.delivered === true) return 'delivered'
+    if (out.accepted === true) {
+      if (out.queued === true || out.delivered === false) return 'queued'
+      return 'delivered'
+    }
+    if (out.deduped) return 'deduped'
+    if (out.blocked) return 'blocked'
+    if (out.expired) return 'expired'
+    return 'retry'
+  }
+
+  function recordQueued(signal, out) {
+    const reason = String(out?.reason ?? 'focus-backlog')
+    stats.queued += 1
+    bump(stats.queuedReasons, reason)
+    stats.recent.lastQueued = { at: now(), reason, id: signal.id }
+    record({ kind: 'queued', id: signal.id, reason })
+    // 只是进 focus backlog，仍未交付；行上留原因，等重放回执 noteDeliveredSeqs 推进 delivered。
+    markLedgerBlocked(signal, reason)
+  }
+
   function offer(signal) {
     let out
     try {
@@ -651,11 +680,16 @@ export async function apply(ctx) {
       ctx.log({ level: 'error', msg: 'qq.signals.offer-fail', error: String(error?.message ?? error) })
       out = { accepted: false, error: String(error?.message ?? error) }
     }
-    if (out?.accepted) { stats.delivered += 1; markLedgerDelivered(signal); return 'delivered' }
-    if (out?.deduped) { stats.dedupedAtSignals += 1; markLedgerDelivered(signal); return 'deduped' }
+    const verdict = classifyOfferOutcome(out)
+    if (verdict === 'delivered') { stats.delivered += 1; markLedgerDelivered(signal); return 'delivered' }
+    // focus 积压：accepted/queued/delivered:false —— 内容还在 focus backlog，不能记已交付。
+    if (verdict === 'queued') { recordQueued(signal, out); return 'queued' }
+    // 幂等去重：原 offer 的处理已经决定过（可能 delivered，也可能 queued）；
+    // 这里不能凭 deduped 就补 delivered。
+    if (verdict === 'deduped') { stats.dedupedAtSignals += 1; return 'deduped' }
     // gate 拦下（time 睡眠/暂停/静音锁）：**不重试**。time 的 gate 已把内容抄进它自己
     // 持久化的 backlog（time/src/index.mjs enqueue），醒来/恢复时统一重放；我们重试会双投。
-    if (out?.blocked) {
+    if (verdict === 'blocked') {
       stats.blocked += 1
       bump(stats.blockedReasons, out.reason ?? 'gate')
       stats.recent.lastBlocked = { at: now(), reason: String(out.reason ?? 'gate'), id: signal.id }
@@ -663,7 +697,7 @@ export async function apply(ctx) {
       markLedgerBlocked(signal, out.reason ?? 'gate')
       return 'blocked'
     }
-    if (out?.expired) {
+    if (verdict === 'expired') {
       stats.expired += 1
       record({ kind: 'expired', id: signal.id })
       return 'expired'
@@ -996,9 +1030,11 @@ export async function apply(ctx) {
         ctx.log({ level: 'error', msg: 'qq.retry.offer-fail', error: String(error?.message ?? error) })
         out = { accepted: false, error: String(error?.message ?? error) }
       }
-      if (out?.accepted) { retry.splice(i, 1); stats.delivered += 1; markLedgerDelivered(item.signal); continue }
-      if (out?.deduped) { retry.splice(i, 1); stats.dedupedAtSignals += 1; markLedgerDelivered(item.signal); continue }
-      if (out?.blocked) {
+      const verdict = classifyOfferOutcome(out)
+      if (verdict === 'delivered') { retry.splice(i, 1); stats.delivered += 1; markLedgerDelivered(item.signal); continue }
+      if (verdict === 'queued') { retry.splice(i, 1); recordQueued(item.signal, out); continue }
+      if (verdict === 'deduped') { retry.splice(i, 1); stats.dedupedAtSignals += 1; continue }
+      if (verdict === 'blocked') {
         // 重试时才发现时间锁：交给 time 的 backlog，不继续重试
         retry.splice(i, 1)
         stats.blocked += 1
@@ -1007,7 +1043,7 @@ export async function apply(ctx) {
         markLedgerBlocked(item.signal, out.reason ?? 'gate')
         continue
       }
-      if (out?.expired) { retry.splice(i, 1); stats.expired += 1; continue }
+      if (verdict === 'expired') { retry.splice(i, 1); stats.expired += 1; continue }
       item.attempts += 1
       if (item.attempts >= cfg.retryMaxAttempts) {
         retry.splice(i, 1)
@@ -1183,7 +1219,7 @@ export async function apply(ctx) {
         autoAlbum: false,
         autoDelete: false,
       },
-      stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
+      stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, queuedReasons: { ...stats.queuedReasons }, retryPending: retry.length, recent: { ...stats.recent } },
       recordFile: recordFile || null,
       statusFile: statusFile || null,
       dedupe: { size: dedupe.size(), file: cfg.dedupeFile || null },
@@ -1214,6 +1250,10 @@ export async function apply(ctx) {
         const viaKeys = Object.keys(via)
         if (viaKeys.length) {
           lines.push(`重放回执（只补 delivered，不算已读）：${viaKeys.map((key) => `${key} 补推 ${via[key].accepted ?? 0} 条（忽略 ${via[key].skipped ?? 0}；调用 ${via[key].calls ?? 0} 次）`).join('；')}`)
+        }
+        if (s.stats?.queued) {
+          const reasons = Object.entries(s.stats.queuedReasons ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${reason}×${count}`).join('，')
+          lines.push(`focus 积压（queued ≠ delivered）：本次 ${s.stats.queued} 条${reasons ? `（${reasons}）` : ''}；重放回执后才补 delivered，mark_read 不能跨过`)
         }
       }
       const media = s.media ?? {}

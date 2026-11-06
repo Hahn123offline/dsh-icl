@@ -333,7 +333,7 @@
 - `packages/dsh-icl/src/bridge.mjs:352-380`（notice 仅 text）；`packages/core/src/dsh-contract.mjs:93-106`（`toDshUserMessage` 仅 text）。
 - `packages/core/src/services.mjs:572-707`（delivery，可带 content/images 字段，但 bridge 未用）。
 - `docs/QQ.md` §7.2/§10.1/§11.1（phase 1 清单与真实窗口）、§0.2/§0.3（真实影子/真实出站验证）。
-- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-media.test.mjs` 9、`qq-ledger-tools.test.mjs` 7、`qq-stickers.test.mjs` 6、`qq-wake.test.mjs` 8、`qq-watermark.test.mjs` 1、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；`dsh-bridge.test.mjs` 36；全量 **760 tests（759 pass / 1 skip）**。
+- 测试：`qq.test.mjs` 19、`qq-send.test.mjs` 18、`qq-humanize.test.mjs` 9、`qq-backfill.test.mjs` 6、`qq-rich.test.mjs` 11、`qq-envelope.test.mjs` 5、`qq-media.test.mjs` 9、`qq-ledger-tools.test.mjs` 7、`qq-stickers.test.mjs` 6、`qq-wake.test.mjs` 8、`qq-watermark.test.mjs` 1、`qq-focus-queued.test.mjs` 2、`qq-mc-concurrent.test.mjs` 3、`qq-preflight.test.mjs` 13；`dsh-bridge.test.mjs` 36；全量 **779 tests（778 pass / 1 skip）**。
 - 真实验证证据：`C:\DSH\icl\.state\lab\qq-send-20261105-2310/{report.md,qq-shadow/status.json,qq-shadow/send-audit.jsonl}`；`qq-shadow-20261105-2257/report.md`。
 
 ### 7.4 本次研究执行的只读验证
