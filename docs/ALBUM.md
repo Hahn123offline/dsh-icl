@@ -14,7 +14,7 @@
 ## 1. 存储布局与元数据
 
 ```
-<stateDir>/media/                       # 媒体根（configFor('album').root）
+<ICL_ROOT>/album/                       # 媒体根（configFor('album').root；默认 <仓库根>/.state/album）
 ├── media.db                            # 元数据（node:sqlite，单写者）
 ├── default/                            # library
 │   └── 2026-11/                        # 年月分桶
@@ -24,6 +24,9 @@
 │   └── grid-2026-11-06T02-11-09.png
 └── tmp/                                # 导入中间文件（失败清理）
 ```
+
+> 旧布局 `<旧 stateDir>/media/` 在 `<ICL_ROOT>/album` 还不存在时仍可读（向后兼容），
+> 用 `tools/icl-move.mjs` 搬到新根；见 `docs/PATHS.md`。
 
 **items 表**（`media.db`）：
 
@@ -106,7 +109,7 @@
 | `qq` | 媒体消息落地时 `album.importFile({path, source:'qq', origin:{conv, messageId, sender}})`；出站走 §5 | qq ↔ album |
 | `dream` | 可选 `media` job：补 caption / 生成年度精选拼图（默认关） | dream → album |
 | `recall` | 二阶段 `kind:'image'` → `album.searchByVector`；一阶段先 `album_search`（文本） | recall ↔ album |
-| `editor` | 不直接对接：媒体根在 `stateDir/media`，editor 的 `root` 是 `stateDir` → 她可以 `list_dir` 看到；写保护不覆盖媒体根 | — |
+| `editor` | 不直接对接：媒体根在 `<ICL_ROOT>/album`，editor 的 `root` 是 `stateDir` → 两个目录分开；写保护不覆盖媒体根 | — |
 
 ## 7. 隐私 / 安全
 
@@ -140,7 +143,7 @@
 | 范围 | 状态 | 说明 |
 |---|---|---|
 | `DEFAULT_PLUGINS`（`packages/dsh-icl/src/config.mjs`） | 已含 `album` | 新装的 ICL 默认会启用相册 |
-| **lab preset**（`presets/lab.patch.yml` 的 `icl-lab` / `icl-mc-lab`） | **已显式挂载 `- album`** | lab 工具面 34 → **41**（+7 个 `album_*`）；`album` 状态目录 = `<stateDir>/media` |
+| **lab preset**（`presets/lab.patch.yml` 的 `icl-lab` / `icl-mc-lab`） | **已显式挂载 `- album`** | lab 工具面 34 → **41**（+7 个 `album_*`）；`album` 状态目录 = `<ICL_ROOT>/album` |
 | **产品 preset**（`presets/icl.patch.yml`） | **暂不挂载（待用户批准）** | 产品会话目前仍是 34 工具；用户批准后再加 `- album` 一行即可 |
 
 **为什么必须显式挂载**：preset 的 `plugins:` 是白名单——即使插件在 `DEFAULT_PLUGINS` 里，没列进 preset 就不会加载

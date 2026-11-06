@@ -233,7 +233,7 @@
 | `video_probe` | `execFile(ffprobe, [-v error -print_format json -show_format -show_streams path])` | 45 000 ms / 32 MB |
 | `video_frames` | `execFile(ffmpeg, [-ss t -i path -frames:v 1 …])`，多帧再拼一张 `tile` | 120 000 ms / 32 MB |
 
-宫格图/帧图写进 `<stateDir>/video/work/` 或 `os.tmpdir()/icl-bili-board-*`（24h 清理）；图片在工具返回后才被桥读取，所以不会提前删。
+宫格图/帧图写进 `<ICL_ROOT>/video-tmp/work/` 或 `os.tmpdir()/icl-bili-board-*`（24h 清理）；图片在工具返回后才被桥读取，所以不会提前删。
 
 ### 6.3 端口与地址
 

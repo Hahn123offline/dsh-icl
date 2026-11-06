@@ -2,12 +2,13 @@
 // 只用于验收窗口（需要 normal 地形）：54840 用前先确认没有别的 bot 在跑场景。
 // 用法：
 //   node packages/mc-body/tools/craft-place-check.mjs --port 54840 --listen 54902 --name ICL-mcbody-1 \
-//     --out C:/DSH/icl/.state/lab/mc-body-soak/craft-place-<run>
+//     --out <ICL_ROOT>/lab/mc-body-soak/craft-place-<run>
 // 产物：report.md + metrics.json + events.jsonl + body.log + body-exit.json
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { iclPaths } from '../../core/src/icl-paths.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const bodyCli = path.resolve(here, '..', 'src', 'cli.mjs')
@@ -17,7 +18,7 @@ const host = String(arg('--host', '127.0.0.1'))
 const port = Number(arg('--port', 54840))
 const listen = Number(arg('--listen', 54902))
 const name = String(arg('--name', 'ICL-mcbody-1')).slice(0, 16)
-const out = path.resolve(String(arg('--out', path.join('C:/DSH/icl/.state/lab/mc-body-soak', `craft-place-${new Date().toISOString().replace(/[:.]/g, '-')}`))))
+const out = path.resolve(String(arg('--out', path.join(iclPaths().root, 'lab', 'mc-body-soak', `craft-place-${new Date().toISOString().replace(/[:.]/g, '-')}`))))
 fs.mkdirSync(out, { recursive: true })
 const base = `http://127.0.0.1:${listen}`
 const logStream = fs.createWriteStream(path.join(out, 'body.log'), { flags: 'a' })

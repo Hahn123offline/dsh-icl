@@ -1,13 +1,15 @@
 // 相册 / 本地多媒体管理（红队 P0 项目：图片记忆 + 本地相册）。
 // 设计见 docs/ALBUM.md；本文件是最小可用实现：
 //   入库（内容哈希去重）→ 列表 → 按描述/标签搜 → 多图拼宫格 → 保留策略 → 体检。
-// 约束：媒体只落在 <stateDir>/media 下；图片只走文件路径/attachment（不进静态 system/facts）。
+// 约束：媒体只落在相册根（默认 ICL_ROOT/album，见 packages/core/src/icl-paths.mjs）下；
+//       图片只走文件路径/attachment（不进静态 system/facts）。
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { DatabaseSync } from 'node:sqlite'
+import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'album'
 
@@ -152,7 +154,8 @@ const sha256File = (file) => new Promise((resolve, reject) => {
 })
 
 export function apply(ctx) {
-  const root = path.resolve(String(ctx.config.root ?? path.join(process.cwd(), 'media')))
+  // 相册根：显式 root > ICL_ALBUM_DIR > ICL_ROOT/album（旧 <stateDir>/media 可读兼容）。
+  const root = path.resolve(String(ctx.config.root ?? iclPaths().albumDir))
   const dbFile = path.join(root, 'media.db')
   const collagesDir = path.join(root, 'collages')
   const tmpDir = path.join(root, 'tmp')

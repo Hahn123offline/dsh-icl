@@ -30,6 +30,7 @@ import { expandForwardIds } from './forward.mjs'
 import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, safeFetchBuffer, saveInboxMedia } from './media.mjs'
+import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'qq'
 
@@ -802,14 +803,11 @@ export async function apply(ctx) {
       const anchor = cfg.dedupeFile || cfg.recordFile || cfg.statusFile
       if (anchor) ledgerFile = path.join(path.dirname(resolvePath(anchor)), 'qq-ledger.db')
     }
-    // 入站媒体统一目录：显式配置优先；否则放在 state 文件同级的 media/inbox/qq（默认 .state/media/inbox/qq）。
+    // 入站媒体统一目录：显式配置优先；给了 state 文件就跟它同级；否则 ICL_ROOT/inbox/qq。
+    const anchor = cfg.ledgerFile || cfg.dedupeFile || cfg.recordFile || cfg.statusFile
     if (cfg.mediaInboxDir) mediaDir = resolvePath(cfg.mediaInboxDir)
-    else {
-      const anchor = cfg.ledgerFile || cfg.dedupeFile || cfg.recordFile || cfg.statusFile
-      mediaDir = anchor
-        ? path.join(path.dirname(resolvePath(anchor)), 'media/inbox/qq')
-        : path.join(process.cwd(), '.state/media/inbox/qq')
-    }
+    else if (anchor) mediaDir = path.join(path.dirname(resolvePath(anchor)), 'media/inbox/qq')
+    else mediaDir = iclPaths().qqInboxDir
     ctx.log({
       msg: 'qq.media.ready',
       dir: mediaDir,
@@ -820,10 +818,10 @@ export async function apply(ctx) {
       maxFileBytes: cfg.maxFileBytes,
       retentionDays: cfg.mediaRetentionDays,
     })
-    // 表情包本地库：显式配置优先；否则 state 同级的 media/stickers（不自动下载/不执行）。
+    // 表情包本地库：显式配置优先；跟 state 文件走时沿用旧位置；否则 ICL_ROOT/media/stickers。
     cfg.stickerDir = cfg.stickerDir
       ? resolvePath(cfg.stickerDir)
-      : path.join(path.dirname(path.dirname(mediaDir)), 'stickers')
+      : (anchor ? path.join(path.dirname(path.dirname(mediaDir)), 'stickers') : iclPaths().stickersDir)
     ctx.log({ msg: 'qq.stickers.ready', dir: cfg.stickerDir, maxBytes: cfg.maxStickerBytes, listLimit: cfg.stickerListLimit })
     ledger = createLedger({ file: ledgerFile || null, log: (entry) => ctx.log({ plugin: 'qq', ...entry }) })
     http = createOneBotHttp({

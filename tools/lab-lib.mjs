@@ -147,12 +147,14 @@ export const KNOWN_MC_SERVERS = Object.freeze({
   flat: { host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
 })
 
-export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'] }) {
+export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
   const posix = (p) => p.replace(/\\/g, '/')
   const stateRoot = path.join(runDir, 'state')
+  // sandbox-policy.workspaceRoot 与会话 cwd 同源；未给 workspace 时退回 runDir/workspace。
+  const workspaceRoot = path.resolve(String(workspace ?? path.join(runDir, 'workspace')))
   // lab 的服务器清单（mc-link 会把它和插件自带 servers.json 合并）；按 --servers 选实际要暴露的服。
   const listed = (Array.isArray(servers) ? servers : String(servers).split(','))
     .map((name) => String(name).trim())
@@ -168,6 +170,7 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'I
     .replaceAll('__LAB_ICL_HOST__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'host.mjs')))
     .replaceAll('__LAB_ICL_CORE__', fileUrl(path.join(REPO_ROOT, 'packages', 'dsh-icl', 'index.mjs')))
     .replaceAll('__LAB_STATE__', posix(stateRoot))
+    .replaceAll('__LAB_WORKSPACE__', posix(workspaceRoot))
     .replaceAll('__LAB_MC_BASE__', `http://127.0.0.1:${mcPort}`)
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
     .replaceAll('__LAB_MC_USERNAME__', String(mcUser))

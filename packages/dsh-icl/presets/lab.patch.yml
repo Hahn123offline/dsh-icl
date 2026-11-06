@@ -17,13 +17,15 @@
 # 整个 lab 进程默认 workspace-write；workspaceRoot 只是"没有会话 cwd 的调用"的兜底，
 # 普通会话仍以 session.header.cwd（lab 用 --workspace 指定）为写边界。
 # permission 的 config 是整体替换，所以三个 preset 必须写全；danger-full-access 保留为回滚路径。
-# workspaceRoot 目录的前置 ACL：icacls C:\DSH\her /grant 'ai_admin:(OI)(CI)F'
+# workspaceRoot 是占位符：tools/lab.mjs 物化 patch 时替换成同一轮 --workspace 解析出的
+# 绝对路径（默认 <rundir>/workspace，或 ICL_SANDBOX_WORKSPACE / ICL_ROOT/home）。
+# 该目录的前置 ACL（Windows）：icacls <workspace> /grant '<user>:(OI)(CI)F'
 # （缺这条时 ACL runner 会 SetNamedSecurityInfoW failed (Win32 5)，见 SANDBOX-PLAN §2.4）。
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
     mode: workspace-write
-    workspaceRoot: 'C:/DSH/her'
+    workspaceRoot: '__LAB_WORKSPACE__'
 - id: permission
   name: '@deepseek-ai/dsh-permission-presets'
   config:

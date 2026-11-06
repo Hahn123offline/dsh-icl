@@ -4,12 +4,13 @@
 // 不重启服务器、不碰用户客户端；只在 127.0.0.1 上代理。
 //
 // 用法：node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54840 --listen 54903 \
-//   --name ICL-mcbody-rc --out C:/DSH/icl/.state/lab/mc-body-soak/<run>-reconnect
+//   --name ICL-mcbody-rc --out <ICL_ROOT>/lab/mc-body-soak/<run>-reconnect
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { iclPaths } from '../../core/src/icl-paths.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const bodyCli = path.resolve(here, '..', 'src', 'cli.mjs')
@@ -22,7 +23,7 @@ const listen = Number(arg('--listen', 54903))
 const name = String(arg('--name', 'ICL-mcbody-rc'))
 const maxReconnect = Number(arg('--max-reconnect', 3))
 const reconnectBaseMs = Number(arg('--reconnect-base-ms', 400))
-const out = path.resolve(String(arg('--out', path.join('C:/DSH/icl/.state/lab/mc-body-soak', `${new Date().toISOString().replace(/[:.]/g, '-')}-reconnect`))))
+const out = path.resolve(String(arg('--out', path.join(iclPaths().root, 'lab', 'mc-body-soak', `${new Date().toISOString().replace(/[:.]/g, '-')}-reconnect`))))
 fs.mkdirSync(out, { recursive: true })
 const base = `http://127.0.0.1:${listen}`
 const logStream = fs.createWriteStream(path.join(out, 'body.log'), { flags: 'a' })

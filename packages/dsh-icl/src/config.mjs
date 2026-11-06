@@ -1,7 +1,7 @@
 // 配置规范化：DSH preset 的 config 只写"和默认不同的部分"。
 import fs from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT, defaultStateDir, dshHome, resolvePath } from './paths.mjs'
+import { REPO_ROOT, dshHome, iclPaths, resolveDataPath, resolvePath } from './paths.mjs'
 
 /** 默认启用的插件。dsh-raw 默认关：DSH 桥直接喂实时 session 事件，文件扫描是旧路。
  *  compaction 默认关（2026-11-05 决策）：它只注入摘要、不替换历史（纯加法），且 DSH 自带
@@ -22,34 +22,66 @@ function readProviders(file) {
   } catch { return [] }
 }
 
-export function normalizeConfig(input = {}) {
-  const stateDir = resolvePath(input.stateDir, defaultStateDir())
+/**
+ * @param {object} [input] preset/headless 传来的 config
+ * @param {{env?:NodeJS.ProcessEnv}} [options] env 可注入（测试用）
+ */
+export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = {}) {
+  const raw = input && typeof input === 'object' ? input : {}
+  // 一个根推全部可写目录：显式 config > env > 默认（<REPO_ROOT>/.state）。
+  // 旧目录（$DSH_HOME/icl/state、旧 QQ 入站目录、旧相册根）在新目录缺席时继续可读。
+  const paths = iclPaths({
+    env,
+    dshHomeDir,
+    root: raw.iclRoot,
+    stateDir: raw.stateDir,
+    homeDir: raw.homeDir,
+    mediaDir: raw.mediaDir,
+    albumDir: raw.albumDir,
+    qqInboxDir: raw.qqInboxDir,
+    videoTmpDir: raw.videoTmpDir,
+    stickersDir: raw.stickersDir,
+    locksDir: raw.locksDir,
+    sandboxWorkspaceRoot: raw.sandboxWorkspaceRoot,
+  })
+  const stateDir = paths.stateDir
   // 提示词分三层（用户 2026-11-05 批准的契约，见 docs/PROMPT-CONTRACT.md）：
   //   人格 prompts/persona.md —— 她是谁、怎么说话（全局常量，不出现工具名）
   //   仿真 prompts/sim.md     —— 她在这个环境里怎么生活、这些工具如何配合（全局，几乎不变）
   //   工具教学                —— 每个工具自己的 description + 按需 skills（不进全局提示词）
-  const personaFile = resolvePath(input.personaFile, path.join(REPO_ROOT, 'prompts', 'persona.md'))
-  const simulationFile = resolvePath(input.simulationFile, path.join(REPO_ROOT, 'prompts', 'sim.md'))
-  const dreamPersonaFile = resolvePath(input.dreamPersonaFile, path.join(REPO_ROOT, 'prompts', 'dream.md'))
-  const providersFile = resolvePath(input.providersFile, path.join(REPO_ROOT, 'config', 'icl.local.json'))
-  const providers = Array.isArray(input.providers) ? input.providers : readProviders(providersFile)
+  const personaFile = resolvePath(raw.personaFile, path.join(REPO_ROOT, 'prompts', 'persona.md'))
+  const simulationFile = resolvePath(raw.simulationFile, path.join(REPO_ROOT, 'prompts', 'sim.md'))
+  const dreamPersonaFile = resolvePath(raw.dreamPersonaFile, path.join(REPO_ROOT, 'prompts', 'dream.md'))
+  const providersFile = resolvePath(raw.providersFile, path.join(REPO_ROOT, 'config', 'icl.local.json'))
+  const providers = Array.isArray(raw.providers) ? raw.providers : readProviders(providersFile)
   return {
+    // 根与派生目录：插件默认值只从这里取，不再各自拼 cwd/.state。
+    iclRoot: paths.root,
+    paths,
+    homeDir: paths.homeDir,
     stateDir,
+    mediaDir: paths.mediaDir,
+    albumDir: paths.albumDir,
+    qqInboxDir: paths.qqInboxDir,
+    videoTmpDir: paths.videoTmpDir,
+    stickersDir: paths.stickersDir,
+    locksDir: paths.locksDir,
+    sandboxWorkspaceRoot: paths.sandboxWorkspaceRoot,
     personaFile,
     simulationFile,
     dreamPersonaFile,
     providersFile,
     providers,
-    presetId: input.presetId == null ? null : String(input.presetId),
-    sessionId: input.sessionId == null ? null : String(input.sessionId),
-    mcBaseUrl: input.mcBaseUrl == null ? null : String(input.mcBaseUrl),
-    plugins: Array.isArray(input.plugins) ? input.plugins.map(String) : [...DEFAULT_PLUGINS],
+    presetId: raw.presetId == null ? null : String(raw.presetId),
+    sessionId: raw.sessionId == null ? null : String(raw.sessionId),
+    mcBaseUrl: raw.mcBaseUrl == null ? null : String(raw.mcBaseUrl),
+    plugins: Array.isArray(raw.plugins) ? raw.plugins.map(String) : [...DEFAULT_PLUGINS],
     /** 按插件 id 覆盖 configFor 的默认值（部署相关，不写进代码）。 */
-    pluginConfig: input.pluginConfig && typeof input.pluginConfig === 'object' ? { ...input.pluginConfig } : {},
-    tickMs: Math.max(0, Number(input.tickMs ?? 500)),
-    timeTickMs: Math.max(1000, Number(input.timeTickMs ?? 15_000)),
-    dreamAt: String(input.dreamAt ?? '23:00'),
-    compactionTriggerChars: Math.max(1000, Number(input.compactionTriggerChars ?? 12_000)),
+    pluginConfig: raw.pluginConfig && typeof raw.pluginConfig === 'object' ? { ...raw.pluginConfig } : {},
+    tickMs: Math.max(0, Number(raw.tickMs ?? 500)),
+    timeTickMs: Math.max(1000, Number(raw.timeTickMs ?? 15_000)),
+    dreamAt: String(raw.dreamAt ?? '23:00'),
+    compactionTriggerChars: Math.max(1000, Number(raw.compactionTriggerChars ?? 12_000)),
     persona: readText(personaFile, ''),
     simulation: readText(simulationFile, ''),
     dreamPersona: readText(dreamPersonaFile, ''),
@@ -58,9 +90,10 @@ export function normalizeConfig(input = {}) {
      * 默认空数组 = 不净化；只有显式配置的 preset（目前仅 lab）才开。
      * 段名目录与语义见 src/purify.mjs；产品 preset 要开需用户批准。
      */
-    purifySections: Array.isArray(input.purifySections) ? input.purifySections.map(String) : [],
-    rawFile: resolvePath(input.rawFile, path.join(stateDir, 'session-events.jsonl')),
-    focusFile: resolvePath(input.focusFile, path.join(stateDir, 'focus.json')),
-    sessionsRoot: resolvePath(input.sessionsRoot, path.join(dshHome(), 'sessions')),
+    purifySections: Array.isArray(raw.purifySections) ? raw.purifySections.map(String) : [],
+    rawFile: resolveDataPath(raw.rawFile, path.join(stateDir, 'session-events.jsonl'), { root: paths.root }),
+    focusFile: resolveDataPath(raw.focusFile, path.join(stateDir, 'focus.json'), { root: paths.root }),
+    // DSH 自己的会话目录不归 ICL 管，仍从 DSH_HOME 推；相对值也锚到 DSH_HOME。
+    sessionsRoot: resolveDataPath(raw.sessionsRoot, path.join(dshHome(env), 'sessions'), { root: dshHome(env) }),
   }
 }

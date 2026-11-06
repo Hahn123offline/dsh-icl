@@ -8,7 +8,6 @@
 // 这一层只负责"把图生成在磁盘上 + 说清哪一格是什么"，不碰附件服务。
 import fs from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import { probeVideo, formatProbe } from './probe.mjs'
 import {
   resolveLocalPath, listVideos, makeWorkDir, pruneWorkDirs, humanBytes,
@@ -18,6 +17,7 @@ import {
   resolveStoryboardCli, runStoryboard, locateInTranscript, extractTextBlock, TC,
 } from './storyboard.mjs'
 import { extractFrames } from './frames.mjs'
+import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'video'
 
@@ -27,7 +27,8 @@ const MAX_TEXT = 8000
 function configOf(ctx) {
   const config = ctx?.config && typeof ctx.config === 'object' ? ctx.config : {}
   return {
-    stateDir: String(config.stateDir ?? path.join(os.tmpdir(), 'icl-video')),
+    // 临时产物目录：显式 > ICL_VIDEO_TMP_DIR > ICL_ROOT/video-tmp（不再落到系统 temp）。
+    stateDir: String(config.stateDir ?? iclPaths().videoTmpDir),
     cli: resolveStoryboardCli(config.storyboardCli),
     cliPath: String(config.storyboardCli ?? process.env.ICL_STORYBOARD_CLI ?? ''),
     ffmpeg: String(config.ffmpeg ?? process.env.ICL_FFMPEG ?? 'ffmpeg'),

@@ -2,6 +2,9 @@
 #
 # 这个文件随 bundle 安装；插件 code 在 ../../index.mjs，默认值由仓库推出。
 # 只把 agent 选到这个 preset，ICL 才会接管工具面、人格与投递。
+#
+# 路径约定：stateDir 之类的"数据路径"相对 ICL_ROOT 解析（默认 <REPO_ROOT>/.state），
+# 不写盘符；只读资产（personaFile 等）相对仓库根解析。换盘/整体迁移见 docs/PATHS.md。
 - insert:
     - id: dsh-icl-host
       name: ../host.mjs
@@ -40,7 +43,7 @@
             name: dsh-icl/index.mjs
             config:
               presetId: icl-loop
-              stateDir: C:/DSH/icl/.state/loop-state
+              stateDir: loop-state
               personaFile: prompts/persona.md
               simulationFile: prompts/sim.md
               tickMs: 200
@@ -83,7 +86,7 @@
             name: dsh-icl/index.mjs
             config:
               presetId: icl-mc
-              stateDir: C:/DSH/icl/.state/mc-state
+              stateDir: mc-state
               personaFile: prompts/persona.md
               simulationFile: prompts/sim.md
               tickMs: 500
