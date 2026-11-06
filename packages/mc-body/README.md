@@ -127,3 +127,6 @@ node packages/mc-body/tools/reconnect-drill.mjs --upstream 54837 --proxy 54940 -
 - **alarm 穿透**：body 只保证事件带 `priority:"alarm"`+`pierce:true` 且不因 pause 而丢（去重记账+窗口补投），并在 `status.safety.alarms` 记 delivered/suppressed/redelivered/pending；**是否被静音/睡眠拦截由 mc-link/time 决定**（time 默认连 alarm 一起拦：body 不假设“静音里 alarm 一定穿”；上层若拦了，用 body 的 alarm_suppressed/redelivered 计数对账）。
 - **睡眠期**：body 的 safety_stop 照旧独立执行（不等模型）；alarm 事件在 mc-link/time 侧进 `priority:'alarm'` 积压，醒来简报第一条呈现。
 - **E6/E7**：`status.playable {ok,blockers}` 给 mc-link join 后可玩判断；`status.spawnLog` 给 spawn 排查。
+
+- **alarm 标记三层**（给 mc-link/time 任一层识别，避免只透传一层就漏）：事件对象顶层 `priority:"alarm"`+`pierce:true`、`data.priority/pierce`、`data.meta.priority/pierce`；覆盖 ALARM 类型与危险 watchdog（`watchdog` + severity=danger：low-health/danger-block/low-oxygen/stuck/health-drop/connection-stale）。`status.safety.alarms{delivered,suppressed,redelivered,pending}` 口径：**body suppressed>0 是 body 内部 15s 去重/待补投，不代表 time/mc-link 漏收**。
+- 字段名稳定不改：`pausedReason:"user-stop"` ↔ time `pausedMode.source/reason`；`safety.reflex/lastReflex`、`playable`、`spawnLog` 只读对齐。
