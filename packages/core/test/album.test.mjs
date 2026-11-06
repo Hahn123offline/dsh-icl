@@ -228,14 +228,18 @@ test('隐私相册：默认列表/搜索/拼图都看不到；show 必须 allowP
   assert.match((await tools.album_search.execute({ query: '隐私图' })).text, /没有匹配/)
   const collageAll = await tools.album_collage.execute({ cols: 2 })
   assert.doesNotMatch(collageAll.text, /#2/, '默认拼图不能包含隐私图')
-  // includePrivate 列表可见且带标记
-  const withPrivate = await tools.album_list.execute({ includePrivate: true })
+  // 隐私双确认：只给 includePrivate 仍不可见
+  const singleConfirm = await tools.album_list.execute({ includePrivate: true })
+  assert.doesNotMatch(singleConfirm.text, /隐私图/, 'includePrivate 单确认不能列隐私')
+  const withPrivate = await tools.album_list.execute({ includePrivate: true, allowPrivate: true })
   assert.match(withPrivate.text, /隐私相册/)
-  // show 门槛
+  // show 也是双确认
   const denied = await tools.album_show.execute({ id: 2 })
   assert.match(denied.text, /隐私相册/)
   assert.equal(denied.imagePath, undefined)
-  const allowed = await tools.album_show.execute({ id: 2, allowPrivate: true })
+  const deniedSingle = await tools.album_show.execute({ id: 2, allowPrivate: true })
+  assert.equal(deniedSingle.imagePath, undefined, 'show 只给 allowPrivate 不够')
+  const allowed = await tools.album_show.execute({ id: 2, includePrivate: true, allowPrivate: true })
   assert.ok(allowed.imagePath && fs.existsSync(allowed.imagePath))
 })
 
@@ -402,4 +406,18 @@ test('image-embed 槽是 optional：缺 CLIP provider 时进 optionalUnmatched�
   const slot = unmatched.find((row) => row.id === 'image-embed')
   assert.ok(slot, '无 provider 时 image-embed 应在 unmatched')
   assert.equal(slot.optional, true, JSON.stringify(unmatched))
+})
+
+test('album_import 只读文件头：readFileHead 不会把大文件整个读进内存', async () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-head-'))
+  const file = path.join(src, 'big.png')
+  fs.writeFileSync(file, Buffer.alloc(200 * 1024, 7))
+  const head = album.readFileHead(file, 64 * 1024)
+  assert.equal(head.length, 64 * 1024)
+  const small = path.join(src, 'small.png')
+  fs.writeFileSync(small, Buffer.alloc(100, 1))
+  assert.equal(album.readFileHead(small, 64 * 1024).length, 100)
+  const empty = path.join(src, 'empty.png')
+  fs.writeFileSync(empty, Buffer.alloc(0))
+  assert.equal(album.readFileHead(empty, 64 * 1024).length, 0)
 })

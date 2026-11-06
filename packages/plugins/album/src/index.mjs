@@ -13,6 +13,20 @@ import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
 export const name = 'album'
 
+/** 只读文件头（默认 64KiB），不把 512MiB 文件整个读进内存。 */
+export function readFileHead(file, maxBytes = 64 * 1024) {
+  const fd = fs.openSync(file, 'r')
+  try {
+    const size = fs.fstatSync(fd).size
+    const length = Math.max(0, Math.min(Number(maxBytes) || 0, size))
+    const buf = Buffer.alloc(length)
+    if (length) fs.readSync(fd, buf, 0, length, 0)
+    return buf
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 const execFileAsync = promisify(execFile)
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
@@ -375,7 +389,7 @@ export function apply(ctx) {
       }
       return { ok: true, deduped: true, row, embedding, embedError }
     }
-    const head = fs.readFileSync(file, { encoding: null, flag: 'r' }).subarray(0, Math.min(64 * 1024, st.size))
+    const head = readFileHead(file, 64 * 1024)
     const size = kind === 'image' ? readImageSize(head, ext) : null
     const lib = safeLibrary(library)
     // 隐私分区：物理上放 private/<library>/<yyyy-mm>/，普通列表默认看不到。
@@ -534,11 +548,14 @@ export function apply(ctx) {
         since: { type: 'number', description: 'Epoch ms lower bound (imported_at).' },
         until: { type: 'number' },
         limit: { type: 'number', description: 'Default 20, max 200.' },
-        includePrivate: { type: 'boolean', description: 'Also list the private album (default false).' },
+        includePrivate: { type: 'boolean', description: 'Also list the private album (default false; needs allowPrivate:true).' },
+        allowPrivate: { type: 'boolean', description: 'Explicitly allow touching the private album.' },
       },
     },
-    execute({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includePrivate = false } = {}) {
-      const rows = queryRows({ library, kind, tag, source, since, until, limit, includePrivate: Boolean(includePrivate) })
+    execute({ library = null, kind = null, tag = null, source = null, since = null, until = null, limit = 20, includePrivate = false, allowPrivate = false } = {}) {
+      // 隐私统一双确认：includePrivate + allowPrivate 同时为 true 才可见（与 search/show 一致）
+      const canSeePrivate = Boolean(includePrivate && allowPrivate)
+      const rows = queryRows({ library, kind, tag, source, since, until, limit, includePrivate: canSeePrivate })
       if (!rows.length) {
         const { n } = q.total.get()
         return { text: n === 0 ? '相册还是空的：还没有导入任何图片/视频。' : `没有符合这个条件的（相册共 ${n} 件；换个筛选条件试试）。` }
@@ -628,12 +645,12 @@ export function apply(ctx) {
     summary: 'Show one album item in detail (path, size, tags, source, sent state).',
     when: ['you need the local path of one picture/clip'],
     avoid: ['browsing - use album_list'],
-    parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'number' }, allowPrivate: { type: 'boolean', description: 'Explicitly allow showing a private-album item.' } } },
-    execute({ id, allowPrivate = false } = {}) {
+    parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'number' }, includePrivate: { type: 'boolean', description: 'Include the private album (needs allowPrivate:true).' }, allowPrivate: { type: 'boolean', description: 'Explicitly allow showing a private-album item.' } } },
+    execute({ id, includePrivate = false, allowPrivate = false } = {}) {
       const row = q.byId.get(Number(id))
       if (!row) return { text: `相册里没有 #${id}（可能已删除）。` }
-      if (Number(row.private) && !allowPrivate) {
-        return { text: `#${id} 在隐私相册里：不能直接展示/发送。确认只有你自己看（或用户明确允许）后，用 album_show {id, allowPrivate:true}。` }
+      if (Number(row.private) && !(includePrivate && allowPrivate)) {
+        return { text: `#${id} 在隐私相册里：不能直接展示/发送。确认只有你自己看（或用户明确允许）后，用 album_show {id, includePrivate:true, allowPrivate:true}。` }
       }
       return { text: metaLine(row), imagePath: row.kind === 'image' ? absOf(row) : undefined }
     },
@@ -770,8 +787,8 @@ export function apply(ctx) {
   ctx.services.provide('album', {
     root,
     importFile,
-    list: (opts = {}) => queryRows(opts).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, caption: row.caption, tags: tagList(row.tags), importedAt: row.imported_at })),
-    search: (query, opts = {}) => q.all.all().filter((row) => (opts.includePrivate ? true : !Number(row.private)) && describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
+    list: (opts = {}) => queryRows({ ...opts, includePrivate: Boolean(opts.includePrivate && opts.allowPrivate) }).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, caption: row.caption, tags: tagList(row.tags), importedAt: row.imported_at })),
+    search: (query, opts = {}) => q.all.all().filter((row) => (Boolean(opts.includePrivate && opts.allowPrivate) || !Number(row.private)) && describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
     semanticSearch: async (query, opts = {}) => {
       const rows = filterRows({ includePrivate: Boolean(opts.includePrivate), allowPrivate: Boolean(opts.allowPrivate) })
       const out = await semanticSearch({ query, image: opts.image ?? null, rows, limit: Number(opts.limit) || 10 })

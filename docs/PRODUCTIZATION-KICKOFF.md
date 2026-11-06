@@ -14,13 +14,13 @@
 |---|---|---|
 | 产品 preset `packages/dsh-icl/presets/icl.patch.yml` | 三个 preset（`icl` / `icl-loop` / `icl-mc`）；`icl-core` 只配 `presetId: icl`，**无 `plugins:`、无 `purifySections`** | 文件本身 |
 | 产品 preset 实际插件 | 继承 `DEFAULT_PLUGINS`（17 个）：memory/world-state/recall/note/lexicon/whois/persona/focus/eager-recall/model-manager/time/dream/editor/bili/video/mc-link/album | 本地 `bootstrapHost` 装配模拟 |
-| 产品实际 ICL 工具数 | **68 / 46,541 字符**（含 9 个 `album_*`（二阶段 +reindex/caption）、6 个 `video_*`、7 个 `bili_*`、17 个 `mcb_*`、editor 3 等） | 同上（`normalizeConfig({presetId:'icl'})` + bootstrap）；分项见 `PRODUCT-SURFACE.md` §1 |
+| 产品实际 ICL 工具数 | **68 / 46,766 字符**（含 9 个 `album_*`（二阶段 +reindex/caption）、6 个 `video_*`、7 个 `bili_*`、17 个 `mcb_*`、editor 3 等） | 同上（`normalizeConfig({presetId:'icl'})` + bootstrap）；分项见 `PRODUCT-SURFACE.md` §1 |
 | 首屏净化 | 只在 lab preset 开（4 段 shadow）；产品未开 | `docs/FIRST-SCREEN.md` §2/§6 |
 | sandbox | 只在 lab 进程 `workspace-write`；产品仍按 desktop profile（未改） | `docs/SANDBOX-PLAN.md` §7/§7.7 |
 | 工具/静态体积（cache） | icl-lab（有 video/新插件）**54 工具 / 39,350 字符 / `c1df0e849a9f`**；system **4,195 字符**；icl-mc-lab（allowlist）**27 / 21,459 / `c91bce1e703b`** | cache sanctioned 审计（`6d2c518`），`CACHE-NIGHT §9.1/§9.2` |
 | 旧文档漂移 | `ALBUM.md §10`、`PLUGINS.md`、`VIDEO-EYES.md` 曾写"产品 preset 未挂 album/video（34/41 工具）"——**已在本轮修正为当前事实**（产品按默认装配含 album/video，66 工具） | 见三份文档 §启用范围 |
 
-> **结论**：产品化的第一步是"确认 68 工具 / 46,541 字符的固定前缀成本是否可接受"（cache 的 icl-lab 54/39,350 可作量级参考）。**方案见 `docs/PRODUCT-SURFACE.md`**：A1 = 产品 `icl` 去 mc-link(17/12,492) → **51/34,101**（cache 数组口径；Σ 口径 34,049，差 52=分隔符）；A2 = sandbox 后再去 editor(3/1,125) → **48/32,924**；**A2+O**（再裁 memory_export/time_edit）→ **45/31,923**，落在 45–50 工具 / 28–32k 目标内。
+> **结论**：产品化的第一步是"确认 68 工具 / 46,766 字符的固定前缀成本是否可接受"（cache 的 icl-lab 54/39,350 可作量级参考）。**方案见 `docs/PRODUCT-SURFACE.md`**：A1 = 产品 `icl` 去 mc-link(17/12,492) → **51/34,326**（cache 数组口径；Σ 口径 34,274，差 52=分隔符）；A2 = sandbox 后再去 editor(3/1,125) → **48/33,149**；**A2+O**（再裁 memory_export/time_edit）→ **45/31,662**，落在 45–50 工具 / 28–32k 目标内。
 
 ## 2. 草案 A：产品 preset patch（`presets/icl.patch.yml`，**不直接应用**）
 
@@ -138,7 +138,7 @@ plugins:
 
 ## 5. 需要用户拍板的清单（按顺序）
 
-1. **工具面预算**：产品接受 68 工具 / **46,541 字符**的固定前缀吗？若不接受，按 `PRODUCT-SURFACE.md` 推荐：A1 = 去 `mc-link`（→ **51/34,101** cache 离线；本地 34,049）；A2 = sandbox 同批下线 `editor`（→ **48/32,924**，字符略超）；**A2+O** = 再裁 `memory_export`+`time_edit`（→ **45/31,923**，达标）。不动 memory/time/album/video 等生活核心。
+1. **工具面预算**：产品接受 68 工具 / **46,766 字符**的固定前缀吗？若不接受，按 `PRODUCT-SURFACE.md` 推荐：A1 = 去 `mc-link`（→ **51/34,326** cache 离线；本地 34,274）；A2 = sandbox 同批下线 `editor`（→ **48/33,149**，字符略超）；**A2+O** = 再裁 `memory_export`+`time_edit`+`time_mute`（→ **45/31,662**，达标）。不动 memory/time/album/video 等生活核心。
 2. **首屏净化**：产品开 4 段 shadow？（推荐先开；仅风险是 deliverable 指引消失。）
 3. **显式插件白名单**：产品写死 15 个（A2：去掉 mc-link/editor，其余同默认）？还是保留 17 个默认全集（无行为变化，68 工具）？
 4. **album 产品启用**：批准隐私边界（私密默认不展示、无自动删、发送需审批）后，产品显式列 `album`（当前默认已生效，显式化不改行为）。
@@ -156,7 +156,7 @@ plugins:
 ## 实施（A1 产品 preset patch，2026-11-06，已落 branch wt/mc-lab，未应用 desktop）
 
 > 状态：**代码/测试已就绪，等 lead 按发布清单应用并重启 desktop**。本实施**未碰 desktop/profile、未重启、未跑 MC**。
-> 目标：产品 `preset-icl` 显式 16 插件白名单（去 mc-link）+ 4 段首屏净化；工具面 **68/46,541 → 51/34,049（cache 数组口径 34,101 / Σ 34,049）**，`systemHasDynamicFacts=false`（facts 仍走 runtime-context）。
+> 目标：产品 `preset-icl` 显式 16 插件白名单（去 mc-link）+ 4 段首屏净化；工具面 **68/46,766 → 51/34,274（cache 数组口径 34,326 / Σ 34,274）**，`systemHasDynamicFacts=false`（facts 仍走 runtime-context）。
 
 ### 实施 1：`packages/dsh-icl/presets/icl.patch.yml`（preset-icl.icl-core.config）
 
@@ -185,15 +185,15 @@ plugins:
   - album
 ```
 
-- 这是 **16 个显式白名单 = DEFAULT 17 − mc-link**；工具面实测 **51 / 34,049 字符**（cache 数组口径 34,101；差 52=分隔符；A1 目标一致）。
-- 与 `PRODUCT-SURFACE` 的"15 插件（A2 去 mc-link/editor）"区分：A1 保留 editor，故 16 个；若用户要 15/A2，再删 `editor` 一行 → 48/32,924（本地；若 +52 差异适用则 32,976）。
+- 这是 **16 个显式白名单 = DEFAULT 17 − mc-link**；工具面实测 **51 / 34,274 字符**（cache 数组口径 34,326；差 52=分隔符；A1 目标一致）。
+- 与 `PRODUCT-SURFACE` 的"15 插件（A2 去 mc-link/editor）"区分：A1 保留 editor，故 16 个；若用户要 15/A2，再删 `editor` 一行 → 48/33,149（本地；若 +52 差异适用则 33,198）。
 - `purifySections` 只 shadow 上述 4 个工程段，不碰 `icl:core` / `icl:facts`；facts 语义不变，仍由 runtime-context 提供（首屏无动态 facts）。
 
 ### 实施 2：测试断言（已绿）
 
 | 文件 | 断言 |
 |---|---|
-| `packages/core/test/product-surface.test.mjs`（新） | YAML 物化后：16 个显式插件、无 mc-link、相对 DEFAULT 只差 mc-link；4 段 purify 且不含 icl:facts/core；bootstrap 后 **51 工具 / 34,049 字符**（本地 Σ 口径；cache 数组口径 34,101，差 52=分隔符）、无 `mcb_*` |
+| `packages/core/test/product-surface.test.mjs`（新） | YAML 物化后：16 个显式插件、无 mc-link、相对 DEFAULT 只差 mc-link；4 段 purify 且不含 icl:facts/core；bootstrap 后 **51 工具 / 34,274 字符**（本地 Σ 口径；cache 数组口径 34,326，差 52=分隔符）、无 `mcb_*` |
 | `packages/core/test/preset-plugins.test.mjs`（改） | 产品 preset 从"允许缺 album/video"改为 **A1 显式 16 插件白名单**；缺项仅 `mc-link` |
 | `packages/core/test/first-screen.test.mjs`（改） | 产品 preset 必须开 4 段净化；不得把 `icl:facts`/`icl:core` 一起 shadow（`systemHasDynamicFacts=false` 的配置前提） |
 
@@ -203,13 +203,13 @@ plugins:
 cd C:\DSH\icl-wt\mc-lab
 node --test packages/core/test/product-surface.test.mjs packages/core/test/preset-plugins.test.mjs packages/core/test/first-screen.test.mjs   # 13/13 pass
 npm test   # 748/748 pass（A1 前 745，+3 新测试）
-node tools/calc-product-surface.mjs  # {"tools":51,"chars":34049,"names":[...]}（Σ 口径；cache 数组口径 34,101）
+node tools/calc-product-surface.mjs  # {"tools":51,"chars":34274,"names":[...]}（Σ 口径；cache 数组口径 34,326）
 node tools/lab.mjs status  # 无 lab；不启动 desktop/profile
 ```
 
 - 物化方式：`yaml.load(icl.patch.yml)` 取 `preset-icl` → `normalizeConfig + bootstrapHost`（只读、no desktop/no lab server）。
 - 首屏字符：lab 实测 5011→2294（`docs/FIRST-SCREEN.md`）；产品侧需重启后用 cache 复核（新会话，不复用旧会话）。
-- 工具面/字符量级：51/34,049（Σ；cache 数组 34,101），无 `mcb_*`；album/video/bili/editor 保留（A1 不砍生活功能）。
+- 工具面/字符量级：51/34,274（Σ；cache 数组 34,326），无 `mcb_*`；album/video/bili/editor 保留（A1 不砍生活功能）。
 
 ### 实施 4：应用与回滚（lead/用户，本任务不执行）
 
@@ -222,7 +222,7 @@ node tools/lab.mjs status  # 无 lab；不启动 desktop/profile
 
 ### 实施 5：风险与未决
 
-- **插件数口径**：A1 = 16 个（保留 editor；cache 数组 51/34,101 / Σ 34,049）；A2 = 15 个（去 editor → 48/32,924），需用户/lead 确认。
+- **插件数口径**：A1 = 16 个（保留 editor；cache 数组 51/34,326 / Σ 34,274）；A2 = 15 个（去 editor → 48/33,149），需用户/lead 确认。
 - MC 从产品生活会话移除：用户要玩 MC 走 `icl-mc` preset（已有）。
 - 首屏 deliverable/file 指引消失；若未来做文件交付，可只保留 `ui:deliverable-file-references`。
 - 产品 album/video 仍在（默认已生效，显式化不改行为）；隐私/发送边界仍按 ALBUM 文档待批准项。
