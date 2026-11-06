@@ -74,7 +74,8 @@ test('账本：活动内 seq 单调、qq_id 去重、水位只进不退、重启
     assert.equal(dup.duplicate, true)
     assert.equal(ledger.markDelivered('qq:private:1', 2), true)
     ledger.markDelivered('qq:private:1', 1)
-    assert.equal(ledger.lastKnown('qq:private:1').attendedSeq, 2, '水位只前进到 2')
+    assert.equal(ledger.lastKnown('qq:private:1').deliveredSeq, 2, '交付高水位到 2')
+    assert.equal(ledger.lastKnown('qq:private:1').attendedSeq, 0, '交付不等于已读（attended 由 mark_read 推进）')
     assert.equal(ledger.markDelivered('qq:private:1', 99), false, '不存在的 seq 不推进')
     assert.equal(ledger.lastKnown('qq:private:1').lastQqId, 'm2')
     ledger.close()
@@ -83,7 +84,7 @@ test('账本：活动内 seq 单调、qq_id 去重、水位只进不退、重启
     assert.equal(ledger.stats().messages, 2)
     assert.equal(ledger.stats().delivered, 2)
     assert.equal(ledger.hasMessage('qq:private:1', 'm1'), true)
-    assert.equal(ledger.lastKnown('qq:private:1').attendedSeq, 2)
+    assert.equal(ledger.lastKnown('qq:private:1').deliveredSeq, 2)
     ledger.close()
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

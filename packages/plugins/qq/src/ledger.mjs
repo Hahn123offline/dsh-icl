@@ -33,6 +33,16 @@ function memoryLedger() {
     }
     return row
   }
+  /** 连续已交付高水位：从 seq=1 起逐条看 deliveredAt，遇到第一条未交付就停（跨过它不安全）。 */
+  const deliveredThrough = (row) => {
+    if (!row) return 0
+    let through = 0
+    for (const message of [...row.rows.values()].sort((a, b) => a.seq - b.seq)) {
+      if (message.seq === through + 1 && message.deliveredAt != null) through = message.seq
+      else if (message.seq > through + 1) break
+    }
+    return through
+  }
   return {
     mode: 'memory',
     append({ activity, qqId = null, signalId = null, at = null, sentAt = null, receivedAt = null, sender = '', text = '', mention = false, media = null }) {
@@ -47,6 +57,7 @@ function memoryLedger() {
         at: Number(at) || null, sentAt: Number(sentAt) || null, receivedAt: Number(receivedAt) || null,
         sender: clip(sender, 200), text: clip(text, MAX_TEXT), mention: mention === true,
         media: media ? JSON.stringify(media) : null, deliveredAt: null, repliedAt: null,
+        blockedReason: null, blockedAt: null,
       }
       row.rows.set(seq, message)
       if (id) row.byQqId.set(id, seq)
@@ -64,8 +75,34 @@ function memoryLedger() {
       const message = row?.rows.get(Number(seq))
       if (!message) return false
       if (message.deliveredAt == null) message.deliveredAt = Date.now()
-      row.attendedSeq = Math.max(row.attendedSeq, Number(seq) || 0)
+      message.blockedReason = null
+      message.blockedAt = null
+      // 只记录"交付"事实，不动 attended：delivered 只代表进了投递队列，不代表模型看过/读过。
       return true
+    },
+    markBlocked(activity, seq, reason = 'blocked', at = Date.now()) {
+      const row = activities.get(String(activity))
+      const message = row?.rows.get(Number(seq))
+      if (!message || message.deliveredAt != null) return false
+      message.blockedReason = clip(reason, 200) || 'blocked'
+      message.blockedAt = Number(at) || Date.now()
+      return true
+    },
+    watermarks(activity) {
+      const row = activities.get(String(activity))
+      if (!row) return { lastSeq: 0, deliveredSeq: 0, attendedSeq: 0, undelivered: 0 }
+      const deliveredSeq = deliveredThrough(row)
+      const lastSeq = row.nextSeq - 1
+      let undelivered = 0
+      for (const message of row.rows.values()) if (message.deliveredAt == null) undelivered += 1
+      return { lastSeq, deliveredSeq, attendedSeq: Math.min(row.attendedSeq, deliveredSeq), undelivered }
+    },
+    /** 未交付的账本行（通常是被 time/focus 拦下）：可见、可解释，但不许被 mark_read 跨过。 */
+    undelivered(activity, { limit = 20 } = {}) {
+      const row = activities.get(String(activity))
+      if (!row) return []
+      return [...row.rows.values()].filter((m) => m.deliveredAt == null).sort((a, b) => a.seq - b.seq)
+        .slice(0, Math.max(1, Math.min(100, Number(limit) || 20))).map((m) => ({ ...m }))
     },
     /** 按 seq 取消息（升序）；beforeSeq 用于"更早的 N 条"。 */
     messages(activity, { afterSeq = 0, beforeSeq = null, limit = 50 } = {}) {
@@ -81,10 +118,21 @@ function memoryLedger() {
     unread(activity, { afterSeq = null, limit = 20 } = {}) {
       const row = activities.get(String(activity))
       if (!row) return { watermark: { attendedSeq: 0, lastSeq: 0 }, messages: [] }
-      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : row.attendedSeq
+      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : Math.min(row.attendedSeq, deliveredThrough(row))
       const messages = [...row.rows.values()].filter((m) => m.seq > after).sort((a, b) => a.seq - b.seq)
         .slice(0, Math.max(1, Math.min(100, Number(limit) || 20))).map((m) => ({ ...m }))
-      return { watermark: { attendedSeq: row.attendedSeq, lastSeq: row.nextSeq - 1, lastAt: row.lastAt }, messages }
+      let undelivered = 0
+      for (const message of row.rows.values()) if (message.deliveredAt == null) undelivered += 1
+      return {
+        watermark: {
+          attendedSeq: Math.min(row.attendedSeq, deliveredThrough(row)),
+          deliveredSeq: deliveredThrough(row),
+          lastSeq: row.nextSeq - 1,
+          undelivered,
+          lastAt: row.lastAt,
+        },
+        messages,
+      }
     },
     markReplied(activity, { throughSeq = null, at = Date.now() } = {}) {
       const row = activities.get(String(activity))
@@ -96,17 +144,19 @@ function memoryLedger() {
       }
       return count
     },
-    /** 手动标记已读：只推进水位（不发送、不标记 replied、不碰投递）。 */
+    /** 手动标记已读：只推进水位（不发送、不标记 replied、不碰投递）。**不许跨过未交付空洞**。 */
     markRead(activity, { throughSeq = null, at = Date.now() } = {}) {
       const row = activities.get(String(activity))
-      if (!row) return { attendedSeq: 0, lastSeq: 0, advanced: 0 }
+      if (!row) return { attendedSeq: 0, deliveredSeq: 0, lastSeq: 0, advanced: 0, clampedToDelivered: false }
       const lastSeq = row.nextSeq - 1
-      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : lastSeq
-      const through = Math.max(0, Math.min(lastSeq, requested))
-      if (through <= row.attendedSeq) return { attendedSeq: row.attendedSeq, lastSeq, advanced: 0 }
-      const advanced = through - row.attendedSeq
+      const deliveredSeq = deliveredThrough(row)
+      const attended = Math.min(row.attendedSeq, deliveredSeq)
+      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Math.max(0, Number(throughSeq)) : deliveredSeq
+      const through = Math.min(deliveredSeq, requested)
+      if (through <= attended) return { attendedSeq: attended, deliveredSeq, lastSeq, advanced: 0, clampedToDelivered: requested > deliveredSeq, requested }
+      const advanced = through - attended
       row.attendedSeq = through
-      return { attendedSeq: row.attendedSeq, lastSeq, advanced }
+      return { attendedSeq: through, deliveredSeq, lastSeq, advanced, clampedToDelivered: requested > deliveredSeq, requested }
     },
     replyState(activity, { messageId = null } = {}) {
       const row = activities.get(String(activity))
@@ -129,13 +179,17 @@ function memoryLedger() {
     },
     lastKnown(activity) {
       const row = activities.get(String(activity))
-      return row ? { lastQqId: row.lastQqId, lastAt: row.lastAt, attendedSeq: row.attendedSeq, lastInAt: row.lastInAt, lastSeq: row.nextSeq - 1 } : null
+      return row ? { lastQqId: row.lastQqId, lastAt: row.lastAt, attendedSeq: Math.min(row.attendedSeq, deliveredThrough(row)), deliveredSeq: deliveredThrough(row), lastInAt: row.lastInAt, lastSeq: row.nextSeq - 1 } : null
     },
     activities() {
       const out = []
       for (const [activity, row] of activities) {
         const rows = [...row.rows.values()]
-        out.push({ activity, total: rows.length, delivered: rows.filter((m) => m.deliveredAt != null).length, attendedSeq: row.attendedSeq, lastAt: row.lastAt, lastQqId: row.lastQqId })
+        out.push({
+          activity, total: rows.length, delivered: rows.filter((m) => m.deliveredAt != null).length,
+          attendedSeq: Math.min(row.attendedSeq, deliveredThrough(row)), deliveredSeq: deliveredThrough(row),
+          lastAt: row.lastAt, lastQqId: row.lastQqId,
+        })
       }
       return out
     },
@@ -152,7 +206,8 @@ function memoryLedger() {
   }
 }
 
-function sqliteLedger(file, log) {  let db
+function sqliteLedger(file, log) {
+  let db
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     db = new DatabaseSync(file)
@@ -171,6 +226,8 @@ function sqliteLedger(file, log) {  let db
         media TEXT,
         delivered_at INTEGER,
         replied_at INTEGER,
+        blocked_reason TEXT,
+        blocked_at INTEGER,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (activity, seq)
       );
@@ -186,8 +243,10 @@ function sqliteLedger(file, log) {  let db
         updated_at INTEGER
       );
     `)
-    // 旧库升级：replied_at 是 P1 加的列；已有库没有就补。
+    // 旧库升级：replied_at（P1）/ blocked_reason、blocked_at（交付水位修复）都是后加的列。
     try { db.exec('ALTER TABLE qq_messages ADD COLUMN replied_at INTEGER') } catch { /* 已存在 */ }
+    try { db.exec('ALTER TABLE qq_messages ADD COLUMN blocked_reason TEXT') } catch { /* 已存在 */ }
+    try { db.exec('ALTER TABLE qq_messages ADD COLUMN blocked_at INTEGER') } catch { /* 已存在 */ }
   } catch (error) {
     try { db?.close() } catch { /* ignore */ }
     log?.({ level: 'warn', msg: 'qq.ledger.open-fail', error: String(error?.message ?? error), file })
@@ -211,17 +270,25 @@ function sqliteLedger(file, log) {  let db
       updated_at = excluded.updated_at
   `)
   const stHas = db.prepare('SELECT 1 AS hit FROM qq_messages WHERE activity = ? AND qq_id = ?')
-  const stDeliver = db.prepare('UPDATE qq_messages SET delivered_at = COALESCE(delivered_at, ?) WHERE activity = ? AND seq = ?')
+  const stDeliver = db.prepare('UPDATE qq_messages SET delivered_at = COALESCE(delivered_at, ?), blocked_reason = NULL, blocked_at = NULL WHERE activity = ? AND seq = ?')
   const stBumpAttended = db.prepare('UPDATE qq_activity SET attended_seq = MAX(attended_seq, ?), updated_at = ? WHERE activity = ?')
+  const stSetAttended = db.prepare('UPDATE qq_activity SET attended_seq = ?, updated_at = ? WHERE activity = ?')
+  const stBlocked = db.prepare('UPDATE qq_messages SET blocked_reason = ?, blocked_at = ? WHERE activity = ? AND seq = ? AND delivered_at IS NULL')
+  const stGap = db.prepare('SELECT MIN(seq) AS gap FROM qq_messages WHERE activity = ? AND delivered_at IS NULL')
+  const stUndeliveredCount = db.prepare('SELECT COUNT(*) AS n FROM qq_messages WHERE activity = ? AND delivered_at IS NULL')
+  const stUndelivered = db.prepare(`
+    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at, blocked_reason, blocked_at
+    FROM qq_messages WHERE activity = ? AND delivered_at IS NULL ORDER BY seq ASC LIMIT ?
+  `)
   const stLast = db.prepare('SELECT last_qq_id, last_at, attended_seq, last_in_at, next_seq FROM qq_activity WHERE activity = ?')
   const stMessages = db.prepare(`
-    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at
+    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at, blocked_reason, blocked_at
     FROM qq_messages
     WHERE activity = ? AND seq > ? AND (? IS NULL OR seq < ?)
     ORDER BY seq ASC LIMIT ?
   `)
   const stUnread = db.prepare(`
-    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at
+    SELECT activity, seq, qq_id, signal_id, at, sent_at, received_at, sender, text, mention, media, delivered_at, replied_at, blocked_reason, blocked_at
     FROM qq_messages
     WHERE activity = ? AND seq > ?
     ORDER BY seq ASC LIMIT ?
@@ -240,8 +307,10 @@ function sqliteLedger(file, log) {  let db
            a.attended_seq,
            a.last_at,
            a.last_qq_id,
+           a.next_seq,
            COUNT(m.seq) AS total,
-           SUM(CASE WHEN m.delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS delivered
+           SUM(CASE WHEN m.delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS delivered,
+           MIN(CASE WHEN m.delivered_at IS NULL THEN m.seq END) AS first_undelivered
     FROM qq_activity a
     LEFT JOIN qq_messages m ON m.activity = a.activity
     GROUP BY a.activity
@@ -269,7 +338,21 @@ function sqliteLedger(file, log) {  let db
       media: row.media == null ? null : row.media,
       deliveredAt: row.delivered_at == null ? null : Number(row.delivered_at),
       repliedAt: row.replied_at == null ? null : Number(row.replied_at),
+      blockedReason: row.blocked_reason == null ? null : String(row.blocked_reason),
+      blockedAt: row.blocked_at == null ? null : Number(row.blocked_at),
     }
+  }
+
+  /** 连续已交付高水位（遇到第一条未交付就停）与未交付数。 */
+  function watermarksOf(key) {
+    const known = stLast.get(key)
+    if (!known) return { lastSeq: 0, deliveredSeq: 0, attendedSeq: 0, undelivered: 0 }
+    const lastSeq = Number(known.next_seq) - 1
+    const gap = stGap.get(key)?.gap
+    const deliveredSeq = gap == null ? lastSeq : Number(gap) - 1
+    const attendedSeq = Math.min(Number(known.attended_seq) || 0, deliveredSeq)
+    const undelivered = Number(stUndeliveredCount.get(key)?.n) || 0
+    return { lastSeq, deliveredSeq, attendedSeq, undelivered }
   }
 
   return {
@@ -299,18 +382,34 @@ function sqliteLedger(file, log) {  let db
       if (!Number.isFinite(n) || n <= 0) return false
       const result = stDeliver.run(Date.now(), key, n)
       if (!result || result.changes === 0) return false
-      stBumpAttended.run(n, Date.now(), key)
       return true
     },
+    markBlocked(activity, seq, reason = 'blocked', at = Date.now()) {
+      const key = String(activity)
+      const n = Number(seq)
+      if (!Number.isFinite(n) || n <= 0) return false
+      const result = stBlocked.run(clip(reason, 200) || 'blocked', Number(at) || Date.now(), key, n)
+      return Boolean(result?.changes)
+    },
+    watermarks(activity) {
+      return watermarksOf(String(activity))
+    },
+    undelivered(activity, { limit = 20 } = {}) {
+      return stUndelivered.all(String(activity), Math.max(1, Math.min(100, Number(limit) || 20))).map(mapMessage)
+    },
     lastKnown(activity) {
-      const row = stLast.get(String(activity))
-      return row ? {
+      const key = String(activity)
+      const row = stLast.get(key)
+      if (!row) return null
+      const watermark = watermarksOf(key)
+      return {
         lastQqId: row.last_qq_id == null ? null : String(row.last_qq_id),
         lastAt: row.last_at == null ? null : Number(row.last_at),
-        attendedSeq: Number(row.attended_seq) || 0,
+        attendedSeq: watermark.attendedSeq,
+        deliveredSeq: watermark.deliveredSeq,
         lastInAt: row.last_in_at == null ? null : Number(row.last_in_at),
-        lastSeq: Number(row.next_seq) - 1,
-      } : null
+        lastSeq: watermark.lastSeq,
+      }
     },
     messages(activity, { afterSeq = 0, beforeSeq = null, limit = 50 } = {}) {
       const rows = stMessages.all(String(activity), Number(afterSeq) || 0, beforeSeq == null ? null : Number(beforeSeq), beforeSeq == null ? null : Number(beforeSeq), Math.max(1, Math.min(200, Number(limit) || 50)))
@@ -318,12 +417,18 @@ function sqliteLedger(file, log) {  let db
     },
     unread(activity, { afterSeq = null, limit = 20 } = {}) {
       const key = String(activity)
-      const known = stLast.get(key)
-      const attended = Number(known?.attended_seq) || 0
-      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : attended
+      const watermark = watermarksOf(key)
+      const after = afterSeq != null && Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : watermark.attendedSeq
       const rows = stUnread.all(key, after, Math.max(1, Math.min(100, Number(limit) || 20)))
+      const known = stLast.get(key)
       return {
-        watermark: { attendedSeq: attended, lastSeq: Number(known?.next_seq ?? 1) - 1, lastAt: known?.last_at == null ? null : Number(known.last_at) },
+        watermark: {
+          attendedSeq: watermark.attendedSeq,
+          deliveredSeq: watermark.deliveredSeq,
+          lastSeq: watermark.lastSeq,
+          undelivered: watermark.undelivered,
+          lastAt: known?.last_at == null ? null : Number(known.last_at),
+        },
         messages: rows.map(mapMessage),
       }
     },
@@ -337,14 +442,15 @@ function sqliteLedger(file, log) {  let db
     markRead(activity, { throughSeq = null, at = Date.now() } = {}) {
       const key = String(activity)
       const known = stLast.get(key)
-      if (!known) return { attendedSeq: 0, lastSeq: 0, advanced: 0 }
-      const lastSeq = Number(known.next_seq) - 1
-      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Number(throughSeq) : lastSeq
-      const through = Math.max(0, Math.min(lastSeq, requested))
-      const before = Number(known.attended_seq) || 0
-      if (through <= before) return { attendedSeq: before, lastSeq, advanced: 0 }
+      if (!known) return { attendedSeq: 0, deliveredSeq: 0, lastSeq: 0, advanced: 0, clampedToDelivered: false }
+      const watermark = watermarksOf(key)
+      const requested = throughSeq != null && Number.isFinite(Number(throughSeq)) ? Math.max(0, Number(throughSeq)) : watermark.deliveredSeq
+      const through = Math.min(watermark.deliveredSeq, requested)
+      if (through <= watermark.attendedSeq) {
+        return { attendedSeq: watermark.attendedSeq, deliveredSeq: watermark.deliveredSeq, lastSeq: watermark.lastSeq, advanced: 0, clampedToDelivered: requested > watermark.deliveredSeq, requested }
+      }
       stBumpAttended.run(through, at, key)
-      return { attendedSeq: through, lastSeq, advanced: through - before }
+      return { attendedSeq: through, deliveredSeq: watermark.deliveredSeq, lastSeq: watermark.lastSeq, advanced: through - watermark.attendedSeq, clampedToDelivered: requested > watermark.deliveredSeq, requested }
     },
     replyState(activity, { messageId = null } = {}) {
       const key = String(activity)
@@ -366,14 +472,19 @@ function sqliteLedger(file, log) {  let db
       }
     },
     activities() {
-      return stActivities.all().map((row) => ({
-        activity: String(row.activity),
-        total: Number(row.total) || 0,
-        delivered: Number(row.delivered) || 0,
-        attendedSeq: Number(row.attended_seq) || 0,
-        lastAt: row.last_at == null ? null : Number(row.last_at),
-        lastQqId: row.last_qq_id == null ? null : String(row.last_qq_id),
-      }))
+      return stActivities.all().map((row) => {
+        const lastSeq = Number(row.next_seq) - 1
+        const deliveredSeq = row.first_undelivered == null ? lastSeq : Number(row.first_undelivered) - 1
+        return {
+          activity: String(row.activity),
+          total: Number(row.total) || 0,
+          delivered: Number(row.delivered) || 0,
+          attendedSeq: Math.min(Number(row.attended_seq) || 0, deliveredSeq),
+          deliveredSeq,
+          lastAt: row.last_at == null ? null : Number(row.last_at),
+          lastQqId: row.last_qq_id == null ? null : String(row.last_qq_id),
+        }
+      })
     },
     stats() {
       const row = stStats.get() ?? {}

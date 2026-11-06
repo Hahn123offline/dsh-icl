@@ -23,7 +23,7 @@
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
 | 给用户的一页说明（申请时间窗直接贴） | ✅ `preflight --brief` + 静态快照 | `docs/QQ-SHADOW-USER-BRIEF.md` |
-| 全量测试 | ✅ 739 pass | `npm test` |
+| 全量测试 | ✅ 760 tests（759 pass / 1 skip） | `npm test` |
 | **P0-3 出站人类化（markdown/多气泡/节奏/切分）** | ✅ 已实现（fake 9 纯函数 + 7 集成测试） | `src/humanize.mjs`、`packages/core/test/qq-humanize.test.mjs` |
 | **P0-1 账本/水位 + 断线补课** | ✅ 已实现（fake 契约 6 条）；真机 `get_friend_msg_history` 待用户在场 | `src/{ledger,backfill,onebot-http}.mjs`、`packages/core/test/qq-backfill.test.mjs` |
 | **P0-2 入站富内容（纯函数层）** | ✅ 已实现（fake 11 条） | `src/{rich,reply-cache,forward,media}.mjs`、`packages/core/test/qq-rich.test.mjs` |
@@ -35,6 +35,8 @@
 | **P1 唤醒矩阵（replyCheck/proactive/nudge，只生成 signal）** | ✅ 已实现（默认 proactive 关；预算/去重/冷却；`qq_status.wake`） | §7.9、`wake.mjs`、`qq-wake.test.mjs` |
 | **P1 `qq_mark_read`（只推本地水位，不发消息）** | ✅ 已实现（只私聊账本；不改已回/不碰投递） | §7.7、`qq-ledger-tools.test.mjs` |
 | **P1 表情知识库（tags/描述/来源/使用次数）** | ✅ 已实现（本地 `library.json`；不下载/不上传；`qq_sticker_note`） | §7.8、`sticker-store.mjs`、`qq-stickers.test.mjs` |
+| **P0 消息不丢：未交付水位（2026-11-06）** | ✅ 已修（delivered/attended 分离；mark_read 不跨未交付；三数可见；被拦原因） | §7.7、`ledger.mjs`、`qq-watermark.test.mjs` |
+| **P1 唤醒正文"醒来第一眼"快照** | ✅ 已实现（oldest-first、≤12 条/6000 字、partial+readThroughSeq） | §7.9、`wake-snapshot.mjs`、`qq-wake.test.mjs` |
 | **红队修复：私聊默认 ambient（不再自动 mention/pierce）** | ✅ 已修复；@ 才穿；admin/alarm 由其它来源显式授予 | `src/normalize.mjs`、`qq-rich.test.mjs`、本文 §3.3/§5/§6 |
 | **F1/F3 QQ 策略进 sim（按需，不进静态 system）** | ✅ `qq_help` 工具 + `skills/reply.md`；qq_status/qq_send 描述承载边界 | §7.5、`src/index.mjs`、`skills/reply.md` |
 | **A2/B1/B2 说话人信封（QQ 部分）** | ✅ 正文前缀 + `meta.qq.envelope`；bridge 侧剩余项见 §7.5 | `src/index.mjs`、`qq-envelope.test.mjs` |
@@ -397,17 +399,18 @@ WS 断线（connector 记下 disconnectedAt/downtime）
         │     get_friend_msg_history {user_id, count}  ← fake 已定契约，真机待验
         │     过滤：账本已有 qq_id / 自己发的 / 早于水位 2s 以上 / 超 maxBackfillAgeMs
         │     命中 → 同一 signal.id 走 gate（backfilled:true）→ signals.offer
-        ├─ 水位：只在 signals.offer 被接受（或 signals 幂等去重）后前进；
-        │         被 time/focus 拦下不前进（等重放，signal id 复用）
+        ├─ 水位：delivered 只在 signals.offer 被接受（或幂等去重）后前进；
+        │         被 time/focus 拦下 = 未交付；attended（已读）只由 qq_mark_read 推进且不能跨过未交付
         └─ gap 可见：reconnects / lastDowntimeMs / backfillRuns / filled / dropped / failed / unsupported
              qq_status 文本 + status.json 的 `gap`、`ledger` 字段
 ```
 
 关键约定：
 
-- **账本字段**（`src/ledger.mjs`）：`activity,seq,qq_id,signal_id,at,sent_at,received_at,sender,text(≤1000),mention,media,delivered_at`；`(activity,seq)` 主键、`(activity,qq_id)` 唯一；每活动 `next_seq/attended_seq/last_qq_id/last_at`。
+- **账本字段**（`src/ledger.mjs`）：`activity,seq,qq_id,signal_id,at,sent_at,received_at,sender,text(≤1000),mention,media,delivered_at,replied_at,blocked_reason,blocked_at`；`(activity,seq)` 主键、`(activity,qq_id)` 唯一；每活动 `next_seq/attended_seq/last_qq_id/last_at`。
 - **seq 是插件内部单调序号**（不是 QQ `message_seq`；私聊历史接口不一定给 `message_seq`）。signal id 仍由 `message_id` 决定：`qq:private:<qq>:<message_id>`。
-- **水位边界**：插件能看到的"投递成功" = `signals.offer` 接受（进入 delivery 队列且未被 time/focus 拦下）。bridge 的 ack 在 `dsh-icl`，插件拿不到回调；因此 `ledger.delivered` 不能说成"用户已看到"。
+- **水位边界**：delivered = `signals.offer` 接受（进入 delivery 队列且未被 time/focus 拦下）的**连续**高水位；bridge 的 ack 在 `dsh-icl`，插件拿不到回调，所以 delivered 不等于"模型/用户看过"（seen 不可知）。
+  attended = 已读水位，只由 `qq_mark_read` 推进，且不能跨过未交付消息；未交付行记 `blocked_reason` 并在 `qq_unread` 里可见。
 - **补课标记**：signal 的 `tags` 加 `backfill`、`meta.qq.backfilled=true`、正文前缀 `[补课] `，模型能知道"这条不是刚发生的"。
 - **已读策略**：P0 **不调用** `mark_msg_as_read` / `mark_private_msg_as_read`（会把已读同步到用户自己的 QQ，属产品决定）；P1 的 `qq_mark_read` 再显式做。
 - **私聊历史语义待真机**：SnowLuma 文档只说 `get_friend_msg_history` "无锚点时从服务器获取最新双向记录"，不一定支持任意锚点；实现用本地水位 + id 双判兜底，真机若确认不支持 → 只保留 gap 可见性，不假装连续。
@@ -504,22 +507,26 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
    若要在正文里显式标“这条曾在专注时被拦”，需要 bridge/focus 在重放/摘要时补标记（跨模块项）。
 3. **状态提示**：`qq_status` 已经有最近一条/回执/gap；若要在提示词里给“有人找你”一行，属于 runtime-context 改动（同上）。
 
-### 7.7 P1 账本工具：qq_unread / qq_history / qq_replied
+### 7.7 P1 账本工具：qq_unread / qq_history / qq_replied / qq_mark_read
 
-三个工具都**只读账本**（不网络、不改状态），与 §7.3 的 SQLite 账本/补课共用同一份事实：
+四个工具都只操作**本地账本**（不网络；`qq_unread/history/replied` 只读，`qq_mark_read` 只推进本地水位），
+与 §7.3 的 SQLite 账本/补课共用同一份事实：
 
 | 工具 | 参数 | 返回/语义 |
 |---|---|---|
-| `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：所有有记录的私聊（水位/最后/未读约数）；填 peer：水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]` 等标记）。 |
+| `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：各私聊 `lastSeq / deliveredSeq / attendedSeq` + 未读/未交付约数；填 peer：三个水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]`；未交付行尾标 `[未交付·被拦：原因]`）。 |
 | `qq_history` | `peer?`, `afterSeq?`, `beforeSeq?`, `limit?` | 按 seq 补看历史（升序）；不填 peer 用最近一个私聊。补课消息正文自带 `[补课]`。 |
 | `qq_replied` | `peer?`, `messageId?` | 填 messageId：该条是否已回 + seq/时间；不填：最后 seq、已回到哪、未回条数。 |
-| `qq_mark_read` | `peer?`, `throughSeq?` | 手动把水位推进到某条（不填=最后一条；超过 lastSeq 自动夹住）。只改本地水位，**不发消息、不自动回复、不标记已回**；返回推进量/剩余未读。 |
+| `qq_mark_read` | `peer?`, `throughSeq?` | 只把**已读水位**推进到"连续已交付高水位"（不填=deliveredSeq；超过部分夹住），**绝不跨过未交付消息**。不发消息、不自动回复、不标记已回。 |
 
-**水位/已回口径（必须写清）**：
-- 水位 = `signals.offer` 被接受（进投递队列、未被 time/focus 拦下）；被拦下的仍在水位之后。插件看不到 focus defer/bridge ack，所以"未读"不等于"用户没看到"。
-- 已回 = **成功发出** QQ 回复时，把"发送前账本里的所有消息"标为已回（quoted reply 至少标到被引用那条的 seq）；
-  发送失败/unknown/被拒绝不会标记。`qq_replied` 只反映这个账本事实，不是送达回执。
-- 已读 = 手动 `qq_mark_read` 才推进水位；它**不会**自动发消息/不会把消息标成已回。`qq_unread` 的未读条数就是"水位之后、还没被处理"的账本口径。
+**三个数必须分开（delivered ≠ seen ≠ attended）**：
+- `lastSeq`：账本最后一条（可能包含被拦下、从未交付的）。
+- `deliveredSeq`：从 seq=1 起**连续**已交付的高水位（`markDelivered` 只记 `delivered_at`；遇到第一条未交付就停）。
+  被 time/focus 拦下的消息 `delivered_at=null`，不会算进 delivered。**delivered 只代表进了投递队列，不代表模型看过（seen 插件不可知）。**
+- `attendedSeq`：**已读水位**，只由 `qq_mark_read` 推进，且上界是 `deliveredSeq`。未交付的消息永远不会被 mark_read 标掉，
+  所以 `qq_unread`/nudge 会一直看到它们（消息不丢）。
+- `qq_mark_read` 不自动发消息/不标记已回。`qq_replied` 的"已回"仍只在**成功发送**后标（quoted reply 至少标到被引用 seq）。
+- 被拦下的行记 `blocked_reason/blocked_at`（来自 time/focus 拒绝原因，若可得）；`qq_status.stats.blockedReasons` 汇总原因。
 - 补课消息与普通消息同一套账本；`qq_history` 里能看到 `[补课]` 标记。
 
 ### 7.8 P1 表情包：本地库列表 + 发送本地图片 + 知识库
@@ -552,7 +559,14 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - 正文明确写"[QQ主动检查]/[QQ主动提醒]/[QQ积压提醒]…（这不是对方发来的消息）"，**不会伪装成用户消息**；
   结构化字段 `meta.qq.wake = {kind, reason, unread?}`；`qq_status.wake` 暴露配置/已发/预算跳过/本小时次数。
 - `wakeEnabled` 总开关（默认 true）；`proactiveEnabled` 默认 false（不主动打扰，用户可显式开）。
-- 与 `qq_mark_read` 的关系：mark_read 推进水位后，下一次 poll 的 `unreadCount=0` → 不再 nudge。
+- **正文带"醒来第一眼"快照**（`src/wake-snapshot.mjs`）：把该私聊未读行按 **oldest-first** 压成 ≤12 条/≤6000 字，
+  每行 `· #seq 发送者：正文`（去掉重复的 `[QQ私聊…]` 信封）；超预算标 `partial` 并给 `readThroughSeq`，
+  正文提示"先看到 #N，后面还有"；`meta.qq.wake.snapshot={included,partial,readThroughSeq}`。
+- 每个 wake 首句是生活化原因（"刚回过想确认接没接话"/"安静了一阵刚好有空"/"离开这会儿又攒了消息"）+ **"这不是对方新消息"**，
+  避免模型把提醒当成用户新说话。
+- 人格提示（按需 `qq_help` skill，不占静态 system）：加了"别习惯性潜水"和"反 AI 味/客服腔"两行。
+- 与 `qq_mark_read` 的关系：mark_read 推进已读水位（不能跨未交付）后，下一次 poll 的 `unreadCount` 减少/归零 → nudge 停止；
+  未交付消息会一直留在快照/提醒里，直到真正交付。
 
 ## 8. 权限与开关
 
@@ -873,7 +887,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 ### 13.1 自动化测试
 
 ```powershell
-node --test packages/core/test packages/mc-body/test   # 739 pass / 0 fail
+node --test packages/core/test packages/mc-body/test   # 760 tests（759 pass / 1 skip）
 node --test packages/core/test/qq.test.mjs             # 19 pass
 node --test packages/core/test/qq-send.test.mjs        # 18 pass（phase 1 出站 + P0-3 人类化集成）
 node --test packages/core/test/qq-humanize.test.mjs    # 9 pass（纯函数：md/切分/节奏/计划）
@@ -1052,8 +1066,9 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 
 ### 13.11 P1 账本工具 / 引用回复 / 表情包（fake 已验证）
 
-- `qq-ledger-tools.test.mjs` → **6 pass**：SQLite 账本 `messages/unread/markReplied/replyState/markRead` 与重启保留；
-  `qq_unread`（水位/汇总/afterSeq）、`qq_history`（分段补看）、`qq_replied`（单条与聚合）、`qq_mark_read`（只推水位/不发消息/不改已回）；
+- `qq-ledger-tools.test.mjs` → **7 pass**：SQLite 账本 `messages/unread/markReplied/replyState/markRead` 与重启保留；
+  delivered/attended 分离、未交付空洞不能跨过（第 7 条）；`qq_unread`（三水位/汇总/afterSeq）、`qq_history`（分段补看）、
+  `qq_replied`（单条与聚合）、`qq_mark_read`（只推已读/不发消息/不改已回）；
   引用回复：`reply` 段 + messageId、审计 `replyTo`、成功发送后账本标记已回；不在账本里的 id / 多气泡带引用都拒绝且零帧。
 - `qq-stickers.test.mjs` → **6 pass**：列表（扩展名/普通文件/query/sort）、发送本地 PNG（`base64://` 段、无本地路径/字节进审计）、
   路径穿越/目录/坏格式/超大/不存在拒绝、非白名单目标拒绝、与文字发送共享限速/每轮；
@@ -1062,13 +1077,23 @@ typing 档位、planBurst 各模式与上限、frequency gate）。
 
 ### 13.12 P1 唤醒矩阵 + 离线媒体契约（2026-11-06）
 
-- `qq-wake.test.mjs` → **6 pass**：
+- `qq-wake.test.mjs` → **8 pass**：
   - 规划器（假时钟）：replyCheck 到点只一次、新 inbound 取消；proactive 空闲+概率+冷却；nudge 未读变化/冷却；
     小时预算超了跳过并计数。
+  - 快照纯函数：oldest-first、≤12 条/6000 字、partial + readThroughSeq、去重复信封；集成 nudge 正文带"醒来第一眼"。
   - 集成：`qq_send` 后生成 `[QQ主动检查]`（不是用户消息）、新 inbound 取消未发检查、proactive 默认关/开启后生成 `[QQ主动提醒]`。
 - `qq-media.test.mjs` → **9 pass**：新增"本地样例 PNG/MP4 文件读字节→落盘/index、无 `.part-*` 残留"离线契约；
   以及媒体策略默认（不自动删/不进 album/512MiB/软上限只告警）。
 - 全部提醒都走 `ctx.signals.offer`，测试从 delivery 侧看到的是 time/focus 允许后的结果；插件没有直接 `delivery.push`。
+
+### 13.13 P0 消息不丢：未交付水位（2026-11-06）
+
+- `qq-watermark.test.mjs` → **1 pass**：time 静音下 3 条私聊 → `deliveredSeq=0, attendedSeq=0, lastSeq=3`；
+  `qq_mark_read {throughSeq:3}` 只推进到 0（拒绝跨未交付）、正文给"未交付 3 条/不会被标掉"；
+  `qq_unread` 三条仍可见（行尾 `[未交付·被拦：…]`）；`qq_status.ledger.watermarks` 三数齐全；
+  nudge 仍尝试提醒（提醒 signal 也被 time 拦，但规划器计数增加）。
+- `qq-ledger-tools.test.mjs` 第 7 条用 SQLite 单测证明 `deliveredSeq` 连续语义与 markRead 夹取。
+- 契约：**delivered ≠ seen ≠ attended**；未交付 = 被 time/focus 拦下、`delivered_at IS NULL`，只能等待真正交付，不能被 mark_read 清掉。
 
 ## 14. 参考文件（只读；**不修改旧仓库**）
 
