@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "savedAt": 1793948866446,
+  "home": null,
+  "tasks": [
+    {
+      "id": "t-1",
+      "idempotencyKey": null,
+      "kind": "collect",
+      "params": {
+        "item": "oak_log",
+        "count": 8,
+        "radius": 24
+      },
+      "state": "done",
+      "progress": {
+        "done": 8,
+        "total": 8,
+        "block": "oak_log",
+        "tool": null,
+        "autoTool": false,
+        "net": 8
+      },
+      "createdAt": 1793948747560,
+      "startedAt": 1793948747561,
+      "finishedAt": 1793948866446,
+      "deadlineAt": 1793949347561,
+      "deadlineMs": 600000,
+      "remainingMs": null,
+      "result": {
+        "collected": 8,
+        "net": 8,
+        "item": "oak_log",
+        "block": "oak_log",
+        "requested": 8,
+        "radius": 36,
+        "source": {
+          "mined": 8,
+          "net": 8,
+          "requested": 8,
+          "item": "oak_log",
+          "reason": "net-target"
+        },
+        "returned": null,
+        "deposited": null
+      },
+      "error": null,
+      "outcomeUnknown": false,
+      "pausedReason": null,
+      "pausedAt": null,
+      "cancelReason": null,
+      "interruptReason": null,
+      "timedOut": false,
+      "pausedByDisconnect": false
+    }
+  ]
+}

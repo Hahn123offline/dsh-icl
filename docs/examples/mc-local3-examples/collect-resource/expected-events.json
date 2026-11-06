@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "taskAssertions": [
+    {
+      "taskId": "t-1",
+      "kind": "collect",
+      "terminal": "done",
+      "error": null,
+      "result": {
+        "require": [
+          "collected",
+          "net",
+          "item"
+        ],
+        "collected": 8,
+        "net": 8,
+        "item": "oak_log"
+      },
+      "events": [
+        "task_queued",
+        "task_started",
+        "macro_done",
+        "task_done"
+      ]
+    }
+  ],
+  "eventAssertions": [
+    {
+      "type": "macro_done",
+      "where": {
+        "kind": "collect"
+      },
+      "min": 1
+    }
+  ],
+  "forbidden": [],
+  "note": "success fixture; result.source is recorded but not asserted here"
+}
