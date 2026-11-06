@@ -532,13 +532,23 @@ node tools/cache-probe.mjs diff --run cache-bf2
 8. **QQ 图片通道（2026-11-06，dsh-icl bridge；本节不改上面任何数字，待 cache 复测）**
    - 改动面：只改**投递消息 content**。QQ 图片字节随 delivery `batch.images` 到 bridge，bridge 用
      `ctx.attachments.saveImages` 换 `ImageAttachmentRef`，消息 content 变成 `[{type:'text'}, {type:'image', attachment}]`；
-     正文仍只有文字，不写 URL/base64。
+     正文仍只有文字，不写 URL/base64。无 images 时 content 仍与旧完全同形。
    - **未新增/修改 `prompt.section` 或 facts 快照**；静态 system / facts runtime-context / ≤1 快照/轮的布局语义不变。
-   - 时序：只有在 batch 带图片时 `tick` 才 async（`await saveImages`）；纯文字批次仍走原同步路径。
+   - 时序：`tick` 本身是 async，但纯文字批次不 await 任何东西；带图批次才 `await saveImages`，且用 busy guard 保证
+     上一批未完成时下一 tick 跳过（不并发 drain，批量顺序稳定）。
    - 失败降级：attachment 服务缺失/`saveImages` 抛错时，只在该条投递正文追加一行提示（含本地媒体路径），
-     消息照常 steer/ack；不改 gate/focus/time 行为，也不碰 system/facts。
-   - 自检：`npm test` 全绿（含 dsh-bridge 32 条）；layout 审计脚本未跑（本轮无 lab）；若 cache 复测需要，
+     消息照常 steer/ack；不改 gate/focus/time 行为，也不碰 system/facts。图片-only 消息补 `（图片）` 占位正文。
+   - 自检：`npm test` 全绿（含 dsh-bridge 36 条）；layout 审计脚本未跑（本轮无 lab）；若 cache 复测需要，
      可用 `tools/cache-layout-audit.mjs` 对比改前/改后 run，预期 system append/replace、tools hash、facts sections 均不变。
+   - **缓存风险（cache 评审 2026-11-06）**：
+     ① 图片块本身在历史里是 append-only、渲染稳定 → 前缀安全；纯文本路由（如 deepseek-flash）会把图片在
+     **请求装配期**投影成文字占位（不写历史）→ 同样安全；
+     ② 但 DSH 的 `compaction-image-offload` 在 provider 返回 `IMAGE_OFFLOAD_REQUIRED`（图片导致超窗）时，会把最老图片
+     **durable 地投影成 `offloaded:true`**（`image/offload`、改 surface 投影）→ **一次性的历史改写，使被改消息之后的前缀失效**
+     （之后重新稳定）。与 `tool-result-pruner` 同类，属"第二股历史重写源"；图片通道第一次让它可达。
+     缓解：入站图片限数量/字节（QQ 默认 ≤3 张/≤8MB，bridge 再按 `imageLimits` 预检），避免一条消息塞太多图触发 offload。
+   - 预检边界：`store.imageLimits` 预检覆盖张数/单张字节/合计字节/类型；像素/尺寸仍由 `saveImages` 校验，
+     失败时该批图片整体降级为文字（不写历史、不影响系统/事实段）。
 
 ---
 

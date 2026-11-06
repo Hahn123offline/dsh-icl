@@ -384,13 +384,17 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         report('attachments.inject', error)
       }
     }
-    return null
+    // inject 可能是同步回调：这里必须再取一次，不能无条件 null（否则启动后第一张图必被降级）。
+    const store = state.attachments ?? ctx.attachments
+    return store?.saveImages ? store : null
   }
 
   /**
    * 图片通道（QQ 等入站附件）：
    *   · batch.images 里是插件给来的字节描述符（data/mediaType/name/path），
    *     这里换成 DSH ImageAttachmentRef → content 里的 image block；正文不写 URL/base64。
+   *   · 先用 store.imageLimits 预检（张数/单张字节/合计字节/类型）；超限的跳过并提示，
+   *     避免把"绕过 admission"的无限图片塞进上下文（DSH 的像素/尺寸最终由 saveImages 校验）。
    *   · attachment 不可用/保存失败：消息照常投递，正文追加一行降级提示（带本地媒体路径，可用 read_image），
    *     **不丢消息**，也绝不把字节塞进正文。
    */
@@ -402,12 +406,37 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     if (descriptors.length) {
       const store = attachmentsService()
       if (store) {
+        let candidates = descriptors
+        let skipped = 0
+        const limits = store.imageLimits && typeof store.imageLimits === 'object' ? store.imageLimits : null
+        if (limits) {
+          const mediaTypes = Array.isArray(limits.mediaTypes) && limits.mediaTypes.length ? new Set(limits.mediaTypes.map(String)) : null
+          const maxCount = Number(limits.maxImagesPerMessage) || Number.POSITIVE_INFINITY
+          const maxBytes = Number(limits.maxImageBytes) || Number.POSITIVE_INFINITY
+          const maxTotal = Number(limits.maxMessageImageBytes) || Number.POSITIVE_INFINITY
+          let total = 0
+          const kept = []
+          for (const img of candidates) {
+            const bytes = Number(img.data?.byteLength ?? img.data?.length ?? 0)
+            if (kept.length >= maxCount || (mediaTypes && !mediaTypes.has(String(img.mediaType)))
+              || bytes > maxBytes || total + bytes > maxTotal) {
+              skipped += 1
+              continue
+            }
+            total += bytes
+            kept.push(img)
+          }
+          candidates = kept
+        }
+        if (skipped > 0) fallback.push(`（${skipped} 张图片超过附件上限，已跳过）`)
         try {
-          const saved = await store.saveImages(descriptors.map((img) => ({
-            data: img.data instanceof Uint8Array ? img.data : new Uint8Array(img.data),
-            mediaType: String(img.mediaType),
-            ...(img.name ? { name: String(img.name) } : {}),
-          })))
+          const saved = candidates.length
+            ? await store.saveImages(candidates.map((img) => ({
+              data: img.data instanceof Uint8Array ? img.data : new Uint8Array(img.data),
+              mediaType: String(img.mediaType),
+              ...(img.name ? { name: String(img.name) } : {}),
+            })))
+            : []
           for (const ref of Array.isArray(saved) ? saved : []) {
             if (ref && typeof ref === 'object') refs.push(ref)
           }
@@ -421,14 +450,17 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         fallback.push(`（${descriptors.length} 张图片未能显示：当前会话没有 attachment 服务${disk.length ? `；本地文件：${disk.join('、')}` : ''}）`)
       }
     }
-    const fullText = fallback.length ? `${text}\n${fallback.join('\n')}` : text
+    // 纯图片消息：正文不能为空（否则 summary/模型侧只有空 text + image）。
+    let fullText = String(text ?? '')
+    if (!fullText && (refs.length || descriptors.length)) fullText = '（图片）'
+    if (fallback.length) fullText = fullText ? `${fullText}\n${fallback.join('\n')}` : fallback.join('\n')
     const plugin = String(batch?.entries?.[0]?.source?.plugin ?? 'icl').replace(/[^a-z0-9:_-]/gi, '') || 'icl'
     return toDshUserMessage(fullText, {
       id: `icl-notice-${batch.id}-${randomUUID()}`,
       source: {
         kind: `plugin:${plugin}`,
         form: 'notice',
-        summary: `${pluginLabel(plugin)}：${text.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
+        summary: `${pluginLabel(plugin)}：${fullText.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
       },
       images: refs,
     })
