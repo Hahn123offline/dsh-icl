@@ -177,17 +177,95 @@ node tools/bili-eval.mjs --offline
 
 ## 9. 还没做（按优先级）
 
-1. **ASR 配置入口**：storyboard 的 ASR 依赖它自己的配置；ICL 侧还没有"给这个视频转写"的一等入口。
-   现在靠字幕轨或 `transcriptFile`；没有字幕的本地视频 `video_locate` 会返回 `E_NO_TRANSCRIPT`。
+1. **ASR 配置入口**：设计见 §11（8088 的 `whisper-asr` 可行），但**还没接线**；现在靠字幕轨或 `transcriptFile`，
+   没有字幕的本地视频 `video_locate` 会返回 `E_NO_TRANSCRIPT`。
 2. **MC 录屏/截图落盘约定**：接口已按"绝对路径"预留，录制端还没实现。
 3. **album 元数据索引**：见 §7。
 4. **批量/长片**：storyboard CLI 有 `--batch`（按窗口切、写 `-timeline.md`），ICL 工具层暂未暴露；
    长片现在靠 `from/to` 分段调用。
-5. **QQ 入站图片**：qq 侧接上 attachment 通道后，人像/截图可以和视频共用同一套"看图"能力。
+5. ~~**QQ 入站图片**~~：qq 侧已接 `ctx.attachments.saveImages → ImageBlock`，和本插件的工具结果入口独立共存（见 §7）。
 
 ---
 
-## 10. 与 B 站插件的分界（速查）
+## 10. storyboard cookies 续期 runbook（2026-12-01 前）
+
+> 适用：`bili_frames`（B 站切帧兜底）与 DSH 原生 `video_storyboard`/`video_zoom` 拉网络链接时。
+> 本地文件（`video_*`）不需要 cookies。整份 runbook 只读写本机文件，**不碰 B 站账号写接口**。
+
+**现在是什么状态**
+- storyboard 的登录态来自 `~/.dsh/video.json` 的 `cookies` 字段 → 一份 Netscape 格式的 `cookies.txt`
+  （由用户/浏览器扩展导出，不是任何插件生成/续期的）。
+- 实测四条鉴权 cookie（SESSDATA / bili_jct / buvid3 / DedeUserID）到期 **2026-12-01 前后**；
+  `node tools/bili-eval.mjs --offline` 会打印到期日（只读到到期列，**不打印任何 cookie 值**）。
+
+**续期步骤**
+1. 浏览器登录 `bilibili.com`（要登录态），用 cookie 导出扩展（如 "Get cookies.txt LOCALLY"）导出
+   **Netscape 格式**的 `cookies.txt`，覆盖 `~/.dsh/video.json` 里 `cookies` 指向的那个文件。
+   - 不要用 `--cookies-from-browser`：Chromium 127+ 的 App-Bound 加密 yt-dlp 读不到
+     （storyboard `src/fetch.js` 的注释里写了同样的结论）。
+2. 确认 `~/.dsh/video.json` 形如 `{ "cookies": "<cookies.txt 的绝对路径>" }`。
+   - 桌面版 DSH 读不到用户 `setx` 的环境变量，所以要用**文件**而不是 `DSH_VIDEO_COOKIES`（storyboard 的设计注释）。
+3. 验证（不花图片 token）：
+   ```bash
+   node "C:\Users\<you>\.dsh\profiles\desktop\node_modules\dsh-video-storyboard\bin\storyboard.mjs" \
+     "https://www.bilibili.com/video/BV1dC4y117Rz" --from 0 --to 5 --out tmp.png --manifest tmp.json
+   ```
+   看 stderr：`auth=cookies, source max 1080p` = 成功；`auth=anonymous` = 没读到 cookies。
+4. 每月/大版本前重复 3；`bili-eval --offline` 的 `storyboard cookies（切帧画质）` 行会给出到期日。
+
+**过期/缺失时会发生什么（现在会明说，不再悄悄变糊）**
+- storyboard 会**匿名降级**：最高 480P，1080P 可能根本不在格式列表里；`--allow-anonymous` 会把它的警告也吞掉。
+- `bili_frames` 已做两层提示：① 调用前读 cookie 到期列，缺失/已过期/7 天内到期 → 文本顶部写
+  "⚠️ …会糊…续期见 docs/VIDEO-EYES.md §11"；② 从 CLI stderr 识别 `auth=anonymous` 再补一条"本次实际匿名拉流"。
+- 原生 `video_storyboard` 不经过 ICL 包装，仍以它自己的 `auth=anonymous` 警告/manifest 为准。
+
+**安全**：cookies.txt 是账号凭证；不要提交进仓库、不要贴日志、不要在工具输出里打印值（这条的代码实现见
+`packages/plugins/bili/src/runtime.mjs` 的 `readStoryboardAuth`，只返回到期时间）。
+
+---
+
+## 11. ASR（whisper-asr @ 8088）接 `video_locate` 的可行性设计
+
+> 只做可行性评估与设计；**没有写 `asr.json`、没有发起推理**（避免占 GPU）。
+
+**现状（2026-11-06 只读探测）**
+- `http://127.0.0.1:8088/v1/models` 列出 `whisper-asr`（llama-swap 网关）。
+- `GET /health` → 200；`OPTIONS /v1/audio/transcriptions` → 204 ⇒ OpenAI 转写路由存在。
+- `dsh-video-storyboard` 的 ASR 客户端是 **OpenAI `/audio/transcriptions` 方言**
+  （`docs/asr-contract.md`）：请求 `multipart/form-data`（16 kHz mono WAV + model + verbose_json），
+  客户端按 ≤45 s、静音中点切片；配置优先级 `DSH_ASR_* env > $DSH_HOME/asr.json > 内置默认`；
+  loopback 服务不要求 key；只有 `asr.json` 写 `manage.start` 时插件才托管启动服务（我们不需要它托管）。
+
+**结论：可行性高，且很可能零代码**
+- 只要把 storyboard 的 ASR 指向 8088，`video_locate` 就能用：它内部会跑一次 `video_storyboard --text-only`
+  （`--transcript auto` 触发 ASR），解析出每格台词；转写结果由 storyboard 缓存，第二次很快。
+- 推荐先走**配置**（方案 A）：
+  ```json
+  // %USERPROFILE%\.dsh\asr.json
+  { "baseUrl": "http://127.0.0.1:8088/v1", "model": "whisper-asr", "language": "zh" }
+  ```
+  （loopback 可不要 key；llama-swap 若要求占位 key，加 `"key": "local"`。）
+- 方案 B（ICL 自持，后续可做）：`video` 插件加 `asrBaseUrl/asrModel/asrLang` 配置，调用 CLI 时注入
+  `DSH_ASR_BASE_URL/DSH_ASR_MODEL/DSH_ASR_LANG`（env 优先级高于 `asr.json`），这样 ICL 不依赖用户全局文件。
+
+**接进 `video_locate` 的流程（设计）**
+1. `video_locate {path, query}` → 若没有缓存转写，先 `storyboard --text-only --text --detail high`（这步触发 ASR）。
+2. CLI 用 ffmpeg 抽 16k mono WAV → 分片 POST `/v1/audio/transcriptions` → 合并 segments（相对分片的时间由客户端加偏移）。
+3. 清单里的 cell 文本被解析后做关键词匹配 → 返回命中格位/时间码（现有 `parseCells` 已能读这份文本）。
+4. 失败/关闭 ASR：返回 `E_NO_TRANSCRIPT`（已有文案），不重试到天荒地老。
+
+**风险与边界**
+- 首次调用要加载 whisper 模型（几秒到几十秒），且可能占 GPU；只在 `video_locate` 缺字幕时触发，`video_storyboard` 可用 `transcript: off` 关。
+- 音乐/纯 BGM 会产生幻觉段；storyboard 有 `filterSuspectSegments`（会报告丢弃，不静默）。
+- 时间戳是"相对分片"的，必须由客户端加偏移（storyboard 已处理；自己实现时最容易错）。
+- 8088 是共享网关：llama-swap 会按需换模型，长测时避免和本地模型实验抢同一时间窗。
+
+**未来验收**：`node bin/asr-check.mjs <本地视频> --from 0 --seconds 12` 出中文文本；`video_locate` 能命中；
+关闭 ASR 时明确 `E_NO_TRANSCRIPT`；`video_storyboard transcript:off` 确实不调服务。
+
+---
+
+## 12. 与 B 站插件的分界（速查）
 
 - 本地路径 → `video_*`（本插件）。
 - `https://www.bilibili.com/video/…` → `bili_watch`/`bili_comments`/`bili_feed`，看画面用 `bili_frames` 或 DSH 原生 `video_storyboard`。
