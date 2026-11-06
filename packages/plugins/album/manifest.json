@@ -1,0 +1,9 @@
+{
+  "id": "album",
+  "version": "0.1.0",
+  "entry": "./src/index.mjs",
+  "tools": ["album_import", "album_list", "album_search", "album_collage", "album_show", "album_prune", "album_status"],
+  "slots": [],
+  "focus": {},
+  "requires": {}
+}

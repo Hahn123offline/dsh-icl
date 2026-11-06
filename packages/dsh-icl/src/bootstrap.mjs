@@ -21,6 +21,7 @@ export function configFor(id, cfg) {
     case 'compaction': return { persona: cfg.persona, keepRecent: 16, triggerChars: cfg.compactionTriggerChars }
     case 'loop-probe': return { inboxFile: path.join(cfg.stateDir, 'loop.inbox.jsonl'), outboxFile: path.join(cfg.stateDir, 'loop.outbox.jsonl') }
     case 'mc-link': return { baseUrl: cfg.mcBaseUrl, logFile: path.join(cfg.stateDir, 'mc-link.jsonl') }
+    case 'album': return { root: path.join(cfg.stateDir, 'media') }
     case 'model-manager': return { providers: cfg.providers ?? [] }
     default: return {}
   }
