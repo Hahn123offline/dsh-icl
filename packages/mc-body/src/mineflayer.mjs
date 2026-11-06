@@ -7,8 +7,8 @@ import { startViewerServer } from './eyes.mjs'
 import {
   chooseRecipeVariant, describeItemTool, pickBestTool, preferredToolClass, requiredTierForBlock, requiredToolClass, suggestToolCraft, TIER_NAME, toolClassNameCn, toolClassOfItem, toolTier,
 } from './tools.mjs'
-import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectBlockCandidates, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
-import { isAirName, isSolidName, makeShelterSpec, shelterBuildOrder, verifyShelter } from './building.mjs'
+import { bridgePlan, checkBlueprintMaterials, clampMacroNumbers, collectAttemptsAreNoTarget, collectBlockCandidates, collectRadiusPlan, directionVector, parseBlueprint, progressEvery, shelterPlan } from './macro.mjs'
+import { isAirName, isSolidName, makeShelterSpec, shelterBuildOrder, shelterMaterialReport, verifyShelter } from './building.mjs'
 import { chooseWeaponItem, isHostile, parseTargetSpec, shouldAbortCombat } from './combat.mjs'
 
 const require = createRequire(import.meta.url)
@@ -319,10 +319,10 @@ export function createMineflayerAdapter({
 
   // 截图用 viewer：每次截图按当前 pose 起一个（可关闭）的 viewer，截完立刻关。
   let screenshotViewer = null
-  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3 } = {}) {
+  async function startScreenshotViewer({ portStart = 3998, viewDistance = 3, center: centerOverride = null, cameraOffset = null } = {}) {
     if (!bot?.player) throw new Error('body 未连接，无法截图')
     if (screenshotViewer) await stopScreenshotViewer()
-    const center = currentPosition()
+    const center = centerOverride ?? currentPosition()
     if (!center) throw new Error('拿不到当前位置，无法截图')
     let lastError = null
     const start = Math.max(1024, Math.min(65_000, Number(portStart) || 3998))
@@ -331,9 +331,10 @@ export function createMineflayerAdapter({
         const viewer = await startViewerServer({
           viewerRoot: process.env.MC_EYES_VIEWER_ROOT ?? null,
           world: bot.world, center, version: bot.version, port, viewDistance,
+          cameraOffset: cameraOffset ?? { x: 0, y: 20, z: 20 },
         })
         screenshotViewer = viewer
-        return { port: viewer.port, center: viewer.center, version: bot.version }
+        return { port: viewer.port, center: viewer.center, version: bot.version, stats: viewer.stats, cameraOffset: viewer.cameraOffset }
       } catch (error) {
         lastError = error
         if (!/EADDRINUSE/i.test(String(error?.message))) break
@@ -1483,24 +1484,41 @@ export function createMineflayerAdapter({
       const radius = Math.max(2, Math.min(48, Number(params.radius) || 16))
       const candidates = collectBlockCandidates(item)
       if (!candidates.length) throw taskFailure('collect: no-target', { item, suggestion: 'item 用方块名（oak_log/stone）或常见掉落名（cobblestone/coal/raw_iron）' })
+      // 资源枯竭时不要秒失败：先换候选方块，再逐级扩大搜索半径（16→≤48），最后给“附近无资源”的可操作结论。
+      const radiusPlan = collectRadiusPlan(radius)
+      const attempts = []
       let lastError = null
-      for (const block of candidates) {
-        if (!bot.registry.blocksByName[block]) continue
-        try {
-          const result = await runTask({ kind: 'mine', params: { block, count, radius, autoTool: params.autoTool } }, { signal, progress })
-          const collected = Number(result?.net ?? result?.mined ?? 0)
-          let returned = null
-          if (params.returnToSafe) returned = await returnToSafe().catch(() => null)
-          let deposited = null
-          if (params.deposit) deposited = await runOp('chest', { action: 'put', all: true }).catch((error) => ({ error: String(error?.message ?? error) }))
-          emit('macro_done', { kind: 'collect', item, block, collected, net: collected, returned, deposited })
-          return { collected, net: collected, item, block, requested: count, source: result, returned, deposited }
-        } catch (error) {
-          if (signal?.aborted) throw error
-          lastError = error
+      for (const scanRadius of radiusPlan) {
+        for (const block of candidates) {
+          if (!bot.registry.blocksByName[block]) continue
+          try {
+            const result = await runTask({ kind: 'mine', params: { block, count, radius: scanRadius, autoTool: params.autoTool } }, { signal, progress })
+            const collected = Number(result?.net ?? result?.mined ?? 0)
+            let returned = null
+            if (params.returnToSafe) returned = await returnToSafe().catch(() => null)
+            let deposited = null
+            if (params.deposit) deposited = await runOp('chest', { action: 'put', all: true }).catch((error) => ({ error: String(error?.message ?? error) }))
+            emit('macro_done', { kind: 'collect', item, block, collected, net: collected, returned, deposited, radius: scanRadius, tried: attempts.length + 1 })
+            return { collected, net: collected, item, block, requested: count, radius: scanRadius, source: result, returned, deposited }
+          } catch (error) {
+            if (signal?.aborted) throw error
+            lastError = error
+            attempts.push({ block, radius: scanRadius, error: String(error?.message ?? error).slice(0, 160) })
+          }
         }
       }
-      throw lastError ?? taskFailure('collect: no-target', { item, suggestion: '附近没有该资源；换 item/调大 radius，或先走到有资源的地方' })
+      const allNoTarget = collectAttemptsAreNoTarget(attempts)
+      if (allNoTarget) {
+        throw taskFailure('collect: no-resources', {
+          item,
+          triedBlocks: candidates,
+          radiusTried: radiusPlan,
+          scannedRadius: radiusPlan[radiusPlan.length - 1],
+          attempts: attempts.slice(-8),
+          suggestion: `附近 ${radiusPlan[radiusPlan.length - 1]} 格内没找到 ${item}（已换 ${candidates.join('/')} 并逐级扩大半径）；先 explore 去有树/石的地方，或换 item（oak_log/stone/cobblestone）；别原地连续重试。`,
+        })
+      }
+      throw lastError ?? taskFailure('collect: no-target', { item, radiusTried: radiusPlan, suggestion: '附近没有该资源；换 item/调大 radius，或先走到有资源的地方' })
     }
     if (task.kind === 'tunnel') {
       const dir = directionVector(params)
@@ -1708,12 +1726,13 @@ export function createMineflayerAdapter({
         : (Math.cos(facingYaw) > 0 ? 'east' : 'west')
       const doorSide = String(params.doorSide ?? params.side ?? autoSide)
       const spec = makeShelterSpec({ size, height, doorSide, material })
-      const need = spec.walls.length + spec.roof.length + spec.interiorHeight * 2
-      const have = Number(inventoryCounts()[material]) || 0
-      if (have < need) {
+      const counts = inventoryCounts()
+      const report = shelterMaterialReport({ material, need: spec.walls.length + spec.roof.length + spec.interiorHeight * 2, counts, width: spec.width, interiorHeight: spec.interiorHeight })
+      if (!report.enough) {
         throw taskFailure('shelter: needs-material', {
-          material, need, have, size: spec.width, height: spec.height,
-          suggestion: `建 ${spec.width}×${spec.width} 小屋（内部 ${spec.interiorHeight} 格高）约需 ${material}×${need}，现有 ${have}；先 collect 补料或换 material（dirt/cobblestone/oak_planks）`,
+          ...report,
+          size: spec.width,
+          height: spec.height,
         })
       }
       const nameAtWorld = (x, y, z) => {
@@ -2879,6 +2898,9 @@ export function createMineflayerAdapter({
 
   return { connect, disconnect, status, chat, runTask, emergency, returnToSafe, inspect, runOp, snapshot, startScreenshotViewer, stopScreenshotViewer }
 }
+
+
+
 
 
 

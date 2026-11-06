@@ -159,3 +159,9 @@ mcb_do {"steps":[{"op":"task","kind":"collect","params":{"item":"oak_log","count
 
 - `tunnel {direction:"east",length:4,height:2,stairs:true}` → done `{done:4,total:4,stairs:true}`，位置 y 从 -60 降到 -62（2 层，平地/底层受限）血 20；随后 `tunnel {direction:"north",length:3}` 基础路径 done，位置回到 y -61 血 20 —— **基础 tunnel 未被 stairs 改动破坏**。
 - 结果/progress 已带 `stairs` 标记（166d1be 后的补 commit）；flat 平地受限只验证下降路径，normal 地形完整阶梯明早验。
+
+### collect 资源枯竭 fallback
+
+- `collect` 先按候选方块找；某个候选/半径失败后**逐级扩大搜索半径**（默认 16 → 24 → 48，`collectRadiusPlan`），仍找不到才失败。
+- 全部失败都是“附近没资源”时，失败码为 **`collect: no-resources`**，result 带 `triedBlocks / radiusTried / scannedRadius / attempts[]` 和“先 explore 去有树/石的地方/换 item，别原地重试”的建议；不再连续秒失败 `collect: no-target`。
+- 真服证据：`.state/lab/mc-body-fix-poc/run1/result.json`（平地 oak_log：8/16/48 三档均 no-target → `collect: no-resources`，`scannedRadius:48`）。

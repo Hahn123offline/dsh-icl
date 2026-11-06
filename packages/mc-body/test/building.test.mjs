@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isAirName, isSolidName, makeShelterSpec, shelterBuildOrder, verifyShelter } from '../src/building.mjs'
+import { isAirName, isSolidName, makeShelterSpec, shelterBuildOrder, shelterMaterialReport, verifyShelter } from '../src/building.mjs'
 
 function buildBlockMap(spec, { skip = [], extra = {} } = {}) {
   const map = new Map()
@@ -86,4 +86,24 @@ test('building：方块名判定（air/liquid/solid）', () => {
   assert.equal(isSolidName(''), false)
 })
 
+
+
+test('building：shelter 材料诊断（needed/have/deficit/替代材料/可执行建议）', () => {
+  const report = shelterMaterialReport({ material: 'dirt', need: 27, counts: { dirt: 5, cobblestone: 32 }, width: 3, interiorHeight: 2 })
+  assert.equal(report.enough, false)
+  assert.equal(report.needed, 27)
+  assert.equal(report.have, 5)
+  assert.equal(report.deficit, 22)
+  assert.equal(report.available.dirt, 5)
+  assert.ok(report.suggestion.includes('还差 22'))
+  assert.ok(report.suggestion.includes('cobblestone'))
+  assert.ok(report.suggestion.includes('material'))
+  assert.equal(report.alternatives[0].material, 'cobblestone')
+  assert.equal(report.alternatives[0].enough, true)
+  const empty = shelterMaterialReport({ material: 'dirt', need: 27, counts: {}, width: 3, interiorHeight: 2 })
+  assert.equal(empty.have, 0)
+  assert.ok(empty.suggestion.includes('dig'))
+  assert.ok(empty.suggestion.includes('dirt'))
+  assert.equal(shelterMaterialReport({ material: 'dirt', need: 5, counts: { dirt: 10 } }).enough, true)
+})
 

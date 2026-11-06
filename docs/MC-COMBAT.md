@@ -177,3 +177,13 @@ E2 run：`.state/lab/e2-20261106-smoke`（phase=stopping 时读取；13 death）
 | 低血暂停→resume | resume 后 700ms 仍 `paused=false`、health 9.5→10.33；`recovery` 字段正确 | `run4/result.json` |
 
 所有真服测试用 54839 独立 dev 服（server.jar 本地、停止后无监听）；未碰 54838（E2）与用户客户端；54841 有他人服务器未触碰。
+
+## 自动躲避与任务取消（2026-11-06，本地 24h 修复）
+
+- **danger 时不再“只逃不取消任务”**：`checkHostiles` 在非 critical 的 danger 判定下：
+  - 当前任务若不是 `hunt/defend/flee/guard` → `cancelTask('auto-defense: threat')`，任务以 `cancelled` 结束、`error="auto-defense: threat"`；
+  - 事件 `task_cancelled_for_defense {taskId, kind, reason, threats}`；
+  - `auto_defense` 事件带 `taskCancelled:true / taskId / taskKind / taskCancelReason`；
+  - **hold 队列 15s**（威胁持续时每次 tick 续 hold）：规避/冷却结束前不启动排队任务，避免“取消一个又立刻接下一个继续送”。
+- 战斗任务自身的中断（combat_abort/危机）保留；critical（苦力怕贴脸/残血）仍升级 `safetyStop('threat')`。
+- 真服证据：`.state/lab/mc-body-fix-poc/run2/result.json` —— `mine` 长任务 + 僵尸 3 格 → 任务 `cancelled/error=auto-defense: threat`，事件 `task_cancelled_for_defense` + `auto_defense.taskCancelled=true/taskKind=mine`。

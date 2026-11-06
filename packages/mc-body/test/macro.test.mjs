@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  bridgePlan, checkBlueprintMaterials, clampMacroNumbers, parseBlueprint, shelterPlan, collectBlockCandidates, directionVector, MACRO_KINDS, progressEvery, shouldReportProgress,
+  bridgePlan, checkBlueprintMaterials, clampMacroNumbers, parseBlueprint, shelterPlan, collectBlockCandidates, collectRadiusPlan, collectAttemptsAreNoTarget, directionVector, MACRO_KINDS, progressEvery, shouldReportProgress,
 } from '../src/macro.mjs'
 
 test('macro：方向解析（north=-Z, east=+X）', () => {
@@ -82,3 +82,12 @@ test('macro：蓝图解析/材料校验/shelter 占位', () => {
 
 
 
+
+test('macro：collect 资源枯竭 fallback（逐级扩大半径 / 判定 no-resources）', () => {
+  assert.deepEqual(collectRadiusPlan(16), [16, 24, 48])
+  assert.deepEqual(collectRadiusPlan(4), [4, 12, 48])
+  assert.deepEqual(collectRadiusPlan(48), [48])
+  assert.equal(collectAttemptsAreNoTarget([{ error: 'mine: no-target' }, { error: 'mine: no-target' }]), true)
+  assert.equal(collectAttemptsAreNoTarget([{ error: 'mine: no-target' }, { error: 'mine: no-path' }]), false)
+  assert.equal(collectAttemptsAreNoTarget([]), false)
+})
