@@ -205,7 +205,10 @@ async function up() {
   const workspace = path.resolve(String(arg('--workspace', path.join(runDir, 'workspace'))))
   // 可选：把所选服务器的端口改成自定义（E2 dev 服 54841 之类），mc-servers.json 里生效。
   const serverPort = arg('--server-port') ? Number(arg('--server-port')) : null
-  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort })
+  // E2 时序可调：清醒节拍/目标续推间隔（秒）。缺省 30。
+  const awakeIdleSec = arg('--awake-idle-sec') ? Number(arg('--awake-idle-sec')) : 30
+  const goalGapSec = arg('--goal-gap-sec') ? Number(arg('--goal-gap-sec')) : 30
+  const patch = materializePatch({ runDir, mcPort, mcUser, servers, workspace, serverPort, awakeIdleSec, goalGapSec })
   const title = String(arg('--title', `ICL Lab ${runId}`))
   const meta = {
     runId,

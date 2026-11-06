@@ -24,6 +24,7 @@ export const PRESETS = Object.freeze({
   'icl-lab': { mc: false, description: 'ICL 全套（不含 MC）' },
   'icl-mc-lab': { mc: true, description: 'ICL + mc-link（独立 body 端口）' },
   'icl-e2': { mc: true, description: 'E2 长测专用（awakeTick 30s、工具面收敛、文案精简）' },
+  'icl-fast': { mc: true, description: 'fast-play 短测（awakeTick 8s、goalResume 8s，cloud）' },
 })
 
 /* ── 基础工具 ─────────────────────────────────────────── */
@@ -148,7 +149,7 @@ export const KNOWN_MC_SERVERS = Object.freeze({
   flat: { host: '127.0.0.1', port: 54837, note: 'flat 调试服（不要用于最终验收）' },
 })
 
-export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace, serverPort = null }) {
+export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'ICL-mclab-1', servers = ['lab-normal', 'flat'], workspace, serverPort = null, awakeIdleSec = 30, goalGapSec = 30 }) {
   ensureDir(runDir)
   const template = fs.readFileSync(PATCH_TEMPLATE, 'utf8')
   const fileUrl = (p) => pathToFileURL(p).href
@@ -176,6 +177,8 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'I
     .replaceAll('__LAB_MC_PORT__', String(mcPort))
     .replaceAll('__LAB_MC_USERNAME__', String(mcUser))
     .replaceAll('__LAB_MC_SERVERS__', posix(serversFile))
+    .replaceAll('__LAB_AWAKE_IDLE__', String(Number(awakeIdleSec) > 0 ? Number(awakeIdleSec) : 30))
+    .replaceAll('__LAB_GOAL_GAP__', String(Number(goalGapSec) > 0 ? Number(goalGapSec) : 30))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')

@@ -53,6 +53,9 @@ const cfg = {
   playbookMin: num('--playbook-min', 2.5),
   playbookIdleSec: num('--playbook-idle-sec', 120),
   noPlaybook: flag('--no-playbook'),
+  /** fast-play：清醒节拍/目标续推间隔（秒），materialize 到 lab preset。 */
+  awakeIdleSec: num('--awake-idle-sec', 30),
+  goalGapSec: num('--goal-gap-sec', 30),
   /** E2 文案收敛：死亡/暂停提示压成一句策略，不列逐步动作。 */
   tersePrompts: flag('--terse-prompts'),
 }
@@ -299,6 +302,8 @@ async function startLab({ fresh = false } = {}) {
     '--mc-user', cfg.mcUser,
     '--servers', cfg.serverName,
     '--server-port', String(cfg.serverPort),
+    '--awake-idle-sec', String(cfg.awakeIdleSec),
+    '--goal-gap-sec', String(cfg.goalGapSec),
     '--model', cfg.model,
     '--timeout', '300',
     ...(fresh ? ['--force'] : []),
