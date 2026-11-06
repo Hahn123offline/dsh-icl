@@ -64,12 +64,17 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
     const body = rows
       .map((row) => `· [${row.focus}] +${row.count}${row.lastText ? `：${row.lastText}` : ''}`)
       .join('\n')
-    signals.offer({
+    // 重放回执：每条被 focus 拦下的 QQ 信号都记了 (activity, seq)；摘要真正进管道后才推 delivered。
+    const qqSeqs = rows.flatMap((row) => (Array.isArray(row.items) ? row.items : []).map((item) => item.qq).filter(Boolean))
+    const outcome = signals.offer({
       from: { plugin: 'focus', activity: 'backlog' },
       kind: 'notice',
       text: `你离开焦点期间，别处积压了 ${total} 条：\n${body}`,
       tags: ['focus-backlog'],
+      // 若被 time 拦下，摘要会带着这些 seq 进 time 队列，在真正释放时再补推 QQ。
+      meta: qqSeqs.length ? { replayQq: qqSeqs.map((row) => ({ activity: row.activity, seq: row.seq })) } : null,
     })
+    if (qqSeqs.length && (outcome?.accepted || outcome?.deduped)) noteQqDelivered(qqSeqs, 'focus-backlog')
   })
 
   /** id -> { manifest, module, apply, dispose:Function[], enabled:boolean } */
@@ -77,6 +82,53 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
   const plugins = new Map()
   /** 插件之间共享能力的注册表：provide/get */
   const shared = new Map()
+
+  /** QQ 重放回执：只在这些消息**确实重新进入投递管道**后调用；只推 delivered，不推 attended。 */
+  function noteQqDelivered(seqs, via) {
+    const qq = shared.get('qq')
+    if (!qq || typeof qq.noteDeliveredSeqs !== 'function') return 0
+    const byActivity = new Map()
+    for (const row of (Array.isArray(seqs) ? seqs : [])) {
+      if (!row || Number(row.seq) <= 0) continue
+      const activity = String(row.activity ?? '')
+      if (!activity) continue
+      const set = byActivity.get(activity) ?? new Set()
+      set.add(Number(row.seq))
+      byActivity.set(activity, set)
+    }
+    let accepted = 0
+    for (const [activity, list] of byActivity) {
+      try {
+        const out = qq.noteDeliveredSeqs({ activity, seqs: [...list], via, at: now() })
+        accepted += Number(out?.accepted ?? 0)
+      } catch (error) { report('qq.receipt', error) }
+    }
+    return accepted
+  }
+
+  // C6：直投 delivery 也要先过 focus（空间闸门）；time 的时间闸门在插件启用后追加，
+  // 所以 gate 顺序是 focus → time。显式 bypass：from.plugin==='time'、tags admin/alarm、
+  // 或 source.meta.bypassFocus===true（只有结构性用途，不改变真实消息路径）。
+  delivery.addGate((entry = {}) => {
+    if (entry.channel === 'signal') return { accept: true } // signals 路径已在 setDeliver 里过 admit
+    const src = entry.source ?? {}
+    const tags = Array.isArray(src.tags) ? src.tags : []
+    const meta = src.meta && typeof src.meta === 'object' ? src.meta : null
+    const bypass = String(src.plugin ?? '') === 'time' || tags.includes('admin') || tags.includes('alarm') || meta?.bypassFocus === true
+    if (bypass) return { accept: true }
+    const signal = {
+      from: { plugin: String(src.plugin ?? ''), activity: src.activity ?? 'delivery' },
+      kind: 'notice',
+      text: String(entry.content?.text ?? ''),
+      focus: src.focus ?? null,
+      tags,
+      meta,
+    }
+    const decision = focus.admit(signal)
+    if (decision.deliver) return { accept: true }
+    focus.defer(signal)
+    return { accept: false, reason: decision.reason ?? 'focus' }
+  })
 
   const clockBridge = {
     set(fn) { const prev = clockOverride; clockOverride = typeof fn === 'function' ? fn : null; return () => { clockOverride = prev } },
