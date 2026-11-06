@@ -1043,10 +1043,34 @@ export function apply(ctx) {
   const MACRO_HINT_OPS = new Set(['mine', 'dig', 'place', 'goto', 'move', 'attack'])
   const MACRO_HINT = '（提示：这类重复动作可用宏——采集 collect、挖通道 tunnel、建造 build/shelter、打架 mcb_combat、补刀 mcb_attack；单步适合少量/精确动作。此提示每 2 分钟最多一次，不用回复它。）'
 
+  // say 去重：local3 里同一句"重连回来了…"被循环调用 87 次；同 session 内相同文本 60s 内不再发。
+  // 去重是"压掉重复"，不是绕过限流：非重复 say 仍走 body 自己的 chat 限流。
+  const lastSayAt = new Map()
+  const sayDedupeMs = Math.max(0, Number(raw.sayDedupeMs ?? 60_000) || 0)
+  const normalizeSayText = (text) => String(text ?? '').replace(/\s+/g, ' ').trim()
+  // 连续提交完全相同 steps：第 N 次起在回执前提醒（不拒绝执行，避免卡死）。
+  const repeatHintAfter = Math.max(2, Number(raw.repeatHintAfter ?? 3) || 3)
+  let lastRunSig = null
+  let lastRunCount = 0
+
   async function runDo(steps, safety = null) {
     const { steps: normalized, notes } = normalizeSteps(steps)
     const noteText = notes.length ? `（参数处理：${notes.join('；')}）` : ''
     const timeoutMs = Number(raw.doTimeoutMs) || 120_000
+    // 连续相同 steps 检测（完全相同才计数；say 文本相同也算同一动作）。
+    const runSig = JSON.stringify(normalized)
+    if (runSig === lastRunSig) lastRunCount += 1
+    else { lastRunSig = runSig; lastRunCount = 1 }
+    const repeatHint = lastRunCount >= repeatHintAfter
+      ? `（重复提醒：这是连续第 ${lastRunCount} 次提交完全相同的动作；如果没进展就换策略/等待事件/检查目标——本提示不拒绝执行。）`
+      : ''
+    const finish = (out) => {
+      if (!repeatHint) return out
+      out.text = `${repeatHint}\n\n${out.text}`
+      out.repeated = true
+      out.repeatCount = lastRunCount
+      return out
+    }
     // 逐步执行（而不是一次发整批）：一步失败也能把**已执行步骤的结果**带回来，
     // 失败归因到具体第几步；task 语义保持"提交后立即返回、后面的步骤不执行"。
     const parts = []
@@ -1054,6 +1078,15 @@ export function apply(ctx) {
     let failed = null
     for (let index = 0; index < normalized.length; index += 1) {
       const step = normalized[index]
+      // say 去重：同一个 session 内相同文本（空白归一化后）60s 内不再重复发送。
+      if (step.op === 'say') {
+        const sayText = normalizeSayText(step.text)
+        const lastAt = lastSayAt.get(sayText)
+        if (lastAt != null && Date.now() - lastAt < sayDedupeMs) {
+          parts.push(`[say] 刚说过（${Math.max(1, Math.round((Date.now() - lastAt) / 1000))} 秒前），未重复发送：${sayText.slice(0, 60)}`)
+          continue
+        }
+      }
       try {
         const body = await call('/v1/do', {
           method: 'POST',
@@ -1063,12 +1096,18 @@ export function apply(ctx) {
         })
         lastStatus = await refreshStatus() ?? lastStatus
         for (const row of body.results ?? []) parts.push(renderRow({ ...row, index }))
+        // say 发送成功才记录（失败/超时不记，避免把没发出去的算成"刚说过"）。
+        if (step.op === 'say') {
+          const sayText = normalizeSayText(step.text)
+          lastSayAt.set(sayText, Date.now())
+          if (lastSayAt.size > 200) lastSayAt.delete(lastSayAt.keys().next().value)
+        }
         // resume 是"继续玩"：同步退出 time 的暂停模式（mcb_stop/危险暂停留下的）。
         if (step.op === 'resume' && setTimePausedMode(false)) parts.push('（已退出时间暂停模式：任务恢复受理；sleep/schedule 计时未受影响）')
         if (body.task) { task = body.task; break }
       } catch (error) {
         if (isTimeoutError(error) || error?.code === 'timeout') {
-          return { text: [...parts, doTimeoutText(timeoutMs)].filter(Boolean).join('\n\n') }
+          return finish({ text: [...parts, doTimeoutText(timeoutMs)].filter(Boolean).join('\n\n') })
         }
         failed = { index, op: step.op, error }
         break
@@ -1084,12 +1123,12 @@ export function apply(ctx) {
               : /已结束.*不能 resume|409/.test(message) ? '；这个任务已结束，需要就重新下任务'
                 : ''
       const done = parts.length ? `\n\n已完成的前序步骤：\n${parts.join('\n\n')}` : '\n\n失败前没有已完成的步骤。'
-      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}${hint}${done}`)
+      throw new Error(`第 ${failed.index + 1} 步（${failed.op}）失败：${message}${hint}${done}${repeatHint ? `\n\n${repeatHint}` : ''}`)
     }
     if (noteText) parts.push(noteText)
     if (task) {
       const head = `任务 ${task.id}（${task.kind}）已接受，状态 ${task.state}。完成/失败/中断会作为事件通知回来，**不要循环 mcb_status/tasks 查**（需要时看一眼即可）。`
-      return { text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head }
+      return finish({ text: parts.length ? `${parts.join('\n\n')}\n\n${head}` : head })
     }
     // 用单步做重复动作时提示宏（不拒绝、节流 2 分钟）：S2 实测 mcb_do 121 次、combat 5、attack 0，
     // 说明模型仍在用单步硬刷，需要在回执里把我们教的宏再提一次。
@@ -1097,7 +1136,7 @@ export function apply(ctx) {
       lastMacroHintAt = Date.now()
       parts.push(MACRO_HINT)
     }
-    return { text: parts.length ? parts.join('\n\n') : '没有返回结果。' }
+    return finish({ text: parts.length ? parts.join('\n\n') : '没有返回结果。' })
   }
 
   const tools = [
