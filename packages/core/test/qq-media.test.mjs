@@ -41,10 +41,10 @@ function fakeFetch(bytesFor) {
   }
 }
 
-async function setup({ overrides = {}, bytesFor } = {}) {
+async function setup({ overrides = {}, bytesFor, logs = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-media-'))
   const fake = await createFakeOneBot({ port: 0, token: TOKEN })
-  const host = createHost({ log: () => {} })
+  const host = createHost({ log: (entry) => { if (logs) logs.push(entry) } })
   const mediaDir = path.join(dir, 'media')
   host.registerPlugin(manifest, qqModule, {
     config: {
@@ -90,7 +90,9 @@ test('媒体纯函数：视频魔数/文件名/index 记录；保留默认值有
     assert.equal(rows[0].kind, 'image')
     assert.equal(rows[0].messageId, '123')
     assert.equal(rows[0].bytes, PNG.length)
-    assert.ok(MEDIA_DEFAULTS.retentionDays > 0)
+    assert.ok(MEDIA_DEFAULTS.retentionDays === 0, '默认不自动删除')
+    assert.ok(MEDIA_DEFAULTS.maxVideoBytes >= 512 * 1024 * 1024, '单视频默认 512MiB')
+    assert.ok(MEDIA_DEFAULTS.maxFileBytes >= 512 * 1024 * 1024, '单文件默认 512MiB')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -163,6 +165,62 @@ test('图片下载失败：消息不丢、正文降级为提示，不伪造 atta
     assert.match(batch.text, /\[图片\]/)
     assert.match(batch.text, /图片未能获取/)
     assert.doesNotMatch(batch.text, /https?:\/\/|base64/)
+  } finally { await env.cleanup() }
+})
+
+test('媒体策略默认：不自动删/不自动 album/单文件 512MiB/总量软告警', async () => {
+  const logs = []
+  const env = await setup({ logs })
+  try {
+    const media = env.qq.status().media
+    assert.equal(media.retentionDays, 0, '默认不自动删除')
+    assert.equal(media.autoDelete, false)
+    assert.equal(media.autoAlbum, false, '归档必须手动（album_import），QQ 不自动进 album')
+    assert.ok(media.maxVideoBytes >= 512 * 1024 * 1024)
+    assert.ok(media.maxFileBytes >= 512 * 1024 * 1024)
+    assert.ok(media.softLimitBytes > 0, '总量是软上限，只告警')
+    env.fake.privateRichMessage({
+      from: OWNER, messageId: 8200,
+      segments: [{ type: 'image', data: { url: 'https://cdn.example/a.png' } }],
+    })
+    await waitFor(() => env.qq.status().media.saved >= 1)
+    assert.ok(env.qq.status().media.bytes > 0)
+  } finally { await env.cleanup() }
+})
+
+test('单视频超过 512MiB 配置上限：拒绝并给原因，不落盘', async () => {
+  const env = await setup({
+    overrides: { maxVideoBytes: 10 },
+    bytesFor: (url) => (url.includes('.mp4') ? MP4 : null),
+  })
+  try {
+    env.fake.privateRichMessage({
+      from: OWNER, messageId: 8201,
+      segments: [{ type: 'video', data: { url: 'https://cdn.example/v.mp4' } }],
+    })
+    await waitFor(() => env.qq.status().stats.mediaFailed >= 1)
+    const [batch] = env.drain()
+    assert.match(batch.text, /视频获取失败：.*超限/)
+    assert.doesNotMatch(batch.text, /https?:\/\//)
+    assert.equal(env.indexRows().length, 0)
+  } finally { await env.cleanup() }
+})
+
+test('总量超过软上限：只告警（日志 + overSoftLimit），不拒绝、不删除', async () => {
+  const logs = []
+  const env = await setup({ overrides: { mediaSoftLimitBytes: 10 }, logs })
+  try {
+    env.fake.privateRichMessage({
+      from: OWNER, messageId: 8202,
+      segments: [{ type: 'image', data: { url: 'https://cdn.example/a.png' } }],
+    })
+    await waitFor(() => env.qq.status().media.saved >= 1)
+    const media = env.qq.status().media
+    assert.equal(media.overSoftLimit, true)
+    assert.ok(logs.some((entry) => entry?.msg === 'qq.media.soft-limit'), '软告警要写日志')
+    // 不拒绝、不删除：文件仍在
+    assert.equal(env.indexRows().length, 1)
+    assert.equal(fs.existsSync(env.indexRows()[0].path), true)
   } finally { await env.cleanup() }
 })
 
