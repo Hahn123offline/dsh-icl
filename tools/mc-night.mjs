@@ -298,6 +298,7 @@ async function startLab({ fresh = false } = {}) {
     '--mc-port', String(cfg.mcPort),
     '--mc-user', cfg.mcUser,
     '--servers', cfg.serverName,
+    '--server-port', String(cfg.serverPort),
     '--model', cfg.model,
     '--timeout', '300',
     ...(fresh ? ['--force'] : []),

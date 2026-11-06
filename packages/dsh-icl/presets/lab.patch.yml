@@ -209,3 +209,72 @@
             config:
               prefix: ''
               suffix: 'Your working directory is {{cwd}}.'
+    - id: preset-icl-e2
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-e2
+        name: ICL E2
+        description: E2 24h 长测专用（lab-only）：awakeTick 30s、goal 续推 30s、工具面收敛、文案精简。
+        order: 33
+        plugins:
+          - id: icl-e2-core
+            name: '__LAB_ICL_CORE__'
+            config:
+              presetId: icl-e2
+              stateDir: '__LAB_STATE__/icl-e2'
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
+              tickMs: 200
+              timeTickMs: 1000
+              purifySections:
+                - 'harness:identity'
+                - 'ui:deliverable-file-references'
+                - 'harness:source'
+                - 'app:web-surface'
+              mcBaseUrl: '__LAB_MC_BASE__'
+              providers:
+                - id: lab-llama-swap-chat
+                  kind: chat
+                  shape: { tools: false }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: qwen35-9b
+                  timeoutMs: 120000
+                  disableThinking: true
+                - id: lab-bge-m3
+                  kind: embedding
+                  shape: { dim: 1024 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: embed-bge-m3
+              pluginConfig:
+                time:
+                  testClock: true
+                  awakeTick:
+                    idleSec: 30
+                  goalResumeMinGapSec: 30
+                mc-link:
+                  listenPort: __LAB_MC_PORT__
+                  username: '__LAB_MC_USERNAME__'
+                  stateDir: '__LAB_STATE__/mc-body'
+                  serversFile: '__LAB_MC_SERVERS__'
+                loop-probe:
+                  resetOnStart: false
+              plugins:
+                - memory
+                - note
+                - recall
+                - persona
+                - eager-recall
+                - model-manager
+                - time
+                - dream
+                - mc-link
+                - loop-probe
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'

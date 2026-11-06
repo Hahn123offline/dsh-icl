@@ -23,6 +23,7 @@ export const DEFAULT_MC_PORT = 54900
 export const PRESETS = Object.freeze({
   'icl-lab': { mc: false, description: 'ICL 全套（不含 MC）' },
   'icl-mc-lab': { mc: true, description: 'ICL + mc-link（独立 body 端口）' },
+  'icl-e2': { mc: true, description: 'E2 长测专用（awakeTick 30s、工具面收敛、文案精简）' },
 })
 
 /* ── 基础工具 ─────────────────────────────────────────── */
