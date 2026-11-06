@@ -536,7 +536,8 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - **谁调/何时调**：time/focus 把被自己拦下的 QQ backlog **真正重放给模型之后**调用（不是入队时、不是拦截时）。
   重放内容来自 time backlog 的原 signal；time 侧知道 `from.activity` 与原 `meta.qq.ledger.seq`，逐条/分批回执。
 - **只推 delivered**：按 seq 写 `delivered_at`（幂等；不存在/已交付的 seq 忽略），从而推进**连续** `deliveredSeq`；
-  **不推 attended、不算已读、不发 QQ 消息、不标记已回**。空洞（seq1 未交付、seq2 已交付）不会让 deliveredSeq 跨过去。
+  **不推 attended、不算已读、不发 QQ 消息、不标记已回**。空洞（seq1 未交付、seq2 已交付）不会让 deliveredSeq 跨过去；
+  **deliveredSeq 单调不回退**：先回执 seq5、seq3 还没到 → 水位停在空洞前；等 3/4 补齐后再连续前进到 5。
 - **失败不影响投递**：服务内部 catch，返回 `{ok:false,error}` 而不 throw；time/focus 可以忽略返回值，绝不能因为回执失败中断重放。
 - **返回**：`{ok, accepted, skipped, deliveredSeq, attendedSeq, lastSeq, via, at}`；`qq_status.ledger.deliveredVia[via]`
   统计 `{accepted, skipped, calls, lastAt}`（便于核对各来源补推量）。
