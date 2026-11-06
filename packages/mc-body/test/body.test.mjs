@@ -648,6 +648,11 @@ test('body：mcb_stop 暂停中可调用（任务/身体分开报告），resume
   assert.ok(report.body.note.includes('身体仍在世界'))
   assert.equal(report.reflex.enabled, true)
   await waitFor(() => body.getTask(queued.id)?.state === 'cancelled', 1000, 'queued cancelled by stop')
+  // pausedReason 用规范值 user-stop（time pausedMode 对账），调用方原始原因保留在 requestedReason
+  const stopAgain = await body.doPlan([{ op: 'stop', reason: 'mcb_stop' }])
+  assert.equal(stopAgain.results[0].result.pausedReason, 'user-stop')
+  assert.equal(stopAgain.results[0].result.requestedReason, 'mcb_stop')
+  assert.equal(stopAgain.results[0].result.safety.requestedReason, 'mcb_stop')
   // 暂停中写动作仍拒；stop 之后 resume 能恢复干活
   await assert.rejects(() => body.doPlan([{ op: 'move', x: 1, y: 64, z: 1 }]), /暂停/)
   assert.throws(() => body.createTask({ kind: 'mine', params: { count: 1 } }), /暂停/)

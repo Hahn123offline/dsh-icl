@@ -501,7 +501,9 @@ export function createBody({
 
   // mcb_stop：cancel + 反射 + 报告（不需要先 resume）；任务与身体状态分开说清。
   function stopAll(reason = 'user-stop') {
-    const stopReason = String(reason || 'user-stop')
+    // pausedReason 用规范值 `user-stop`（与 time pausedMode 对账）；调用方原始原因放 requestedReason。
+    const requestedReason = String(reason || 'user-stop')
+    const stopReason = ['mcb_stop', 'manual', 'api', 'stop'].includes(requestedReason) ? 'user-stop' : requestedReason
     const cancelled = []
     for (const task of queue.splice(0)) {
       if (TERMINAL.has(task.state)) continue
@@ -519,7 +521,7 @@ export function createBody({
     if (!paused) safetyStop(stopReason)
     else if (pausedReason !== stopReason) {
       pausedReason = stopReason
-      pushAlarm('safety_stop', { reason: pausedReason, via: 'mcb_stop' })
+      pushAlarm('safety_stop', { reason: pausedReason, via: 'mcb_stop', requestedReason })
     }
     const adapterState = adapterStatus()
     const connected = adapterState.connected === undefined ? connectionState !== false : Boolean(adapterState.connected)
@@ -528,6 +530,7 @@ export function createBody({
       ok: true,
       paused: true,
       pausedReason,
+      requestedReason,
       task: {
         cancelled,
         note: cancelled.length ? `任务已停（取消 ${cancelled.length} 个）` : '任务已停（没有在跑/排队的任务）',
@@ -542,7 +545,7 @@ export function createBody({
           : '身体不在世界（离线/已退出）；恢复需先让 body 上线',
       },
       reflex: reflexView(),
-      safety: { reason: pausedReason, alarm: true, priority: 'alarm', pierce: true },
+      safety: { reason: pausedReason, requestedReason, alarm: true, priority: 'alarm', pierce: true },
     }
   }
 
