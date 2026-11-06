@@ -367,8 +367,10 @@ export async function createLabSession(api, { preset, workspace, title }) {
   return { workspaceId, sessionId }
 }
 
-export async function selectModel(api, sessionId, { provider, model }) {
-  const value = unwrap(await api.callUnary('session/selectModel', { sessionId, provider, model }, undefined, 'long'), 'session/selectModel')
+export async function selectModel(api, sessionId, { provider, model, reasoningEffort = null }) {
+  // session/selectModel 的可选 reasoningEffort（DSH 0.2 请求 schema 支持；不传则用 profile/model 默认）。
+  const request = { sessionId, provider, model, ...(reasoningEffort ? { reasoningEffort: String(reasoningEffort) } : {}) }
+  const value = unwrap(await api.callUnary('session/selectModel', request, undefined, 'long'), 'session/selectModel')
   return value
 }
 
