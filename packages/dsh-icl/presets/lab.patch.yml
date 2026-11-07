@@ -326,6 +326,9 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: true
+          # 原生 read_image：QQ/视频附件不可用时也能按本地路径看单张图（lab-only）。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-persona
             name: '@deepseek-ai/dsh-persona'
             config:

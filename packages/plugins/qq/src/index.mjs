@@ -921,6 +921,38 @@ export async function apply(ctx) {
   function handleEvent(raw, { backfilled = false } = {}) {
     if (disposed) return { accept: false, code: 'disposed' }
     stats.frames += 1
+    // 戳一戳（OneBot notice: notice_type=notify / sub_type=poke，或直接 notice_type=poke）：
+    // 不是消息，之前的 gate 当 not-message 丢掉；这里单独入口，只接受 owner/白名单，
+    // 目标必须是机器人自己（群戳忽略），给模型一条"有人戳你"的信号，而不是伪造用户消息。
+    const isPoke = raw?.post_type === 'notice'
+      && (raw?.sub_type === 'poke' || raw?.notice_type === 'poke'
+        || (raw?.notice_type === 'notify' && String(raw?.sub_type ?? '') === 'poke'))
+    if (isPoke) {
+      const fromId = String(raw?.user_id ?? raw?.sender_id ?? '')
+      const targetId = raw?.target_id == null ? null : String(raw.target_id)
+      const selfId = raw?.self_id == null ? null : String(raw.self_id)
+      const allowed = (cfg.ownerQQ != null && fromId === String(cfg.ownerQQ))
+        || cfg.allowAllPrivate === true
+        || cfg.allowPrivate.map(String).includes(fromId)
+      if (!allowed) return { accept: false, code: 'not-allowlisted' }
+      if (targetId != null && selfId != null && targetId !== selfId) return { accept: false, code: 'poke-not-me' }
+      const at = now()
+      const name = senderKindOf(fromId) === 'owner' ? '主人' : `QQ ${fromId}`
+      stats.poke = (stats.poke ?? 0) + 1
+      ctx.signals.offer({
+        from: { plugin: 'qq', activity: `qq:private:${fromId}` },
+        kind: 'notice',
+        text: `[QQ戳一戳] ${name} 戳了戳你（这不是对方发来的消息；可以回应，也可以发回一个戳一戳）`,
+        tags: ['qq', 'private', 'poke'],
+        meta: {
+          qq: {
+            poke: { from: fromId, target: targetId, at, fromSelf: fromId === String(raw?.self_id ?? '') },
+            envelope: { channel: 'qq', scope: 'private', senderKind: senderKindOf(fromId), peerId: fromId, activity: `qq:private:${fromId}`, at },
+          },
+        },
+      })
+      return { accept: true, code: 'poke' }
+    }
     if (raw?.post_type === 'meta_event') {
       stats.meta += 1
       connector?.onMeta?.() // 保留扩展点：当前只更新连接器内部 lastPacketAt
