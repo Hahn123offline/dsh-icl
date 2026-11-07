@@ -147,6 +147,8 @@
               stateDir: mc-state
               personaFile: prompts/persona.md
               simulationFile: prompts/sim.md
+              simulationExtraFiles:
+                - prompts/sim-mc.md
               tickMs: 500
               timeTickMs: 1000
               mcBaseUrl: http://127.0.0.1:54836

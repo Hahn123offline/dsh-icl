@@ -72,6 +72,10 @@ export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = 
   //   工具教学                —— 每个工具自己的 description + 按需 skills（不进全局提示词）
   const personaFile = resolvePath(raw.personaFile, path.join(REPO_ROOT, 'prompts', 'persona.md'))
   const simulationFile = resolvePath(raw.simulationFile, path.join(REPO_ROOT, 'prompts', 'sim.md'))
+  // 只在特定 preset 加载的仿真补充（如 MC）：避免产品提示词里出现当前工具面不存在的
+  // mcb_* 操作手册。base sim 永远是 sim.md，extra 追加在它后面。
+  const simulationExtraFiles = (Array.isArray(raw.simulationExtraFiles) ? raw.simulationExtraFiles : [])
+    .map((file) => resolvePath(file, path.join(REPO_ROOT, 'prompts', 'sim.md')))
   const dreamPersonaFile = resolvePath(raw.dreamPersonaFile, path.join(REPO_ROOT, 'prompts', 'dream.md'))
   const providersFile = resolvePath(raw.providersFile, path.join(REPO_ROOT, 'config', 'icl.local.json'))
   const providers = Array.isArray(raw.providers) ? raw.providers : readProviders(providersFile)
@@ -90,6 +94,7 @@ export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = 
     sandboxWorkspaceRoot: paths.sandboxWorkspaceRoot,
     personaFile,
     simulationFile,
+    simulationExtraFiles,
     dreamPersonaFile,
     providersFile,
     providers,
@@ -121,7 +126,8 @@ export function normalizeConfig(input = {}, { env = process.env, dshHomeDir } = 
     dreamAt: String(raw.dreamAt ?? '23:00'),
     compactionTriggerChars: Math.max(1000, Number(raw.compactionTriggerChars ?? 12_000)),
     persona: readText(personaFile, ''),
-    simulation: readText(simulationFile, ''),
+    simulation: [readText(simulationFile, ''), ...simulationExtraFiles.map((file) => readText(file, ''))]
+      .filter(Boolean).join('\n\n'),
     dreamPersona: readText(dreamPersonaFile, ''),
     /**
      * 第一屏净化（红队 P0-1）：用同名空段 shadow 掉 DSH 全局的工程脚手架段。

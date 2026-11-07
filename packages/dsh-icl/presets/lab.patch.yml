@@ -170,6 +170,8 @@
               stateDir: '__LAB_STATE__/icl-mc-lab'
               personaFile: prompts/persona.md
               simulationFile: prompts/sim.md
+              simulationExtraFiles:
+                - prompts/sim-mc.md
               tickMs: 200
               timeTickMs: 1000
               # 第一屏净化（红队 P0-1）：与 icl-lab 同 4 段 shadow；产品 preset 要开需用户批准。

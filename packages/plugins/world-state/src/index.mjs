@@ -8,7 +8,8 @@
 //   · 默认（无参数）：每个注册者只露出最多 cap 条 brief，用来做"全局一瞥"
 //   · 指定 owner：列出这个注册者登记的全部项（受 limit 约束）
 //   · 指定 owner + item：展开这一项的全量内容
-//   · items() 每次调用都重新求值 → 注册者可以动态撤回/新增（例如"没有活跃世界"就不投）
+//   · items() 每次调用都重新求值 → 注册者可以动态撤回/新增；空 items() 默认出一行“无”，
+//     只有显式 `empty:false` 的 source 才整段消失（全局快照，不是有才出现的通知流）
 //
 // 提示词里**永远只放 brief 层**；detail 只在工具/服务里展开。
 export const name = 'world-state'
@@ -163,7 +164,7 @@ export function apply(ctx) {
     summary: 'Read the world state bus: one line per feed, or expand one owner or item.',
     when: ['you want to know what is going on around you', 'before acting somewhere'],
     avoid: ['when nothing changed since you last looked'],
-    description: 'No arguments: the global glance (one line per owner/feed). owner: list that owner\'s items. owner + item: expand one item\'s full detail. Sources are assembled at runtime and may disappear when they have nothing to report.',
+    description: 'No arguments: the global glance (one line per owner/feed). owner: list that owner\'s items. owner + item: expand one item\'s full detail. Feeds report "无" when they have nothing right now; a feed only disappears if its source explicitly opts out with empty:false.',
     parameters: {
       type: 'object',
       additionalProperties: false,

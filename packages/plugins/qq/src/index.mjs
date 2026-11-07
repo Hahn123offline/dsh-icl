@@ -1716,10 +1716,10 @@ export async function apply(ctx) {
         empty: () => '无未读',
         items: () => {
           const s = status()
-          if (!s.enabled) return [{ key: 'disabled', brief: 'QQ 未启用。' }]
-          if (!s.connection.connected) return [{ key: 'offline', brief: 'QQ 未连接。' }]
+          if (!s.enabled) return [{ key: 'disabled', brief: '未启用。' }]
+          if (!s.connection.connected) return [{ key: 'offline', brief: '未连接。' }]
           const unread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
-          if (unread > 0) return [{ key: 'unread', brief: `QQ 私聊还有 ${unread} 条没交付。`, detail: `未交付 ${unread} 条；用 qq_unread / qq_replied 查看。` }]
+          if (unread > 0) return [{ key: 'unread', brief: `私聊还有 ${unread} 条没交付。`, detail: `未交付 ${unread} 条；用 qq_unread / qq_replied 查看。` }]
           return []
         },
       })
