@@ -620,6 +620,15 @@ export async function apply(ctx) {
   /** 唤醒矩阵的提醒只生成 signal（给 time 决定投递），不直接碰 delivery/focus。 */
   function emitWake(emission) {
     if (!emission?.activity) return false
+    // 睡眠/暂停/静音时，唤醒矩阵的“主动检查/积压提醒”不是外部消息，不能塞进 time 积压；
+    // 原始消息已经在积压里，醒来简报会统一呈现，提醒再次入队只会造成重复噪声。
+    try {
+      const phase = ctx.services?.get?.('time')?.status?.()?.phase
+      if (phase && phase !== 'awake') {
+        stats.wakeSuppressedNonAwake = (stats.wakeSuppressedNonAwake ?? 0) + 1
+        return false
+      }
+    } catch { /* time 不可用时保持旧行为 */ }
     const peer = peerLabelOf(emission.activity)
     const wakeApi = timeWakeApi()
     const compact = timeWakeCompact(wakeApi)

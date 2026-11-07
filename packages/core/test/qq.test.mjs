@@ -576,3 +576,29 @@ test('睡眠拦截：戳一戳与普通消息一样进 time 积压，不产生�
   host.disable('time')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('睡眠中唤醒矩阵的主动提醒不塞进 time 积压（只保留原始消息）', async () => {
+  FakeWebSocket.reset()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-wake-sleep-'))
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(timeManifest, timeModule, { config: { stateFile: path.join(dir, 'time.json'), tickMs: 3_600_000 } })
+  host.registerPlugin(manifest, qqModule, {
+    config: makePluginConfig({ wakeTickMs: 20, nudgeSoftMs: 0, nudgeCooldownMs: 0, replyCheckEnabled: false }),
+  })
+  await host.enable('time')
+  const time = host.shared.get('time')
+  time.sleep({ message: '睡了', durationMin: 30 })
+  host.services.delivery.drain('session').forEach((batch) => host.services.delivery.ack(batch.id))
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(privateEvent({ text: '睡眠里的一条', messageId: 9501 })))
+  assert.equal(time.status().backlog, 1)
+  await sleep(1300)
+  assert.equal(time.status().backlog, 1, '睡眠中不应再生成积压提醒')
+  assert.ok((host.shared.get('qq').status().stats.wakeSuppressedNonAwake ?? 0) >= 1, '唤醒矩阵应在非 awake 时被拦下')
+  host.disable('qq')
+  host.disable('time')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
