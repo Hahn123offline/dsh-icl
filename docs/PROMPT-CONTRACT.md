@@ -29,7 +29,7 @@
 ## 3. 插件 prompt section 的硬规则
 
 - 只允许"当前事实"：`时间：…`、`位置：…`、`任务：…`、`待办：…`。不允许"你应该…""记得要…"。
-- 每段最多 1–2 行、有长度上限（实现里要截断），没有内容时整段消失（`when()` 返回 false），不要留空行。
+- 每段最多 1–2 行、有长度上限（实现里要截断），没有内容时整段消失（`when()` 返回 false），不要留空行。**例外：world 的 feed 空值是事实**（见 §9），allow 的 source 会用一条“无”占位而不是整段消失；`empty:false` 的 source 才按本节消失。
 - 动态段 order 从 800 起；人格 20、仿真 25，中间留给未来全局常量段（30–799）。
 - 段文本的**开头**不许放随机量（id、毫秒时间戳、随机摘要）；易变量放段尾。
 - 同一事实只能有一个 section；发现重复（如 time 与 world-state 各一行"时间"）由 owner 合并。
@@ -44,7 +44,8 @@
 ## 5. 已落地的拆分（2026-11-05）
 
 - `prompts/persona.md`：小千的身份、语气、在乎的事、底线（无工具名）。
-- `prompts/sim.md`：生活节奏、时间/唤醒/睡眠、focus、记忆、MC 怎么来一局、看视频、工具共同规矩。
+- `prompts/sim.md`：生活节奏、时间/唤醒/睡眠/quiet、focus、记忆、看视频、工具共同规矩。
+- `prompts/sim-mc.md`：MC 操作配合，只由 `icl-mc` / `icl-mc-lab` 通过 `simulationExtraFiles` 追加；产品/普通 lab 不加载。
 - `prompts/live.md`：**遗留合并版**，不再被默认配置引用；保留作对照，勿再往里加内容。
 - `dsh-icl`：`personaFile` 默认 `prompts/persona.md`；新增 `simulationFile`（默认 `prompts/sim.md`），
   由 `bootstrapHost` 注册为 `icl:simulation`（order 25），与 `persona`（order 20）相邻。
@@ -88,3 +89,9 @@ scoped `@deepseek-ai/dsh-persona`：
 - world status 是**全局快照**，不是"有内容才出现"的通知流：注册 source 在 `items()` 为空时默认生成 `无` 占位（`empty` 可改文案，`empty:false` 才允许完全消失）。
 - QQ / 待办 / 日程等源必须在"没消息"时也告诉模型"现在没有"，否则模型会把缺失误读成"世界只有时间"。
 - 心跳消息 = time status + world brief；它不再只是时间信息。
+
+## 10. 2026-11-08 追加：preset-specific 仿真补充
+
+- 仿真 base 永远只有 `prompts/sim.md`；只对某类 preset 成立的工具手册（目前是 MC）放 `prompts/sim-mc.md`，由 `simulationExtraFiles` 追加。
+- 普通 `icl` / `icl-loop` 不加载 MC 段：产品没有 `mcb_*` 工具，提示词里不该出现它们。
+- 判断标准仍是 §2 四问；sim 只讲"这些工具如何配合"，不抄参数表。MC 段目前仍有偏操作手册的内容，后续可按 §2 再收缩到 `mcb_help` skills。
