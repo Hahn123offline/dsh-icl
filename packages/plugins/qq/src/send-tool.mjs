@@ -81,6 +81,9 @@ export async function registerSendTool({
   // 仅供测试/运维：把 live config 显式关掉（不写文件，只改内存对象）
   function killSwitch(reason = 'manual') {
     live.allowSend = false
+    outbox.length = 0
+    if (outboxTimer) { try { clearTimeout(outboxTimer) } catch { /* 已触发 */ } outboxTimer = null }
+    idempotency.clear()
     log({ level: 'warn', msg: 'qq.send.kill-switch', reason })
     return { allowSend: live.allowSend }
   }
@@ -181,8 +184,213 @@ export async function registerSendTool({
   const maxMessageChars = Math.max(1, Math.floor(num(cfg.maxMessageChars, BURST.maxChars)))
   const gapMode = String(cfg.gapMode ?? 'auto')
   const targetCfg = { ...cfg, enabled: true, allowSend: true, sendApproval: SEND_APPROVAL_TOKEN }
+  // Phase 2 短队列：默认关；产品 preset 开。关闭时保持原有"超限直接拒绝"语义。
+  const outboxEnabled = cfg.outboxEnabled === true
+  const outboxMaxPending = Math.max(1, Math.floor(num(cfg.outboxMaxPending, 20)))
+  const outboxTtlMs = Math.max(10_000, num(cfg.outboxTtlMs, 5 * 60_000))
+  const globalMaxPerMinute = num(cfg.globalSendMaxPerMinute, 0)
+  const outbox = []
+  const idempotency = new Map() // fingerprint -> { state, at, result }
+  let outboxTimer = null
+  let outboxBusy = false
+  let globalTimes = []
+  state.outboxCounts = { queued: 0, sent: 0, dropped: 0, deduped: 0 }
 
-  /** 把入参归一成"已清洗、已切好"的气泡列表；失败返回 { error, detail }。 */
+  function pruneGlobal(at = now()) {
+    globalTimes = globalTimes.filter((t) => at - t < 60_000)
+  }
+
+  /** 统一限速判定；includeTurn=false 时供队列 worker 使用（每轮调用额度只在 execute 判）。 */
+  function rateIssue(peer, count, { includeTurn = false } = {}) {
+    const at = now()
+    const ps = peerState(peer)
+    ps.times = ps.times.filter((t) => at - t < 3600_000)
+    const minute = ps.times.filter((t) => at - t < 60_000)
+    if (includeTurn && maxPerTurn > 0 && state.turnSent >= maxPerTurn) return `本轮最多 ${maxPerTurn} 条（等下一轮再发）`
+    if (ps.times.length && at - ps.times[ps.times.length - 1] < minIntervalMs) return `同一私聊至少 ${Math.round(minIntervalMs / 1000)} 秒一条`
+    if (maxPerMinute > 0 && minute.length + count > maxPerMinute) return `每分钟最多 ${maxPerMinute} 条（本次计划 ${count} 条）`
+    if (maxPerHour > 0 && ps.times.length + count > maxPerHour) return `每小时最多 ${maxPerHour} 条（本次计划 ${count} 条）`
+    if (globalMaxPerMinute > 0) {
+      pruneGlobal(at)
+      if (globalTimes.length + count > globalMaxPerMinute) return `全局每分钟最多 ${globalMaxPerMinute} 条`
+    }
+    return null
+  }
+
+  function fingerprintOf(peer, bubbles, replyToMessageId = null) {
+    return hash(`${peer}\u0000${bubbles.join('\u0001')}\u0000${replyToMessageId ?? ''}`)
+  }
+
+  function idempotencyHit(fingerprint) {
+    if (!outboxEnabled || !fingerprint || sameTextWindowMs <= 0) return null
+    const row = idempotency.get(fingerprint)
+    if (!row || now() - Number(row.at) >= sameTextWindowMs) return null
+    return row
+  }
+
+  function rememberIdempotency(fingerprint, row) {
+    if (!outboxEnabled || !fingerprint) return
+    idempotency.set(fingerprint, { at: now(), ...row })
+    if (idempotency.size > 200) {
+      const oldest = [...idempotency.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (oldest) idempotency.delete(oldest[0])
+    }
+  }
+
+  function enqueueOutbox(job, reason = null) {
+    if (outbox.length >= outboxMaxPending) {
+      state.outboxCounts.dropped += 1
+      audit({ kind: 'queue', peerId: job.peer, chars: job.key.length, textHash: hash(job.key), outcome: 'refused', error: 'queue-full', reason })
+      return refuse(`发送队列已满（${outboxMaxPending} 条），这次没有排队`, { peerId: job.peer, chars: job.key.length, hash: hash(job.key) })
+    }
+    job.enqueuedAt = now()
+    job.expiresAt = job.enqueuedAt + outboxTtlMs
+    outbox.push(job)
+    state.outboxCounts.queued += 1
+    if (job.fingerprint) rememberIdempotency(job.fingerprint, { state: 'queued' })
+    audit({ kind: 'queue', peerId: job.peer, chars: job.key.length, textHash: hash(job.key), outcome: 'queued', reason })
+    scheduleOutbox(0)
+    return {
+      text: `已排队（${reason || '前一批还没发完/限流中'}），会按顺序发；不要重复调用。`,
+      outcome: 'queued',
+      queued: true,
+      peerId: job.peer,
+    }
+  }
+
+  function scheduleOutbox(delayMs = 0) {
+    if (!outboxEnabled || outboxBusy || !outbox.length || outboxTimer) return
+    outboxTimer = setTimeout(() => {
+      outboxTimer = null
+      void drainOutbox()
+    }, Math.max(0, Number(delayMs) || 0))
+    if (typeof outboxTimer.unref === 'function') outboxTimer.unref()
+  }
+
+  async function drainOutbox() {
+    if (!outboxEnabled || outboxBusy || !outbox.length || !keysNow()) return
+    const job = outbox[0]
+    if (now() >= Number(job.expiresAt)) {
+      outbox.shift()
+      state.outboxCounts.dropped += 1
+      if (job.fingerprint) idempotency.delete(job.fingerprint)
+      audit({ kind: 'queue', peerId: job.peer, chars: job.key.length, textHash: hash(job.key), outcome: 'expired' })
+      scheduleOutbox(0)
+      return
+    }
+    const issue = rateIssue(job.peer, job.bubbles.length)
+    if (issue) {
+      scheduleOutbox(Math.min(1000, Math.max(100, minIntervalMs / 2)))
+      return
+    }
+    outboxBusy = true
+    outbox.shift()
+    state.outboxCounts.sent += 1
+    try {
+      await performSend(job)
+    } catch (error) {
+      log({ level: 'warn', msg: 'qq.outbox.send-fail', peerId: job.peer, error: String(error?.message ?? error) })
+    } finally {
+      outboxBusy = false
+      scheduleOutbox(50)
+    }
+  }
+
+  /** 真正执行一批发送（execute 与队列 worker 共用）。 */
+  async function performSend({ peer, bubbles, key, replyToMessageId = null, args = {}, fingerprint = null, fromQueue = false }) {
+    const ps = peerState(peer)
+    const at = now()
+    ps.lastText = key
+    ps.lastTextAt = at
+    let throughSeq = null
+    try { throughSeq = typeof onSendStart === 'function' ? await onSendStart({ peerId: peer, replyToMessageId, at }) : null } catch { throughSeq = null }
+    const plan = planBurst(bubbles, {
+      random: randomImpl,
+      gapMode: args.gapMode ?? gapMode,
+      gapMs: args.gapMs ?? null,
+      gaps: Array.isArray(args.gaps) ? args.gaps : null,
+      pace: args.pace ?? 'normal',
+      maxMessages: burstMaxMessages,
+      maxChars: maxMessageChars,
+      minGapMs: num(cfg.burstIntervalMinMs, BURST.minGapMs),
+      maxGapMs: num(cfg.burstIntervalMaxMs, BURST.maxGapMs),
+      longGapChance: num(cfg.longGapProbability, BURST.longGapChance, { max: 1 }),
+      longGapMinMs: num(cfg.longGapMinMs, BURST.longGapMinMs),
+      longGapMaxMs: num(cfg.longGapMaxMs, BURST.longGapMaxMs),
+    })
+    const startedAt = now()
+    const sent = []
+    let failure = null
+    for (let i = 0; i < plan.length; i += 1) {
+      const step = plan[i]
+      if (i > 0) {
+        if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
+        await sleepImpl(step.delayBeforeMs)
+      }
+      if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
+      const bubbleAt = now()
+      ps.times.push(bubbleAt)
+      pruneGlobal(bubbleAt)
+      globalTimes.push(bubbleAt)
+      const result = await outbound.sendPrivate(peer, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
+      const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+      state.counts[outcome] += 1
+      audit({
+        kind: 'send', peerId: peer, chars: step.text.length, textHash: hash(step.text),
+        outcome, messageId: result.messageId ?? null, ms: result.ms ?? null,
+        batch: { index: i + 1, total: plan.length }, replyTo: i === 0 ? replyToMessageId : null,
+        queued: fromQueue || undefined,
+        error: result.error ?? null,
+      })
+      if (!result.ok) { failure = { outcome, error: result.error, index: i }; break }
+      sent.push({ messageId: result.messageId, chars: step.text.length, ms: result.ms })
+    }
+
+    const ms = now() - startedAt
+    const outcome = !failure && sent.length === plan.length ? 'ok' : (failure?.outcome ?? 'unknown')
+    state.recent = {
+      at: now(),
+      peerId: peer,
+      outcome,
+      replyToMessageId,
+      messageId: sent[0]?.messageId ?? null,
+      messageIds: sent.map((item) => item.messageId).filter(Boolean),
+      sent: sent.length,
+      total: plan.length,
+      ms,
+      chars: bubbles.reduce((sum, text) => sum + text.length, 0),
+      error: failure?.error ?? null,
+    }
+    if (typeof onSent === 'function' && sent.length > 0) {
+      try {
+        await onSent({
+          peerId: peer, replyToMessageId, sent: sent.length, total: plan.length,
+          outcome, throughSeq, at: now(),
+        })
+      } catch (error) {
+        ctx.log({ level: 'warn', msg: 'qq.send.on-sent', error: String(error?.message ?? error) })
+      }
+    }
+    if (fingerprint) {
+      if (outcome === 'ok') rememberIdempotency(fingerprint, { state: 'sent', result: { messageId: sent[0]?.messageId ?? null } })
+      else if (outcome === 'rejected') idempotency.delete(fingerprint)
+      else rememberIdempotency(fingerprint, { state: 'unknown' })
+    }
+    if (outcome === 'ok') {
+      if (plan.length === 1) return { text: `已发出去（messageId=${sent[0]?.messageId}，${ms}ms）。`, outcome: 'ok', messageId: sent[0]?.messageId ?? null }
+      return { text: `已发出去 ${plan.length} 条（共 ${ms}ms；messageIds=${sent.map((item) => item.messageId).join(',')}）。`, outcome: 'ok', messageIds: sent.map((item) => item.messageId) }
+    }
+    const reason = failure?.error ?? '未知原因'
+    const label = outcome === 'unknown' ? `结果未知（${reason}）` : reason
+    return {
+      text: `没发出去：${label}。已发 ${sent.length}/${plan.length} 条，其余 ${plan.length - sent.length} 条未发送（不自动重试）。`,
+      outcome,
+      error: reason,
+      sent: sent.length,
+      total: plan.length,
+    }
+  }
+
   function prepareBubbles(args = {}) {
     const rawList = args.messages != null
       ? (Array.isArray(args.messages) ? args.messages : [args.messages])
@@ -237,110 +445,33 @@ export async function registerSendTool({
     if (maxPerTurn > 0 && state.turnSent >= maxPerTurn) {
       return refuse(`本轮最多 ${maxPerTurn} 条（等下一轮再发）`, { peerId: peer, chars: key.length, hash: hash(key) })
     }
-    const ps = peerState(peer)
-    ps.times = ps.times.filter((t) => at - t < 3600_000)
-    const minute = ps.times.filter((t) => at - t < 60_000)
-    if (ps.times.length && at - ps.times[ps.times.length - 1] < minIntervalMs) {
-      return refuse(`限流：同一私聊至少 ${Math.round(minIntervalMs / 1000)} 秒一条`, { peerId: peer, chars: key.length, hash: hash(key) })
-    }
-    if (maxPerMinute > 0 && minute.length + bubbles.length > maxPerMinute) {
-      return refuse(`限流：每分钟最多 ${maxPerMinute} 条（本次计划 ${bubbles.length} 条）`, { peerId: peer, chars: key.length, hash: hash(key) })
-    }
-    if (maxPerHour > 0 && ps.times.length + bubbles.length > maxPerHour) {
-      return refuse(`限流：每小时最多 ${maxPerHour} 条（本次计划 ${bubbles.length} 条）`, { peerId: peer, chars: key.length, hash: hash(key) })
-    }
-    if (sameTextWindowMs > 0 && ps.lastText === key && at - ps.lastTextAt < sameTextWindowMs) {
+    const fingerprint = fingerprintOf(peer, bubbles, replyToMessageId)
+    if (outboxEnabled) {
+      const duplicate = idempotencyHit(fingerprint)
+      if (duplicate) {
+        state.outboxCounts.deduped += 1
+        if (duplicate.state === 'sent') return { text: '这批内容刚发过，没有重复发送。', outcome: 'ok', deduped: true }
+        if (duplicate.state === 'queued') return { text: '这批内容已经在发送队列里了，没有重复排队。', outcome: 'queued', deduped: true, queued: true }
+        return { text: '这批内容上次发送结果未知；不要重发，先用 qq_status 核对。', outcome: 'unknown', deduped: true }
+      }
+    } else if (sameTextWindowMs > 0 && peerState(peer).lastText === key && at - peerState(peer).lastTextAt < sameTextWindowMs) {
       return refuse(`重复内容（${Math.round(sameTextWindowMs / 1000)} 秒内已发过同样的话）`, { peerId: peer, chars: key.length, hash: hash(key) })
     }
 
-    // 真正开始：每轮只算一次调用；气泡逐条发，逐条守卫
+    const job = { peer, bubbles, key, replyToMessageId, args, fingerprint, fromQueue: false }
+    const issue = rateIssue(peer, bubbles.length)
     state.turnSent += 1
-    ps.lastText = key
-    ps.lastTextAt = at
-    let throughSeq = null
-    try { throughSeq = typeof onSendStart === 'function' ? await onSendStart({ peerId: peer, replyToMessageId, at }) : null } catch { throughSeq = null }
-    const plan = planBurst(bubbles, {
-      random: randomImpl,
-      gapMode: args.gapMode ?? gapMode,
-      gapMs: args.gapMs ?? null,
-      gaps: Array.isArray(args.gaps) ? args.gaps : null,
-      pace: args.pace ?? 'normal',
-      maxMessages: burstMaxMessages,
-      maxChars: maxMessageChars,
-      minGapMs: num(cfg.burstIntervalMinMs, BURST.minGapMs),
-      maxGapMs: num(cfg.burstIntervalMaxMs, BURST.maxGapMs),
-      longGapChance: num(cfg.longGapProbability, BURST.longGapChance, { max: 1 }),
-      longGapMinMs: num(cfg.longGapMinMs, BURST.longGapMinMs),
-      longGapMaxMs: num(cfg.longGapMaxMs, BURST.longGapMaxMs),
-    })
-    const startedAt = now()
-    const sent = []
-    let failure = null
-    for (let i = 0; i < plan.length; i += 1) {
-      const step = plan[i]
-      if (i > 0) {
-        if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
-        await sleepImpl(step.delayBeforeMs)
-      }
-      if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
-      const bubbleAt = now()
-      ps.times.push(bubbleAt)
-      const result = await outbound.sendPrivate(peer, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
-      const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
-      state.counts[outcome] += 1
-      audit({
-        kind: 'send', peerId: peer, chars: step.text.length, textHash: hash(step.text),
-        outcome, messageId: result.messageId ?? null, ms: result.ms ?? null,
-        batch: { index: i + 1, total: plan.length }, replyTo: i === 0 ? replyToMessageId : null,
-        error: result.error ?? null,
-      })
-      if (!result.ok) { failure = { outcome, error: result.error, index: i }; break }
-      sent.push({ messageId: result.messageId, chars: step.text.length, ms: result.ms })
+    if (outboxEnabled && (issue || outbox.length)) {
+      return enqueueOutbox(job, issue)
     }
+    if (issue) return refuse(`限流：${issue}`, { peerId: peer, chars: key.length, hash: hash(key) })
 
-    const ms = now() - startedAt
-    const outcome = !failure && sent.length === plan.length ? 'ok' : (failure?.outcome ?? 'unknown')
-    state.recent = {
-      at: now(),
-      peerId: peer,
-      outcome,
-      replyToMessageId,
-      messageId: sent[0]?.messageId ?? null,
-      messageIds: sent.map((item) => item.messageId).filter(Boolean),
-      sent: sent.length,
-      total: plan.length,
-      ms,
-      chars: bubbles.reduce((sum, text) => sum + text.length, 0),
-      error: failure?.error ?? null,
-    }
-    if (typeof onSent === 'function' && sent.length > 0) {
-      try {
-        await onSent({
-          peerId: peer, replyToMessageId, sent: sent.length, total: plan.length,
-          outcome, throughSeq, at: now(),
-        })
-      } catch (error) {
-        ctx.log({ level: 'warn', msg: 'qq.send.on-sent', error: String(error?.message ?? error) })
-      }
-    }
-    if (outcome === 'ok') {
-      if (plan.length === 1) return { text: `已发出去（messageId=${sent[0]?.messageId}，${ms}ms）。`, outcome: 'ok', messageId: sent[0]?.messageId ?? null }
-      return { text: `已发出去 ${plan.length} 条（共 ${ms}ms；messageIds=${sent.map((item) => item.messageId).join(',')}）。`, outcome: 'ok', messageIds: sent.map((item) => item.messageId) }
-    }
-    const reason = failure?.error ?? '未知原因'
-    const label = outcome === 'unknown' ? `结果未知（${reason}）` : reason
-    return {
-      text: `没发出去：${label}。已发 ${sent.length}/${plan.length} 条，其余 ${plan.length - sent.length} 条未发送（不自动重试）。`,
-      outcome,
-      error: reason,
-      sent: sent.length,
-      total: plan.length,
-    }
+    return performSend(job)
   }
 
   ctx.tools.register({
     name: 'qq_send',
-    summary: '发 QQ 私聊（唯一 QQ 发送工具）：一段话或 1–8 条短气泡，只能 owner/白名单私聊，群不存在。回复前先确认这是不是该回的那条（详见 qq_help 的 reply 策略）。',
+    summary: '发 QQ 私聊（唯一 QQ 发送工具）：一段话或 1–8 条短气泡，只能 owner/白名单私聊，群不存在。限流时可能返回“已排队”，不要重复调用。',
     when: [
       '你刚看到一条 QQ 私聊、判断该回',
       '想把回复拆成几条短气泡，而不是一大段',
@@ -349,6 +480,7 @@ export async function registerSendTool({
       '群消息（群发送不存在）',
       '图片/语音/文件（这些能力不存在，别用文字假装；表情用 qq_send_sticker）',
       '结果 unknown 时盲目重发（可能双发；用 qq_status 核对）',
+      '看到“已排队”或“刚发过”后再次调用（队列/幂等会处理，重复调用没有意义）',
       '对方只是发表情/图片且没问话时硬猜内容',
       '引用回复时同时发多条气泡（引用只支持单条）',
     ],
@@ -506,7 +638,8 @@ export async function registerSendTool({
         owner: cfg.ownerQQ ?? null,
         allowPrivate: [...(cfg.allowPrivate ?? [])],
         perTurn: { limit: maxPerTurn, sent: state.turnSent },
-        limits: { minIntervalMs, maxPerMinute, maxPerHour, sameTextWindowMs, burstMaxMessages, maxMessageChars, gapMode },
+        limits: { minIntervalMs, maxPerMinute, maxPerHour, sameTextWindowMs, burstMaxMessages, maxMessageChars, gapMode, globalMaxPerMinute },
+        outbox: { enabled: outboxEnabled, pending: outbox.length, maxPending: outboxMaxPending, ttlMs: outboxTtlMs, counts: { ...state.outboxCounts } },
         burst: { enabled: burstEnabled, maxMessages: burstMaxMessages, maxChars: maxMessageChars },
         stickers: { dir: stickerDir || null, libraryFile: stickerLibraryFile || null, maxBytes: maxStickerBytes, listLimit: stickerListLimit },
         counts: { ...state.counts },
@@ -517,6 +650,8 @@ export async function registerSendTool({
     },
     dispose() {
       try { offTurnEnd() } catch { /* 已注销 */ }
+      if (outboxTimer) { try { clearTimeout(outboxTimer) } catch { /* 已触发 */ } outboxTimer = null }
+      outbox.length = 0
       try { outbound.stop() } catch (error) { log({ level: 'warn', msg: 'qq.send.stop', error: String(error?.message ?? error) }) }
     },
   }

@@ -93,6 +93,11 @@ const DEFAULTS = Object.freeze({
   sendSameTextWindowMs: 60_000,
   maxSendsPerTurn: 1,
   maxSendChars: 2000,
+  // Phase 2 出站短队列：限流时排队而不是直接拒绝；默认关，产品 preset 开。
+  outboxEnabled: false,
+  outboxMaxPending: 20,
+  outboxTtlMs: 5 * 60_000,
+  globalSendMaxPerMinute: 0,
   sensitivePatterns: null,
   // P0-1 账本 / 断线补课（默认开：补课失败只是 gap 可见，不影响实时入站）
   ledgerFile: '',
@@ -178,6 +183,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.deliverBackfill = cfg.deliverBackfill === true
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
+  cfg.outboxEnabled = cfg.outboxEnabled === true
   cfg.burstEnabled = cfg.burstEnabled !== false
   cfg.markdownToPlain = cfg.markdownToPlain !== false
   cfg.backfillEnabled = cfg.backfillEnabled !== false
@@ -195,7 +201,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.stickerDir = String(cfg.stickerDir ?? '')
   cfg.stickerLibraryFile = String(cfg.stickerLibraryFile ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }

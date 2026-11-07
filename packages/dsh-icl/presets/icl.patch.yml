@@ -66,6 +66,11 @@
                   allowSend: true
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: 'auto'
+                  # Phase 2 出站短队列：限流时排队，短队列满/过期才拒绝；全局每分钟 24 条。
+                  outboxEnabled: true
+                  outboxMaxPending: 20
+                  outboxTtlMs: 300000
+                  globalSendMaxPerMinute: 24
                   # 入站防抖：对方连发时先攒 8s 再合成一次投递；最长 20s 必须交。
                   inboundDebounce:
                     enabled: true

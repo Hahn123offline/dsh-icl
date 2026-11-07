@@ -319,6 +319,10 @@
                   allowSend: true
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: '__LAB_SNOWLUMA_HOME__'
+                  outboxEnabled: true
+                  outboxMaxPending: 20
+                  outboxTtlMs: 300000
+                  globalSendMaxPerMinute: 24
                   accountUin: '2593621742'
                   ledgerFile: '__LAB_STATE__/qq/ledger.db'
                   recordFile: '__LAB_STATE__/qq/record.jsonl'

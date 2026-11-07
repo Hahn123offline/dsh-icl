@@ -347,3 +347,49 @@ test('每分钟上限按气泡数预留：计划超过上限时拒绝且零帧',
     assert.equal(env.fake.sendActions().length, 0)
   } finally { await env.cleanup() }
 })
+
+/* ── Phase 2：出站短队列 / 全局限流 / 批次幂等 ── */
+
+test('短队列：限流时排队，之后按顺序补发，不直接拒绝', async () => {
+  const env = await setup({
+    outboxEnabled: true,
+    outboxMaxPending: 5,
+    outboxTtlMs: 60_000,
+    sendMinIntervalMs: 1000,
+    maxSendsPerTurn: 10,
+    sendSameTextWindowMs: 60_000,
+  })
+  try {
+    const first = await env.tool().execute({ text: '第一句' })
+    assert.equal(first.outcome, 'ok')
+    const second = await env.tool().execute({ text: '第二句' })
+    assert.equal(second.outcome, 'queued')
+    assert.match(second.text, /已排队/)
+    assert.ok(await waitFor(() => env.fake.sendActions().length === 2, { timeoutMs: 3000 }), '队列应补发第二条')
+    assert.deepEqual(env.fake.sendActions().map((a) => a.params.message), ['第一句', '第二句'])
+    assert.equal(env.qq.status().send.outbox.pending, 0)
+  } finally { await env.cleanup() }
+})
+
+test('短队列批次幂等：同内容重复调用只发一次，返回 deduped', async () => {
+  const env = await setup({ outboxEnabled: true, sendMinIntervalMs: 0, sendSameTextWindowMs: 60_000 })
+  try {
+    const first = await env.tool().execute({ text: '同一句' })
+    assert.equal(first.outcome, 'ok')
+    const second = await env.tool().execute({ text: '同一句' })
+    assert.equal(second.outcome, 'ok')
+    assert.equal(second.deduped, true)
+    assert.equal(env.fake.sendActions().length, 1)
+  } finally { await env.cleanup() }
+})
+
+test('短队列满：拒绝新任务，不无限堆积', async () => {
+  const env = await setup({ outboxEnabled: true, outboxMaxPending: 1, sendMinIntervalMs: 5000, maxSendsPerTurn: 10 })
+  try {
+    assert.equal((await env.tool().execute({ text: '一' })).outcome, 'ok')
+    assert.equal((await env.tool().execute({ text: '二' })).outcome, 'queued')
+    const third = await env.tool().execute({ text: '三' })
+    assert.equal(third.outcome, 'refused')
+    assert.match(third.text, /队列已满/)
+  } finally { await env.cleanup() }
+})

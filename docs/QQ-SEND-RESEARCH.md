@@ -369,3 +369,16 @@ Phase 1 已实现（`6f274a3`）：
 - 未做：Phase 2 出站短队列/全局限流/批次幂等；Phase 3 显式 wait/打断；Phase 4 调参。
 
 **慢打字员的注意点**：10s quiet 是"最后一条之后无人再发"的等待，不是固定回复延迟；如果用户 10s 后继续发，新消息会进入下一批（Phase 3 的 finish-then-handle 会保证不抢话）。这个值需要真实聊天调参，不要一次调得太短。
+
+## 12. Phase 2：出站短队列 / 全局限流 / 批次幂等（已实现）
+
+- **短队列**（`send-tool.mjs`）：限流或前一批未发完时不再直接拒绝，而是入队；最多 20 条、TTL 5 分钟；队列满/过期才拒绝。队列按 FIFO 逐条 worker 发送，发送中仍逐条检查 kill switch。
+- **全局限流**：新增 `globalSendMaxPerMinute`（产品/ lab = 24），与每 peer 的 10/min、60/h 同时生效。
+- **批次幂等**：`peer + 气泡文本 + replyTo` 指纹，60s 窗口内重复调用返回"刚发过/已排队/结果未知"，不再发第二遍；rejected 删除指纹允许有意识重试，unknown 保留指纹阻止盲目重发。
+- **语义**：队列中的发送仍然"整批发完才返回"，但 `qq_send` 在排队时立即返回 `queued`；模型看到排队/重复提示就不应再调用。
+- **未做**：队列持久化（进程重启会丢 pending）、显式 wait/打断、全局队列公平（多 peer 时仍简单 FIFO）。
+- 测试：`qq-send.test.mjs` 新增排队、幂等、队列满三条；全量测试通过。
+- 产品/lab preset 已开 `outboxEnabled:true, outboxMaxPending:20, outboxTtlMs:300000, globalSendMaxPerMinute:24`。
+
+**下一阶段（Phase 3）**：显式 `qq_wait_for_messages` + finish-then-handle 打断；届时再把"整批返回 + 队列 + 等待"三者串成一个 per-activity 状态机。
+
