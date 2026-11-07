@@ -1,9 +1,10 @@
-# Time 日历层设计（v1 已实现）
+# Time 日历层设计（v2 已实现）
 
-状态：**v1 已实现（2026-11-07）**。原则：**在现有 `schedules` 上扩展，不新开日历库、不重复已有天粒度节律**。
+状态：**v2 已实现（2026-11-07）**。原则：**在现有 `schedules` 上扩展，不新开日历库、不重复已有天粒度节律**。
 
-已落地：`date / endDate / allDay / wake / repeat(every,until,count) / skipDates`；`time_view.calendar`（today/tomorrow/week）；`time_status` 的 `【今天】【明天】【本周】` 区块。
-未做（第二版）：monthly/yearly recurrence、复杂 RRULE、GUI；`skipDates` 是唯一例外形式，改某天先取消再建。
+已落地：`date / endDate / allDay / wake / repeat(every,until,count) / skipDates`；`repeat.every` 支持 `Nd / Nw / Nmo / Ny`；`time_view.calendar`（today/tomorrow/week）；`time_status` 的 `【今天】【明天】【本周】` 区块。
+monthly/yearly 采用标准日历语义：遇到不存在的日期（31 号遇到小月、2/29 遇平年）**跳过该次 occurrence**，不压到月末。
+未做：复杂 RRULE、逐事件时区、GUI；`skipDates` 是唯一例外形式，改某天先取消再建。
 
 ## 0. 事实基线
 

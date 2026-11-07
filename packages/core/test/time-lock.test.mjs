@@ -708,6 +708,30 @@ test('日历：skipDates 不会在跳过日补响上一条 occurrence', async ()
   assert.doesNotMatch(drainText(host), /不该响/)
 })
 
+test('日历 v2：monthly/yearly 按标准日历跳过不存在的日期', () => {
+  const fmt = (point) => { const d = new Date(point); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+  const monthly = time.normalizeSchedule({ id: 'm31', date: '2026-01-31', at: '07:30', repeat: { every: '1mo', count: 3 }, message: '月末' })
+  const monthPoints = []
+  let cursor = monthly.__parsed.startAt - 1
+  for (let i = 0; i < 3; i += 1) {
+    const point = time.nextOccurrence(monthly.__parsed, cursor, null)
+    assert.ok(point, '应能生成第 ' + (i + 1) + ' 个月末 occurrence')
+    monthPoints.push(fmt(point))
+    cursor = point
+  }
+  assert.deepEqual(monthPoints, ['2026-01-31', '2026-03-31', '2026-05-31'], '2 月/4 月没有 31 号，应跳过而不是压到 28/30')
+
+  const yearly = time.normalizeSchedule({ id: 'leap', date: '2024-02-29', at: '07:30', repeat: { every: '1y', count: 2 }, message: '闰日' })
+  const yearPoints = []
+  cursor = yearly.__parsed.startAt - 1
+  for (let i = 0; i < 2; i += 1) {
+    const point = time.nextOccurrence(yearly.__parsed, cursor, null)
+    yearPoints.push(fmt(point))
+    cursor = point
+  }
+  assert.deepEqual(yearPoints, ['2024-02-29', '2028-02-29'], '平年没有 2/29，应跳到下一个闰年')
+})
+
 
 test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再静默等待', async () => {
   let virtualNow = MON_0900

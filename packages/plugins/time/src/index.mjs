@@ -223,18 +223,34 @@ function endOfCalendarDate(key, timeZone) {
 }
 
 function parseRepeatEvery(raw) {
-  const m = /^(\d+)\s*(d|w|天|周)$/i.exec(String(raw ?? '').trim())
-  if (!m) throw new Error(`repeat.every 格式应为 2d / 2w：${raw}`)
+  const m = /^(\d+)\s*(d|w|mo|y|天|周|月|年)$/i.exec(String(raw ?? '').trim())
+  if (!m) throw new Error(`repeat.every 格式应为 2d / 2w / 1mo / 1y：${raw}`)
   const n = Math.max(1, Number(m[1]))
-  const unit = /^w|周$/i.test(m[2]) ? 'w' : 'd'
-  return { n, unit, intervalMs: n * (unit === 'w' ? 7 : 1) * CAL_DAY_MS }
+  const unitRaw = m[2].toLowerCase()
+  const unit = unitRaw === 'w' || unitRaw === '周' ? 'w'
+    : unitRaw === 'mo' || unitRaw === '月' ? 'mo'
+      : unitRaw === 'y' || unitRaw === '年' ? 'y' : 'd'
+  return { n, unit, intervalMs: unit === 'd' || unit === 'w' ? n * (unit === 'w' ? 7 : 1) * CAL_DAY_MS : 0 }
+}
+
+function daysInCalendarMonth(y, m) {
+  return new Date(Date.UTC(y, m, 0)).getUTCDate()
+}
+
+/** 按月/年推进；不存在的日期（31 号遇到小月、2/29 遇平年）跳过该 occurrence。 */
+function addCalendarMonths(fields, months, timeZone) {
+  const total = (fields.y * 12 + (fields.m - 1)) + months
+  const y = Math.floor(total / 12)
+  const m = (total % 12 + 12) % 12 + 1
+  if (fields.d > daysInCalendarMonth(y, m)) return null
+  return zonedEpoch({ y, m, d: fields.d, h: fields.h ?? 0, min: fields.min ?? 0 }, timeZone)
 }
 
 function normalizeRepeatInput(input) {
   if (input == null) return null
   const raw = typeof input === 'string' ? { every: input } : input
   if (!raw || typeof raw !== 'object') throw new Error('repeat 应为 {every,until?,count?}')
-  if (raw.every == null) throw new Error('repeat 需要 every（如 "2d" / "2w"）')
+  if (raw.every == null) throw new Error('repeat 需要 every（如 "2d" / "2w" / "1mo" / "1y"）')
   return {
     every: String(raw.every),
     until: raw.until == null ? null : String(raw.until),
@@ -303,6 +319,19 @@ function calendarPoints(parsed, from, to, timeZone, { ignoreSkip = false } = {})
       const t = pointOnDay(fields, parsed.hour, parsed.minute, timeZone)
       produced += 1
       if (!push(t)) break
+    }
+  } else if (parsed.everyUnit === 'mo' || parsed.everyUnit === 'y') {
+    const start = partsOf(startAt, timeZone)
+    const stepMonths = parsed.everyUnit === 'y' ? 12 * parsed.everyN : parsed.everyN
+    let produced = 0
+    for (let k = 0; k < 5000 && produced < count; k += 1) {
+      const t = addCalendarMonths(start, k * stepMonths, timeZone)
+      if (t == null) continue // 2/29、31 号遇到小月：标准日历跳过，不计 COUNT
+      if (t > untilAt) break
+      if (t > to) break
+      produced += 1
+      if (t < from) continue
+      push(t)
     }
   } else {
     for (let k = 0; k < count; k += 1) {
@@ -562,7 +591,11 @@ export function describeParsed(parsed) {
   if (parsed.kind === 'calendar') {
     const every = parsed.everyUnit === 'w'
       ? `每 ${parsed.everyN} 周`
-      : `每 ${parsed.everyN} 天`
+      : parsed.everyUnit === 'mo'
+        ? `每 ${parsed.everyN} 月`
+        : parsed.everyUnit === 'y'
+          ? `每 ${parsed.everyN} 年`
+          : `每 ${parsed.everyN} 天`
     const time = parsed.allDay ? '全天' : `${pad2(parsed.hour)}:${pad2(parsed.minute)}`
     return `${every} ${time}`
   }
@@ -2791,7 +2824,7 @@ export function apply(ctx) {
   tool({
     name: 'time_arrange',
     summary: '新建安排：一次/每天/每周/倒计时唤醒、日历日期/跨天/重复、goal 持续目标；mode:"heartbeat" 设置活跃度。',
-    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w",until?,count?} 在 date 上重复；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
@@ -2803,8 +2836,8 @@ export function apply(ctx) {
         endDate: { type: 'string', description: '跨天事件结束日期 YYYY-MM-DD（含当天）' },
         allDay: { type: 'boolean', description: '全天事件（默认只展示，不叫醒；要叫醒配 wake:true）' },
         wake: { type: 'boolean', description: '是否产生唤醒；allDay 默认 false，定时事件默认 true' },
-        repeat: { type: 'object', additionalProperties: false, description: '在 date 上重复：{every:"2d"|"2w", until?, count?}', properties: {
-          every: { type: 'string', description: '2d = 每两天，2w = 每两周' },
+        repeat: { type: 'object', additionalProperties: false, description: '在 date 上重复：{every:"2d"|"2w"|"1mo"|"1y", until?, count?}', properties: {
+          every: { type: 'string', description: '2d=每两天，2w=每两周，1mo=每月，1y=每年' },
           until: { type: 'string', description: '结束日期 YYYY-MM-DD 或 ISO' },
           count: { type: 'number', description: '最多发生次数' },
         } },
