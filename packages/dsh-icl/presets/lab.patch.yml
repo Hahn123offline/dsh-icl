@@ -21,6 +21,13 @@
 # 绝对路径（默认 <rundir>/workspace，或 ICL_SANDBOX_WORKSPACE / ICL_ROOT/home）。
 # 该目录的前置 ACL（Windows）：icacls <workspace> /grant '<user>:(OI)(CI)F'
 # （缺这条时 ACL runner 会 SetNamedSecurityInfoW failed (Win32 5)，见 SANDBOX-PLAN §2.4）。
+# DSH 原生附件服务（图片真正进模型的前提）。web profile 默认没有这个插件，
+# 导致 lab 里 ctx.attachments 缺失：QQ 图片只变成 "[图片]"，工具图片被迫 text-only。
+# lab 里挂上并把存储放到 run 目录，避免污染用户 ~/.dsh/attachments。
+- id: attachment-local
+  name: '@deepseek-ai/dsh-attachment-local'
+  config:
+    dshHome: '__LAB_STATE__/dsh-home'
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
