@@ -5,7 +5,7 @@
 > `tools/loop-host.mjs`、`tools/scenarios/loop-s2-time.json` / `loop-s4-sleep.json` / `loop-s5-mute.json`。
 > 状态机、`arrange` 语法、inbox 命令、静音锁语义**只在本文件写**，别处只引用这一份。
 > 最后核对：2026-11-05（与代码同步；上一版 2026-11-03 的"已知问题"大部分已修，见 §10）。
-> 2026-11-07 追加：全局兜底心跳 v2（模型设 frequency、后台随机 10–20m/f、span/goal/phase 暂停、心跳消息自带 status）见 `docs/TIME-HEARTBEAT.md`；awakeTick 默认关闭。
+> 2026-11-07 追加：全局兜底心跳 v2（模型设 frequency、后台随机 10–20m/f、span/goal/phase 暂停、心跳消息自带 status）见 `docs/TIME-HEARTBEAT.md`；awakeTick 默认关闭。日历 v1（date/endDate/allDay/wake/repeat/skipDates + time_view.calendar）见 `docs/TIME-CALENDAR.md`。
 
 ---
 
