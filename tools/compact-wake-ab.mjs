@@ -48,8 +48,10 @@ async function run() {
 
   // 1) 通过 time 控制后门注入：goal + 多组 schedule wake（唤醒类消息，不依赖模型自己调工具）。
   const lines = []
-  lines.push(inboxLine('ab-goal', 'arrange', { mode: 'goal', theme: 'AB：把背包整理好', afterMin: 1, resumeLimit: 30 }))
-  const wakeAt = [25, 85, 145, 205, 265, 325, 385]
+  lines.push(inboxLine('ab-goal', 'goal_add', { theme: 'AB：把背包整理好', durationMin: 10, resumeLimit: 30 }))
+  // 一次小睡（醒来 brief 是长 wake-class），前后各排一组 schedule wake。
+  lines.push(inboxLine('ab-sleep', 'arrange', { id: 'ab-sleep', mode: 'wake', in: '110s', durationMin: 1, sleep: true, message: 'AB 小睡：整理一下再回来。' }))
+  const wakeAt = [20, 50, 200, 235, 270, 305, 340, 375, 410, 445]
   wakeAt.forEach((sec, i) => {
     lines.push(inboxLine(`ab-wake-${i + 1}`, 'arrange', {
       id: `ab-wake-${i + 1}`,
@@ -105,8 +107,9 @@ function eventList(runDir) {
     if (payload?.type !== 'session/event') continue
     const event = payload.event
     if (!event) continue
-    const text = (event.data?.content ?? []).filter?.((part) => part?.type === 'text').map((part) => part.text).join('') ?? ''
-    events.push({ seq: event.seq, type: event.type, at: Number(event.time) || 0, kind: event.data?.source?.kind ?? null, text })
+    const content = event.data?.content ?? event.data?.message?.content ?? []
+    const text = (Array.isArray(content) ? content : []).filter((part) => part?.type === 'text').map((part) => part.text).join('')
+    events.push({ seq: event.seq, type: event.type, at: Number(event.time) || 0, kind: event.data?.source?.kind ?? null, name: event.data?.name ?? null, text })
   }
   return events.sort((a, b) => a.seq - b.seq)
 }
@@ -145,6 +148,12 @@ function analyseRun(runId) {
     totalChars += event.text.length
   }
   const qqWakes = userMessages.filter((event) => /^\[QQ(主动检查|主动提醒|积压提醒)\]/.test(event.text))
+  const toolCalls = {}
+  for (const event of events) {
+    if (event.type !== 'tool/call' || !event.name) continue
+    toolCalls[event.name] = (toolCalls[event.name] ?? 0) + 1
+  }
+  const statusCalls = ['time_status', 'world_status', 'focus_status', 'mcb_status', 'qq_status', 'time_list'].reduce((acc, name) => { acc[name] = toolCalls[name] ?? 0; return acc }, {})
   const allWakes = wakeEvents
   // turn-gap：turn/end → 下一 turn/start
   const gaps = []
@@ -160,17 +169,27 @@ function analyseRun(runId) {
     const next = turnStarts.find((start) => start.at >= Number(wake.at))
     if (next) wakeToStart.push(Math.max(0, Math.round((next.at - Number(wake.at)) / 1000)))
   }
-  // 当事人原话：transcript 里包含唤醒关键词的助手行
-  let transcript = ''
-  try { transcript = fs.readFileSync(path.join(runDir, 'transcript.md'), 'utf8') } catch { /* ignore */ }
+  // 当事人原话：优先 events 里的 assistant/message（带 seq/type），transcript 兜底。
   const quotes = []
-  for (const line of transcript.split(/\r?\n/)) {
-    const text = line.replace(/^[-*]\s*/, '').trim()
+  for (const event of events) {
+    if (event.type !== 'assistant/message') continue
+    const text = String(event.text ?? '').trim()
     if (text.length < 8) continue
-    if (!/(背包|整理|时间|继续|打断|目标|提醒|刚才)/.test(text)) continue
-    if (text.startsWith('#') || text.startsWith('>')) continue
-    quotes.push(text.slice(0, 160))
+    if (!/(背包|整理|时间|继续|打断|目标|提醒|刚才|闹钟|醒|睡|简报|憋|等)/.test(text)) continue
+    quotes.push({ seq: event.seq, type: event.type, text: text.slice(0, 200) })
     if (quotes.length >= 6) break
+  }
+  if (!quotes.length) {
+    let transcript = ''
+    try { transcript = fs.readFileSync(path.join(runDir, 'transcript.md'), 'utf8') } catch { /* ignore */ }
+    for (const line of transcript.split(/\r?\n/)) {
+      const text = line.replace(/^[-*]\s*/, '').trim()
+      if (text.length < 8) continue
+      if (!/(背包|整理|时间|继续|打断|目标|提醒|刚才|闹钟|醒|睡|简报|憋|等)/.test(text)) continue
+      if (text.startsWith('#') || text.startsWith('>')) continue
+      quotes.push({ seq: null, type: 'transcript', text: text.slice(0, 200) })
+      if (quotes.length >= 6) break
+    }
   }
   return {
     runId,
@@ -184,6 +203,7 @@ function analyseRun(runId) {
     },
     qqWake: { count: qqWakes.length, chars: qqWakes.reduce((sum, event) => sum + event.text.length, 0) },
     userMessages: { count: userMessages.length, chars: totalChars, bySource },
+    toolCalls: { total: Object.values(toolCalls).reduce((a, b) => a + b, 0), byName: toolCalls, status: statusCalls },
     turnGapSec: { count: gaps.length, p50: percentile(gaps, 0.5), p95: percentile(gaps, 0.95), max: gaps.length ? Math.max(...gaps) : null },
     wakeToStartSec: { count: wakeToStart.length, p50: percentile(wakeToStart, 0.5), p95: percentile(wakeToStart, 0.95), max: wakeToStart.length ? Math.max(...wakeToStart) : null },
     quotes,
@@ -220,7 +240,7 @@ function renderResult(s) {
     const compact = s.compact.wakeClass.byProducer[producer] ?? { count: 0, chars: 0 }
     return `| ${producer} | ${base.count} / ${base.chars} | ${compact.count} / ${compact.chars} | ${pct((base.chars > 0 ? Math.round((1 - compact.chars / base.chars) * 1000) / 10 : null))} |`
   }).join('\n')
-  return `# compactWake A/B 结果（B）\n\n> 生成：${s.at}\n> baseline run：\`${s.base.runId}\` · compact run：\`${s.compact.runId}\`\n> 指标从 lab 的 \`time-events.jsonl\`（wake-class）、\`events.jsonl\`（投递字符/turn）、\`transcript.md\`（原话）离线计算；只改 time 唤醒提示，不动 system/sim/persona。\n\n## 1. 结论数字\n\n| 指标 | baseline | compact | 变化 |\n|---|---|---|---|\n| wakeClass 字符（time 唤醒类） | ${s.base.wakeClass.chars} | ${s.compact.wakeClass.chars} | ↓ ${pct(s.delta.wakeClassCharsPct)} |\n| wakeClass 条数 | ${s.base.wakeClass.count} | ${s.compact.wakeClass.count} | — |\n| 总投递字符（user/message） | ${s.base.userMessages.chars} | ${s.compact.userMessages.chars} | ↓ ${pct(s.delta.totalDeliveredCharsPct)} |\n| turn-gap p50 / p95 / max | ${s.base.turnGapSec.p50 ?? '—'} / ${s.base.turnGapSec.p95 ?? '—'} / ${s.base.turnGapSec.max ?? '—'} | ${s.compact.turnGapSec.p50 ?? '—'} / ${s.compact.turnGapSec.p95 ?? '—'} / ${s.compact.turnGapSec.max ?? '—'} | — |\n| wake→下一 turn-start p95 | ${s.base.wakeToStartSec.p95 ?? '—'} | ${s.compact.wakeToStartSec.p95 ?? '—'} | — |\n| QQ 唤醒条数 / 字符 | ${s.base.qqWake.count} / ${s.base.qqWake.chars} | ${s.compact.qqWake.count} / ${s.compact.qqWake.chars} | — |\n\n## 2. wakeClass 按 producer（条数 / 字符）\n\n| producer | baseline | compact | 字符下降 |\n|---|---|---|---|\n${rows || '| （无 wake-class） | 0 / 0 | 0 / 0 | — |'}\n\n## 3. 分桶（time-events）\n\n- baseline：${JSON.stringify(s.base.wakeClass.modes)}\n- compact：${JSON.stringify(s.compact.wakeClass.modes)}\n\n## 4. 当事人原话（transcript 截取，≥3 条）\n\n${(s.compact.quotes.length ? s.compact.quotes : s.base.quotes).map((quote) => `- ${quote}`).join('\n') || '- （本次 transcript 未截到命中关键词的原话）'}\n\n## 5. 判读\n\n- 门槛（设计 §6）：wakeClass 字符 ↓≥50%、总投递字符 ↓≥10%、turn-gap p95 不升、status 调用不升、无忘记目标/漏警报。\n- \`fullEvery=20\` 生效；payload（sleep brief/未读/积压/危险）未压。\n- 已知限制：time 看不到 assistant 原文，time 生产的 compact "上次"写"刚醒/刚连上"；QQ 唤醒若未接 compact 会在 QQ 行单独列出。\n`
+  return `# compactWake A/B 结果（B）\n\n> 生成：${s.at}\n> baseline run：\`${s.base.runId}\` · compact run：\`${s.compact.runId}\`\n> 指标从 lab 的 \`time-events.jsonl\`（wake-class）、\`events.jsonl\`（投递字符/turn）、\`transcript.md\`（原话）离线计算；只改 time 唤醒提示，不动 system/sim/persona。\n\n## 1. 结论数字\n\n| 指标 | baseline | compact | 变化 |\n|---|---|---|---|\n| wakeClass 字符（time 唤醒类） | ${s.base.wakeClass.chars} | ${s.compact.wakeClass.chars} | ↓ ${pct(s.delta.wakeClassCharsPct)} |\n| wakeClass 条数 | ${s.base.wakeClass.count} | ${s.compact.wakeClass.count} | — |\n| 总投递字符（user/message） | ${s.base.userMessages.chars} | ${s.compact.userMessages.chars} | ↓ ${pct(s.delta.totalDeliveredCharsPct)} |\n| 工具调用 total（time_status/world_status/focus_status） | ${s.base.toolCalls.total}（${s.base.toolCalls.status.time_status}/${s.base.toolCalls.status.world_status}/${s.base.toolCalls.status.focus_status}） | ${s.compact.toolCalls.total}（${s.compact.toolCalls.status.time_status}/${s.compact.toolCalls.status.world_status}/${s.compact.toolCalls.status.focus_status}） | — |\n| turn-gap p50 / p95 / max | ${s.base.turnGapSec.p50 ?? '—'} / ${s.base.turnGapSec.p95 ?? '—'} / ${s.base.turnGapSec.max ?? '—'} | ${s.compact.turnGapSec.p50 ?? '—'} / ${s.compact.turnGapSec.p95 ?? '—'} / ${s.compact.turnGapSec.max ?? '—'} | — |\n| wake→下一 turn-start p95 | ${s.base.wakeToStartSec.p95 ?? '—'} | ${s.compact.wakeToStartSec.p95 ?? '—'} | — |\n| QQ 唤醒条数 / 字符 | ${s.base.qqWake.count} / ${s.base.qqWake.chars} | ${s.compact.qqWake.count} / ${s.compact.qqWake.chars} | — |\n\n## 2. wakeClass 按 producer（条数 / 字符）\n\n| producer | baseline | compact | 字符下降 |\n|---|---|---|---|\n${rows || '| （无 wake-class） | 0 / 0 | 0 / 0 | — |'}\n\n## 3. 分桶（time-events）\n\n- baseline：${JSON.stringify(s.base.wakeClass.modes)}\n- compact：${JSON.stringify(s.compact.wakeClass.modes)}\n\n## 4. 当事人原话（transcript 截取，≥3 条）\n\n${(s.compact.quotes.length ? s.compact.quotes : s.base.quotes).map((quote) => `- ${quote.type}${quote.seq != null ? ` seq=${quote.seq}` : ''}：${quote.text}`).join('\n') || '- （本次 transcript 未截到命中关键词的原话）'}\n\n## 5. 判读\n\n- 门槛（设计 §6）：wakeClass 字符 ↓≥50%、总投递字符 ↓≥10%、turn-gap p95 不升、status 调用不升、无忘记目标/漏警报。\n- \`fullEvery=20\` 生效；payload（sleep brief/未读/积压/危险）未压。\n- 已知限制：time 看不到 assistant 原文，time 生产的 compact "上次"写"刚醒/刚连上"；QQ 唤醒若未接 compact 会在 QQ 行单独列出。\n`
 }
 
 if (cmd === 'run') run().catch((error) => { console.error(`[ab] ${error?.message ?? error}`); process.exit(1) })
