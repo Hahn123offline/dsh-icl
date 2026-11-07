@@ -286,6 +286,19 @@
                 - 'ui:deliverable-file-references'
                 - 'harness:source'
                 - 'app:web-surface'
+              # CLIP 512d（CPU）给相册图片记忆；bge-m3 1024d 给记忆文本召回。
+              providers:
+                - id: lab-clip-zh
+                  kind: embedding
+                  shape: { dim: 512 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: clip-zh
+                  timeoutMs: 30000
+                - id: lab-bge-m3
+                  kind: embedding
+                  shape: { dim: 1024 }
+                  baseUrl: 'http://127.0.0.1:8088/v1'
+                  model: embed-bge-m3
               pluginConfig:
                 time:
                   testClock: true
