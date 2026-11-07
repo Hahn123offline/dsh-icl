@@ -579,17 +579,18 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /** 延迟取 DSH attachment 服务；没有就返回 null（调用方降级为文字提示）。 */
   function attachmentsService() {
-    if (state.attachments?.saveImages) return state.attachments
+    const ok = (store) => Boolean(store && (typeof store.saveImage === 'function' || typeof store.saveImages === 'function'))
+    if (ok(state.attachments)) return state.attachments
     if (!state.attachmentsInjected && typeof ctx.inject === 'function') {
       state.attachmentsInjected = true
       try {
         ctx.inject(['attachments'], (sub) => {
-          if (sub?.attachments?.saveImages) {
+          if (ok(sub?.attachments)) {
             state.attachments = sub.attachments
-            diag({ event: 'attachments.injected', saveImages: true, saveImage: typeof sub.attachments.saveImage === 'function' })
+            diag({ event: 'attachments.injected', saveImages: typeof sub.attachments.saveImages === 'function', saveImage: typeof sub.attachments.saveImage === 'function' })
           } else if (sub?.attachments) {
             state.attachments = sub.attachments
-            diag({ event: 'attachments.injected-no-saveImages', keys: Object.keys(sub.attachments).slice(0, 8) })
+            diag({ event: 'attachments.injected-no-api', keys: Object.keys(sub.attachments).slice(0, 8) })
           } else {
             diag({ event: 'attachments.inject-empty', keys: sub ? Object.keys(sub).slice(0, 8) : null })
           }
@@ -599,7 +600,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       }
     }
     // inject 可能是同步回调：这里必须再取一次，不能无条件 null（否则启动后第一张图必被降级）。
-    return state.attachments?.saveImages ? state.attachments : null
+    if (ok(state.attachments)) return state.attachments
+    // 测试/非 Cordis 宿主：ctx 可能直接挂了 attachments。Cordis 未 inject 时读取会抛错，
+    // 所以必须 try/catch，不能影响有 inject 的真实宿主。
+    try {
+      if (ok(ctx.attachments)) return ctx.attachments
+    } catch { /* Cordis: cannot get property without inject */ }
+    return null
   }
 
   /**
