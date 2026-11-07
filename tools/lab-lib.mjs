@@ -7,6 +7,7 @@
 //   · 所有状态落在 `.state/lab/<runId>/`，`.state/lab/current.json` 只存指针。
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
@@ -25,7 +26,19 @@ export const PRESETS = Object.freeze({
   'icl-mc-lab': { mc: true, description: 'ICL + mc-link（独立 body 端口）' },
   'icl-e2': { mc: true, description: 'E2 长测专用（awakeTick 30s、工具面收敛、文案精简）' },
   'icl-fast': { mc: true, description: 'fast-play 短测（awakeTick 8s、goalResume 8s，cloud）' },
+  'icl-qq-lab': { mc: false, description: 'QQ 私聊真机媒体测试（lab-only：收 owner 图片/视频，不连群）' },
 })
+
+/** SnowLuma 安装目录：显式 env 优先，否则取 ~/Downloads 下最新的 SnowLuma-*。 */
+export function resolveSnowlumaHome() {
+  if (process.env.SNOWLUMA_HOME) return path.resolve(String(process.env.SNOWLUMA_HOME))
+  const base = path.join(os.homedir(), 'Downloads')
+  try {
+    const dirs = fs.readdirSync(base).filter((name) => name.startsWith('SnowLuma-')).sort()
+    if (dirs.length) return path.join(base, dirs[dirs.length - 1])
+  } catch { /* 没有 Downloads 就退回占位路径，由 QQ 插件明确报错 */ }
+  return path.join(base, 'SnowLuma-v2.1.1-win-x64-lite')
+}
 
 /* ── 基础工具 ─────────────────────────────────────────── */
 
@@ -182,6 +195,7 @@ export function materializePatch({ runDir, mcPort = DEFAULT_MC_PORT, mcUser = 'I
     .replaceAll('__LAB_AWAKE_MIN_IDLE__', String(Number(awakeMinIdleSec) > 0 ? Number(awakeMinIdleSec) : 30))
     .replaceAll('__LAB_GOAL_GAP__', String(Number(goalGapSec) >= 0 ? Number(goalGapSec) : 30))
     .replaceAll('__LAB_COMPACT_WAKE__', compactWake === true ? 'true' : 'false')
+    .replaceAll('__LAB_SNOWLUMA_HOME__', posix(resolveSnowlumaHome()))
   if (/__LAB_[A-Z_]+__/.test(output)) throw new Error('lab.patch.yml 还有未替换的占位符')
   const file = path.join(runDir, 'lab.patch.yml')
   fs.writeFileSync(file, output, 'utf8')

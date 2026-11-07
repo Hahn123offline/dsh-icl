@@ -255,6 +255,75 @@
             config:
               prefix: ''
               suffix: 'Your working directory is {{cwd}}.'
+    # QQ 私聊真机媒体测试（lab-only）：只收 owner 私聊，不连群、不自动外发；
+    # 用于验证"用户通过 QQ 发图片/视频 → 落盘 → album/video 可用"的整条链路。
+    - id: preset-icl-qq-lab
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: icl-qq-lab
+        name: ICL QQ Lab
+        description: QQ 私聊真机媒体测试（lab-only：收 owner 图片/视频并落盘，不连群）。
+        order: 34
+        plugins:
+          - id: icl-qq-lab-core
+            name: '__LAB_ICL_CORE__'
+            config:
+              presetId: icl-qq-lab
+              stateDir: '__LAB_STATE__/icl-qq-lab'
+              personaFile: prompts/persona.md
+              simulationFile: prompts/sim.md
+              tickMs: 200
+              timeTickMs: 1000
+              purifySections:
+                - 'harness:identity'
+                - 'ui:deliverable-file-references'
+                - 'harness:source'
+                - 'app:web-surface'
+              pluginConfig:
+                time:
+                  testClock: true
+                qq:
+                  enabled: true
+                  ownerQQ: '3429502459'
+                  allowPrivate:
+                    - '3429502459'
+                  allowAllPrivate: false
+                  # 出站三把钥匙：lab 测试显式打开，只允许 owner 私聊；群永远拒绝。
+                  allowSend: true
+                  sendApproval: 'lead-approved'
+                  snowlumaHomeDir: '__LAB_SNOWLUMA_HOME__'
+                  accountUin: '2593621742'
+                  ledgerFile: '__LAB_STATE__/qq/ledger.db'
+                  recordFile: '__LAB_STATE__/qq/record.jsonl'
+                  statusFile: '__LAB_STATE__/qq/status.json'
+                  auditFile: '__LAB_STATE__/qq/audit.jsonl'
+                  dedupeFile: '__LAB_STATE__/qq/dedupe.json'
+                  mediaInboxDir: '__LAB_STATE__/qq-inbox'
+                  stickerDir: '__LAB_STATE__/qq-stickers'
+              plugins:
+                - memory
+                - world-state
+                - recall
+                - note
+                - lexicon
+                - whois
+                - persona
+                - focus
+                - eager-recall
+                - model-manager
+                - time
+                - qq
+                - album
+                - video
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              suffix: 'Your working directory is {{cwd}}.'
     - id: preset-icl-e2
       name: '@deepseek-ai/dsh-agent-preset'
       config:
