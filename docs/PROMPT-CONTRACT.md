@@ -75,3 +75,10 @@ scoped `@deepseek-ai/dsh-persona`：
 
 实测（lab，2026-11-05）：系统提示词首行只剩 `You are an AI agent powered by DeepSeek Harness.`，
 第 3 行是人格段；工作目录仍在末尾。改 preset 后**必须重启/新起进程**才生效（DSH 无热重载）。
+
+## 8. 2026-11-07 追加：Time 心跳的三层分工
+
+- **人格**（后续）：她喜欢怎样活跃——不写工具名。
+- **仿真**（已写）：`## 时间、安排与心跳` 客观描述心跳何时会来、消息自带状态、frequency 是随机唤醒频率、span/goal/睡眠会自动暂停心跳；只列"醒来后可以做什么"，不规定必须做。
+- **工具**：`time_arrange {mode:"heartbeat", frequency}` 写参数、clamp、预估；`time_status` 只陈述当前事实。
+- 旧 `awakeTick`（外部定时自检）默认关闭，产品显式 `enabled:false`；不要把它与兜底心跳混为一谈。
