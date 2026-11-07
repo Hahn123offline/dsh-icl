@@ -142,6 +142,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 - 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（`priority:'alarm'` 最高，其次 `mention/at/private/direct/admin`，最后 ambient）；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
 - 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId` 与 `priority`（`alarm|normal`）。
 - **sleep 与 quiet 的 message 语义**：`sleep:true`/`quiet:true` 时 `message` 是**结束时**的唤醒语，开始时默认不说话；要入睡/开始提示用 `startMessage`。`at:"now"` 的睡眠安排不会再立刻发“睡够了”把自己叫醒。
+- 2026-11-08 用户备注：**quiet 的 @ 放行只是简单策略，后续可能换**（按会话/白名单/焦点/注意力等更细规则）；不要把它当永久契约，先记着不改。
 - 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），**危险条目排最前**（`⚠ ` 前缀），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
 - 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
 
