@@ -620,6 +620,25 @@ test('心跳 v2：静音积压时心跳消息带积压预览（不用先调 time
   assert.match(text, /在吗/)
 })
 
+test('time_view：结构化区块与 statusText 标题一致（给模型/未来 GUI 共用）', async () => {
+  let virtualNow = MON_0900
+  const { api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
+  api.add({ id: 'v-wake', in: '10m', mode: 'wake', message: '十分钟后' })
+  api.addGoal({ theme: '显式目标', turnLimit: 2 })
+  const view = api.view()
+  assert.equal(view.phase, 'awake')
+  assert.equal(view.next.id, 'v-wake')
+  assert.equal(view.next.relative.includes('还有'), true)
+  assert.equal(view.goals.length, 1)
+  assert.equal(view.goals[0].theme, '显式目标')
+  assert.equal(typeof view.heartbeat.frequency, 'number')
+  assert.equal(view.backlog.count, 0)
+  const text = api.statusText()
+  for (const heading of ['【现在】', '【下一次】', '【目标】', '【心跳】']) assert.ok(text.includes(heading), `statusText 缺少 ${heading}`)
+  assert.match(text, /下一个安排：v-wake/)
+  assert.match(text, /目标：g-.*显式目标/)
+})
+
 
 test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再静默等待', async () => {
   let virtualNow = MON_0900

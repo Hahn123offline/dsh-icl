@@ -2239,9 +2239,75 @@ export function apply(ctx) {
     }
   }
 
+  /** 结构化时间视图：模型 status 与未来 GUI 共用同一份数据（只读、无副作用）。 */
+  function timeView() {
+    const now = nowTime()
+    const next = nextUpcoming(now)
+    const hb = heartbeatStatus()
+    const preview = state.queue.slice(-3).map((row) => ({
+      source: `${row.from?.plugin ?? '?'}${row.from?.activity ? `/${row.from.activity}` : ''}`,
+      text: String(row.text ?? '').slice(0, 160),
+      reason: row.reason ?? null,
+      at: row.at ?? null,
+    }))
+    return {
+      at: now,
+      iso: new Date(now).toISOString(),
+      phase: state.phase,
+      phaseText: phaseText(),
+      next: next ? {
+        id: next.schedule.id,
+        mode: next.schedule.mode ?? 'wake',
+        kind: next.schedule.kind ?? 'single',
+        at: next.point,
+        relative: fmtRelative(next.point, now),
+        label: describeParsed(next.parsed),
+      } : null,
+      spans: state.spans.map((span) => ({
+        id: span.id,
+        sleep: Boolean(span.sleep),
+        until: Number(span.until),
+        relative: fmtRelative(Number(span.until), now),
+      })),
+      goals: state.goals.map((goal) => ({
+        id: goal.id,
+        theme: goal.theme,
+        turnLimit: goal.turnLimit ?? null,
+        until: goal.until ?? null,
+        resumes: Number(goal.resumes ?? 0),
+      })),
+      sleep: state.sleepingId == null ? null : {
+        id: state.sleepingId,
+        until: state.sleepUntil == null ? null : Number(state.sleepUntil),
+      },
+      lock: state.lock ? {
+        until: Number(state.lock.until),
+        relative: fmtRelative(Number(state.lock.until), now),
+        reason: state.lock.reason ?? null,
+        emergencyQuota: Number(state.lock.emergency?.quota ?? 0),
+        emergencyUsed: Number(state.lock.emergency?.used ?? 0),
+      } : null,
+      paused: pausedActive(),
+      backlog: { count: state.queue.length, bySource: reasonCounts(), preview },
+      heartbeat: {
+        frequency: hb.frequency,
+        estimated: hb.estimated.text,
+        dueAt: hb.globalDueAt,
+        pausedBy: hb.pausedBy,
+      },
+      dropped: {
+        missed: state.stats.missed,
+        overflow: state.stats.overflow,
+        expired: state.stats.expired,
+        total: state.stats.dropped,
+      },
+    }
+  }
+
   function statusText() {
     const now = nowTime()
-    const lines = [`现在：${stampAt(now, timeZone)}。`]
+    const lines = ['【现在】']
+    lines.push(`现在：${stampAt(now, timeZone)}。`)
     // 四个会"压住她"的状态写成一行的中文，别让她去读 JSON 字段名。
     const bits = [phaseText()]
     if (state.phase === 'sleeping' && state.sleepUntil) bits.push(`睡到 ${stampAt(Number(state.sleepUntil), timeZone)}（${fmtRelative(Number(state.sleepUntil), now)}）`)
@@ -2255,6 +2321,7 @@ export function apply(ctx) {
     lines.push(`状态：${bits.join('；')}。`)
     // 暂停语义（用户拍板）：任务停止、世界继续、危险会穿透。给 mc-body/mc-link 对齐的口径。
     if (pausedActive()) {
+      lines.push('【暂停】')
       const mode = state.pausedMode?.active ? `${state.pausedMode.source ?? 'external'}：${state.pausedMode.reason ?? ''}` : `time：${state.pauseReason ?? 'time-pause'}`
       const pierce = state.lastPierce
         ? `；最近穿透：${state.lastPierce.plugin}（${stampAt(Number(state.lastPierce.at), timeZone)}，${(state.lastPierce.tags ?? []).join('/')}）`
@@ -2266,17 +2333,8 @@ export function apply(ctx) {
       if (focusLease) preserved.push(`专注 ${focusLease.title ?? focusLease.label}`)
       if (preserved.length) lines.push(`保留：${preserved.join('；')}（继续用 time_resume / focus_leave；离开用 time_cancel）。`)
     }
-    const hb = heartbeatStatus()
-    if (state.phase === 'awake') {
-      const pausedBy = hb.pausedBy === 'span' ? '进行中的长日程' : hb.pausedBy === 'goal' ? '活跃目标' : hb.pausedBy === 'phase' ? '睡眠/暂停' : null
-      const next = pausedBy
-        ? `暂停（${pausedBy}）`
-        : (hb.globalDueAt ? `预计 ${fmtRelative(Number(hb.globalDueAt), now)}醒` : '等下一次回合结束后排')
-      lines.push(`心跳：活跃度 ${hb.frequency}（约 ${hb.estimated.text} 随机醒一次）；${next}。`)
-    } else if (state.phase === 'sleeping') {
-      lines.push('心跳：睡眠中（长日程会自动暂停心跳，醒来恢复）。')
-    }
     if (state.phase === 'sleeping' && state.sleepBoundary) {
+      lines.push('【睡眠边界】')
       const boundary = state.sleepBoundary
       if (boundary.turnEndedAt == null) {
         const age = Math.round((now - Number(boundary.at)) / 1000)
@@ -2285,15 +2343,33 @@ export function apply(ctx) {
         lines.push('⚠ 睡眠边界：入睡后出现新回合（疑似外部直投；session/prompt 不经过 time gate）。')
       }
     }
+    lines.push('【下一次】')
     const next = nextUpcoming(now)
     if (next) lines.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${fmtRelative(next.point, now)}）。`)
+    else lines.push('没有下一个安排。')
     if (state.spans.length) {
+      lines.push('【进行中】')
       lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)
     }
     if (state.goals.length) {
+      lines.push('【目标】')
       lines.push(`目标：${state.goals.map((g) => `${g.id} ${g.theme}${g.turnLimit != null ? `（剩 ${g.turnLimit} 轮）` : ''}${g.until != null ? `（到 ${stampAt(g.until, timeZone)}）` : ''}`).join('；')}。`)
     }
+    const hb = heartbeatStatus()
+    lines.push('【心跳】')
+    if (state.phase === 'awake') {
+      const pausedBy = hb.pausedBy === 'span' ? '进行中的长日程' : hb.pausedBy === 'goal' ? '活跃目标' : hb.pausedBy === 'phase' ? '睡眠/暂停' : null
+      const nextText = pausedBy
+        ? `暂停（${pausedBy}）`
+        : (hb.globalDueAt ? `预计 ${fmtRelative(Number(hb.globalDueAt), now)}醒` : '等下一次回合结束后排')
+      lines.push(`心跳：活跃度 ${hb.frequency}（约 ${hb.estimated.text} 随机醒一次）；${nextText}。`)
+    } else if (state.phase === 'sleeping') {
+      lines.push('心跳：睡眠中（长日程会自动暂停心跳，醒来恢复）。')
+    } else {
+      lines.push('心跳：计时暂停。')
+    }
     if (state.stats.missed || state.stats.dropped || state.stats.expired) {
+      lines.push('【异常】')
       lines.push(`丢弃：漏响 ${state.stats.missed}、溢出 ${state.stats.overflow}、过期 ${state.stats.expired}（累计丢弃 ${state.stats.dropped}）。`)
     }
     return lines.join('\n')
@@ -2383,6 +2459,8 @@ export function apply(ctx) {
     now: () => nowTime(),
     timeZone: () => timeZone,
     phase: () => state.phase,
+    view: () => timeView(),
+    statusText: () => statusText(),
     schedules: () => state.schedules.map(({ __parsed, ...rest }) => rest),
     queue: () => state.queue.map((q) => ({ ...q })),
     add: addSchedule,
