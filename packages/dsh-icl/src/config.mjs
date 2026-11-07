@@ -8,7 +8,7 @@ import { REPO_ROOT, dshHome, iclPaths, resolveDataPath, resolvePath } from './pa
  *  checkpoint/压缩；留着会与 dream 的原文输入冲突。要实验时在 preset 里显式列出。 */
 export const DEFAULT_PLUGINS = Object.freeze([
   'memory', 'world-state', 'recall', 'note', 'lexicon', 'whois', 'persona', 'focus',
-  'eager-recall', 'model-manager', 'time', 'dream', 'editor', 'bili', 'video', 'mc-link', 'album',
+  'eager-recall', 'model-manager', 'time', 'dream', 'editor', 'bili', 'video', 'mc-link', 'album', 'qq',
 ])
 
 function readText(file, fallback = '') {

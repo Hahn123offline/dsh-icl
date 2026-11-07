@@ -19,9 +19,9 @@ const preset = (() => {
   return entry.config.plugins.find((plugin) => plugin?.id === 'icl-core')?.config
 })()
 
-test('产品 A1：显式 16 插件白名单（去 mc-link），与 DEFAULT 只差 mc-link', () => {
+test('产品 A1：显式 17 插件白名单（含 qq）（去 mc-link），与 DEFAULT 只差 mc-link', () => {
   assert.equal(preset.presetId, 'icl')
-  assert.equal(preset.plugins.length, 16)
+  assert.equal(preset.plugins.length, 17)
   assert.ok(!preset.plugins.includes('mc-link'), '产品不得挂 mc-link')
   assert.deepEqual(DEFAULT_PLUGINS.filter((id) => !preset.plugins.includes(id)), ['mc-link'])
 })
@@ -37,15 +37,15 @@ test('产品 A1：首屏净化 4 段，且不 shadow icl:facts / icl:core（fact
   assert.ok(!preset.purifySections.includes('icl:core'))
 })
 
-test('产品 A1 工具面预算：51 工具 / 34,274 字符，无 mcb_*', async () => {
+test('产品 A1 工具面预算：61 工具 / 39,618 字符（含 qq），无 mcb_*', async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'product-a1-'))
   const host = createHost({ log: () => {} })
   try {
-    await bootstrapHost(host, normalizeConfig({ stateDir, providers: [], presetId: 'icl', plugins: preset.plugins, purifySections: preset.purifySections }), { log: () => {} })
+    await bootstrapHost(host, normalizeConfig({ stateDir, providers: [], presetId: 'icl', plugins: preset.plugins, purifySections: preset.purifySections, pluginConfig: preset.pluginConfig }), { log: () => {} })
     const tools = host.services.tools.list()
     const chars = tools.reduce((sum, tool) => sum + JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }).length, 0)
-    assert.equal(tools.length, 51)
-    assert.equal(chars, 34274)
+    assert.equal(tools.length, 61)
+    assert.equal(chars, 39618)
     assert.ok(!tools.some((tool) => String(tool.name).startsWith('mcb_')), '产品面不得出现 mcb_*')
   } finally {
     try { fs.rmSync(stateDir, { recursive: true, force: true }) } catch { /* Windows 插件可能占用临时目录，忽略清理失败 */ }

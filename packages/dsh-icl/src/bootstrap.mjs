@@ -25,7 +25,18 @@ export function configFor(id, cfg) {
     case 'album': return { root: cfg.albumDir ?? path.join(cfg.stateDir, 'media') }
     // 用户批准（2026-11-06）：eager-recall 的 hits/injected/chars 计数落盘，供 E2 质量快照读取。
     case 'eager-recall': return { counterFile: path.join(cfg.stateDir, 'eager-recall.jsonl') }
-    case 'qq': return { mediaInboxDir: cfg.qqInboxDir, stickerDir: cfg.stickersDir }
+    case 'qq': {
+      const qqDir = path.join(cfg.stateDir, 'qq')
+      return {
+        mediaInboxDir: cfg.qqInboxDir,
+        stickerDir: cfg.stickersDir,
+        ledgerFile: path.join(qqDir, 'ledger.db'),
+        recordFile: path.join(qqDir, 'record.jsonl'),
+        statusFile: path.join(qqDir, 'status.json'),
+        auditFile: path.join(qqDir, 'audit.jsonl'),
+        dedupeFile: path.join(qqDir, 'dedupe.json'),
+      }
+    }
     case 'bili': return { stateDir: cfg.stateDir }
     case 'video': return { stateDir: cfg.videoTmpDir ?? cfg.stateDir }
     case 'model-manager': return { providers: cfg.providers ?? [] }

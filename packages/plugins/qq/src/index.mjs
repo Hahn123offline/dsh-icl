@@ -18,6 +18,7 @@
 // 刻意不在这个插件里做的事：读 time 的 phase、绕过 gate 直接 delivery.push、自己维护"未读水位"、
 // 下载图片/语音、启动或停止 SnowLuma、读写 SnowLuma 配置。
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createInboundConnector, discoverOneBotEndpoint, sanitizeUrl } from './connector.mjs'
 import { createDedupeStore, createInboundGate } from './gate.mjs'
@@ -221,10 +222,26 @@ function resolvePath(file) {
   return path.isAbsolute(file) ? file : path.resolve(process.cwd(), file)
 }
 
-/** 端点解析：SnowLuma 只读发现优先于显式 url（发现失败再退回 url）。 */
+/** 默认 SnowLuma 安装目录：env 优先，否则 ~/Downloads 下最新的 SnowLuma-*（不写死用户名/盘符）。 */
+export function defaultSnowlumaHome() {
+  if (process.env.SNOWLUMA_HOME) return path.resolve(String(process.env.SNOWLUMA_HOME))
+  try {
+    const base = path.join(os.homedir(), 'Downloads')
+    const dirs = fs.readdirSync(base, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('SnowLuma-'))
+      .map((entry) => entry.name)
+      .sort()
+    if (dirs.length) return path.join(base, dirs[dirs.length - 1])
+  } catch { /* 没有 Downloads 就用显式配置 */ }
+  return null
+}
+
+/** 端点解析：snowlumaHomeDir='auto' 时自动发现（env SNOWLUMA_HOME 优先），
+ *  显式路径优先于显式 url；没有 snowlumaHomeDir 时只用 url（避免测试/无 QQ 环境误连本机 SnowLuma）。 */
 export function resolveEndpoint(cfg, log = () => {}) {
-  if (cfg.snowlumaHomeDir) {
-    const found = discoverOneBotEndpoint(cfg.snowlumaHomeDir, { accountUin: cfg.accountUin })
+  const home = cfg.snowlumaHomeDir === 'auto' ? defaultSnowlumaHome() : (cfg.snowlumaHomeDir || null)
+  if (home) {
+    const found = discoverOneBotEndpoint(home, { accountUin: cfg.accountUin })
     if (found.ok) {
       log({ msg: 'qq.endpoint.discovered', uin: found.uin, url: sanitizeUrl(found.wsUrl), file: path.basename(found.file), http: found.httpUrl ? sanitizeUrl(found.httpUrl) : null })
       return {
@@ -235,7 +252,7 @@ export function resolveEndpoint(cfg, log = () => {}) {
     log({ level: 'warn', msg: 'qq.endpoint.discover-fail', error: found.error })
   }
   if (cfg.url) return { ok: true, url: cfg.url, token: cfg.token, uin: cfg.accountUin, source: 'config', httpUrl: '', httpToken: '' }
-  return { ok: false, error: '没有可用的上游：配置 url 或 snowlumaHomeDir' }
+  return { ok: false, error: '没有可用的上游：配置 url 或 snowlumaHomeDir（也找不到默认 SnowLuma 安装）' }
 }
 
 export async function apply(ctx) {

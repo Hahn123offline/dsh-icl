@@ -39,11 +39,11 @@ test('lab preset 两个会话都显式挂载 album；两 lab 列表并集覆盖 
   assert.deepEqual(missing, [], `lab preset 并集缺插件（注册了但没挂载）：${missing.join(',')}`)
 })
 
-test('产品 preset A1：显式 16 插件白名单（去 mc-link），不再是隐式全量', () => {
+test('产品 preset A1：显式 17 插件白名单（含 qq）（去 mc-link），不再是隐式全量', () => {
   const lists = pluginLists(read('packages/dsh-icl/presets/icl.patch.yml'))
   const product = lists[0]
   assert.ok(product, '产品 preset 应有显式 plugins 列表')
-  assert.equal(product.length, 16, `产品 A1 白名单应为 16 个插件，实际 ${product.length}：${product.join(',')}`)
+  assert.equal(product.length, 17, `产品 A1 白名单应为 17 个插件（含 qq），实际 ${product.length}：${product.join(',')}`)
   assert.ok(!product.includes('mc-link'), '产品 A1 不得包含 mc-link（MC 只走 icl-mc）')
   const missing = DEFAULT_PLUGINS.filter((id) => !product.includes(id)).sort()
   assert.deepEqual(missing, ['mc-link'], `产品 preset 相对 DEFAULT 只允许少 mc-link：${missing.join(',')}`)

@@ -48,6 +48,19 @@
                 - bili
                 - video
                 - album
+                - qq
+              # QQ 私聊（真机已验证）：只接 owner 私聊；出站三把钥匙打开但只允许 owner。
+              # SnowLuma 安装目录/账号由插件自动发现（~/Downloads/SnowLuma-*），不写死用户名。
+              pluginConfig:
+                qq:
+                  enabled: true
+                  ownerQQ: '3429502459'
+                  allowPrivate:
+                    - '3429502459'
+                  allowAllPrivate: false
+                  allowSend: true
+                  sendApproval: 'lead-approved'
+                  snowlumaHomeDir: 'auto'
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
