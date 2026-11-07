@@ -2519,14 +2519,19 @@ export function apply(ctx) {
         owner: 'time',
         title: '日程',
         order: 5,
-        cap: 3,
+        cap: 1,
         items: () => {
-          // "现在几点/下一个安排/积压"已经由 time prompt section 陈述（同一事实只有一个家）。
-          // 世界状态只留"进行中/目标"，并靠注册 owner:'time' 抑制 world-state 的兜底时间行。
-          const lines = []
-          if (state.spans.length) lines.push({ key: 'span', brief: `进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。` })
-          if (state.goals.length) lines.push({ key: 'goals', brief: `目标：${state.goals.map((g) => `${g.id} ${g.theme}`).join('；')}。` })
-          return lines
+          // 全局概览只放一行 compact 日程（供 world_status / 未来 UI）；完整细节用
+          // world_status {owner:'time', item:'calendar'} 或 time_status，不在这里重复整段。
+          const view = timeView()
+          const parts = []
+          if (view.next) parts.push(`下次 ${view.next.id}（${view.next.relative}）`)
+          if (view.spans.length) parts.push(`进行中 ${view.spans.map((s) => s.id).join('、')}`)
+          if (view.goals.length) parts.push(`目标 ${view.goals.map((g) => g.id).join('、')}`)
+          if (view.phase !== 'awake') parts.push(view.phaseText)
+          if (view.backlog.count) parts.push(`积压 ${view.backlog.count}`)
+          if (!parts.length) return []
+          return [{ key: 'calendar', brief: `日程：${parts.join('；')}。`, detail: statusText() }]
         },
       })
     } catch (error) { log('warn', 'time.world', { error: String(error?.message ?? error) }) }
