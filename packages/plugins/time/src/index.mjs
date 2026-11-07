@@ -433,10 +433,12 @@ export function apply(ctx) {
   const emergencyTags = (Array.isArray(ctx.config.emergencyTags) ? ctx.config.emergencyTags : ['alarm', 'safety', 'emergency']).map(String)
   const emergencyFrom = Array.isArray(ctx.config.emergencyFrom) ? ctx.config.emergencyFrom.map(String) : null
   const listLimit = Math.max(1, Number(ctx.config.listLimit ?? 20))
-  // 清醒节拍（awake heartbeat）：awake 且没有 sleep/mute/pause 时，turn-end 后如果
-  // 没有目标续推就安排下一次自检，避免"无事可做就静默等事件"的分钟级假死。
+  // 清醒节拍（awake heartbeat）：**默认关闭（opt-in）**。
+  // 历史设计用外部定时注入"你醒着，该自检了"，实际会把空闲回合反复打扰；
+  // 唤醒频率应由模型自己用闹钟/时间安排（time_arrange）主动设定，而不是外部定时器。
+  // 需要长跑实验时显式 awakeTick.enabled=true（E2 lab 仍显式开启）。
   const awakeCfg = ctx.config.awakeTick && typeof ctx.config.awakeTick === 'object' ? ctx.config.awakeTick : {}
-  const awakeTickEnabled = awakeCfg.enabled !== false
+  const awakeTickEnabled = awakeCfg.enabled === true
   // immediate：玩游戏的快节奏模式（用户要求"无等待，除非 agent 自愿等待"）。
   // turn-end 后 minIdleSec(~1s) 就自检；连续 N 次没有任何外部信号/任务事件后
   // 退避到 backoffSec，事件一到立刻恢复 immediate。
