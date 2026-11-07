@@ -305,6 +305,13 @@
                 qq:
                   enabled: true
                   ownerQQ: '3429502459'
+                  # 入站防抖：lab 真机测试也走同一套合并窗口。
+                  inboundDebounce:
+                    enabled: true
+                    quietMs: 10000
+                    mentionQuietMs: 4000
+                    maxHoldMs: 30000
+                    maxBatchMessages: 20
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false

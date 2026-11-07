@@ -488,10 +488,13 @@ export function createFocusService({ now = () => Date.now() } = {}) {
       // 留住每条信号的来源身份：重放时 QQ 需要按 seq 补"已交付"回执（只推 delivered，不推 attended）。
       const ledger = signal.meta?.qq?.ledger
       const qq = ledger && Number(ledger.seq) > 0 ? { activity: String(ledger.activity ?? key), seq: Number(ledger.seq) } : null
+      const batchSeqs = Array.isArray(signal.meta?.qq?.batch?.seqs) && signal.meta.qq.batch.seqs.length
+        ? signal.meta.qq.batch.seqs.map((seq) => ({ activity: String(ledger?.activity ?? key), seq: Number(seq) })).filter((row) => row.seq > 0)
+        : null
       row.count += 1
       row.lastAt = at
       row.lastText = String(signal.text ?? '').slice(0, 200)
-      row.items.push({ plugin: String(signal.from?.plugin ?? ''), text: String(signal.text ?? '').slice(0, 200), at, signalId: signal.id == null ? null : String(signal.id), qq })
+      row.items.push({ plugin: String(signal.from?.plugin ?? ''), text: String(signal.text ?? '').slice(0, 200), at, signalId: signal.id == null ? null : String(signal.id), qq, qqSeqs: batchSeqs })
       if (row.items.length > 20) row.items.shift()
       backlog.set(key, row)
       backlogChanged()

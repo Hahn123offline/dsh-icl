@@ -32,6 +32,7 @@ import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 import { createWakePlanner } from './wake.mjs'
+import { createInboundDebouncer, normalizeDebounceConfig } from './debounce.mjs'
 import { buildWakeSnapshot } from './wake-snapshot.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
@@ -69,6 +70,8 @@ const DEFAULTS = Object.freeze({
   retryTickMs: 2000,
   retryMaxAttempts: 5,
   signalTtlMs: 1_800_000,
+  // 入站防抖：同一个人连发时合成一批再给模型。默认关；产品 preset 显式开启。
+  inboundDebounce: { enabled: false, quietMs: 10_000, mentionQuietMs: 4_000, maxHoldMs: 30_000, maxBatchMessages: 20 },
   // 观测/记录
   recordFile: '',
   statusFile: '',
@@ -170,6 +173,7 @@ export function normalizeQqConfig(input = {}) {
     if (input[key] !== undefined) cfg[key] = input[key]
   }
   cfg.enabled = cfg.enabled === true
+  cfg.inboundDebounce = normalizeDebounceConfig(cfg.inboundDebounce)
   cfg.allowAllPrivate = cfg.allowAllPrivate === true
   cfg.deliverBackfill = cfg.deliverBackfill === true
   cfg.promptLine = cfg.promptLine === true
@@ -321,6 +325,7 @@ export async function apply(ctx) {
   let replyResolver = null
   let wakePlanner = null
   let wakeTimer = null
+  let inboundDebouncer = null
   const gap = {
     reconnects: 0,
     lastDowntimeMs: null,
@@ -438,10 +443,19 @@ export async function apply(ctx) {
   }
 
   /** 补课只认"已进投递队列"：signals 接受（或幂等去重）后推进账本水位；被 time/focus 拦下的不推进。 */
+  function ledgerSeqsOf(signal) {
+    const batch = signal?.meta?.qq?.batch
+    if (Array.isArray(batch?.seqs) && batch.seqs.length) return batch.seqs
+    const info = signal?.meta?.qq?.ledger
+    return info?.seq != null ? [info.seq] : []
+  }
+
   function markLedgerDelivered(signal) {
     const info = signal?.meta?.qq?.ledger
     if (!info || !ledger) return
-    try { ledger.markDelivered(info.activity, info.seq) } catch (error) {
+    try {
+      for (const seq of ledgerSeqsOf(signal)) ledger.markDelivered(info.activity, seq)
+    } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.ledger.mark-delivered', error: String(error?.message ?? error) })
     }
   }
@@ -450,7 +464,9 @@ export async function apply(ctx) {
   function markLedgerBlocked(signal, reason) {
     const info = signal?.meta?.qq?.ledger
     if (!info || !ledger) return
-    try { ledger.markBlocked(info.activity, info.seq, reason) } catch (error) {
+    try {
+      for (const seq of ledgerSeqsOf(signal)) ledger.markBlocked(info.activity, seq, reason)
+    } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.ledger.mark-blocked', error: String(error?.message ?? error) })
     }
   }
@@ -746,6 +762,13 @@ export async function apply(ctx) {
     enqueueRetry(signal, out?.error ?? 'deliver-failed')
     return 'retry'
   }
+
+  inboundDebouncer = createInboundDebouncer({
+    config: cfg.inboundDebounce,
+    now,
+    onFlush: (signal) => offer(signal),
+    log: (row) => { try { ctx.log(row) } catch { /* 日志失败不影响投递 */ } },
+  })
 
   /**
    * 入站媒体（图片/视频/文件）：
@@ -1085,7 +1108,9 @@ export async function apply(ctx) {
       segments: signal.meta.qq.segments,
       envelope: signal.meta.qq.envelope ?? null,
     })
-    offer(signal)
+    // 入站防抖：同一个人连发时先攒成一批；关闭时 push 会同步走 offer，行为不变。
+    if (inboundDebouncer) inboundDebouncer.push(signal)
+    else offer(signal)
     return decision
   }
 
@@ -1276,6 +1301,7 @@ export async function apply(ctx) {
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
       wake: wakePlanner?.status() ?? null,
+      debounce: inboundDebouncer?.status() ?? null,
       ledger: ledger ? { ...ledger.stats(), watermarks: ledgerWatermarks(), deliveredVia: JSON.parse(JSON.stringify(stats.deliveredVia)) } : { mode: 'off', file: null, activities: 0, messages: 0, delivered: 0, watermarks: [], deliveredVia: {} },
       http: { ok: Boolean(http?.ok), endpointUrl: http?.ok ? sanitizeUrl(http.endpointUrl) : null },
       media: {
@@ -1585,6 +1611,7 @@ export async function apply(ctx) {
       // 返回 {ok, accepted, skipped, deliveredSeq, attendedSeq, lastSeq, via}；失败不 throw。
       noteDeliveredSeqs,
       gateCounters: () => gate.counters(),
+      flushInbound: () => inboundDebouncer?.flushAll() ?? null,
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
       skills: () => SKILLS.map((s) => ({ ...s })),
@@ -1611,6 +1638,10 @@ export async function apply(ctx) {
   await startSend()
 
   ctx.onDispose(() => {
+    try { inboundDebouncer?.dispose({ flushPending: true }) } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.debounce.dispose', error: String(error?.message ?? error) })
+    }
+    inboundDebouncer = null
     disposed = true
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }

@@ -66,6 +66,13 @@
                   allowSend: true
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: 'auto'
+                  # 入站防抖：对方连发时先攒 8s 再合成一次投递；最长 20s 必须交。
+                  inboundDebounce:
+                    enabled: true
+                    quietMs: 10000
+                    mentionQuietMs: 4000
+                    maxHoldMs: 30000
+                    maxBatchMessages: 20
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:

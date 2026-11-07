@@ -83,7 +83,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       .map((row) => `· [${row.focus}] +${row.count}${row.lastText ? `：${row.lastText}` : ''}`)
       .join('\n')
     // 重放回执：每条被 focus 拦下的 QQ 信号都记了 (activity, seq)；摘要真正进管道后才推 delivered。
-    const qqSeqs = rows.flatMap((row) => (Array.isArray(row.items) ? row.items : []).map((item) => item.qq).filter(Boolean))
+    const qqSeqs = rows.flatMap((row) => (Array.isArray(row.items) ? row.items : []).flatMap((item) => (Array.isArray(item.qqSeqs) && item.qqSeqs.length ? item.qqSeqs : (item.qq ? [item.qq] : []))).filter(Boolean))
     const outcome = signals.offer({
       from: { plugin: 'focus', activity: 'backlog' },
       kind: 'notice',

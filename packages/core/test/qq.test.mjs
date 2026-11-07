@@ -290,6 +290,37 @@ test('只读入站：私聊进 signals/delivery；群、陌生人、重复被挡
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
+test('入站防抖：连发两条先攒批，flush 后只投一条 batch，账本 watermark 推 2', async () => {
+  FakeWebSocket.reset()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-debounce-'))
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, {
+    config: makePluginConfig({
+      ledgerFile: path.join(dir, 'ledger.db'),
+      inboundDebounce: { enabled: true, quietMs: 1000, maxHoldMs: 5000, maxBatchMessages: 20 },
+    }),
+  })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(privateEvent({ text: '一', messageId: 9101 })))
+  ws.emit('message', eventFrame(privateEvent({ text: '二', messageId: 9102 })))
+  assert.equal(host.services.delivery.pendingCount(), 0, 'quiet 窗口内不投递')
+  const shared = host.shared.get('qq')
+  assert.equal(shared.status().debounce.pendingMessages, 2)
+  shared.flushInbound()
+  const [batch] = host.services.delivery.drain('session')
+  assert.ok(batch, 'flush 后应投递一条 batch')
+  assert.match(batch.text, /（连发 2 条）/)
+  assert.match(batch.text, /· 测试：一/)
+  assert.match(batch.text, /· 测试：二/)
+  const watermarks = shared.status().ledger.watermarks
+  assert.equal(watermarks[0].deliveredSeq, 2, 'batch 内两条都要记 delivered')
+  host.services.delivery.ack(batch.id)
+  host.disable('qq')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
 test('被 time 静音锁拦下：计入 blocked、不重试（由 time 的 backlog 负责重放）', async () => {
   FakeWebSocket.reset()
   const host = createHost({ log: () => {} })
