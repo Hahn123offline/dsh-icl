@@ -393,3 +393,16 @@ test('短队列满：拒绝新任务，不无限堆积', async () => {
     assert.match(third.text, /队列已满/)
   } finally { await env.cleanup() }
 })
+
+test('finish-then-handle：发送多气泡中来了新消息，当前气泡后停，剩余不发', async () => {
+  const env = await setup({ maxSendsPerTurn: 10, burstMaxMessages: 3, burstIntervalMinMs: 500, burstIntervalMaxMs: 600 })
+  try {
+    const sending = env.tool().execute({ messages: ['甲', '乙', '丙'] })
+    assert.ok(await waitFor(() => env.fake.sendActions().length >= 1, { timeoutMs: 2000 }))
+    env.fake.privateMessage({ from: Number(OWNER), name: '测试', text: '插话', messageId: 9301 })
+    const result = await sending
+    assert.equal(result.outcome, 'interrupted')
+    assert.equal(env.fake.sendActions().length, 1, '只应发出当前这一条')
+    assert.match(result.text, /停发剩余气泡|已发 1\/3/)
+  } finally { await env.cleanup() }
+})

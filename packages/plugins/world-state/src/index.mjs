@@ -51,6 +51,9 @@ export function apply(ctx) {
       order: Number(source.order) || 50,
       cap: Math.max(0, Number.isFinite(Number(source.cap)) ? Number(source.cap) : DEFAULT_CAP),
       items: source.items,
+      // 默认"没内容也要报无"：world status 是全局快照，不是"有才出现"的通知流。
+      // source 显式 empty:false 才允许完全消失（如 clock 在 time 存在时）。
+      empty: source.empty === false ? false : (source.empty ?? '无'),
     }
     sources.set(id, entry)
     return () => { sources.delete(id) }
@@ -63,7 +66,13 @@ export function apply(ctx) {
       if (owner != null && source.owner !== String(owner)) continue
       let raw = []
       try { raw = source.items() } catch { raw = [] }
-      for (const item of normalizeItems(raw)) out.push({ ...item, source: source.id, owner: source.owner, title: source.title })
+      const items = normalizeItems(raw)
+      if (!items.length && source.empty !== false) {
+        const text = typeof source.empty === 'function' ? source.empty() : source.empty
+        const brief = String(text ?? '').trim()
+        if (brief) items.push({ key: '__empty__', brief, detail: null, placeholder: true })
+      }
+      for (const item of items) out.push({ ...item, source: source.id, owner: source.owner, title: source.title })
     }
     return out.sort((a, b) => {
       const orderOf = (id) => sources.get(id)?.order ?? 50
@@ -128,7 +137,7 @@ export function apply(ctx) {
 
   // 默认来源：没有 time 插件时兜底显示系统时间；time 在时不再重复一行。
   registerSource({
-    id: 'clock', owner: 'clock', title: '时间', order: 10,
+    id: 'clock', owner: 'clock', title: '时间', order: 10, empty: false,
     items: () => ([...sources.values()].some((s) => s.owner === 'time')
       ? []
       : [{ key: 'now', brief: `现在是 ${stamp(ctx.now())}。` }]),

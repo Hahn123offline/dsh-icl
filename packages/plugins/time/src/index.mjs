@@ -1148,6 +1148,10 @@ export function apply(ctx) {
   function heartbeatMessage(at) {
     const lines = [`【心跳】${stampAt(at, timeZone)} 没有新回合；当前情况：`]
     lines.push(statusText())
+    try {
+      const worldText = world?.renderBrief?.()
+      if (worldText) lines.push(`世界：\n${worldText}`)
+    } catch { /* 世界状态失败不影响心跳 */ }
     if (state.queue.length) {
       const preview = state.queue.slice(-3).map((row) => `- ${row.from?.plugin ?? '?'}：${clipBriefText(row.text, 80)}`)
       lines.push(`积压预览：\n${preview.join('\n')}`)

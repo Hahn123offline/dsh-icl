@@ -520,3 +520,28 @@ test('静态安全：index 不 import 发送实现；qq_send 只在 send-tool；
   assert.match(index, /await import\('\.\/send-tool\.mjs'\)/)
   assert.doesNotMatch(index, /^import .*from '\.\/send-tool\.mjs'/m)
 })
+
+/* ── Phase 3：显式等待 + finish-then-handle ── */
+
+test('显式等待：等待期间到达的新消息由 waiter 消费，不再进 delivery；账本 delivered', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig({ ledgerFile: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-wait-')), 'ledger.db') }) })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  try {
+    const tool = host.services.tools.list().find((t) => t.name === 'qq_wait_for_messages')
+    assert.ok(tool, '应注册 qq_wait_for_messages')
+    const pending = tool.execute({ timeoutMs: 5000, quietMs: 1000 })
+    await sleep(30)
+    ws.emit('message', eventFrame(privateEvent({ text: '补充一句', messageId: 9201 })))
+    const result = await pending
+    assert.equal(result.outcome, 'messages')
+    assert.match(result.text, /补充一句/)
+    assert.equal(host.services.delivery.pendingCount(), 0, 'wait 消费的消息不能再次投递')
+    assert.equal(host.shared.get('qq').status().ledger.watermarks[0].deliveredSeq, 1)
+  } finally {
+    host.disable('qq')
+  }
+})

@@ -382,3 +382,25 @@ Phase 1 已实现（`6f274a3`）：
 
 **下一阶段（Phase 3）**：显式 `qq_wait_for_messages` + finish-then-handle 打断；届时再把"整批返回 + 队列 + 等待"三者串成一个 per-activity 状态机。
 
+---
+
+## 13. Phase 3：显式等待 + finish-then-handle（已实现）
+
+- **`qq_wait_for_messages` 工具**：`timeoutMs` 5–600s（默认 45s）、`quietMs` 1–30s（默认 10s）；等待期间到达的消息由 waiter 消费，不再进 debouncer/delivery，返回时一次性给模型并补推整批 delivered。等待是独立动作，不附在 send 上。
+- **finish-then-handle**：发送多气泡时若入站收到新消息，当前气泡发完后停止剩余气泡；返回 `outcome:"interrupted"`，新消息留给下一轮。实现上 send-tool 暴露 `noteInbound(peer)`，只有该 peer 正在发送时才标记；`performSend` 在下一个气泡的等待后检查。
+- **注意**：等待/打断目前只覆盖私聊单人会话；群聊、多会话公平尚未做。
+- 测试：`qq.test.mjs` 等待消费不双投；`qq-send.test.mjs` 多气泡发送中被入站打断只发 1 条。
+- 工具面：新增 1 个 QQ 工具；产品工具面变为 62 工具（字符见 product-surface 测试）。
+
+## 14. World status 的"无内容也要报无"（与 Phase 3 同批修）
+
+问题：world status 的 `items()` 为空时整个 source 从 brief 中消失；QQ 没注册 world source、其它插件没消息也不报"无"，模型只看到 time，误以为世界只有时间。
+
+修复：
+- `world-state` 的 `registerSource` 新增 `empty`（默认 `'无'`；`empty:false` 才允许完全消失）。空 source 在 `itemsOf` 里生成占位项 `{key:'__empty__',brief:'无'}`，因此 brief/owner/detail 都能看到"这里现在没有"。
+- `clock` 源显式 `empty:false`（time 存在时不重复时间行）。
+- QQ 注册 world source（order 1）：未启用/未连接/有未交付分别显示具体事实；没有未读时显示 `QQ：无未读`。
+- 心跳消息现在在 time status 后追加 `世界：…` brief，所以心跳不再只有 time 信息；如果 QQ/待办/日程无内容，也会明确写"无"。
+- 测试：`m1b-persona-world.test.mjs` 改为"撤回后报无、empty:false 才消失"；全量测试通过。
+
+

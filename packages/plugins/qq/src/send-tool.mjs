@@ -83,6 +83,8 @@ export async function registerSendTool({
     live.allowSend = false
     outbox.length = 0
     if (outboxTimer) { try { clearTimeout(outboxTimer) } catch { /* 已触发 */ } outboxTimer = null }
+    activePeers.clear()
+    interruptedPeers.clear()
     idempotency.clear()
     log({ level: 'warn', msg: 'qq.send.kill-switch', reason })
     return { allowSend: live.allowSend }
@@ -194,10 +196,20 @@ export async function registerSendTool({
   let outboxTimer = null
   let outboxBusy = false
   let globalTimes = []
+  const activePeers = new Set()
+  const interruptedPeers = new Set()
   state.outboxCounts = { queued: 0, sent: 0, dropped: 0, deduped: 0 }
 
   function pruneGlobal(at = now()) {
     globalTimes = globalTimes.filter((t) => at - t < 60_000)
+  }
+
+  /** 发送中收到新消息：只影响正在发送的 peer（finish-then-handle）。 */
+  function noteInbound(peerId) {
+    const peer = String(peerId ?? '').trim()
+    if (!peer || !activePeers.has(peer)) return false
+    interruptedPeers.add(peer)
+    return true
   }
 
   /** 统一限速判定；includeTurn=false 时供队列 worker 使用（每轮调用额度只在 execute 判）。 */
@@ -321,29 +333,46 @@ export async function registerSendTool({
     const startedAt = now()
     const sent = []
     let failure = null
-    for (let i = 0; i < plan.length; i += 1) {
-      const step = plan[i]
-      if (i > 0) {
+    activePeers.add(peer)
+    interruptedPeers.delete(peer)
+    try {
+      for (let i = 0; i < plan.length; i += 1) {
+        const step = plan[i]
+        if (i > 0) {
+          if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
+          await sleepImpl(step.delayBeforeMs)
+          // finish-then-handle：等待下一气泡期间收到新消息，当前气泡已发完，剩余不发。
+          if (interruptedPeers.delete(peer)) {
+            failure = { outcome: 'interrupted', error: '收到新消息，停发剩余气泡（finish-then-handle）', index: i }
+            break
+          }
+        }
         if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
-        await sleepImpl(step.delayBeforeMs)
+        const bubbleAt = now()
+        ps.times.push(bubbleAt)
+        pruneGlobal(bubbleAt)
+        globalTimes.push(bubbleAt)
+        const result = await outbound.sendPrivate(peer, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
+        const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+        state.counts[outcome] += 1
+        audit({
+          kind: 'send', peerId: peer, chars: step.text.length, textHash: hash(step.text),
+          outcome, messageId: result.messageId ?? null, ms: result.ms ?? null,
+          batch: { index: i + 1, total: plan.length }, replyTo: i === 0 ? replyToMessageId : null,
+          queued: fromQueue || undefined,
+          error: result.error ?? null,
+        })
+        if (!result.ok) { failure = { outcome, error: result.error, index: i }; break }
+        sent.push({ messageId: result.messageId, chars: step.text.length, ms: result.ms })
+        // finish-then-handle：当前气泡已发完；若期间收到新消息，停止剩余气泡，把新消息留给下一轮。
+        if (i < plan.length - 1 && interruptedPeers.delete(peer)) {
+          failure = { outcome: 'interrupted', error: '收到新消息，停发剩余气泡（finish-then-handle）', index: i + 1 }
+          break
+        }
       }
-      if (!keysNow()) { failure = { outcome: 'refused', error: '出站已关闭（kill switch 或三把钥匙未齐）', index: i }; break }
-      const bubbleAt = now()
-      ps.times.push(bubbleAt)
-      pruneGlobal(bubbleAt)
-      globalTimes.push(bubbleAt)
-      const result = await outbound.sendPrivate(peer, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
-      const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
-      state.counts[outcome] += 1
-      audit({
-        kind: 'send', peerId: peer, chars: step.text.length, textHash: hash(step.text),
-        outcome, messageId: result.messageId ?? null, ms: result.ms ?? null,
-        batch: { index: i + 1, total: plan.length }, replyTo: i === 0 ? replyToMessageId : null,
-        queued: fromQueue || undefined,
-        error: result.error ?? null,
-      })
-      if (!result.ok) { failure = { outcome, error: result.error, index: i }; break }
-      sent.push({ messageId: result.messageId, chars: step.text.length, ms: result.ms })
+    } finally {
+      activePeers.delete(peer)
+      interruptedPeers.delete(peer)
     }
 
     const ms = now() - startedAt
@@ -629,6 +658,7 @@ export async function registerSendTool({
 
   return {
     async execute(args) { return execute(args) },
+    noteInbound,
     killSwitch,
     status() {
       const transport = outbound.status()
@@ -640,6 +670,8 @@ export async function registerSendTool({
         perTurn: { limit: maxPerTurn, sent: state.turnSent },
         limits: { minIntervalMs, maxPerMinute, maxPerHour, sameTextWindowMs, burstMaxMessages, maxMessageChars, gapMode, globalMaxPerMinute },
         outbox: { enabled: outboxEnabled, pending: outbox.length, maxPending: outboxMaxPending, ttlMs: outboxTtlMs, counts: { ...state.outboxCounts } },
+        activePeers: [...activePeers],
+        interruptedPeers: [...interruptedPeers],
         burst: { enabled: burstEnabled, maxMessages: burstMaxMessages, maxChars: maxMessageChars },
         stickers: { dir: stickerDir || null, libraryFile: stickerLibraryFile || null, maxBytes: maxStickerBytes, listLimit: stickerListLimit },
         counts: { ...state.counts },

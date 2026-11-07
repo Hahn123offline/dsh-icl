@@ -130,7 +130,7 @@ test('世界：按注册者查，再展开某一项', async () => {
   assert.match(miss.text, /没有这一项/)
 })
 
-test('世界：注册者可以动态撤回（没东西就不出现）', async () => {
+test('世界：注册者撤回后仍报“无”；只有显式 empty:false 才彻底消失', async () => {
   const { host } = await setup({ withMemory: false })
   await host.enable('world-state')
   const w = host.shared.get('world')
@@ -138,8 +138,13 @@ test('世界：注册者可以动态撤回（没东西就不出现）', async ()
   w.registerSource({ id: 'mc', owner: 'mc', title: 'MC', items: () => (alive ? [{ key: 'server', brief: '当前活跃：127.0.0.1:63930' }] : []) })
   assert.match(w.renderBrief(), /127\.0\.0\.1:63930/)
   alive = false
-  assert.doesNotMatch(w.renderBrief(), /127\.0\.0\.1:63930/, '没东西时应该彻底消失')
-  assert.deepEqual(w.read({ owner: 'mc' }).items, [])
+  assert.doesNotMatch(w.renderBrief(), /127\.0\.0\.1:63930/)
+  assert.match(w.renderBrief(), /MC：无/, '没内容时仍要告诉模型“这里现在没有”')
+  assert.equal(w.read({ owner: 'mc' }).items.length, 1)
+  assert.match(w.read({ owner: 'mc' }).text, /无/)
+
+  w.registerSource({ id: 'quiet', owner: 'quiet', title: '静默源', empty: false, items: () => [] })
+  assert.doesNotMatch(w.renderBrief(), /静默源/, 'empty:false 的源允许完全消失')
 })
 
 test('工具统一通道：所有插件的工具都只出现在核心的工具面里', async () => {

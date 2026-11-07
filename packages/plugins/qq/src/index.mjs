@@ -32,7 +32,7 @@ import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
 import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 import { createWakePlanner } from './wake.mjs'
-import { createInboundDebouncer, normalizeDebounceConfig } from './debounce.mjs'
+import { createInboundDebouncer, mergeSignals, normalizeDebounceConfig } from './debounce.mjs'
 import { buildWakeSnapshot } from './wake-snapshot.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
@@ -332,6 +332,7 @@ export async function apply(ctx) {
   let wakePlanner = null
   let wakeTimer = null
   let inboundDebouncer = null
+  const waiters = new Map() // activity -> waiter
   const gap = {
     reconnects: 0,
     lastDowntimeMs: null,
@@ -776,6 +777,70 @@ export async function apply(ctx) {
     log: (row) => { try { ctx.log(row) } catch { /* 日志失败不影响投递 */ } },
   })
 
+  /* ── 显式等待（Phase 3）：模型主动留在对话里等下一批新消息 ────────────────
+   * 等待是独立动作，不附在 send 上；等待期间到达的消息由 waiter 消费，
+   * 不进正常 debounce/delivery，避免"工具返回了、下一回合又收到一遍"。
+   */
+  function waitForMessages({ peer, timeoutMs = 45_000, quietMs = 10_000 } = {}) {
+    const activity = activityIdForPrivate(peer)
+    if (waiters.has(activity)) return Promise.resolve({ text: `已经在等 ${peer} 的新消息了，不要重复 wait。`, outcome: 'busy' })
+    const seed = inboundDebouncer?.take(activity) ?? []
+    const timeout = Math.max(5_000, Math.min(600_000, Number(timeoutMs) || 45_000))
+    const quiet = Math.max(1_000, Math.min(30_000, Number(quietMs) || 10_000))
+    const startedAt = now()
+    return new Promise((resolve) => {
+      const waiter = { activity, peer, signals: seed.slice(), quietMs: quiet, timeoutMs: timeout, startedAt, timers: {}, done: false, resolve }
+      waiters.set(activity, waiter)
+      const clear = () => {
+        for (const timer of Object.values(waiter.timers)) { try { clearTimeout(timer) } catch { /* 已触发 */ } }
+        waiter.timers = {}
+      }
+      const finish = (reason = 'timeout') => {
+        if (waiter.done) return
+        waiter.done = true
+        clear()
+        waiters.delete(activity)
+        const signals = waiter.signals
+        if (!signals.length) {
+          resolve({ text: `等了 ${Math.round((now() - startedAt) / 1000)} 秒，没有新消息。`, outcome: 'timeout', waitedMs: now() - startedAt })
+          return
+        }
+        const merged = mergeSignals(signals)
+        markLedgerDelivered(merged)
+        resolve({
+          text: `收到 ${signals.length} 条新消息：\n${merged.text}`,
+          outcome: 'messages',
+          count: signals.length,
+          messageIds: signals.map((signal) => signal.meta?.qq?.envelope?.messageId).filter(Boolean),
+          waitedMs: now() - startedAt,
+          quiet: reason === 'quiet',
+        })
+      }
+      waiter.finish = finish
+      waiter.armQuiet = () => {
+        if (waiter.timers.quiet) { try { clearTimeout(waiter.timers.quiet) } catch { /* 已触发 */ } }
+        waiter.timers.quiet = setTimeout(() => finish('quiet'), quiet)
+      }
+      waiter.timers.timeout = setTimeout(() => finish('timeout'), timeout)
+      if (seed.length) waiter.armQuiet()
+    })
+  }
+
+  function takeWaiterSignal(signal) {
+    const waiter = waiters.get(String(signal?.from?.activity ?? ''))
+    if (!waiter || waiter.done) return false
+    waiter.signals.push(signal)
+    waiter.armQuiet()
+    return true
+  }
+
+  function disposeWaiters(reason = 'dispose') {
+    for (const waiter of [...waiters.values()]) {
+      try { waiter.finish(reason) } catch { /* 已清理 */ }
+    }
+    waiters.clear()
+  }
+
   /**
    * 入站媒体（图片/视频/文件）：
    *   · 图片：安全抓取 → 字节随 signal.images 交给 bridge 换 DSH attachment（图片正文不写 URL/base64）；
@@ -1114,6 +1179,10 @@ export async function apply(ctx) {
       segments: signal.meta.qq.segments,
       envelope: signal.meta.qq.envelope ?? null,
     })
+    // 发送中收到新消息：通知发送链在"当前气泡发完后"停下（finish-then-handle）。
+    try { sendHandle?.noteInbound?.(signal.meta?.qq?.envelope?.peerId ?? null) } catch { /* 发送链未注册不阻塞入站 */ }
+    // 显式 wait 正在等这个会话：消息交给 waiter，不再走正常 debounce/delivery，避免双投。
+    if (takeWaiterSignal(signal)) return decision
     // 入站防抖：同一个人连发时先攒成一批；关闭时 push 会同步走 offer，行为不变。
     if (inboundDebouncer) inboundDebouncer.push(signal)
     else offer(signal)
@@ -1607,7 +1676,58 @@ export async function apply(ctx) {
     },
   })
 
+  ctx.tools.register({
+    name: 'qq_wait_for_messages',
+    summary: '留在当前私聊里等下一批新消息（显式等待；不是 sleep）。wait 返回的消息不会在下一轮再投一遍。',
+    when: ['你刚回完一句，想等对方把话说完再决定下一步', '你想在同一个回合里观察到对方的补充/追问'],
+    avoid: ['不要用它代替回复（等不到不会自动生成回复）', '不要和 qq_send 同时开多个 wait', '群聊不存在'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        peer: { type: 'string', description: '私聊 QQ 号；不填用 owner/唯一白名单。' },
+        timeoutMs: { type: 'number', description: '最长等多久（毫秒，5000–600000，默认 45000）。' },
+        quietMs: { type: 'number', description: '对方最后一条之后还要安静多久才算“说完了”（毫秒，1000–30000，默认 10000）。' },
+      },
+    },
+    async execute({ peer, timeoutMs, quietMs } = {}) {
+      const fallback = cfg.ownerQQ != null && String(cfg.ownerQQ).trim()
+        ? String(cfg.ownerQQ).trim()
+        : (cfg.allowPrivate.length === 1 ? String(cfg.allowPrivate[0]) : '')
+      const targetPeer = String(peer ?? fallback).trim()
+      if (!targetPeer) return { text: '没有可等待的私聊目标。', outcome: 'refused' }
+      if (!cfg.allowPrivate.map(String).includes(targetPeer) && String(cfg.ownerQQ ?? '') !== targetPeer) {
+        return { text: `目标 ${targetPeer} 不在私聊白名单里，不能等它的消息。`, outcome: 'refused' }
+      }
+      return waitForMessages({ peer: targetPeer, timeoutMs, quietMs })
+    },
+  })
+
   // 给 driver / 测试读的共享能力（不暴露给模型）
+  let offWorld = null
+  try {
+    const world = ctx.services.get('world')
+    if (world?.registerSource) {
+      offWorld = world.registerSource({
+        id: 'qq',
+        owner: 'qq',
+        title: 'QQ',
+        order: 1,
+        cap: 1,
+        empty: () => '无未读',
+        items: () => {
+          const s = status()
+          if (!s.enabled) return [{ key: 'disabled', brief: 'QQ 未启用。' }]
+          if (!s.connection.connected) return [{ key: 'offline', brief: 'QQ 未连接。' }]
+          const unread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
+          if (unread > 0) return [{ key: 'unread', brief: `QQ 私聊还有 ${unread} 条没交付。`, detail: `未交付 ${unread} 条；用 qq_unread / qq_replied 查看。` }]
+          return []
+        },
+      })
+    }
+  } catch (error) {
+    ctx.log({ level: 'warn', msg: 'qq.world.register', error: String(error?.message ?? error) })
+  }
+
   let offShared = null
   try {
     offShared = ctx.services.provide('qq', {
@@ -1644,6 +1764,7 @@ export async function apply(ctx) {
   await startSend()
 
   ctx.onDispose(() => {
+    try { disposeWaiters('dispose') } catch { /* 已清理 */ }
     try { inboundDebouncer?.dispose({ flushPending: true }) } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.debounce.dispose', error: String(error?.message ?? error) })
     }
@@ -1669,6 +1790,7 @@ export async function apply(ctx) {
     const flushed = gate.flush()
     if (flushed?.error) ctx.log({ level: 'warn', msg: 'qq.dedupe.save', error: flushed.error })
     try { offShared?.() } catch { /* 注销器已执行 */ }
+    try { offWorld?.() } catch { /* 注销器已执行 */ }
     ctx.log({ msg: 'qq.disposed', delivered: stats.delivered, blocked: stats.blocked, dropped: gate.counters().byCode })
   })
 

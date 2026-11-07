@@ -82,3 +82,9 @@ scoped `@deepseek-ai/dsh-persona`：
 - **仿真**（已写）：`## 时间、安排与心跳` 客观描述心跳何时会来、消息自带状态、frequency 是随机唤醒频率、span/goal/睡眠会自动暂停心跳；只列"醒来后可以做什么"，不规定必须做。
 - **工具**：`time_arrange {mode:"heartbeat", frequency}` 写参数、clamp、预估；`time_status` 只陈述当前事实。
 - 旧 `awakeTick`（外部定时自检）默认关闭，产品显式 `enabled:false`；不要把它与兜底心跳混为一谈。
+
+## 9. 2026-11-07 追加：World status 的"无"也是事实
+
+- world status 是**全局快照**，不是"有内容才出现"的通知流：注册 source 在 `items()` 为空时默认生成 `无` 占位（`empty` 可改文案，`empty:false` 才允许完全消失）。
+- QQ / 待办 / 日程等源必须在"没消息"时也告诉模型"现在没有"，否则模型会把缺失误读成"世界只有时间"。
+- 心跳消息 = time status + world brief；它不再只是时间信息。

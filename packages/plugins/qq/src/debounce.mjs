@@ -134,6 +134,16 @@ export function createInboundDebouncer({
     return signal
   }
 
+  /** 等待/抢占路径：把尚未到 quiet 的条目取走，交给等待者消费，不再走正常投递。 */
+  function take(activity) {
+    const key = String(activity)
+    const entry = buffers.get(key)
+    if (!entry) return []
+    buffers.delete(key)
+    clearTimers(entry)
+    return entry.items.slice()
+  }
+
   function armQuiet(entry) {
     if (entry.quietTimer) { try { clearTimer(entry.quietTimer) } catch { /* 已触发 */ } }
     const last = entry.items[entry.items.length - 1]
@@ -188,5 +198,5 @@ export function createInboundDebouncer({
     }
   }
 
-  return { push, flush, flushAll, dispose, status, config: () => ({ ...cfg }) }
+  return { push, flush, flushAll, take, dispose, status, config: () => ({ ...cfg }) }
 }
