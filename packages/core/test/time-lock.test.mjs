@@ -120,6 +120,48 @@ test('静音锁：手动解除立即释放并返回条数', async () => {
   assert.equal(api.unmute().muted, false, '二次解除要如实说没有静音')
 })
 
+test('sleep 安排：入睡不立刻叫醒；message 是醒来时说的话', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  const tool = host.services.tools.list().find((t) => t.name === 'time_arrange')
+  const out = await tool.execute({ mode: 'wake', kind: 'span', at: 'now', duration: '1m', sleep: true, message: '醒醒啦' })
+  assert.match(out.text, /安排好了/)
+  virtualNow += 1_000
+  api.tick()
+  assert.equal(api.status().phase, 'sleeping')
+  assert.equal(drainText(host), '', '入睡瞬间不能把“醒来时说的话”当唤醒发出去')
+  virtualNow += 61_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /醒醒啦/, '醒来时才用 message')
+  assert.equal(api.status().phase, 'awake')
+})
+
+test('quiet 安排：非 @ 消息积压、@ 放行、结束提醒并释放；phase 保持醒着', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  const tool = host.services.tools.list().find((t) => t.name === 'time_arrange')
+  const out = await tool.execute({ mode: 'wake', kind: 'span', at: 'now', duration: '10m', quiet: true, message: '安静结束了' })
+  assert.match(out.text, /安排好了/)
+  virtualNow += 1_000
+  api.tick()
+  assert.equal(api.status().phase, 'awake')
+  assert.equal(drainText(host), '', '安静开始不额外刷屏')
+  const plain = host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '普通私聊' })
+  assert.equal(plain.accepted, false)
+  assert.equal(plain.reason, 'quiet')
+  const mention = host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '@我 急事', tags: ['mention'] })
+  assert.equal(mention.accepted, true, '@ 应该穿透安静安排')
+  assert.equal(api.queue().length, 1)
+  virtualNow += 10 * 60_000 + 1_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /安静结束了/)
+  assert.match(text, /普通私聊/, '结束时释放积压')
+  assert.equal(api.status().phase, 'awake')
+  assert.equal(api.queue().length, 0)
+})
+
 test('静音与睡眠在状态/积压里可区分；静音优先', async () => {
   const { host, api } = await boot()
   api.sleep({ message: '睡了', durationMin: 30 })

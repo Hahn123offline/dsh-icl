@@ -60,8 +60,8 @@ const PHASES = ['awake', 'sleeping', 'paused']
 | `phase` | `awake` / `sleeping` / `paused`；启动时非法值回落 `awake` |
 | `since` | 最近一次阶段意义变化的时间戳（入睡/醒来/resume） |
 | `schedules` | 全部安排，持久；一次性安排响过即删，daily/weekly 保留 |
-| `spans` | 进行中的长日程 `{id, until, endMessage, sleep, silent, allow}` |
-| `queue` | 被拦下的积压 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，`reason ∈ paused/sleeping/muted/muted-quota`；`signalId` 保留原信号 id 供来源侧（QQ/MC）对账/去重，同 id 重复 offer 不重复入队 |
+| `spans` | 进行中的长日程 `{id, until, endMessage, sleep, quiet, silent, allow}` |
+| `queue` | 被拦下的积压 `{id, signalId, from:{plugin,activity}, kind, text, tags, focus, reason, at, createdAt, expiresAt}`，`reason ∈ paused/sleeping/quiet/muted/muted-quota`；`signalId` 保留原信号 id 供来源侧（QQ/MC）对账/去重，同 id 重复 offer 不重复入队 |
 | `goals` | `{id, theme, until, turnLimit, resumeLimit, resumes, focus, resumeOnStop, createdAt, lastResumeAt}` |
 | `fired` | 幂等键 `"<id>@<YYYY-MM-DD>" → ms`；负值表示"这天已处理但漏响" |
 | `sleepingId` / `sleepUntil` | 当前睡眠安排 id / 结束时刻（展示与后移用；判定读 `spans[].until`） |
@@ -91,12 +91,13 @@ const PHASES = ['awake', 'sleeping', 'paused']
 | 参数 | 真实语义 |
 |---|---|
 | `mode` | 必填；只有 `'goal'` 是 goal，其余一律 wake |
-| `kind` | `single/span`；`sleep:true` 或给 `duration`/`until` 时强制 span |
+| `kind` | `single/span`；`sleep:true`/`quiet:true` 或给 `duration`/`until` 时强制 span |
 | `at` | `HH:mm`（每天）／`周一 07:30`、`mon,wed 07:30`、`一、三 07:30`（每周）／`YYYY-MM-DD`（那天 00:00）／ISO／`now` |
 | `in` | 倒计时：`10m`/`2h`/`1d`/`1h30m`/纯数字=分钟；与 `at` 同给时 **at 优先** |
-| `duration` | span 时长（同上语法）；`sleep:true` 无时长默认 3 分钟 |
+| `duration` | span 时长（同上语法）；`sleep:true` 无时长默认 3 分钟；`quiet:true` 必须有终点 |
 | `weekdays` | `[1..7]`（1=周一）配 `HH:mm`，等价于 `at:'周一 07:30'` 多天写法 |
-| `message` / `theme` | wake 正文 / goal 主题（缺省回落 message） |
+| `message` / `theme` | 普通 wake 正文 / goal 主题；`sleep`/`quiet` 时 `message` 是**结束时**的唤醒语，入睡/开始不叫醒 |
+| `startMessage` | `sleep`/`quiet` 开始时说的话（默认不说，一般不用） |
 | `silent` | 只发 `schedule-start` 事件、不发消息；span 的结束语也不发 |
 | `tags` | 打进 `schedule-start` 事件，插件按标签订阅（dream 的 `tags:['dream']`） |
 | `focus` | goal 绑定的注意力空间（`addGoal` 时 `focus.enter`，结束/取消释放） |
@@ -125,7 +126,7 @@ const PHASES = ['awake', 'sleeping', 'paused']
 
 ---
 
-## 4. 拦截层：sleep / mute / 事件
+## 4. 拦截层：sleep / quiet / mute / 事件
 
 `time` 是 `signals` 的唯一纵向拦截层（`signals.addGate`），并在 delivery 上再装一层 push-time gate。判定顺序：
 
@@ -133,12 +134,14 @@ const PHASES = ['awake', 'sleeping', 'paused']
 2. `from.plugin === 'time'` → 放行（自己的闹钟/结束语/目标续推；FOCUS.md §1.6：静音不关自己的闹钟）。
 3. `lock` 生效（显式静音）→ `lock.allow` 命中放行；危险消息（`emergencyTags`：默认 `alarm/safety/emergency`）**默认也拦**（`emergencyQuota` 默认 0，显式配置才 opt-in 放行）→ 入队 `reason:'muted'`、`priority:'alarm'`，记 `lastBlockedAlarm`；普通消息入队 `reason:'muted'`。**静音优先于睡眠白名单。**
 4. `phase === 'sleeping'` → 活动 span 的 `allow` 命中放行；**危险消息不叫醒**，入队 `reason:'sleeping'`、`priority:'alarm'`（醒来简报第一条呈现），普通消息入队 `reason:'sleeping'`；白名单默认 `[{from:'admin'}]`。
-5. `phase === 'paused'` **或外部 pausedMode.active** → **危险消息穿透并叫醒会话**（记 `lastPierce` + `time-events pause-pierce`）；普通消息入队 `reason:'paused'`。暂停 = 任务停止、世界继续（见 §16）。
+5. **活跃 `quiet` span** → phase 仍是 `awake`；`@`（tags/meta 里的 mention）或 `allow` 命中放行；普通消息入队 `reason:'quiet'`（危险同样入队并标 `priority:'alarm'`），结束 span 时释放；默认白名单 `[{from:'admin'},{tags:['mention']},{tags:['at']}]`。quiet 不触发 dream，不是睡眠。
+6. `phase === 'paused'` **或外部 pausedMode.active** → **危险消息穿透并叫醒会话**（记 `lastPierce` + `time-events pause-pierce`）；普通消息入队 `reason:'paused'`。暂停 = 任务停止、世界继续（见 §16）。
 
 补充：
 - `allow: []` 表示**没有**白名单（除 time 自己和静音锁规则外全拦）；`allow:null` 才回落默认。
 - 积压有界：`maxQueue` 默认 500。溢出时**优先丢最旧的 ambient 消息**（`priority:'alarm'` 最高，其次 `mention/at/private/direct/admin`，最后 ambient）；全都被保护时丢最旧一条；`stats.dropped/overflow` 计数并 log，`time_status` 可见。
 - 同一条信号（`signal.id` 相同）重复 offer 不重复入队；条目保留 `signalId` 与 `priority`（`alarm|normal`）。
+- **sleep 与 quiet 的 message 语义**：`sleep:true`/`quiet:true` 时 `message` 是**结束时**的唤醒语，开始时默认不说话；要入睡/开始提示用 `startMessage`。`at:"now"` 的睡眠安排不会再立刻发“睡够了”把自己叫醒。
 - 释放：`flushQueue` 只在 `awake` 时真的发送；文本有界（前 20 条 + 来源计数，默认上限 3000 字），**危险条目排最前**（`⚠ ` 前缀），前缀保持 `[plugin/activity]`；`expiresAt` 过期显式丢弃计数；**发送失败不清队列**。
 - 去重：同一天同一安排 `fired` 只响一次；积压条目有 `id` 可 `skip`。
 

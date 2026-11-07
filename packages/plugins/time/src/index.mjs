@@ -26,6 +26,8 @@ export const name = 'time'
 
 const PHASES = Object.freeze(['awake', 'sleeping', 'paused'])
 const DEFAULT_ALLOW = Object.freeze([{ from: 'admin' }])
+// quiet span 的默认放行：管理员 + 明确 @ 到她的消息。其它普通消息一律积压。
+const DEFAULT_QUIET_ALLOW = Object.freeze([{ from: 'admin' }, { tags: ['mention'] }, { tags: ['at'] }])
 const WEEKDAYS_ZH = ['一', '二', '三', '四', '五', '六', '日']
 const WEEKDAY_ALIASES = Object.freeze({
   一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7,
@@ -468,8 +470,9 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
     if (parsedUntil == null) throw new Error(`until 格式应为 ISO、HH:mm 或 in 式时长：${input.until}`)
     untilAt = parsedUntil
   }
-  const kind = input.sleep === true || input.kind === 'span' || durationMs != null || untilAt != null ? 'span' : 'single'
+  const kind = input.sleep === true || input.quiet === true || input.kind === 'span' || durationMs != null || untilAt != null ? 'span' : 'single'
   // 睡眠必须有终点；只给 sleep:true 没给时长时默认 3 分钟，和提示词"三分钟后回来"一致。
+  if (input.quiet === true && durationMs == null && untilAt == null) throw new Error('quiet 安静安排需要 duration 或 until（要明确结束时间）')
   const durationMin = durationMs != null
     ? Math.max(1, Math.round(durationMs / 60_000))
     : (input.sleep === true && untilAt == null ? 3 : null)
@@ -492,8 +495,12 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
     durationMin,
     until: untilAt,
     message: String(input.message ?? ''),
+    // 睡眠与普通唤醒分开说：message 是"醒来时说的话"；startMessage 才是入睡时的提示。
+    // 旧 sleep() 后门仍把 message 当入睡提示，所以它显式传 startMessage。
+    startMessage: String(input.startMessage ?? ''),
     theme: String(input.theme ?? input.message ?? ''),
     sleep: input.sleep === true,
+    quiet: input.quiet === true,
     silent: input.silent === true,
     tags: Array.isArray(input.tags) ? input.tags.map(String).slice(0, 8) : [],
     focus: input.focus == null ? null : String(input.focus),
@@ -1420,6 +1427,20 @@ export function apply(ctx) {
     return state.spans.find((span) => span.sleep && span.id === state.sleepingId) ?? null
   }
 
+  function activeQuietSpan() {
+    return state.spans.find((span) => span.quiet === true) ?? null
+  }
+
+  /** 明确 @ 到她的信号：不绑定某个插件，tags/meta 里任一处标了 mention 都算。 */
+  function isMention(signal) {
+    const tags = Array.isArray(signal?.tags) ? signal.tags.map((tag) => String(tag).toLowerCase()) : []
+    if (tags.some((tag) => ['mention', 'at', 'at-me', 'at_me', 'atme', 'reply-me'].includes(tag))) return true
+    const meta = signal?.meta ?? {}
+    if (meta.mention === true || meta.mentioned === true) return true
+    if (meta.qq?.envelope?.mentioned === true) return true
+    return false
+  }
+
   function isEmergency(signal) {
     const plugin = String(signal.from?.plugin ?? '')
     if (emergencyFrom && !emergencyFrom.includes(plugin)) return false
@@ -1509,7 +1530,19 @@ export function apply(ctx) {
       if (alarm) recordBlockedAlarm(signal, 'sleeping')
       return { accept: false, reason: 'sleeping', priority: alarm ? 'alarm' : undefined }
     }
-    // 3) 暂停（任务停止、世界继续）：危险必须穿透并把会话叫醒；其余进积压。
+    // 3) 安静安排（非睡眠）：普通消息积压；明确 @ 和管理员放行；phase 仍是 awake。
+    const quiet = activeQuietSpan()
+    if (quiet) {
+      const allow = Array.isArray(quiet.allow) ? quiet.allow : DEFAULT_QUIET_ALLOW
+      if (isMention(signal) || allowMatch(allow, signal)) {
+        if (alarm) recordPierce(signal, 'quiet-allow')
+        return { accept: true }
+      }
+      enqueue(signal, 'quiet', { priority: alarm ? 'alarm' : 'normal' })
+      if (alarm) recordBlockedAlarm(signal, 'quiet')
+      return { accept: false, reason: 'quiet', priority: alarm ? 'alarm' : undefined }
+    }
+    // 4) 暂停（任务停止、世界继续）：危险必须穿透并把会话叫醒；其余进积压。
     if (pausedActive()) {
       if (alarm) { recordPierce(signal, 'pause'); return { accept: true, pierce: 'alarm' } }
       enqueue(signal, 'paused')
@@ -1808,7 +1841,9 @@ export function apply(ctx) {
     const span = state.spans.find((s) => s.id === current.id)
     if (span && next.durationMin != null) {
       span.until = nowTime() + next.durationMin * 60_000
-      span.endMessage = next.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${next.id}`
+      span.endMessage = next.sleep
+        ? (next.message || '整理完了。今天看到的东西已经记下来了，接着来吧。')
+        : `结束了：${next.id}`
       if (span.sleep && state.sleepingId === span.id) {
         state.sleepUntil = span.until
         state.since = nowTime()
@@ -1877,6 +1912,9 @@ export function apply(ctx) {
         // 已经在睡：不叠加第二层睡眠（旧实现里第二层会在旧 span 结束时提前把 phase 切醒）。
         log('warn', 'time.sleep.overlap', { existing: state.sleepingId, ignored: schedule.id })
         outcome = { started: false, reason: 'already-sleeping' }
+      } else if (schedule.quiet && (activeQuietSpan() || state.phase === 'sleeping')) {
+        log('warn', 'time.quiet.overlap', { ignored: schedule.id, phase: state.phase })
+        outcome = { started: false, reason: state.phase === 'sleeping' ? 'sleeping' : 'already-quiet' }
       } else {
         const endAt = schedule.until ?? now + (Number(schedule.durationMin) || 0) * 60_000
         if (schedule.sleep) {
@@ -1908,21 +1946,29 @@ export function apply(ctx) {
           }
         }
         if (!schedule.silent) {
-          const text = schedule.message || (schedule.sleep
-            ? '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。'
-            : `开始了：${schedule.id}`)
-          const sent = sendWake({ text, payload: text, producer: `schedule:${schedule.id}`, kind: 'wake', tags: [schedule.sleep ? 'sleep' : 'span'] })
-          if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
+          // 普通 span 在开始时说 message；睡眠/安静的 message 属于"结束时"，开始时只说 startMessage
+          // （默认不说）。否则 at:"now" 的睡眠安排会立刻发一条"睡够了"把自己叫醒。
+          const text = (schedule.sleep || schedule.quiet)
+            ? (schedule.startMessage || '')
+            : (schedule.message || `开始了：${schedule.id}`)
+          if (text) {
+            const sent = sendWake({ text, payload: text, producer: `schedule:${schedule.id}`, kind: 'wake', tags: [schedule.sleep ? 'sleep' : (schedule.quiet ? 'quiet' : 'span')] })
+            if (sent && sent.accepted === false) log('warn', 'time.wake.failed', { id: schedule.id, reason: sent.reason ?? sent.error ?? 'unknown' })
+          }
         }
         state.spans.push({
           id: schedule.id,
           until: endAt,
-          endMessage: schedule.sleep ? '整理完了。今天看到的东西已经记下来了，接着来吧。' : `结束了：${schedule.id}`,
+          endMessage: schedule.sleep
+            ? (schedule.message || '整理完了。今天看到的东西已经记下来了，接着来吧。')
+            : (schedule.quiet ? (schedule.message || '安静结束了。') : `结束了：${schedule.id}`),
           sleep: Boolean(schedule.sleep),
+          quiet: Boolean(schedule.quiet),
           silent: Boolean(schedule.silent),
-          allow: Array.isArray(schedule.allow) ? schedule.allow : DEFAULT_ALLOW,
+          allow: Array.isArray(schedule.allow) ? schedule.allow : (schedule.quiet ? DEFAULT_QUIET_ALLOW : DEFAULT_ALLOW),
         })
         if (schedule.sleep) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] })
+        if (schedule.quiet) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'quiet-start', tags: ['quiet'] })
         if (schedule.sleep) {
           // 醒来简报的底账：睡眠开始时间、dream 触发标记、统计基线（tick 在睡眠中不丢这些）。
           state.sleepBrief = {
@@ -2043,6 +2089,18 @@ export function apply(ctx) {
       // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
       if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
       // 醒来后如果没有新的 turn 触发，清醒节拍负责在 idleSec 内叫起一次自检。
+      armAwakeTick()
+      persist()
+      return { ended: true, released }
+    }
+    if (span.quiet === true) {
+      let released = 0
+      if (state.phase === 'awake' && !span.silent) {
+        const text = span.endMessage || '安静结束了。'
+        sendWake({ text, payload: text, producer: 'quiet-end', kind: 'wake', tags: ['wake', 'quiet-end'] })
+      }
+      if (state.phase === 'awake') released = flushQueue('你安静时')
+      recordEvent('quiet-end', { quietId: span.id, released })
       armAwakeTick()
       persist()
       return { ended: true, released }
@@ -2345,6 +2403,7 @@ export function apply(ctx) {
     bits.push(schedule.mode === 'goal' ? '目标模式' : '唤醒')
     if (schedule.kind === 'span') bits.push(`长日程${schedule.durationMin ? ` ${fmtDuration(schedule.durationMin * 60_000)}` : ''}`)
     if (schedule.sleep) bits.push('睡觉')
+    if (schedule.quiet) bits.push('安静')
     if (schedule.silent) bits.push('静默')
     if (Array.isArray(schedule.tags) && schedule.tags.length) bits.push(`tags:${schedule.tags.join('/')}`)
     const label = schedule.message || schedule.theme || ''
@@ -2584,6 +2643,8 @@ export function apply(ctx) {
       const left = Math.max(0, Number(lock.emergency?.quota ?? 0) - Number(lock.emergency?.used ?? 0))
       bits.push(`静音到 ${stampAt(Number(lock.until), timeZone)}（${fmtRelative(Number(lock.until), now)}${lock.reason ? `，${lock.reason}` : ''}；紧急剩余 ${left}/${Number(lock.emergency?.quota ?? 0)}）`)
     }
+    const quietSpan = activeQuietSpan()
+    if (quietSpan) bits.push(`安静到 ${stampAt(Number(quietSpan.until), timeZone)}（${fmtRelative(Number(quietSpan.until), now)}）`)
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
     lines.push(`状态：${bits.join('；')}。`)
     // 暂停语义（用户拍板）：任务停止、世界继续、危险会穿透。给 mc-body/mc-link 对齐的口径。
@@ -2629,7 +2690,7 @@ export function apply(ctx) {
     pushCalBlock('【本周】', rest)
     if (state.spans.length) {
       lines.push('【进行中】')
-      lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)
+      lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : (s.quiet ? '（安静）' : '')} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)
     }
     if (state.goals.length) {
       lines.push('【目标】')
@@ -2756,7 +2817,7 @@ export function apply(ctx) {
     /** 控制后门/测试用：立即尝试释放积压（只在 awake 时真的发送）。 */
     flush(reason = '手动') { return flushQueue(reason) },
     sleep({ message = '到整理时间了。把今天的经历放下，我要把它们沉淀成记忆；三分钟后回来。', durationMin = 3, allow = null } = {}) {
-      const schedule = addSchedule({ id: `sleep-${Date.now().toString(36)}`, at: 'now', mode: 'wake', sleep: true, message, durationMin, allow })
+      const schedule = addSchedule({ id: `sleep-${Date.now().toString(36)}`, at: 'now', mode: 'wake', sleep: true, startMessage: message, durationMin, allow })
       return startSchedule(schedule)
     },
     wake,
@@ -2828,7 +2889,7 @@ export function apply(ctx) {
   tool({
     name: 'time_arrange',
     summary: '新建安排：一次/每天/每周/倒计时唤醒、日历日期/跨天/重复、goal 持续目标；mode:"heartbeat" 设置活跃度。',
-    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。sleep 的 message 是醒来时说的话（不是入睡提示；要入睡提示用 startMessage）。quiet:true 表示安静安排：phase 保持醒着，拦住非 @ 消息（@/管理员可放行），不触发 dream，到点用 message 提醒；必须配 duration/until。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
@@ -2847,12 +2908,14 @@ export function apply(ctx) {
         } },
         skipDates: { type: 'array', items: { type: 'string' }, description: '跳过这些日期 YYYY-MM-DD（只跳过 occurrence）' },
         duration: { type: 'string', description: 'span 持续多久，如 8h / 30m' },
-        message: { type: 'string', description: '唤醒时说的话（wake）或目标主题（goal）' },
+        message: { type: 'string', description: '普通唤醒时说的话；sleep:true 时是醒来时说的话（不是入睡提示）' },
+        startMessage: { type: 'string', description: 'sleep:true 时入睡瞬间说的话；默认不说，一般不用' },
         theme: { type: 'string', description: 'goal 主题，缺省用 message' },
         tags: { type: 'array', items: { type: 'string' }, description: '给安排打标签；插件按标签订阅 schedule-start 事件' },
         focus: { type: 'string', description: 'goal 绑定的注意力空间' },
         turnLimit: { type: 'number', description: 'goal 的回合上限' },
-        sleep: { type: 'boolean', description: 'wake+span 且要进入睡眠时设 true' },
+        sleep: { type: 'boolean', description: 'wake+span 进入睡眠：外部消息转积压，醒来用 message 作为唤醒语' },
+        quiet: { type: 'boolean', description: 'wake+span 进入"安静安排"：非 @ 消息积压、phase 保持醒着、不触发 dream；必须配 duration/until' },
         silent: { type: 'boolean', description: '只发事件、不发消息' },
         allow: { type: 'array', items: { type: 'object' }, description: '睡眠期间的白名单规则 {from,kinds,tags,any}' },
         id: { type: 'string', description: '安排 id（同名会覆盖）' },
@@ -2888,9 +2951,9 @@ export function apply(ctx) {
     parameters: {
       type: 'object', additionalProperties: false, required: ['id'], properties: {
         id: { type: 'string' }, at: { type: 'string' }, in: { type: 'string' },
-        message: { type: 'string' }, theme: { type: 'string' },
+        message: { type: 'string' }, startMessage: { type: 'string' }, theme: { type: 'string' },
         mode: { type: 'string', enum: ['wake', 'goal'] }, duration: { type: 'string' },
-        silent: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
+        silent: { type: 'boolean' }, sleep: { type: 'boolean' }, quiet: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
       },
     },
     async execute({ id, ...patch } = {}) {
