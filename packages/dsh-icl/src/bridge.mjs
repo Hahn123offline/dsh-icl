@@ -60,15 +60,9 @@ function imageMediaType(file) {
 /**
  * 拿宿主附件服务（可选）。没有它时工具结果退回"路径文本"，绝不假装图已在上下文里。
  * 不用 `inject` 强制依赖：headless/测试环境未必装了 attachment-local。
+ * 注意：DSH Cordis 不允许未 inject 就读取 ctx.attachments（会抛 "cannot get property without inject"），
+ * 因此所有 attachment 访问都必须走 `ctx.inject(['attachments'], …)` 后缓存的服务。
  */
-function resolveAttachments(ctx) {
-  try {
-    if (ctx?.attachments && typeof ctx.attachments.saveImage === 'function') return ctx.attachments
-    const viaGet = typeof ctx?.get === 'function' ? ctx.get('attachments') : null
-    if (viaGet && typeof viaGet.saveImage === 'function') return viaGet
-  } catch { /* 没有这个服务 */ }
-  return null
-}
 
 /** 把本地图片文件提交成 attachment 引用；失败交给上层退回文本。 */
 function makeSaveImage(attachments) {
@@ -101,7 +95,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     const data = fs.readFileSync(file)
     return store.saveImage({ data, mediaType, name: path.basename(file) })
   }
-  diag({ event: 'bridge.init', ctxAttachments: Boolean(ctx?.attachments?.saveImages), inject: typeof ctx?.inject === 'function' })
+  diag({ event: 'bridge.init', inject: typeof ctx?.inject === 'function' })
 
   const state = {
     session: null,
@@ -586,7 +580,6 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   /** 延迟取 DSH attachment 服务；没有就返回 null（调用方降级为文字提示）。 */
   function attachmentsService() {
     if (state.attachments?.saveImages) return state.attachments
-    if (ctx.attachments?.saveImages) return ctx.attachments
     if (!state.attachmentsInjected && typeof ctx.inject === 'function') {
       state.attachmentsInjected = true
       try {
@@ -594,6 +587,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
           if (sub?.attachments?.saveImages) {
             state.attachments = sub.attachments
             diag({ event: 'attachments.injected', saveImages: true, saveImage: typeof sub.attachments.saveImage === 'function' })
+          } else if (sub?.attachments) {
+            state.attachments = sub.attachments
+            diag({ event: 'attachments.injected-no-saveImages', keys: Object.keys(sub.attachments).slice(0, 8) })
           } else {
             diag({ event: 'attachments.inject-empty', keys: sub ? Object.keys(sub).slice(0, 8) : null })
           }
@@ -603,8 +599,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       }
     }
     // inject 可能是同步回调：这里必须再取一次，不能无条件 null（否则启动后第一张图必被降级）。
-    const store = state.attachments ?? ctx.attachments
-    return store?.saveImages ? store : null
+    return state.attachments?.saveImages ? state.attachments : null
   }
 
   /**
