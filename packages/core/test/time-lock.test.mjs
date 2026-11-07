@@ -639,6 +639,66 @@ test('time_view：结构化区块与 statusText 标题一致（给模型/未来 
   assert.match(text, /目标：g-.*显式目标/)
 })
 
+/* ───────────────────────── 日历 v1 ───────────────────────── */
+
+test('日历：date + at 定时事件进 calendar view，并在到点唤醒', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  api.add({ id: 'cal-wake', date: '2026-11-03', at: '07:30', mode: 'wake', message: '早课' })
+  const view = api.view()
+  const event = view.calendar.week.find((item) => item.id === 'cal-wake')
+  assert.ok(event, '定时事件应出现在本周视图')
+  assert.equal(event.allDay, false)
+  assert.equal(event.wake, true)
+  assert.equal(event.title, '早课')
+  virtualNow = new Date(2026, 10, 3, 7, 31, 0).getTime()
+  api.tick()
+  assert.match(drainText(host), /早课/)
+})
+
+test('日历：allDay 默认只展示不叫醒；wake:true 才叫醒', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  api.add({ id: 'cal-bday', date: '2026-11-03', allDay: true, message: '生日' })
+  const event = api.view().calendar.week.find((item) => item.id === 'cal-bday')
+  assert.ok(event)
+  assert.equal(event.allDay, true)
+  assert.equal(event.wake, false)
+  virtualNow = new Date(2026, 10, 3, 0, 1, 0).getTime()
+  api.tick()
+  assert.doesNotMatch(drainText(host), /生日/, '全天事件默认不产生唤醒')
+
+  api.add({ id: 'cal-bday-wake', date: '2026-11-03', allDay: true, wake: true, message: '要叫醒的生日' })
+  virtualNow = new Date(2026, 10, 3, 0, 2, 0).getTime()
+  api.tick()
+  assert.match(drainText(host), /要叫醒的生日/)
+})
+
+test('日历：repeat every/count/until/skipDates 与跨天 endDate', async () => {
+  let virtualNow = MON_0900
+  const { api } = await boot({ now: () => virtualNow })
+  api.add({
+    id: 'cal-rep', date: '2026-11-03', at: '07:30', mode: 'wake', message: '隔天',
+    repeat: { every: '2d', count: 3 }, skipDates: ['2026-11-05'],
+  })
+  const events = api.view().calendar.week.filter((item) => item.id === 'cal-rep').map((item) => new Date(item.startAt).getDate())
+  assert.deepEqual(events, [3, 7], '3 次 occurrence 中 11-05 被跳过')
+
+  api.add({ id: 'cal-span', date: '2026-11-04', endDate: '2026-11-06', message: '出差' })
+  const span = api.view().calendar.week.find((item) => item.id === 'cal-span')
+  assert.ok(span)
+  assert.equal(new Date(span.endAt).getDate(), 6)
+  assert.equal(api.status().schedules.find((item) => item.id === 'cal-span').kind, 'span')
+})
+
+test('日历：每周重复（weekdays + every 2w）在周视图里只出现本周 occurrence', async () => {
+  let virtualNow = MON_0900
+  const { api } = await boot({ now: () => virtualNow })
+  api.add({ id: 'cal-biweekly', date: '2026-11-03', at: '07:30', weekdays: [2, 4], repeat: { every: '2w', count: 4 }, message: '双周' })
+  const dates = api.view().calendar.week.filter((item) => item.id === 'cal-biweekly').map((item) => new Date(item.startAt).getDate())
+  assert.deepEqual(dates, [3, 5], '本周只应出现 11-03(周二) 和 11-05(周四)')
+})
+
 
 test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再静默等待', async () => {
   let virtualNow = MON_0900

@@ -204,6 +204,127 @@ function parseAt(value, now = Date.now(), timeZone = null) {
   throw new Error(`at 格式应为 HH:mm、周一 HH:mm、ISO 或 now：${raw}`)
 }
 
+/* ── 日历层（v1）：date / endDate / allDay / wake / repeat(every,until,count) / skipDates ── */
+
+const CAL_DAY_MS = 86_400_000
+
+function parseCalendarDate(raw, timeZone) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw ?? '').trim())
+  if (!m) throw new Error(`date 格式应为 YYYY-MM-DD：${raw}`)
+  const fields = { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) }
+  const at = zonedEpoch({ ...fields, h: 0, min: 0 }, timeZone)
+  if (!Number.isFinite(at)) throw new Error(`date 不合法：${raw}`)
+  return { fields, at, key: `${m[1]}-${m[2]}-${m[3]}` }
+}
+
+function endOfCalendarDate(key, timeZone) {
+  const d = parseCalendarDate(key, timeZone)
+  return zonedEpoch({ ...d.fields, h: 23, min: 59, s: 59 }, timeZone)
+}
+
+function parseRepeatEvery(raw) {
+  const m = /^(\d+)\s*(d|w|天|周)$/i.exec(String(raw ?? '').trim())
+  if (!m) throw new Error(`repeat.every 格式应为 2d / 2w：${raw}`)
+  const n = Math.max(1, Number(m[1]))
+  const unit = /^w|周$/i.test(m[2]) ? 'w' : 'd'
+  return { n, unit, intervalMs: n * (unit === 'w' ? 7 : 1) * CAL_DAY_MS }
+}
+
+function normalizeRepeatInput(input) {
+  if (input == null) return null
+  const raw = typeof input === 'string' ? { every: input } : input
+  if (!raw || typeof raw !== 'object') throw new Error('repeat 应为 {every,until?,count?}')
+  if (raw.every == null) throw new Error('repeat 需要 every（如 "2d" / "2w"）')
+  return {
+    every: String(raw.every),
+    until: raw.until == null ? null : String(raw.until),
+    count: raw.count == null ? null : Math.max(1, Number(raw.count) || 1),
+  }
+}
+
+function normalizeSkipDates(input) {
+  if (!Array.isArray(input)) return []
+  return [...new Set(input.map((x) => String(x).trim()).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)))].sort()
+}
+
+function buildCalendarParsed(schedule, timeZone) {
+  const date = parseCalendarDate(schedule.date, timeZone)
+  const tm = schedule.time == null ? null : /^(\d{1,2}):(\d{2})$/.exec(String(schedule.time))
+  const hour = tm ? Number(tm[1]) : 0
+  const minute = tm ? Number(tm[2]) : 0
+  const startAt = zonedEpoch({ ...date.fields, h: hour, min: minute }, timeZone)
+  const repeat = schedule.repeat ? normalizeRepeatInput(schedule.repeat) : null
+  if (!repeat) return { kind: 'once', at: startAt, allDay: Boolean(schedule.allDay) }
+  const every = parseRepeatEvery(repeat.every)
+  const weekdays = every.unit === 'w' && Array.isArray(schedule.weekdays) && schedule.weekdays.length
+    ? schedule.weekdays.map(Number).filter((n) => n >= 1 && n <= 7).sort((a, b) => a - b)
+    : null
+  return {
+    kind: 'calendar',
+    startAt,
+    intervalMs: every.intervalMs,
+    everyN: every.n,
+    everyUnit: every.unit,
+    weekdays,
+    hour,
+    minute,
+    allDay: Boolean(schedule.allDay),
+    wake: schedule.wake !== false,
+    untilAt: repeat.until ? endOfCalendarDate(/^\d{4}-\d{2}-\d{2}$/.test(repeat.until) ? repeat.until : dayKey(Date.parse(repeat.until), timeZone), timeZone) : null,
+    count: repeat.count,
+    skipDates: new Set(normalizeSkipDates(schedule.skipDates)),
+  }
+}
+
+/** 生成 [from,to] 内的日历 occurrence；skipDates/until/count 都在这里处理。 */
+function calendarPoints(parsed, from, to, timeZone) {
+  const out = []
+  const startAt = Number(parsed.startAt)
+  const untilAt = parsed.untilAt == null ? Infinity : Number(parsed.untilAt)
+  const count = parsed.count == null ? Infinity : Math.max(1, Number(parsed.count))
+  const skip = parsed.skipDates ?? new Set()
+  const push = (t) => {
+    if (!Number.isFinite(t) || t < startAt || t > untilAt) return false
+    if (t >= from && t <= to && !skip.has(dayKey(t, timeZone))) out.push(t)
+    return true
+  }
+  if (parsed.weekdays && parsed.everyUnit === 'w') {
+    const start = partsOf(startAt, timeZone)
+    const startDay = Date.UTC(start.y, start.m - 1, start.d)
+    let produced = 0
+    for (let day = startDay; day <= to && produced < count; day += CAL_DAY_MS) {
+      const idx = Math.round((day - startDay) / CAL_DAY_MS)
+      const week = Math.floor(idx / 7)
+      if (week % parsed.everyN !== 0) continue
+      const d = new Date(day)
+      const fields = { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }
+      const dow = new Date(Date.UTC(fields.y, fields.m - 1, fields.d)).getUTCDay() || 7
+      if (!parsed.weekdays.includes(dow)) continue
+      const t = pointOnDay(fields, parsed.hour, parsed.minute, timeZone)
+      produced += 1
+      if (!push(t)) break
+    }
+  } else {
+    for (let k = 0; k < count; k += 1) {
+      const t = startAt + k * Number(parsed.intervalMs)
+      if (t > to) break
+      if (!push(t)) break
+    }
+  }
+  return out.sort((a, b) => a - b)
+}
+
+function calendarNext(parsed, now, timeZone) {
+  const points = calendarPoints(parsed, now + 1, now + 5 * 366 * CAL_DAY_MS, timeZone)
+  return points.length ? points[0] : null
+}
+
+function calendarLatest(parsed, now, timeZone) {
+  const points = calendarPoints(parsed, parsed.startAt, now, timeZone)
+  return points.length ? points[points.length - 1] : null
+}
+
+
 /** 时长/倒计时语法：'10m' / '2h' / '1d' / '1h30m' / 数字=分钟。返回毫秒或 null。 */
 function parseIn(value) {
   if (value == null) return null
@@ -270,19 +391,48 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
   const timeZone = options?.timeZone ?? null
   const mode = input.mode === 'goal' ? 'goal' : 'wake'
 
-  // in 与 at 同给时 at 优先；但 edit 想用 in 改期时会把 at 显式清掉。
-  const inMs = parseIn(input.in ?? input.inMinutes ?? null)
-  let startRaw = input.at != null ? String(input.at) : (inMs != null ? new Date(now + inMs).toISOString() : null)
-  if (!startRaw) throw new Error('安排需要 at（HH:mm / 周一 HH:mm / ISO / now）或 in（如 10m / 1d）')
-  let parsed = parseAt(startRaw, now, timeZone)
+  const date = input.date != null ? parseCalendarDate(input.date, timeZone) : null
+  const endDate = input.endDate != null ? parseCalendarDate(input.endDate, timeZone) : null
+  const allDay = input.allDay === true || (date != null && input.at == null)
+  const timeMatch = input.at != null ? /^(\d{1,2}):(\d{2})$/.exec(String(input.at).trim()) : null
+  let startRaw
+  let parsed
+  let time = null
+  if (date) {
+    if (!allDay && !timeMatch) throw new Error('date + at 时 at 应为 HH:mm（要 ISO 时间就直接用 at，不用 date）')
+    const hour = timeMatch ? Number(timeMatch[1]) : 0
+    const minute = timeMatch ? Number(timeMatch[2]) : 0
+    if (timeMatch) time = `${pad2(hour)}:${pad2(minute)}`
+    const startAt = zonedEpoch({ ...date.fields, h: hour, min: minute }, timeZone)
+    startRaw = new Date(startAt).toISOString()
+    parsed = { kind: 'once', at: startAt }
+  } else {
+    // in 与 at 同给时 at 优先；但 edit 想用 in 改期时会把 at 显式清掉。
+    const inMs = parseIn(input.in ?? input.inMinutes ?? null)
+    startRaw = input.at != null ? String(input.at) : (inMs != null ? new Date(now + inMs).toISOString() : null)
+    if (!startRaw) throw new Error('安排需要 at（HH:mm / 周一 HH:mm / ISO / now）或 in（如 10m / 1d）')
+    parsed = parseAt(startRaw, now, timeZone)
+  }
+
+  const repeat = normalizeRepeatInput(input.repeat ?? null)
+  if (repeat && !date) throw new Error('repeat 需要配合 date 使用（如 date:"2026-11-08"）')
 
   const weekdays = normalizeWeekdays(input.weekdays ?? input.days ?? null)
   if (weekdays) {
-    if (parsed.kind !== 'daily') throw new Error('weekdays 需要配合 HH:mm 使用（如 at:"07:30", weekdays:[1,3,5]）')
-    parsed = { kind: 'weekly', weekdays, hour: parsed.hour, minute: parsed.minute }
+    if (parsed.kind === 'daily') {
+      parsed = { kind: 'weekly', weekdays, hour: parsed.hour, minute: parsed.minute }
+    } else if (!(date && repeat)) {
+      throw new Error('weekdays 需要配合 HH:mm 使用（如 at:"07:30", weekdays:[1,3,5]），或 date+repeat 的每周模式')
+    }
   }
 
-  const durationMs = parseIn(input.duration ?? input.durationMin ?? null)
+  let durationMs = parseIn(input.duration ?? input.durationMin ?? null)
+  if (endDate) {
+    if (!date) throw new Error('endDate 需要配合 date 使用')
+    const endAt = endOfCalendarDate(endDate.key, timeZone)
+    const startAt = Number(parsed.at)
+    durationMs = Math.max(60_000, endAt - startAt)
+  }
   let untilAt = null
   if (input.until != null) {
     const parsedUntil = parseUntil(input.until, now, timeZone)
@@ -297,12 +447,19 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
 
   const turnLimit = input.turnLimit == null ? null : Math.max(1, Number(input.turnLimit) || 1)
   const resumeLimit = input.resumeLimit == null ? null : Math.max(1, Number(input.resumeLimit) || 1)
-  return {
+  const schedule = {
     id: String(input.id ?? nextScheduleId()),
     mode,
     kind,
     at: startRaw,
-    weekdays: parsed.kind === 'weekly' ? parsed.weekdays : null,
+    date: date ? date.key : null,
+    time,
+    endDate: endDate ? endDate.key : null,
+    allDay,
+    wake: input.wake === true ? true : input.wake === false ? false : !allDay,
+    weekdays: weekdays ?? (parsed.kind === 'weekly' ? parsed.weekdays : null),
+    repeat,
+    skipDates: normalizeSkipDates(input.skipDates),
     durationMin,
     until: untilAt,
     message: String(input.message ?? ''),
@@ -314,8 +471,9 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
     allow: Array.isArray(input.allow) ? input.allow : null,
     turnLimit,
     resumeLimit,
-    __parsed: parsed,
   }
+  schedule.__parsed = date ? buildCalendarParsed(schedule, timeZone) : parsed
+  return schedule
 }
 
 /** until 语法：ISO / HH:mm（下一个该时刻）/ in 式时长（从 now 起）。 */
@@ -339,6 +497,7 @@ function parseUntil(value, now, timeZone) {
 /** 安排里的解析结果（跨重启后从 at/weekdays 重建）。 */
 function parsedOf(schedule, now, timeZone) {
   if (schedule.__parsed) return schedule.__parsed
+  if (schedule.date) return buildCalendarParsed(schedule, timeZone)
   let parsed = parseAt(schedule.at, now, timeZone)
   if (Array.isArray(schedule.weekdays) && schedule.weekdays.length && parsed.kind === 'daily') {
     parsed = { kind: 'weekly', weekdays: schedule.weekdays.slice().sort((a, b) => a - b), hour: parsed.hour, minute: parsed.minute }
@@ -349,6 +508,7 @@ function parsedOf(schedule, now, timeZone) {
 /** 已经到达、且是"最近一次"的触发点（用于 tick 的到点判定）。 */
 export function occurrenceAt(parsed, now, timeZone = null) {
   if (!parsed) return null
+  if (parsed.kind === 'calendar') return calendarLatest(parsed, now, timeZone)
   if (parsed.kind === 'once') return parsed.at
   if (parsed.kind === 'daily') {
     const p = partsOf(now, timeZone)
@@ -375,6 +535,7 @@ export function occurrenceAt(parsed, now, timeZone = null) {
 /** 下一个未来的触发点（用于清单/世界状态展示）。 */
 export function nextOccurrence(parsed, now, timeZone = null) {
   if (!parsed) return null
+  if (parsed.kind === 'calendar') return calendarNext(parsed, now, timeZone)
   if (parsed.kind === 'once') return parsed.at > now ? parsed.at : null
   const p = partsOf(now, timeZone)
   if (parsed.kind === 'daily') {
@@ -398,6 +559,13 @@ export function nextOccurrence(parsed, now, timeZone = null) {
 /** 人读的时间描述（清单/世界状态用）。 */
 export function describeParsed(parsed) {
   if (!parsed) return '(无法解析)'
+  if (parsed.kind === 'calendar') {
+    const every = parsed.everyUnit === 'w'
+      ? `每 ${parsed.everyN} 周`
+      : `每 ${parsed.everyN} 天`
+    const time = parsed.allDay ? '全天' : `${pad2(parsed.hour)}:${pad2(parsed.minute)}`
+    return `${every} ${time}`
+  }
   if (parsed.kind === 'once') return '一次'
   if (parsed.kind === 'daily') return `每天 ${pad2(parsed.hour)}:${pad2(parsed.minute)}`
   const days = parsed.weekdays.map((n) => WEEKDAYS_ZH[n - 1]).join('、')
@@ -1544,6 +1712,7 @@ export function apply(ctx) {
 
   function scheduleSignature(schedule) {
     const parsed = schedule.__parsed ?? parsedOf(schedule, nowTime(), timeZone)
+    if (parsed.kind === 'calendar') return `calendar|${parsed.startAt}|${parsed.intervalMs}|${(parsed.weekdays ?? []).join(',')}|${parsed.untilAt ?? ''}|${parsed.count ?? ''}|${[...(parsed.skipDates ?? [])].join(',')}`
     if (parsed.kind === 'once') return `once|${parsed.at}`
     if (parsed.kind === 'daily') return `daily|${parsed.hour}:${parsed.minute}`
     return `weekly|${(parsed.weekdays ?? []).join(',')}|${parsed.hour}:${parsed.minute}`
@@ -1627,9 +1796,22 @@ export function apply(ctx) {
     return { cancelled: true, parts }
   }
 
-  function startSchedule(schedule) {
+  function startSchedule(schedule, atPoint = null) {
     const now = nowTime()
     const parsed = schedule.__parsed ?? parsedOf(schedule, now, timeZone)
+    const point = atPoint ?? occurrenceAt(parsed, now, timeZone) ?? now
+    // 日历层：skipDates 只跳 occurrence；allDay/wake:false 只展示，不产生唤醒。
+    if (parsed.kind === 'calendar' && parsed.skipDates?.has(dayKey(point, timeZone))) {
+      state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
+      persist()
+      return { started: false, calendarOnly: true, skipped: true }
+    }
+    if (schedule.wake === false || (schedule.allDay && schedule.wake !== true)) {
+      state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
+      noteExternalActivity(now, `schedule:${schedule.id}`)
+      persist()
+      return { started: false, calendarOnly: true }
+    }
     // 通用日历事件：time 不认识消费者，插件按 tags 订阅（dream 的每日安排就是 tags:['dream']）。
     emitEvent({
       from: { plugin: 'time', activity: 'schedule' },
@@ -1725,7 +1907,6 @@ export function apply(ctx) {
     }
     // fired 的日期用"触发点所在的那一天"，不是"现在"：跨午夜补响（daily 23:55 在
     // 00:05 才跑到）时记到昨天，今晚 23:55 还能正常响。
-    const point = occurrenceAt(parsed, now, timeZone) ?? now
     state.fired[`${schedule.id}@${dayKey(point, timeZone)}`] = now
     noteExternalActivity(now, `schedule:${schedule.id}`)
     persist()
@@ -1966,7 +2147,7 @@ export function apply(ctx) {
         if (state.fired[key]) continue
         const grace = parsed.kind === 'once' ? onceCatchUpMs : catchUpMs
         if (at - point > grace) { missedSchedule(schedule, point, at); continue }
-        startSchedule(schedule)
+        startSchedule(schedule, point)
         // 一次性安排响过就删（daily/weekly 保留）；别在 time.json 里堆一次性的残骸。
         if (parsed.kind === 'once') dropSchedule(schedule.id)
       }
@@ -2240,6 +2421,54 @@ export function apply(ctx) {
   }
 
   /** 结构化时间视图：模型 status 与未来 GUI 共用同一份数据（只读、无副作用）。 */
+  function calendarDayStart(at) {
+    const p = partsOf(at, timeZone)
+    return zonedEpoch({ y: p.y, m: p.m, d: p.d, h: 0, min: 0 }, timeZone)
+  }
+
+  function calendarEventsBetween(from, to) {
+    const out = []
+    const max = 200
+    for (const schedule of state.schedules) {
+      let parsed
+      try { parsed = parsedOf(schedule, nowTime(), timeZone) } catch { continue }
+      let cursor = from - 1
+      for (let guard = 0; guard < max; guard += 1) {
+        const point = nextOccurrence(parsed, cursor, timeZone)
+        if (point == null || point > to) break
+        cursor = point
+        if (point < from) continue
+        const endAt = schedule.endDate
+          ? endOfCalendarDate(schedule.endDate, timeZone)
+          : (schedule.durationMin != null ? point + Number(schedule.durationMin) * 60_000 : point)
+        out.push({
+          id: schedule.id,
+          title: schedule.theme || schedule.message || schedule.id,
+          startAt: point,
+          endAt,
+          allDay: Boolean(schedule.allDay),
+          wake: schedule.wake !== false,
+          mode: schedule.mode,
+          kind: schedule.kind,
+          sleep: Boolean(schedule.sleep),
+          silent: Boolean(schedule.silent),
+        })
+      }
+    }
+    return out.sort((a, b) => a.startAt - b.startAt)
+  }
+
+  function calendarView(now = nowTime()) {
+    const today = calendarDayStart(now)
+    const tomorrow = today + CAL_DAY_MS
+    const week = today + 7 * CAL_DAY_MS
+    return {
+      today: calendarEventsBetween(today, tomorrow - 1),
+      tomorrow: calendarEventsBetween(tomorrow, tomorrow + CAL_DAY_MS - 1),
+      week: calendarEventsBetween(today, week - 1),
+    }
+  }
+
   function timeView() {
     const now = nowTime()
     const next = nextUpcoming(now)
@@ -2295,6 +2524,7 @@ export function apply(ctx) {
         dueAt: hb.globalDueAt,
         pausedBy: hb.pausedBy,
       },
+      calendar: calendarView(now),
       dropped: {
         missed: state.stats.missed,
         overflow: state.stats.overflow,
@@ -2347,6 +2577,15 @@ export function apply(ctx) {
     const next = nextUpcoming(now)
     if (next) lines.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${fmtRelative(next.point, now)}）。`)
     else lines.push('没有下一个安排。')
+    const cal = timeView().calendar
+    const calLine = (event) => `· ${event.allDay ? '全天' : timeOnly(event.startAt, timeZone)} ${event.title}（${event.id}${event.wake ? '' : '，仅展示'}）`
+    if (cal.today.length) { lines.push('【今天】'); for (const event of cal.today) lines.push(calLine(event)) }
+    if (cal.tomorrow.length) { lines.push('【明天】'); for (const event of cal.tomorrow) lines.push(calLine(event)) }
+    if (cal.week.length > cal.today.length + cal.tomorrow.length) {
+      const rest = cal.week.filter((event) => !cal.today.some((x) => x.id === event.id && x.startAt === event.startAt)
+        && !cal.tomorrow.some((x) => x.id === event.id && x.startAt === event.startAt))
+      if (rest.length) { lines.push('【本周】'); for (const event of rest) lines.push(calLine(event)) }
+    }
     if (state.spans.length) {
       lines.push('【进行中】')
       lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)
@@ -2547,8 +2786,8 @@ export function apply(ctx) {
   })
   tool({
     name: 'time_arrange',
-    summary: '新建安排：一次/每天/每周/倒计时到点唤醒，或 goal 持续目标；mode:"heartbeat" 设置自己的全局活跃度（随机唤醒频率）。',
-    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局兜底心跳（此时只认 frequency，不要 at/in）。at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放；长日程/目标会自动暂停心跳，结束后恢复。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2）：1 约每 10–20 分钟可能醒一次，0.2 约 1–2 小时，0.05 约几小时；系统会显示预估频率，不需要自己算间隔。silent:true 只发事件不发消息。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
+    summary: '新建安排：一次/每天/每周/倒计时唤醒、日历日期/跨天/重复、goal 持续目标；mode:"heartbeat" 设置活跃度。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w",until?,count?} 在 date 上重复；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
@@ -2556,6 +2795,16 @@ export function apply(ctx) {
         kind: { type: 'string', enum: ['single', 'span'], description: 'single=一次；span=有开始和结束' },
         at: { type: 'string', description: 'HH:mm（每天）、"周一 07:30"（每周）、ISO、now' },
         in: { type: 'string', description: '多久之后，如 10m / 2h / 1d' },
+        date: { type: 'string', description: '日历日期 YYYY-MM-DD；配 at:"HH:mm" 是定时事件，省略 at 是全天事件' },
+        endDate: { type: 'string', description: '跨天事件结束日期 YYYY-MM-DD（含当天）' },
+        allDay: { type: 'boolean', description: '全天事件（默认只展示，不叫醒；要叫醒配 wake:true）' },
+        wake: { type: 'boolean', description: '是否产生唤醒；allDay 默认 false，定时事件默认 true' },
+        repeat: { type: 'object', additionalProperties: false, description: '在 date 上重复：{every:"2d"|"2w", until?, count?}', properties: {
+          every: { type: 'string', description: '2d = 每两天，2w = 每两周' },
+          until: { type: 'string', description: '结束日期 YYYY-MM-DD 或 ISO' },
+          count: { type: 'number', description: '最多发生次数' },
+        } },
+        skipDates: { type: 'array', items: { type: 'string' }, description: '跳过这些日期 YYYY-MM-DD（只跳过 occurrence）' },
         duration: { type: 'string', description: 'span 持续多久，如 8h / 30m' },
         message: { type: 'string', description: '唤醒时说的话（wake）或目标主题（goal）' },
         theme: { type: 'string', description: 'goal 主题，缺省用 message' },
