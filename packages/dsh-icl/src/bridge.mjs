@@ -510,15 +510,34 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   }
 
   function rawSearch({ query = '', limit = 2 } = {}) {
-    const needle = String(query ?? '').trim().toLowerCase()
-    if (!needle) return []
+    const raw = String(query ?? '').trim().toLowerCase()
+    if (!raw) return []
     const max = Math.max(1, Number(limit) || 2)
-    const hits = []
-    for (let i = state.raw.length - 1; i >= 0 && hits.length < max; i -= 1) {
-      const row = state.raw[i]
-      if (String(row.text ?? '').toLowerCase().includes(needle)) hits.push(row)
+    // 纯子串匹配对"今天主人发过哪些图片和视频"这种问句几乎永远 0 命中；
+    // 改成中文 bigram + 西文词打分：抽到"主人/图片/视频"就能从原文捞回细节。
+    const compact = raw.replace(/[\s，。！？、,.!?;；:：'"“”‘’（）()\[\]【】]/g, '')
+    const terms = new Set()
+    for (const seg of (raw.match(/[\u4e00-\u9fff]{2,}/g) ?? [])) {
+      for (let i = 0; i + 1 < seg.length; i += 1) terms.add(seg.slice(i, i + 2))
     }
-    return hits.reverse()
+    for (const word of (raw.match(/[a-z0-9_]{2,}/g) ?? [])) terms.add(word)
+    const list = [...terms].slice(0, 24)
+    if (!list.length) return []
+    const scored = []
+    for (let i = state.raw.length - 1; i >= 0; i -= 1) {
+      const row = state.raw[i]
+      const text = String(row.text ?? '')
+      if (!text) continue
+      const hay = text.toLowerCase().replace(/\s+/g, '')
+      let hits = 0
+      for (const term of list) if (hay.includes(term)) hits += 1
+      const exact = compact.length > 3 && hay.includes(compact) ? 1 : 0
+      if (!hits && !exact) continue
+      scored.push({ row, score: hits / list.length + exact * 2 })
+      if (scored.length >= 400) break
+    }
+    scored.sort((a, b) => b.score - a.score || Number(b.row.time ?? 0) - Number(a.row.time ?? 0))
+    return scored.slice(0, max).map((entry) => entry.row)
   }
 
   function registerRaw() {
