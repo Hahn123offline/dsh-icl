@@ -34,7 +34,10 @@ export function resolveSnowlumaHome() {
   if (process.env.SNOWLUMA_HOME) return path.resolve(String(process.env.SNOWLUMA_HOME))
   const base = path.join(os.homedir(), 'Downloads')
   try {
-    const dirs = fs.readdirSync(base).filter((name) => name.startsWith('SnowLuma-')).sort()
+    const dirs = fs.readdirSync(base, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('SnowLuma-'))
+      .map((entry) => entry.name)
+      .sort()
     if (dirs.length) return path.join(base, dirs[dirs.length - 1])
   } catch { /* 没有 Downloads 就退回占位路径，由 QQ 插件明确报错 */ }
   return path.join(base, 'SnowLuma-v2.1.1-win-x64-lite')
