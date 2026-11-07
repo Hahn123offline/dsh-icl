@@ -277,7 +277,7 @@ function buildCalendarParsed(schedule, timeZone) {
 }
 
 /** 生成 [from,to] 内的日历 occurrence；skipDates/until/count 都在这里处理。 */
-function calendarPoints(parsed, from, to, timeZone) {
+function calendarPoints(parsed, from, to, timeZone, { ignoreSkip = false } = {}) {
   const out = []
   const startAt = Number(parsed.startAt)
   const untilAt = parsed.untilAt == null ? Infinity : Number(parsed.untilAt)
@@ -285,7 +285,7 @@ function calendarPoints(parsed, from, to, timeZone) {
   const skip = parsed.skipDates ?? new Set()
   const push = (t) => {
     if (!Number.isFinite(t) || t < startAt || t > untilAt) return false
-    if (t >= from && t <= to && !skip.has(dayKey(t, timeZone))) out.push(t)
+    if (t >= from && t <= to && (ignoreSkip || !skip.has(dayKey(t, timeZone)))) out.push(t)
     return true
   }
   if (parsed.weekdays && parsed.everyUnit === 'w') {
@@ -320,7 +320,7 @@ function calendarNext(parsed, now, timeZone) {
 }
 
 function calendarLatest(parsed, now, timeZone) {
-  const points = calendarPoints(parsed, parsed.startAt, now, timeZone)
+  const points = calendarPoints(parsed, parsed.startAt, now, timeZone, { ignoreSkip: true })
   return points.length ? points[points.length - 1] : null
 }
 
@@ -2579,13 +2579,17 @@ export function apply(ctx) {
     else lines.push('没有下一个安排。')
     const cal = timeView().calendar
     const calLine = (event) => `· ${event.allDay ? '全天' : timeOnly(event.startAt, timeZone)} ${event.title}（${event.id}${event.wake ? '' : '，仅展示'}）`
-    if (cal.today.length) { lines.push('【今天】'); for (const event of cal.today) lines.push(calLine(event)) }
-    if (cal.tomorrow.length) { lines.push('【明天】'); for (const event of cal.tomorrow) lines.push(calLine(event)) }
-    if (cal.week.length > cal.today.length + cal.tomorrow.length) {
-      const rest = cal.week.filter((event) => !cal.today.some((x) => x.id === event.id && x.startAt === event.startAt)
-        && !cal.tomorrow.some((x) => x.id === event.id && x.startAt === event.startAt))
-      if (rest.length) { lines.push('【本周】'); for (const event of rest) lines.push(calLine(event)) }
+    const pushCalBlock = (title, events) => {
+      if (!events.length) return
+      lines.push(title)
+      for (const event of events.slice(0, 8)) lines.push(calLine(event))
+      if (events.length > 8) lines.push(`· …还有 ${events.length - 8} 条`)
     }
+    pushCalBlock('【今天】', cal.today)
+    pushCalBlock('【明天】', cal.tomorrow)
+    const rest = cal.week.filter((event) => !cal.today.some((x) => x.id === event.id && x.startAt === event.startAt)
+      && !cal.tomorrow.some((x) => x.id === event.id && x.startAt === event.startAt))
+    pushCalBlock('【本周】', rest)
     if (state.spans.length) {
       lines.push('【进行中】')
       lines.push(`进行中：${state.spans.map((s) => `${s.id}${s.sleep ? '（睡觉）' : ''} 到 ${stampAt(Number(s.until), timeZone)}`).join('；')}。`)

@@ -699,6 +699,15 @@ test('日历：每周重复（weekdays + every 2w）在周视图里只出现本�
   assert.deepEqual(dates, [3, 5], '本周只应出现 11-03(周二) 和 11-05(周四)')
 })
 
+test('日历：skipDates 不会在跳过日补响上一条 occurrence', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  api.add({ id: 'cal-skip-wake', date: '2026-11-03', at: '07:30', repeat: { every: '1d', count: 2 }, skipDates: ['2026-11-03'], message: '不该响' })
+  virtualNow = new Date(2026, 10, 3, 7, 31, 0).getTime()
+  api.tick()
+  assert.doesNotMatch(drainText(host), /不该响/)
+})
+
 
 test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再静默等待', async () => {
   let virtualNow = MON_0900
