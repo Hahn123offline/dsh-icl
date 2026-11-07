@@ -797,6 +797,9 @@ export async function apply(ctx) {
         })
         images.push({ data: fetched.buffer, mediaType: fetched.mimeType, name: path.basename(saved.path), path: saved.path })
         mediaFiles.push({ kind: 'image', path: saved.path, bytes: saved.bytes, mime: saved.mime })
+        // 图片附件不可用时的兜底：正文也写本地路径（像视频一样），否则模型只看到 "[图片]"，
+        // 既不知道文件在哪，也无法用 read_image / album_import 继续处理。
+        appended.push(`\n[图片已保存：${saved.path}]`)
         stats.mediaSaved += 1
         stats.mediaBytes += saved.bytes
         maybeWarnMediaSize()
