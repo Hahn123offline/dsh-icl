@@ -12,6 +12,8 @@ import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import * as qqModule from '../../plugins/qq/src/index.mjs'
 import manifest from '../../plugins/qq/manifest.json' with { type: 'json' }
+import * as timeModule from '../../plugins/time/src/index.mjs'
+import timeManifest from '../../plugins/time/manifest.json' with { type: 'json' }
 import { activityIdForPrivate, messageIdOf, normalizeSegments, buildPrivateSignal, sentAtOf } from '../../plugins/qq/src/normalize.mjs'
 import { createDedupeStore, createInboundGate } from '../../plugins/qq/src/gate.mjs'
 import { checkSendTarget, sendEnabled } from '../../plugins/qq/src/outbound.mjs'
@@ -544,4 +546,33 @@ test('显式等待：等待期间到达的新消息由 waiter 消费，不再进
   } finally {
     host.disable('qq')
   }
+})
+
+test('睡眠拦截：戳一戳与普通消息一样进 time 积压，不产生投递', async () => {
+  FakeWebSocket.reset()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-poke-sleep-'))
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(timeManifest, timeModule, { config: { stateFile: path.join(dir, 'time.json'), tickMs: 3_600_000 } })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig() })
+  await host.enable('time')
+  const time = host.shared.get('time')
+  time.sleep({ message: '睡了', durationMin: 30 })
+  host.services.delivery.drain('session').forEach((batch) => host.services.delivery.ack(batch.id))
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame({
+    post_type: 'notice', notice_type: 'poke', sub_type: 'poke',
+    time: Math.floor(NOW / 1000), self_id: 2593621742,
+    user_id: 10001, target_id: 2593621742,
+    sender: { user_id: 10001, nickname: '测试' },
+  }))
+  assert.equal(host.services.delivery.pendingCount(), 0, '戳一戳不能叫醒睡眠')
+  assert.equal(time.status().backlog, 1)
+  assert.equal(time.queue()[0].reason, 'sleeping')
+  assert.match(time.queue()[0].text, /戳了戳你/)
+  assert.equal(ws.sent.length, 0)
+  host.disable('qq')
+  host.disable('time')
+  fs.rmSync(dir, { recursive: true, force: true })
 })
