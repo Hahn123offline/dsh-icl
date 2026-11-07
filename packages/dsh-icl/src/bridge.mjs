@@ -84,8 +84,24 @@ function makeSaveImage(attachments) {
 export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   if (!ctx?.tools || typeof ctx.tools.register !== 'function') throw new Error('DSH 桥需要 ctx.tools.register')
   if (!host?.services) throw new Error('DSH 桥需要 ICL host')
-  const attachments = resolveAttachments(ctx)
-  const saveImage = makeSaveImage(attachments)
+  // 诊断：图片通道问题（attachment 服务是否可用/注册是否回退）写一条 JSONL，方便 lab 里取证。
+  const diagFile = config.stateDir ? path.join(String(config.stateDir), 'icl-diag.jsonl') : null
+  const diag = (event) => {
+    if (!diagFile) return
+    try {
+      fs.mkdirSync(path.dirname(diagFile), { recursive: true })
+      fs.appendFileSync(diagFile, `${JSON.stringify({ at: Date.now(), ...event })}\n`, 'utf8')
+    } catch { /* 诊断失败不影响主流程 */ }
+  }
+  const saveImage = async (file) => {
+    const store = attachmentsService()
+    if (!store) throw new Error('当前会话没有 attachment 服务')
+    const mediaType = imageMediaType(file)
+    if (!mediaType) throw new Error(`不支持的图片扩展名：${path.extname(file) || '(无)'}`)
+    const data = fs.readFileSync(file)
+    return store.saveImage({ data, mediaType, name: path.basename(file) })
+  }
+  diag({ event: 'bridge.init', ctxAttachments: Boolean(ctx?.attachments?.saveImages), inject: typeof ctx?.inject === 'function' })
 
   const state = {
     session: null,
@@ -305,7 +321,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         const off = ctx.tools.register(build(!state.outputFallback))
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
         added.push(name)
+        if (!state.diagImageOk) { state.diagImageOk = true; diag({ event: 'tool.register.image-ok', name, imageOutput: !state.outputFallback }) }
       } catch (error) {
+        diag({ event: 'tool.register.failed', name, imageOutput: !state.outputFallback, error: String(error?.message ?? error) })
         // 兼容回退：老宿主（DSH 0.2.0-rc.2）只认 text-only output schema。
         // 先整体切 text-only 重试一次；成功则后续工具直接走 text-only，并留一条可查的告警。
         if (!state.outputFallback) {
@@ -573,7 +591,12 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       state.attachmentsInjected = true
       try {
         ctx.inject(['attachments'], (sub) => {
-          if (sub?.attachments?.saveImages) state.attachments = sub.attachments
+          if (sub?.attachments?.saveImages) {
+            state.attachments = sub.attachments
+            diag({ event: 'attachments.injected', saveImages: true, saveImage: typeof sub.attachments.saveImage === 'function' })
+          } else {
+            diag({ event: 'attachments.inject-empty', keys: sub ? Object.keys(sub).slice(0, 8) : null })
+          }
         })
       } catch (error) {
         report('attachments.inject', error)
@@ -596,6 +619,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   async function noticeMessageWithImages(batch, text) {
     const descriptors = (Array.isArray(batch?.images) ? batch.images : [])
       .filter((img) => img && img.data && img.mediaType)
+    diag({ event: 'inbound.images', batchImages: Array.isArray(batch?.images) ? batch.images.length : 0, descriptors: descriptors.length, text: String(text ?? '').slice(0, 80) })
     const refs = []
     const fallback = []
     if (descriptors.length) {
