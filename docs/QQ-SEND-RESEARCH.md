@@ -345,7 +345,27 @@ WAITING
 
 ## 10. 参考索引（本仓库文件）
 
-- 当前：`packages/plugins/qq/src/{send-tool,outbound,humanize,wake,index}.mjs`
+- 当前：`packages/plugins/qq/src/{send-tool,outbound,humanize,wake,index,debounce}.mjs`
 - 旧 dsh-qq：`C:\DSH\qwenstuff\dsh-qq\src\bridge.js` 的 `sendChain` / `computeGapsV2` / `sendMessagesV2` / wait 段
 - 旧 focus-core：`C:\DSH\qwenstuff\focus-core\apps\dsh-icl\src\domain\{qq-send,qq-stream,wait,attention-window,rhythm}.js`、`src\routes\qq.js`
 - 旧文档：`C:\DSH\qwenstuff\dsh-qq-调度核心设计-v2.md`、`dsh-qq-审计报告.md`
+
+---
+
+## 11. 用户决策与 Phase 1 实现记录（2026-11-07）
+
+用户拍板：
+1. 等待用**显式工具**，不做 send 后自动 settle。
+2. 打断默认 **finish-then-handle**；给较慢打字的人留足时间，避免抢话。
+3. 超限用**短队列**（后续 Phase 2）；群聊暂不做，先把私聊自然回复做透。
+4. 接受"整批发完才返回"。
+5. 范围：先私聊单人会话，群聊成熟后开放。
+
+Phase 1 已实现（`6f274a3`）：
+- `packages/plugins/qq/src/debounce.mjs`：纯防抖器 + `mergeSignals`；默认 quiet **10s**、maxHold **30s**、最多 20 条；关闭时同步直投。
+- 产品 preset / QQ lab preset 已启用 `inboundDebounce`；插件库默认仍关闭以免破坏旧测试。
+- batch signal 带 `meta.qq.batch.seqs`，QQ/focus 重放回执补推整批 delivered；合并后仍保留每条账本 seq、messageId、图片。
+- 测试：`qq-debounce.test.mjs` 纯函数 + `qq.test.mjs` 插件集成（flush 后一条 batch、watermark=2）。
+- 未做：Phase 2 出站短队列/全局限流/批次幂等；Phase 3 显式 wait/打断；Phase 4 调参。
+
+**慢打字员的注意点**：10s quiet 是"最后一条之后无人再发"的等待，不是固定回复延迟；如果用户 10s 后继续发，新消息会进入下一批（Phase 3 的 finish-then-handle 会保证不抢话）。这个值需要真实聊天调参，不要一次调得太短。
