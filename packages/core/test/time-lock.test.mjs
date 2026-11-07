@@ -526,6 +526,101 @@ function emitTurnEnd(host, seq = 1) {
   host.services.signals.emit({ from: { plugin: 'dsh' }, kind: 'event', text: 'turn-end', tags: ['turn-end'], meta: { seq } })
 }
 
+/* ───────────────────────── 全局兜底心跳 v2（频率随机唤醒） ───────────────────────── */
+
+test('心跳 v2：turn-end 后按频率随机醒一次，消息自带当前 status', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({
+    now: () => virtualNow,
+    config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1 } },
+  })
+  emitTurnEnd(host, 1)
+  const hb0 = api.status().heartbeat
+  assert.equal(hb0.frequency, 1)
+  assert.equal(hb0.pausedBy, null)
+  assert.ok(hb0.globalDueAt >= virtualNow + 60_000, 'f=1 基线 60s 后应有下一次心跳')
+  virtualNow += 59_000
+  api.tick()
+  assert.doesNotMatch(drainText(host), /【心跳】/, '没到点不打扰')
+  virtualNow += 2_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /【心跳】/)
+  assert.match(text, /现在：/)
+  assert.match(text, /心跳：活跃度/)
+  assert.equal(api.status().heartbeat.globalStats.sent, 1)
+  assert.equal(api.status().heartbeat.globalDueAt, null, '触发后等下一回合结束再排')
+})
+
+test('心跳 v2：span 进入暂停、离开恢复；wake 安排不暂停', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({
+    now: () => virtualNow,
+    config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1 } },
+  })
+  api.add({ id: 'hb-wake', in: '5m', mode: 'wake', message: '普通闹钟' })
+  emitTurnEnd(host, 1)
+  assert.ok(api.status().heartbeat.globalDueAt != null, 'wake 安排不应暂停心跳')
+
+  api.add({ id: 'hb-span', at: 'now', kind: 'span', duration: '10m', message: '忙着' })
+  api.tick() // 让 at:'now' 的 span 真正开始
+  assert.equal(api.status().spans.length, 1)
+  emitTurnEnd(host, 2)
+  assert.equal(api.status().heartbeat.globalDueAt, null, 'span 活跃时心跳暂停')
+  assert.equal(api.status().heartbeat.pausedBy, 'span')
+
+  virtualNow += 11 * 60_000
+  api.tick() // span 到期结束，心跳重新排
+  assert.equal(api.status().spans.length, 0)
+  assert.ok(api.status().heartbeat.globalDueAt != null, 'span 结束后心跳恢复')
+})
+
+test('心跳 v2：goal 活跃时暂停，取消后恢复', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1 } } })
+  const goal = api.addGoal({ theme: '持续目标', resumeLimit: 10 })
+  emitTurnEnd(host, 1)
+  assert.equal(api.status().heartbeat.pausedBy, 'goal')
+  assert.equal(api.status().heartbeat.globalDueAt, null)
+  api.cancel(goal.id)
+  api.tick()
+  assert.equal(api.status().heartbeat.pausedBy, null)
+  assert.ok(api.status().heartbeat.globalDueAt != null)
+})
+
+test('心跳 v2：frequency 工具可设且 clamp 到 [0.01,1]，status 给人话预估', async () => {
+  const { host, api } = await boot({ config: { awakeTick: { enabled: false } } })
+  const tools = Object.fromEntries(host.services.tools.list().map((t) => [t.name, t]))
+  const high = await tools.time_arrange.execute({ mode: 'heartbeat', frequency: 9 })
+  assert.match(high.text, /心跳活跃度设为 1/)
+  assert.equal(api.status().heartbeat.frequency, 1)
+  const low = await tools.time_arrange.execute({ mode: 'heartbeat', frequency: 0.001 })
+  assert.match(low.text, /心跳活跃度设为 0.01/)
+  assert.equal(api.status().heartbeat.frequency, 0.01)
+  assert.match(api.statusText(), /心跳：活跃度/)
+  assert.match(api.statusText(), /约 .*随机醒一次/)
+})
+
+test('心跳 v2：静音积压时心跳消息带积压预览（不用先调 time_status）', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({
+    now: () => virtualNow,
+    config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1 } },
+  })
+  api.mute({ minutes: 30, reason: '安静' })
+  host.services.signals.offer({ from: { plugin: 'qq', activity: 'qq:private:owner' }, kind: 'content', text: '主人：在吗' })
+  assert.equal(api.status().backlog, 1)
+  emitTurnEnd(host, 1)
+  virtualNow += 61_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /【心跳】/)
+  assert.match(text, /积压 1 条/)
+  assert.match(text, /积压预览/)
+  assert.match(text, /在吗/)
+})
+
+
 test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再静默等待', async () => {
   let virtualNow = MON_0900
   const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: true, idleSec: 60, maxPerHour: 10 } } })
@@ -545,7 +640,7 @@ test('清醒节拍：无 goal 时 turn-end 后 idleSec 内自检，空闲不再�
   const heartbeat = api.heartbeat()
   assert.ok(heartbeat.idleSec >= 61)
   assert.equal(heartbeat.ticksLastHour, 1)
-  assert.match(api.statusText(), /心跳：上次回合结束/)
+  assert.match(api.statusText(), /心跳：活跃度/)
 })
 
 test('清醒节拍不叠加在目标续推上（有 goal 时由 goal 唤醒）', async () => {

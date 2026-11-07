@@ -458,6 +458,20 @@ export function apply(ctx) {
   const awakeRetrySec = Math.max(5, Number(awakeCfg.retrySec ?? 30))
   const awakeDuringFocus = awakeCfg.duringFocus !== false
   const awakeCappedSec = Math.max(60, Number(awakeCfg.cappedSec ?? 600))
+  // 全局兜底心跳（heartbeat v2）：模型只设"活跃度频率"，不设间隔。
+  // 基线 f=1 → 每 10–20 分钟随机跳一次；实际间隔 = uniform(baseMin, baseMax) / f。
+  // 频率 clamp 后永远存在（不会完全关掉），模型只能把间隔拉长。
+  const heartbeatCfg = ctx.config.heartbeat && typeof ctx.config.heartbeat === 'object' ? ctx.config.heartbeat : {}
+  const heartbeatBaseMinSec = Math.max(60, Number(heartbeatCfg.baseMinSec ?? 10 * 60))
+  const heartbeatBaseMaxSec = Math.max(heartbeatBaseMinSec, Number(heartbeatCfg.baseMaxSec ?? 20 * 60))
+  const heartbeatMinFrequency = Math.max(0.001, Math.min(1, Number(heartbeatCfg.minFrequency ?? 0.01)))
+  const heartbeatMaxFrequency = Math.max(heartbeatMinFrequency, Math.min(1, Number(heartbeatCfg.maxFrequency ?? 1)))
+  const clampHeartbeatFrequency = (value, fallback = 0.2) => {
+    const n = Number(value)
+    const base = Number.isFinite(n) ? n : fallback
+    return Math.min(heartbeatMaxFrequency, Math.max(heartbeatMinFrequency, base))
+  }
+  const heartbeatDefaultFrequency = clampHeartbeatFrequency(heartbeatCfg.frequency ?? 0.2)
   const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
   const awakeCappedShortMax = Math.max(0, Number(awakeCfg.cappedShortMax ?? 3))
   // B：渐进式唤醒（compactWake）。lab-only，默认关；只压"唤醒提示的 orientation"，
@@ -506,6 +520,11 @@ export function apply(ctx) {
     pausedAt: null,
     pauseReason: null,
     inboxOffset: 0,
+    // 心跳 v2：模型设定的活跃度频率（0.01..1）；下一次随机唤醒与上次触发时间。
+    heartbeatFrequency: heartbeatDefaultFrequency,
+    heartbeatDueAt: null,
+    heartbeatLastAt: null,
+    heartbeatStats: { sent: 0, suppressed: 0, skippedBusy: 0 },
     // 清醒节拍/心跳：最后一次 turn-end、下一次自检、最近一小时的节拍时间戳
     lastTurnEndAt: null,
     lastTurnStartAt: null,
@@ -562,6 +581,10 @@ export function apply(ctx) {
       state.fired = saved.fired && typeof saved.fired === 'object' ? saved.fired : {}
       state.inboxOffset = Number(saved.inboxOffset) > 0 ? Number(saved.inboxOffset) : 0
       state.stats = { ...blank().stats, ...(saved.stats && typeof saved.stats === 'object' ? saved.stats : {}) }
+      state.heartbeatFrequency = clampHeartbeatFrequency(saved.heartbeatFrequency ?? heartbeatDefaultFrequency)
+      state.heartbeatDueAt = Number(saved.heartbeatDueAt) > 0 ? Number(saved.heartbeatDueAt) : null
+      state.heartbeatLastAt = Number(saved.heartbeatLastAt) > 0 ? Number(saved.heartbeatLastAt) : null
+      state.heartbeatStats = { sent: 0, suppressed: 0, skippedBusy: 0, ...(saved.heartbeatStats && typeof saved.heartbeatStats === 'object' ? saved.heartbeatStats : {}) }
       state.awakeTickSentAt = Array.isArray(saved.awakeTickSentAt) ? saved.awakeTickSentAt.map(Number).filter(Number.isFinite).slice(-120) : []
       state.awakeTickShortSentAt = Array.isArray(saved.awakeTickShortSentAt) ? saved.awakeTickShortSentAt.map(Number).filter(Number.isFinite).slice(-20) : []
       for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt', 'awakeTickBackoffAt', 'awakeTickLastActivityAt', 'reactionPendingAt']) {
@@ -880,6 +903,85 @@ export function apply(ctx) {
   function clearAwakeTick() {
     if (state.awakeTickDueAt != null) { state.awakeTickDueAt = null; dirty = true }
     syncAwakeTimer()
+  }
+
+  /* ── 全局兜底心跳（heartbeat v2） ──
+   * 模型只设频率 f；实际间隔 = uniform(10m,20m) / f，随机。
+   * 不检查已有安排；span/goal 活跃时暂停，最后一个 span/goal 结束后恢复。
+   * 只在 turn-end 后没有新回合时计时；心跳消息直接带 statusText()，省一次 time_status 调用。
+   */
+  function heartbeatInTurn() {
+    return state.lastTurnStartAt != null && (state.lastTurnEndAt == null || Number(state.lastTurnStartAt) > Number(state.lastTurnEndAt))
+  }
+
+  function heartbeatSuppressed() {
+    if (state.phase !== 'awake') return true
+    if (state.spans.length) return true
+    if (state.goals.length) return true
+    return false
+  }
+
+  function heartbeatDelayMs() {
+    const base = heartbeatBaseMinSec * 1000 + Math.random() * (heartbeatBaseMaxSec - heartbeatBaseMinSec) * 1000
+    return Math.max(60_000, Math.round(base / clampHeartbeatFrequency(state.heartbeatFrequency)))
+  }
+
+  function heartbeatEstimate() {
+    const f = clampHeartbeatFrequency(state.heartbeatFrequency)
+    const lo = Math.round(heartbeatBaseMinSec * 1000 / f)
+    const hi = Math.round(heartbeatBaseMaxSec * 1000 / f)
+    return { minMs: lo, maxMs: hi, text: `每 ${fmtDuration(lo)}–${fmtDuration(hi)}` }
+  }
+
+  function clearHeartbeat() {
+    if (state.heartbeatDueAt != null) { state.heartbeatDueAt = null; dirty = true }
+  }
+
+  /** turn-end 后（或 span/goal 释放后）排下一次心跳；被抑制就不排。 */
+  function armHeartbeat(delayMs = null) {
+    if (heartbeatSuppressed() || heartbeatInTurn() || state.lastTurnEndAt == null) { clearHeartbeat(); return }
+    state.heartbeatDueAt = nowTime() + (delayMs != null ? Math.max(60_000, Number(delayMs)) : heartbeatDelayMs())
+    dirty = true
+  }
+
+  function heartbeatMessage(at) {
+    const lines = [`【心跳】${stampAt(at, timeZone)} 没有新回合；当前情况：`]
+    lines.push(statusText())
+    if (state.queue.length) {
+      const preview = state.queue.slice(-3).map((row) => `- ${row.from?.plugin ?? '?'}：${clipBriefText(row.text, 80)}`)
+      lines.push(`积压预览：\n${preview.join('\n')}`)
+    }
+    return lines.join('\n')
+  }
+
+  function maybeHeartbeat(at) {
+    if (heartbeatSuppressed()) {
+      if (state.heartbeatDueAt != null) { state.heartbeatDueAt = null; dirty = true; state.heartbeatStats.suppressed = Number(state.heartbeatStats.suppressed ?? 0) + 1 }
+      return false
+    }
+    if (heartbeatInTurn()) {
+      if (state.heartbeatDueAt != null) { state.heartbeatDueAt = null; dirty = true; state.heartbeatStats.skippedBusy = Number(state.heartbeatStats.skippedBusy ?? 0) + 1 }
+      return false
+    }
+    if (state.heartbeatDueAt == null) {
+      if (state.lastTurnEndAt != null) armHeartbeat()
+      return false
+    }
+    if (at < Number(state.heartbeatDueAt)) return false
+    const text = heartbeatMessage(at)
+    const outcome = sendWake({ text, payload: text, producer: 'heartbeat', kind: 'wake', tags: ['heartbeat'] })
+    if (outcome && outcome.accepted === false) {
+      state.heartbeatDueAt = at + Math.max(60_000, heartbeatEstimate().minMs / 3)
+      dirty = true
+      return false
+    }
+    state.heartbeatDueAt = null
+    state.heartbeatLastAt = at
+    state.heartbeatStats.sent = Number(state.heartbeatStats.sent ?? 0) + 1
+    dirty = true
+    recordEvent('heartbeat-fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+    log('info', 'time.heartbeat.fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+    return true
   }
 
   function awakeTickText(at, { short = false } = {}) {
@@ -1432,6 +1534,8 @@ export function apply(ctx) {
     } else {
       armAwakeTick()
     }
+    // 心跳 v2：不检查已有 wake 安排；span/goal 活跃时 armHeartbeat 自己会清掉。
+    armHeartbeat()
     persist()
     return resumed
   }
@@ -1738,6 +1842,7 @@ export function apply(ctx) {
     state.pauseReason = String(reason ?? 'time-pause').slice(0, 200)
     state.phase = 'paused'
     clearAwakeTick()
+    clearHeartbeat()
     persist()
     recordEvent('pause-on', { reason: state.pauseReason, since: state.pausedAt })
     log('info', 'time.pause', { at: state.pausedAt, reason: state.pauseReason })
@@ -1786,7 +1891,7 @@ export function apply(ctx) {
     persist()
     // 恢复后如果还在睡眠，积压应该留到醒来一起放；不要在睡着时倒给模型。
     const released = sleeping ? 0 : flushQueue('暂停期间')
-    if (!sleeping) armAwakeTick()
+    if (!sleeping) { armAwakeTick(); armHeartbeat() }
     log('info', 'time.resume', { deltaMs: delta, phase: state.phase, released })
     return { resumed: true, released, phase: state.phase, deltaMs: delta }
   }
@@ -1879,6 +1984,7 @@ export function apply(ctx) {
           emitEvent({ from: { plugin: 'time', activity: 'sleep-boundary' }, kind: 'event', text: 'sleep-boundary-overrun', tags: ['sleep', 'boundary', 'overrun'], meta: { afterSec: boundaryAgeSec, graceSec: sleepGraceSec } })
         }
       }
+      maybeHeartbeat(at)
       maybeAwakeTick(at)
       // 醒着长时间没有 turn 活动 = 可观测异常（自检本该在 idleSec 内把它救回来）。
       if (awakeTickEnabled && !awakeSuppressed() && state.lastTurnEndAt != null) {
@@ -1891,7 +1997,7 @@ export function apply(ctx) {
           }
         }
       }
-      if (dirty || state.queue.length || state.spans.length || state.goals.length || state.awakeTickDueAt != null) persist()
+      if (dirty || state.queue.length || state.spans.length || state.goals.length || state.awakeTickDueAt != null || state.heartbeatDueAt != null) persist()
       return { at }
     } catch (error) {
       state.lastTickError = { at, error: String(error?.stack ?? error) }
@@ -2067,6 +2173,16 @@ export function apply(ctx) {
       reactionPendingAt: state.reactionPendingAt ?? null,
       pendingBacklog: state.queue.length,
       turnEnds: Number(state.turnEnds ?? 0),
+      // 全局兜底心跳 v2（模型用 frequency 控制，不按间隔）
+      globalEnabled: true,
+      frequency: clampHeartbeatFrequency(state.heartbeatFrequency),
+      estimated: heartbeatEstimate(),
+      globalDueAt: state.heartbeatDueAt != null ? Number(state.heartbeatDueAt) : null,
+      globalLastAt: state.heartbeatLastAt != null ? Number(state.heartbeatLastAt) : null,
+      pausedBy: heartbeatSuppressed()
+        ? (state.phase !== 'awake' ? 'phase' : (state.spans.length ? 'span' : (state.goals.length ? 'goal' : 'other')))
+        : null,
+      globalStats: { ...state.heartbeatStats },
     }
   }
 
@@ -2151,15 +2267,14 @@ export function apply(ctx) {
       if (preserved.length) lines.push(`保留：${preserved.join('；')}（继续用 time_resume / focus_leave；离开用 time_cancel）。`)
     }
     const hb = heartbeatStatus()
-    if (hb.enabled && state.phase === 'awake') {
-      if (hb.state === 'overdue') {
-        lines.push(`⚠ 心跳：醒着 ${hb.idleSec} 秒没有回合（阈值 ${hb.thresholdSec} 秒 ×1.5），清醒节拍本应已介入。`)
-      } else if (hb.idleSec != null) {
-        const nextAt = hb.nextTickAt ? `${fmtRelative(Number(hb.nextTickAt), now)}自检` : '自检未排'
-        lines.push(`心跳：上次回合结束 ${hb.idleSec} 秒前；${nextAt}（近一小时自检 ${hb.ticksLastHour} 次）。`)
-      } else {
-        lines.push('心跳：还没收到过 turn-end（清醒节拍照常待命）。')
-      }
+    if (state.phase === 'awake') {
+      const pausedBy = hb.pausedBy === 'span' ? '进行中的长日程' : hb.pausedBy === 'goal' ? '活跃目标' : hb.pausedBy === 'phase' ? '睡眠/暂停' : null
+      const next = pausedBy
+        ? `暂停（${pausedBy}）`
+        : (hb.globalDueAt ? `预计 ${fmtRelative(Number(hb.globalDueAt), now)}醒` : '等下一次回合结束后排')
+      lines.push(`心跳：活跃度 ${hb.frequency}（约 ${hb.estimated.text} 随机醒一次）；${next}。`)
+    } else if (state.phase === 'sleeping') {
+      lines.push('心跳：睡眠中（长日程会自动暂停心跳，醒来恢复）。')
     }
     if (state.phase === 'sleeping' && state.sleepBoundary) {
       const boundary = state.sleepBoundary
@@ -2349,11 +2464,12 @@ export function apply(ctx) {
   })
   tool({
     name: 'time_arrange',
-    summary: '新建一条安排：一次/每天/每周/倒计时到点唤醒；mode:"goal" 则持续在回合末唤醒，直到取消。',
-    description: 'at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"（倒计时，与 at 同给时 at 优先）；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放。weekdays:[1..7] 配 HH:mm 表示每周。silent:true 只发事件不发消息（给插件订阅用，tags 决定谁收到）。focus 绑定注意力空间；turnLimit 限制 goal 的回合数；goal 在回合末续推，但同一目标至少间隔 goalResumeMinGapSec（默认 60s）才再唤醒一次，续推会标注"第 N 次"。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
+    summary: '新建安排：一次/每天/每周/倒计时到点唤醒，或 goal 持续目标；mode:"heartbeat" 设置自己的全局活跃度（随机唤醒频率）。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局兜底心跳（此时只认 frequency，不要 at/in）。at 支持 "HH:mm"（每天）、"周一 07:30" 或 "mon,wed 07:30"（每周）、ISO 时间、"now"；in 支持 "10m"/"2h"/"1d"/"1h30m"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转为积压、醒来批量释放；长日程/目标会自动暂停心跳，结束后恢复。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2）：1 约每 10–20 分钟可能醒一次，0.2 约 1–2 小时，0.05 约几小时；系统会显示预估频率，不需要自己算间隔。silent:true 只发事件不发消息。返回安排 id，之后可用 time_edit 改、time_cancel 取消。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
-        mode: { type: 'string', enum: ['wake', 'goal'], description: 'wake=到点发一条唤醒；goal=持续目标' },
+        mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
+        frequency: { type: 'number', description: 'heartbeat 用：活跃度 0.01–1（1=最活跃，约 10–20 分钟一次；0.05≈几小时一次）' },
         kind: { type: 'string', enum: ['single', 'span'], description: 'single=一次；span=有开始和结束' },
         at: { type: 'string', description: 'HH:mm（每天）、"周一 07:30"（每周）、ISO、now' },
         in: { type: 'string', description: '多久之后，如 10m / 2h / 1d' },
@@ -2371,6 +2487,17 @@ export function apply(ctx) {
       },
     },
     async execute(input = {}) {
+      if (String(input.mode) === 'heartbeat') {
+        if (input.frequency == null) throw new Error('heartbeat 需要 frequency（0.01–1）')
+        const frequency = clampHeartbeatFrequency(input.frequency)
+        state.heartbeatFrequency = frequency
+        state.heartbeatDueAt = null
+        dirty = true
+        armHeartbeat()
+        persist()
+        const est = heartbeatEstimate()
+        return { text: `心跳活跃度设为 ${frequency}：约 ${est.text} 随机醒一次（系统会随机化，不按固定间隔）。` }
+      }
       const schedule = addSchedule(input)
       const detail = describeSchedule(schedule, nowTime())
       return { text: `安排好了：${detail}` }
@@ -2529,6 +2656,8 @@ export function apply(ctx) {
       }
       noteReaction(at)
       state.lastTurnStartAt = at
+      // 会话又活跃了：取消待触发的心跳；这一轮结束后再重新计时。
+      clearHeartbeat()
       const seq = Number(signal?.meta?.seq)
       if (Number.isFinite(seq)) state.lastTurnSeq = seq
       if (state.phase === 'sleeping' && state.sleepBoundary && state.sleepBoundary.turnEndedAt != null && !state.sleepBoundary.postSleepTurn) {
