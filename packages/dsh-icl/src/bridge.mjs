@@ -748,6 +748,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       const ok = out?.result ? out.result.ok !== false : out?.ok !== false
       return { ok, out }
     }
+    diag({ event: 'bridge.no-cold-transport', hostApi: Boolean(hostApi?.prompt), direct: Boolean(direct?.prompt) })
     return { ok: false, error: 'no cold prompt transport' }
   }
 
