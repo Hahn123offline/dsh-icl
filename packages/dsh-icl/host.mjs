@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { NodeApiClient } from '../adapters/dsh-client.mjs'
 
 export const name = 'icl-host'
 
@@ -56,22 +57,54 @@ export function apply(ctx, config = {}) {
   let handle = null
   let started = false
   let apiProxy = null
+  let httpClient = null
+  let baseUrl = String(config.baseUrl ?? process.env.DSH_WEB_URL ?? '').replace(/\/+$/, '')
+
+  if (!baseUrl && typeof ctx.inject === 'function') {
+    try {
+      ctx.inject(['webServer'], (sub) => {
+        const port = sub.webServer?.port
+        if (port) {
+          baseUrl = `http://127.0.0.1:${port}`
+          diag({ msg: 'icl-host.webserver', baseUrl })
+        }
+      })
+    } catch { /* env 缺失时由调用方报错 */ }
+  }
+
+  function client() {
+    if (httpClient) return httpClient
+    if (!baseUrl) return null
+    httpClient = new NodeApiClient(baseUrl, 15000, {})
+    diag({ msg: 'icl-host.http-client', baseUrl })
+    return httpClient
+  }
 
   // 标准消息投递入口：供 preset 里的 bridge 在“没有 live agent”时冷恢复会话。
-  // 使用 DSH 官方 ApiProxy.session.prompt，不在 Host 里自己 resume/猜时机。
+  // 优先 Host 内 ApiProxy；拿不到时回退到老 dsh-qq 用过的 DSH HTTP 门面。
   const iclHost = {
     prompt: async ({ sessionId: target = null, text = '' } = {}) => {
-      if (!apiProxy?.sessions?.prompt) return { ok: false, error: 'apiProxy unavailable' }
       if (!target) return { ok: false, error: 'sessionId missing' }
       try {
-        const out = await apiProxy.sessions.prompt({
-          rpcId: randomUUID(),
-          payload: {
+        let out
+        if (apiProxy?.sessions?.prompt) {
+          out = await apiProxy.sessions.prompt({
+            rpcId: randomUUID(),
+            payload: {
+              sessionId: String(target),
+              mode: 'queue',
+              content: [{ type: 'text', text: String(text).slice(0, 12000) }],
+            },
+          })
+        } else {
+          const c = client()
+          if (!c) return { ok: false, error: 'apiProxy/http bridge unavailable' }
+          out = await c.callUnary('session/prompt', {
             sessionId: String(target),
             mode: 'queue',
             content: [{ type: 'text', text: String(text).slice(0, 12000) }],
-          },
-        })
+          })
+        }
         const ok = out?.result ? out.result.ok !== false : out?.ok !== false
         if (!ok) diag({ msg: 'icl-host.prompt-fail', sessionId: String(target), error: out?.result?.error?.message ?? null })
         return { ok, error: out?.result?.error?.message ?? null }

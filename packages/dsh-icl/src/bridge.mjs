@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { TEXT_OUTPUT_SCHEMA, toDshToolDefinition, toDshPromptSection, toDshUserMessage } from '../../core/src/dsh-contract.mjs'
+import { NodeApiClient } from '../../adapters/dsh-client.mjs'
 import { matchToolAllowlist } from './config.mjs'
 
 const RAW_ID = 'dsh-session'
@@ -726,7 +727,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     try { hostApi = ctx.iclHost ?? (typeof ctx.get === 'function' ? ctx.get('iclHost') : null) } catch { /* 老 Host 没有该服务 */ }
     const direct = state.apiProxy?.sessions
     const sessionId = state.session?.id ?? lastSessionIdHint()
-    if ((!hostApi?.prompt && !direct?.prompt) || !sessionId) return 0
+    if ((!hostApi?.prompt && !direct?.prompt && !process.env.DSH_WEB_URL) || !sessionId) return 0
     if (state.ticking) return 0
     state.ticking = true
     const batches = host.services.delivery.drain('session')
@@ -738,9 +739,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       return 0
     }
     try {
-      const out = hostApi?.prompt
-        ? await hostApi.prompt({ sessionId, text })
-        : await direct.prompt({
+      let out
+      if (hostApi?.prompt) {
+        out = await hostApi.prompt({ sessionId, text })
+      } else if (direct?.prompt) {
+        out = await direct.prompt({
           rpcId: randomUUID(),
           payload: {
             sessionId,
@@ -748,6 +751,15 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
             content: [{ type: 'text', text: text.slice(0, 12000) }],
           },
         })
+      } else {
+        // 老 dsh-qq 的 DSH HTTP 门面：session/prompt 本身会冷恢复。
+        const client = new NodeApiClient(process.env.DSH_WEB_URL, 15000, {})
+        out = await client.callUnary('session/prompt', {
+          sessionId,
+          mode: 'queue',
+          content: [{ type: 'text', text: text.slice(0, 12000) }],
+        })
+      }
       const ok = out == null
         ? false
         : (out.ok !== undefined
