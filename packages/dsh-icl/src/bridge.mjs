@@ -735,9 +735,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       const ok = out?.result ? out.result.ok !== false : out?.ok !== false
       return { ok, out }
     }
-    if (process.env.DSH_WEB_URL) {
+    const knownBase = process.env.DSH_WEB_URL || globalThis.__ICL_DSH_WEB_URL
+    if (knownBase) {
       // 最后回退：老 dsh-qq 的 DSH HTTP 门面（session/prompt 会冷恢复）。
-      const client = new NodeApiClient(process.env.DSH_WEB_URL, 15000, {})
+      diag({ event: 'bridge.cold-http', base: knownBase })
+      const client = new NodeApiClient(knownBase, 15000, {})
       const out = await client.callUnary('session/prompt', {
         sessionId,
         mode: 'queue',

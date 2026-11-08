@@ -60,12 +60,14 @@ export function apply(ctx, config = {}) {
   let httpClient = null
   let baseUrl = String(config.baseUrl ?? process.env.DSH_WEB_URL ?? '').replace(/\/+$/, '')
 
+  if (baseUrl) globalThis.__ICL_DSH_WEB_URL = baseUrl
   if (!baseUrl && typeof ctx.inject === 'function') {
     try {
       ctx.inject(['webServer'], (sub) => {
         const port = sub.webServer?.port
         if (port) {
           baseUrl = `http://127.0.0.1:${port}`
+          globalThis.__ICL_DSH_WEB_URL = baseUrl
           diag({ msg: 'icl-host.webserver', baseUrl })
         }
       })
