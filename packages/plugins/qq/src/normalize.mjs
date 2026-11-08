@@ -211,7 +211,6 @@ export function buildGroupSignal({
   const atSelf = richInfo.atSelf === true
   const tags = ['qq', 'group']
   if (atSelf) tags.push('at', 'mention')
-  else tags.push('ambient')
   return {
     id: signalIdFor({ scope: 'group', peerId: gid, messageId, at, text: body }),
     from: { plugin: 'qq', activity },

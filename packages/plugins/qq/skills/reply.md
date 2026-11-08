@@ -43,8 +43,8 @@
 
 **群聊 G1**：
 - 只有 `allowGroups` 白名单群会被接收；其它群整类丢弃。
-- 没有 focus 时普通群消息进 `focus` 的该群 backlog；`focus_enter {activity:"qq:group:<id>"}`
-  进入某个群后，该群普通消息直达；别群普通消息继续 backlog，别群 @ 可按 pierce 规则穿透。
+- 安静的小群，普通群消息可以直接到；短时间刷屏时会进该群 `focus` backlog。
+- `focus_enter {activity:"qq:group:<id>"}` 进入某个群后，该群普通消息直达；别群普通消息继续攒着，别群 @ 可按 pierce 规则穿透。
 - 群消息用 `qq_groups` 看未读、`qq_group_history` 看账本；**G1 不发群消息**。
 - 群消息不会生成 nudge/主动提醒。
 

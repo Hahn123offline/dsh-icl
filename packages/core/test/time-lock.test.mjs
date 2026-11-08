@@ -1408,3 +1408,17 @@ test('睡眠积压跨过信号 TTL 也不丢；重复 sleep lease 醒来全部�
   assert.match(text, /长睡期间的消息/, '睡眠积压不能被 30 分钟信号 TTL 判过期')
   assert.equal(host.services.focus.list().filter((lease) => lease.label === 'sleep').length, 0, '醒来释放全部重复 sleep lease')
 })
+
+test('time_arrange once:true：HH:mm 只响下一次，不建每日闹钟', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  const tool = host.services.tools.list().find((t) => t.name === 'time_arrange')
+  const out = await tool.execute({ mode: 'wake', at: '09:30', once: true, message: '只响一次' })
+  assert.match(out.text, /只响一次|一次/)
+  virtualNow += 31 * 60_000
+  api.tick()
+  assert.match(drainText(host), /只响一次/)
+  virtualNow += 24 * 3600_000
+  api.tick()
+  assert.equal(drainText(host), '', '第二天不应再响')
+})

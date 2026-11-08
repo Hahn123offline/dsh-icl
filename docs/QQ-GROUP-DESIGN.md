@@ -7,8 +7,9 @@
 
 - 配置：`groupPolicy:'allowlist'` + `allowGroups:[...]`；默认 `ignore`，产品 preset 已开两个旧小群
   `601357169` / `1057812765`（只读）。
-- 入站：白名单群 `message_type=group` 进 gate；普通消息 `tags:['qq','group','ambient']`，@ self
-  带 `at/mention`；群账本按 `qq:group:<id>`，群信封 `[QQ群·群名]`。
+- 入站：白名单群 `message_type=group` 进 gate；普通消息默认不预标 ambient，按 per-activity rate
+  决定：安静群直达，短时间刷屏时标 `ambient` 进 focus backlog；@ self 带 `at/mention`。
+  群账本按 `qq:group:<id>`，群信封 `[QQ群·群名]`。
 - 注意力：`focus.admit` 无 focus 时把 ambient 群消息 defer 到该群 backlog；@ 直达；
   当前 focus 的群直达，别群 ambient backlog；focus 进入群时回放积压摘要。
 - 繁忙度：新增 `attention-window.mjs`（旧 focus-core 公式），群 debounce 用 per-activity

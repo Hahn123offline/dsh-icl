@@ -456,6 +456,11 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
       throw new Error('weekdays 需要配合 HH:mm 使用（如 at:"07:30", weekdays:[1,3,5]），或 date+repeat 的每周模式')
     }
   }
+  // HH:mm 本身是"每天"语义；要一次性就显式 once:true，取下一次 occurrence。
+  if (input.once === true && (parsed.kind === 'daily' || parsed.kind === 'weekly')) {
+    const next = nextOccurrence(parsed, now, timeZone)
+    if (next != null) parsed = { kind: 'once', at: next }
+  }
 
   let durationMs = parseIn(input.duration ?? input.durationMin ?? null)
   if (endDate) {
@@ -2426,7 +2431,7 @@ export function apply(ctx) {
     } else {
       bits.push(`at=${schedule.at}`)
     }
-    bits.push(schedule.mode === 'goal' ? '目标模式' : '唤醒')
+    bits.push(schedule.mode === 'goal' ? '目标模式' : (schedule.sleep ? '睡眠安排' : (schedule.quiet ? '安静安排' : '唤醒')))
     if (schedule.kind === 'span') bits.push(`长日程${schedule.durationMin ? ` ${fmtDuration(schedule.durationMin * 60_000)}` : ''}`)
     if (schedule.sleep) bits.push('睡觉')
     if (schedule.quiet) bits.push('安静')
@@ -2912,7 +2917,7 @@ export function apply(ctx) {
   tool({
     name: 'time_arrange',
     summary: '新建安排：一次/每天/每周/倒计时唤醒、日历日期/跨天/重复、goal 持续目标；mode:"heartbeat" 设置活跃度。',
-    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。sleep 的 message 是醒来时说的话（不是入睡提示；要入睡提示用 startMessage）。quiet:true 表示安静安排：phase 保持醒着，拦住非 @ 消息（@/管理员可放行），不触发 dream，到点用 message 提醒；必须配 duration/until。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天；要只响下一次加 once:true）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。sleep 的 message 是醒来时说的话（不是入睡提示；要入睡提示用 startMessage）。quiet:true 表示安静安排：phase 保持醒着，拦住非 @ 消息（@/管理员可放行），不触发 dream，到点用 message 提醒；必须配 duration/until。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
@@ -2942,6 +2947,7 @@ export function apply(ctx) {
         silent: { type: 'boolean', description: '只发事件、不发消息' },
         allow: { type: 'array', items: { type: 'object' }, description: '睡眠期间的白名单规则 {from,kinds,tags,any}' },
         id: { type: 'string', description: '安排 id（同名会覆盖）' },
+        once: { type: 'boolean', description: 'HH:mm 时只响下一次（默认每天重复）；一次性定时用它，避免建出每日闹钟' },
         weekdays: { type: 'array', items: { type: 'number' }, description: '每周的星期（1=周一…7=周日），配 at:"HH:mm"' },
       },
     },
@@ -2959,7 +2965,10 @@ export function apply(ctx) {
       }
       const schedule = addSchedule(input)
       const detail = describeSchedule(schedule, nowTime())
-      return { text: `安排好了：${detail}` }
+      const dailyHint = input.once !== true && /^\d{1,2}:\d{2}$/.test(String(input.at ?? '')) && !input.date && !input.weekdays
+        ? '（HH:mm 默认每天重复；要一次性请加 once:true）'
+        : ''
+      return { text: `安排好了：${detail}${dailyHint}` }
     },
   })
   tool({
@@ -2976,7 +2985,7 @@ export function apply(ctx) {
         id: { type: 'string' }, at: { type: 'string' }, in: { type: 'string' },
         message: { type: 'string' }, startMessage: { type: 'string' }, theme: { type: 'string' },
         mode: { type: 'string', enum: ['wake', 'goal'] }, duration: { type: 'string' },
-        silent: { type: 'boolean' }, sleep: { type: 'boolean' }, quiet: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
+        silent: { type: 'boolean' }, sleep: { type: 'boolean' }, quiet: { type: 'boolean' }, once: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
       },
     },
     async execute({ id, ...patch } = {}) {

@@ -8,7 +8,7 @@
 // 否则模型会永远等下去。
 //
 // 纯逻辑 + 可注入 timer，便于测试；不做 IO、不碰发送。
-import { RATE_WINDOW_MS, windowDelayMs } from './attention-window.mjs'
+import { RATE_FAST, RATE_WINDOW_MS, windowDelayMs } from './attention-window.mjs'
 
 export const DEBOUNCE_DEFAULTS = Object.freeze({
   enabled: false,
@@ -129,6 +129,15 @@ export function createInboundDebouncer({
     clearTimers(entry)
     const signal = mergeSignals(entry.items)
     if (!signal) return null
+    // 旧 busyness 规则：安静群的普通消息应当能叫醒；只有峰值速率超过 RATE_FAST
+    // 才标 ambient，交给 focus 进 backlog。@ 永远不标 ambient。
+    if (entry.isGroup) {
+      const mention = Array.isArray(signal.tags) && (signal.tags.includes('mention') || signal.tags.includes('at'))
+      if (!mention && Number(entry.peakRate ?? 0) > RATE_FAST) {
+        signal.tags = [...new Set([...(signal.tags ?? []), 'ambient'])]
+        signal.meta = { ...(signal.meta ?? {}), ambient: true }
+      }
+    }
     stats.batches += 1
     stats.flushedMessages += entry.items.length
     stats.maxBatch = Math.max(stats.maxBatch, entry.items.length)
@@ -167,6 +176,7 @@ export function createInboundDebouncer({
       const at = now()
       entry.arrivals = (entry.arrivals ?? []).filter((t) => at - t < RATE_WINDOW_MS)
       const rate = entry.arrivals.length
+      entry.peakRate = Math.max(Number(entry.peakRate ?? 0), rate)
       const adaptive = windowDelayMs(rate, mentioned ? 'pierce' : 'ambient')
       quiet = Math.max(base, adaptive)
     }

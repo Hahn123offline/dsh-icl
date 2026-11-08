@@ -34,6 +34,7 @@ import { senderIdOf, activityIdForPrivate, activityIdForGroup } from './normaliz
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 import { createWakePlanner } from './wake.mjs'
 import { createInboundDebouncer, mergeSignals, normalizeDebounceConfig } from './debounce.mjs'
+import { RATE_FAST, RATE_WINDOW_MS } from './attention-window.mjs'
 import { buildWakeSnapshot } from './wake-snapshot.mjs'
 import { iclPaths } from '../../../core/src/icl-paths.mjs'
 
@@ -341,6 +342,7 @@ export async function apply(ctx) {
   let wakeTimer = null
   let inboundDebouncer = null
   const waiters = new Map() // activity -> waiter
+  const groupArrivals = new Map() // activity -> timestamps（无 debounce 时的 busyness）
   const gap = {
     reconnects: 0,
     lastDowntimeMs: null,
@@ -468,23 +470,36 @@ export async function apply(ctx) {
    * 模型进入任何一轮前都能看到的未读摘要。只列还没交付的行，不重复当前刚投递的消息；
    * 目的在于“说话前先看到旧消息”，而不是等下一次主动检查。
    */
-  function unreadDigest(maxChars = 700) {
+  function unreadDigest(maxChars = 700, { markDelivered = false } = {}) {
     if (!ledger) return ''
     const blocks = []
+    const marks = new Map()
+    const collect = (activity, msgs) => {
+      if (!marks.has(activity)) marks.set(activity, [])
+      for (const msg of msgs) marks.get(activity).push(msg.seq)
+    }
     const privateRows = ledgerWatermarks().filter((row) => Number(row.undelivered) > 0)
     for (const row of privateRows.slice(0, 4)) {
       const activity = activityIdForPrivate(row.peer)
       const msgs = (ledger.undelivered(activity, { limit: 2 }) ?? []).slice(0, 2)
+      collect(activity, msgs)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`私聊 ${row.peer}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     const groupRows = groupWatermarks()
     for (const row of groupRows.slice(0, 4)) {
       const msgs = (ledger.undelivered(row.activity, { limit: 2 }) ?? []).slice(0, 2)
+      collect(row.activity, msgs)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`群 ${row.groupId}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     if (!blocks.length) return ''
+    if (markDelivered) {
+      // 摘要已经进了本轮上下文，这几条就算“已交付”；attended 仍留给 qq_mark_read。
+      for (const [activity, seqs] of marks) {
+        try { ledger.markDeliveredSeqs(activity, seqs) } catch { /* 水位失败不影响摘要 */ }
+      }
+    }
     const text = `QQ 还有没看过的消息（回之前先确认，不要假装没看见）：\n${blocks.join('\n')}`
     return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
   }
@@ -504,6 +519,8 @@ export async function apply(ctx) {
         text: `[QQ未读] ${reason === 'session-bind' ? '你回来时' : ''}还有没处理的消息：\n${digest}`,
         tags: ['qq', 'unread'],
       })
+      // 只有真正进管道（未排队）才把摘要里的行标 delivered；排队/睡眠拦下时留给下一轮。
+      if (out?.delivered === true || (out?.accepted === true && out?.queued !== true)) unreadDigest(500, { markDelivered: true })
       return Boolean(out?.accepted || out?.delivered)
     } catch (error) {
       ctx.log({ level: 'warn', msg: 'qq.unread.notify-fail', error: String(error?.message ?? error) })
@@ -1286,6 +1303,18 @@ export async function apply(ctx) {
     try { sendHandle?.noteInbound?.(signal.meta?.qq?.envelope?.peerId ?? null) } catch { /* 发送链未注册不阻塞入站 */ }
     // 显式 wait 正在等这个会话：消息交给 waiter，不再走正常 debounce/delivery，避免双投。
     if (takeWaiterSignal(signal)) return decision
+    // debounce 关闭时也要有 busyness：安静群的普通消息直达，短时间刷屏才进 ambient backlog。
+    if (signal.meta?.qq?.scope === 'group' && !cfg.inboundDebounce.enabled) {
+      const key = String(signal.from.activity)
+      const at = now()
+      const list = (groupArrivals.get(key) ?? []).filter((t) => at - t < RATE_WINDOW_MS)
+      list.push(at)
+      groupArrivals.set(key, list)
+      if (list.length > RATE_FAST && !signal.tags?.includes('at') && !signal.tags?.includes('mention')) {
+        signal.tags = [...new Set([...(signal.tags ?? []), 'ambient'])]
+        signal.meta.ambient = true
+      }
+    }
     // 入站防抖：同一个人连发时先攒成一批；关闭时 push 会同步走 offer，行为不变。
     if (inboundDebouncer) inboundDebouncer.push(signal)
     else offer(signal)
@@ -1933,7 +1962,7 @@ export async function apply(ctx) {
   }
   // 每轮开始前把"还没交付的旧消息"带进上下文；不是主动检查，也不依赖心跳。
   try {
-    ctx.prompt.onTurn(() => unreadDigest(800))
+    ctx.prompt.onTurn(() => unreadDigest(800, { markDelivered: true }))
   } catch (error) {
     ctx.log({ level: 'warn', msg: 'qq.prompt.on-turn', error: String(error?.message ?? error) })
   }
