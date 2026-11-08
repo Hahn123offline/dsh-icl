@@ -76,13 +76,19 @@
                   outboxMaxPending: 20
                   outboxTtlMs: 300000
                   globalSendMaxPerMinute: 24
-                  # 入站防抖：对方连发时先攒 8s 再合成一次投递；最长 20s 必须交。
+                  # 不在发送后自动 replyCheck：那会在回合结束后额外叫醒一次。
+                  replyCheckEnabled: false
+                  # 入站防抖：群聊/连发先攒 6s 再合成一次投递；最长 20s 必须交。
                   inboundDebounce:
                     enabled: true
-                    quietMs: 10000
-                    mentionQuietMs: 4000
-                    maxHoldMs: 30000
+                    quietMs: 6000
+                    mentionQuietMs: 3000
+                    maxHoldMs: 20000
                     maxBatchMessages: 20
+                    # 安静群 ordinary 直接回；>5/5s 才由 debounce 标 ambient。
+                    groupQuietMs: 6000
+                    groupMentionQuietMs: 3000
+                    groupMaxHoldMs: 20000
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:

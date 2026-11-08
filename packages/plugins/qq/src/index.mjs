@@ -481,23 +481,28 @@ export async function apply(ctx) {
     const privateRows = ledgerWatermarks().filter((row) => Number(row.undelivered) > 0)
     for (const row of privateRows.slice(0, 4)) {
       const activity = activityIdForPrivate(row.peer)
-      const msgs = (ledger.undelivered(activity, { limit: 2 }) ?? []).slice(0, 2)
+      const msgs = (ledger.undelivered(activity, { limit: 4 }) ?? []).slice(0, 4)
       collect(activity, msgs)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`私聊 ${row.peer}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     const groupRows = groupWatermarks()
     for (const row of groupRows.slice(0, 4)) {
-      const msgs = (ledger.undelivered(row.activity, { limit: 2 }) ?? []).slice(0, 2)
+      const msgs = (ledger.undelivered(row.activity, { limit: 4 }) ?? []).slice(0, 4)
       collect(row.activity, msgs)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`群 ${row.groupId}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     if (!blocks.length) return ''
     if (markDelivered) {
-      // 摘要已经进了本轮上下文，这几条就算“已交付”；attended 仍留给 qq_mark_read。
+      // 摘要已经进了本轮上下文：标 delivered，并把 attended 推到看过的最后一条；
+      // 未展示的后续未交付留给下一轮。
       for (const [activity, seqs] of marks) {
-        try { ledger.markDeliveredSeqs(activity, seqs) } catch { /* 水位失败不影响摘要 */ }
+        try {
+          ledger.markDeliveredSeqs(activity, seqs)
+          const through = Math.max(...seqs)
+          if (Number.isFinite(through)) ledger.markRead(activity, { throughSeq: through })
+        } catch { /* 水位失败不影响摘要 */ }
       }
     }
     const text = `QQ 还有没看过的消息（回之前先确认，不要假装没看见）：\n${blocks.join('\n')}`
