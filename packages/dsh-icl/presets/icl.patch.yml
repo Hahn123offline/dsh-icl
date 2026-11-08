@@ -12,6 +12,12 @@
 - insert:
     - id: dsh-icl-host
       name: ../host.mjs
+      config:
+        presetId: icl
+        autoResume: true
+        # 启动后等 UI/agent factory 就绪，再恢复最近一个 ICL 顶层会话。
+        autoResumeDelayMs: 2500
+        autoResumeAttempts: 4
     - id: preset-icl
       name: '@deepseek-ai/dsh-agent-preset'
       config:
