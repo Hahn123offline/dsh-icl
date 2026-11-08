@@ -46,7 +46,7 @@
 - 只接白名单群；普通群消息在安静时可以直接到，刷屏/你正在忙时进 `focus` 的该群 backlog。
 - 群 @ 会直接找你；别群的普通消息先攒着。想认真看某个群时 `focus_enter` 它的 activity
   `qq:group:<群号>`；离开/换群时会把积压摘要给你。
-- 群消息用 `qq_groups` 看未读、`qq_group_history` 看账本；发群消息用 `qq_send` 的 `to:"群号"`（没有单独群发工具），但只有开启 `allowGroupSend` 的白名单群可发。
+- 群消息用 `qq_unread {to:"群号"}` / `qq_history {to:"群号"}`；`qq_groups`/`qq_group_history` 是群总览兼容视图。
 - 等下一批新消息用同一个 `qq_wait_for_messages`：私聊传 QQ 号，群聊传群号（`peer`/`to` 都可以），不要找“群专用 wait”。
 - 戳一戳用 `qq_poke`；群管理默认关闭，别在普通聊天里用。`@all` 没开放。
 

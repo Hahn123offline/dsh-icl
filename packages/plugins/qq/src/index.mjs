@@ -1763,6 +1763,32 @@ export async function apply(ctx) {
     return latest ? ledgerPeerOf(latest) : null
   }
 
+  /** 统一读目标：同一个参数接受私聊 QQ 号或白名单群号。 */
+  function resolveReadTarget(raw, { defaultLatest = true } = {}) {
+    const id = raw == null ? '' : String(raw).trim()
+    if (id) {
+      if (cfg.groupPolicy === 'allowlist' && cfg.allowGroups.map(String).includes(id)) {
+        return { kind: 'group', id, activity: activityIdForGroup(id), label: `群 ${id}` }
+      }
+      return { kind: 'private', id, activity: ledgerActivityFor(id), label: `私聊 ${id}` }
+    }
+    if (!defaultLatest) return null
+    const rows = ledger?.activities() ?? []
+    let best = null
+    let bestAt = -Infinity
+    for (const row of rows) {
+      const known = ledger.lastKnown(row.activity) ?? {}
+      const at = Number(known.lastAt ?? 0)
+      if (!best || at > bestAt) { best = row; bestAt = at }
+    }
+    if (!best) return null
+    const activity = String(best.activity)
+    const group = /^qq:group:(\d+)$/.exec(activity)
+    if (group) return { kind: 'group', id: group[1], activity, label: `群 ${group[1]}` }
+    const peer = ledgerPeerOf(activity)
+    return peer ? { kind: 'private', id: peer, activity, label: `私聊 ${peer}` } : null
+  }
+
   function formatLedgerTime(at) {
     const n = Number(at)
     if (!Number.isFinite(n) || n <= 0) return '时间未知'
@@ -1779,70 +1805,73 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_unread',
-    summary: '看 QQ 私聊未读（账本口径，三个数分开：lastSeq 最后一条 / deliveredSeq 连续已交付高水位 / attendedSeq 已读水位）。被 time/focus 拦下的消息算"未交付"，不会被 mark_read 跨过，也不会从 unread 里消失。',
-    when: ['想知道有没有还没处理的 QQ 私聊', '想确认上次看到哪条（水位）', '怀疑有被睡眠/静音拦下的消息'],
+    summary: '看 QQ 私聊或白名单群未读（账本口径，三个数分开：lastSeq 最后一条 / deliveredSeq 连续已交付高水位 / attendedSeq 已读水位）。被 time/focus/静音拦下的消息算"未交付"，不会被 mark_read 跨过，也不会从 unread 里消失。',
+    when: ['想知道有没有还没处理的 QQ 私聊或群消息', '想确认上次看到哪条（水位）', '怀疑有被睡眠/静音/群静音拦下的消息'],
     avoid: ['把 delivered 当成"模型看过"（delivered 只代表进了投递队列）', '用 qq_history 补看具体内容'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        peer: { type: 'string', description: '私聊 QQ 号；不填汇总所有有记录的私聊。' },
+        peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填汇总所有有记录的活动。' },
+        to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
         afterSeq: { type: 'number', description: '只看这个 seq 之后的未读（默认用账本水位）。' },
         limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）。' },
       },
     },
-    async execute({ peer, afterSeq, limit } = {}) {
+    async execute({ peer, to, afterSeq, limit } = {}) {
       if (!ledger) return { text: '账本未启用，无法查询未读。' }
-      const targetPeer = peer == null ? null : String(peer).trim()
-      if (!targetPeer) {
-        const rows = (ledger.activities() ?? []).map((row) => ({ ...row, peer: ledgerPeerOf(row.activity) })).filter((row) => row.peer)
-        if (!rows.length) return { text: '还没有任何 QQ 私聊记录。' }
+      const targetInput = peer == null || String(peer).trim() === '' ? to : peer
+      const target = resolveReadTarget(targetInput, { defaultLatest: false })
+      if (!target) {
+        const rows = ledger.activities() ?? []
+        if (!rows.length) return { text: '还没有任何 QQ 私聊/群记录。' }
         const lines = rows.map((row) => {
           const known = ledger.lastKnown(row.activity)
+          const group = /^qq:group:(\d+)$/.exec(String(row.activity))
+          const label = group ? `群 ${group[1]}` : `私聊 ${ledgerPeerOf(row.activity) ?? row.activity}`
           const attended = known?.attendedSeq ?? row.attendedSeq ?? 0
           const delivered = known?.deliveredSeq ?? row.deliveredSeq ?? 0
           const last = known?.lastSeq ?? row.total ?? 0
           const undelivered = Math.max(0, last - delivered)
-          return `- ${row.peer}：最后 #${last}，已交付 #${delivered}，水位 #${attended}，未读约 ${Math.max(0, last - attended)} 条${undelivered ? `（其中未交付 ${undelivered} 条，不会被 mark_read 跨过）` : ''}`
+          return `- ${label}：最后 #${last}，已交付 #${delivered}，水位 #${attended}，未读约 ${Math.max(0, last - attended)} 条${undelivered ? `（其中未交付 ${undelivered} 条，不会被 mark_read 跨过）` : ''}`
         })
-        return { text: `QQ 私聊账本（delivered ≠ seen ≠ attended）：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号"} 看具体未读，或 qq_history 补看。` }
+        return { text: `QQ 账本（delivered ≠ seen ≠ attended）：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号或群号"} 看具体未读，或 qq_history 补看。` }
       }
-      const activity = ledgerActivityFor(targetPeer)
-      const out = ledger.unread(activity, { afterSeq: afterSeq == null ? null : Number(afterSeq), limit })
-      const head = `私聊 ${targetPeer}：最后 #${out.watermark.lastSeq}，已交付 #${out.watermark.deliveredSeq}，水位 #${out.watermark.attendedSeq}`
+      const out = ledger.unread(target.activity, { afterSeq: afterSeq == null ? null : Number(afterSeq), limit })
+      const head = `${target.label}：最后 #${out.watermark.lastSeq}，已交付 #${out.watermark.deliveredSeq}，水位 #${out.watermark.attendedSeq}`
       if (!out.messages.length) return { text: `${head}；没有水位之后的未读消息。` }
       const undelivered = out.messages.filter((row) => row.deliveredAt == null).length
       return {
-        text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中未交付 ${undelivered} 条：可能被 time/focus 拦下，详见行尾标记；mark_read 不能跨过）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}`,
+        text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中未交付 ${undelivered} 条：可能被 time/focus/静音拦下，详见行尾标记；mark_read 不能跨过）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}`,
       }
     },
   })
 
   ctx.tools.register({
     name: 'qq_history',
-    summary: '按私聊/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]，来源信封带 [QQ私聊·主人] 等）。',
-    when: ['想回看某条 QQ 私聊之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
-    avoid: ['以为这里能看群消息（群聊用 qq_groups / qq_group_history）', '把它当实时未读（用 qq_unread）'],
+    summary: '按私聊/群/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]）。',
+    when: ['想回看某条 QQ 私聊或群消息之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
+    avoid: ['以为这里只查私聊（它同时接受 QQ 号和群号）', '把它当实时未读（用 qq_unread）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填用最近一个有记录的活动。' },
+        to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
         afterSeq: { type: 'number', description: '只看这个 seq 之后。' },
         beforeSeq: { type: 'number', description: '只看这个 seq 之前（补看更早的用）。' },
         limit: { type: 'number', description: '最多几条（默认 20，上限 200）。' },
       },
     },
-    async execute({ peer, afterSeq, beforeSeq, limit } = {}) {
+    async execute({ peer, to, afterSeq, beforeSeq, limit } = {}) {
       if (!ledger) return { text: '账本未启用，无法查询历史。' }
-      const targetPeer = resolveLedgerPeer(peer)
-      if (!targetPeer) return { text: '没有可查询的 QQ 私聊记录。' }
-      const activity = ledgerActivityFor(targetPeer)
-      const rows = ledger.messages(activity, {
+      const target = resolveReadTarget(peer ?? to)
+      if (!target) return { text: '没有可查询的 QQ 私聊/群记录。' }
+      const rows = ledger.messages(target.activity, {
         afterSeq: afterSeq == null ? 0 : Number(afterSeq),
         beforeSeq: beforeSeq == null ? null : Number(beforeSeq),
         limit: limit == null ? 20 : Number(limit),
       })
-      if (!rows.length) return { text: `私聊 ${targetPeer} 没有符合条件的记录（afterSeq/beforeSeq/limit）。` }
-      return { text: `私聊 ${targetPeer} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
+      if (!rows.length) return { text: `${target.label} 没有符合条件的记录（afterSeq/beforeSeq/limit）。` }
+      return { text: `${target.label} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
     },
   })
 
@@ -1873,9 +1902,9 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_groups',
-    summary: '列出只读白名单群及各自账本水位/未交付数（群聊 G1 只读，不发群消息）。',
+    summary: '列出白名单群及各自账本水位/未交付数（群总览兼容视图；统一读用 qq_unread/qq_history）。',
     when: ['想看看哪些群有未处理消息', '准备 focus_enter 某个群之前'],
-    avoid: ['以为这里能发群消息（G1 只读）', '把它当群消息正文（用 qq_group_history）'],
+    avoid: ['以为这里能发群消息（发消息用 qq_send）', '把它当群消息正文（用 qq_unread/qq_history）'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() {
       if (!ledger) return { text: '账本未启用，无法查询群。' }
@@ -1895,9 +1924,9 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_group_history',
-    summary: '按群/seq 补看 QQ 群账本历史（只读；群聊 G1 不发群消息）。',
+    summary: '按群/seq 补看 QQ 群账本历史（群总览兼容视图；统一读用 qq_history {to:"群号"}）。',
     when: ['想回看某个白名单群之前说了什么', 'focus_enter 群之后需要具体上下文'],
-    avoid: ['把它当实时未读（用 qq_groups）', '想发群消息（G1 只读）'],
+    avoid: ['把它当实时未读（用 qq_unread）', '重复 qq_history 的群分支'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -1927,59 +1956,61 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_replied',
-    summary: '查某条 QQ 私聊是否已经回过（账本口径：成功发出 QQ 回复时，把发送前收到的消息标为已回；不伪造未发出的回复）。',
+    summary: '查某条 QQ 私聊/群消息是否已经回过（账本口径：成功发出 QQ 回复时，把发送前收到的消息标为已回；不伪造未发出的回复）。',
     when: ['想知道对方某条消息是否已经回过了', '避免重复回复同一条'],
     avoid: ['把它当发送回执（用 qq_status 看 send.recent）', '以为焦点/睡眠拦下的消息已经被回过'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填用最近一个有记录的活动。' },
+        to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
         messageId: { type: 'string', description: '具体消息 messageId（与正文/信封里的 id 对应）。' },
       },
     },
-    async execute({ peer, messageId } = {}) {
+    async execute({ peer, to, messageId } = {}) {
       if (!ledger) return { text: '账本未启用，无法查询。' }
-      const targetPeer = resolveLedgerPeer(peer)
-      if (!targetPeer) return { text: '没有可查询的 QQ 私聊记录。' }
-      const activity = ledgerActivityFor(targetPeer)
+      const target = resolveReadTarget(peer ?? to)
+      if (!target) return { text: '没有可查询的 QQ 私聊/群记录。' }
+      const activity = target.activity
       if (messageId != null && String(messageId).trim() !== '') {
         const state = ledger.replyState(activity, { messageId: String(messageId).trim() })
-        if (!state.found) return { text: `私聊 ${targetPeer} 的账本里没有 messageId=${messageId} 这条消息。` }
+        if (!state.found) return { text: `${target.label} 的账本里没有 messageId=${messageId} 这条消息。` }
         if (state.replied) return { text: `已经回过（#${state.seq}，回于 ${formatLedgerTime(state.repliedAt)}）。` }
         return { text: `还没回过（#${state.seq}，收到于 ${formatLedgerTime(state.at)}）。` }
       }
       const state = ledger.replyState(activity)
-      return { text: `私聊 ${targetPeer}：最后 #${state.lastSeq}，已回到 #${state.lastRepliedSeq}${state.lastRepliedAt ? `（${formatLedgerTime(state.lastRepliedAt)}）` : ''}；未回 ${state.unreplied} 条。` }
+      return { text: `${target.label}：最后 #${state.lastSeq}，已回到 #${state.lastRepliedSeq}${state.lastRepliedAt ? `（${formatLedgerTime(state.lastRepliedAt)}）` : ''}；未回 ${state.unreplied} 条。` }
     },
   })
 
   ctx.tools.register({
     name: 'qq_mark_read',
-    summary: '手动推进 QQ 私聊账本的**已读水位**（只动本地水位；不发消息、不自动回复、不标记"已回"）。只能推进到"连续已交付"高水位：被 time/focus 拦下、从未交付的消息**不许被跨过**。',
-    when: ['你已经看过/处理了这些私聊，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
-    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回', '群消息（群聊 G1 使用 qq_group_history，且不发群）'],
+    summary: '手动推进 QQ 私聊/群账本的**已读水位**（只动本地水位；不发消息、不自动回复、不标记"已回"）。只能推进到"连续已交付"高水位：被 time/focus/静音拦下、从未交付的消息**不许被跨过**。',
+    when: ['你已经看过/处理了这些私聊或群消息，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
+    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        peer: { type: 'string', description: '私聊 QQ 号；不填用最近一个私聊。' },
+        peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填用最近一个有记录的活动。' },
+        to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
         throughSeq: { type: 'number', description: '推进到这个 seq（不填=连续已交付高水位）；超过已交付部分会被夹住，不会跨过未交付消息。' },
       },
     },
-    async execute({ peer, throughSeq } = {}) {
+    async execute({ peer, to, throughSeq } = {}) {
       if (!ledger) return { text: '账本未启用，无法标记。' }
-      const targetPeer = resolveLedgerPeer(peer)
-      if (!targetPeer) return { text: '没有可标记的 QQ 私聊记录。' }
-      const activity = ledgerActivityFor(targetPeer)
+      const target = resolveReadTarget(peer ?? to)
+      if (!target) return { text: '没有可标记的 QQ 私聊/群记录。' }
+      const activity = target.activity
       const before = ledger.lastKnown(activity)
-      if (!before) return { text: `私聊 ${targetPeer} 还没有账本记录。` }
+      if (!before) return { text: `${target.label} 还没有账本记录。` }
       const result = ledger.markRead(activity, { throughSeq: throughSeq == null ? null : Number(throughSeq), at: now() })
       const afterUnread = ledger.unread(activity, { limit: 100 }).messages.length
       const undelivered = Math.max(0, (result.lastSeq ?? 0) - (result.deliveredSeq ?? 0))
       const clamped = result.clampedToDelivered === true
-      const tail = `最后 #${result.lastSeq}，已交付 #${result.deliveredSeq}，水位 #${result.attendedSeq}，剩余未读 ${afterUnread} 条${undelivered ? `；未交付 ${undelivered} 条（可能被 time/focus 拦下，不会被标掉，也不会从 unread 消失）` : ''}${clamped && !undelivered ? '；请求的 seq 超过已交付部分，已夹住' : ''}。只改了本地水位，没有发消息，也没有标记已回。`
+      const tail = `最后 #${result.lastSeq}，已交付 #${result.deliveredSeq}，水位 #${result.attendedSeq}，剩余未读 ${afterUnread} 条${undelivered ? `；未交付 ${undelivered} 条（可能被 time/focus/静音拦下，不会被标掉，也不会从 unread 消失）` : ''}${clamped && !undelivered ? '；请求的 seq 超过已交付部分，已夹住' : ''}。只改了本地水位，没有发消息，也没有标记已回。`
       const text = result.advanced > 0
-        ? `已把私聊 ${targetPeer} 的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}）。${tail}`
-        : `私聊 ${targetPeer} 的水位没有推进（已经是 #${result.attendedSeq}）。${tail}`
+        ? `已把${target.label}的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}）。${tail}`
+        : `${target.label}的水位没有推进（已经是 #${result.attendedSeq}）。${tail}`
       return { text }
     },
   })
