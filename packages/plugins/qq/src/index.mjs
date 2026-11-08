@@ -1171,25 +1171,48 @@ export async function apply(ctx) {
         || (raw?.notice_type === 'notify' && String(raw?.sub_type ?? '') === 'poke'))
     if (isPoke) {
       const fromId = String(raw?.user_id ?? raw?.sender_id ?? '')
-      const targetId = raw?.target_id == null ? null : String(raw.target_id)
-      const selfId = raw?.self_id == null ? null : String(raw.self_id)
-      const allowed = (cfg.ownerQQ != null && fromId === String(cfg.ownerQQ))
-        || cfg.allowAllPrivate === true
-        || cfg.allowPrivate.map(String).includes(fromId)
-      if (!allowed) return { accept: false, code: 'not-allowlisted' }
-      if (targetId != null && selfId != null && targetId !== selfId) return { accept: false, code: 'poke-not-me' }
+      const targetId = raw?.target_id == null ? '' : String(raw.target_id)
+      const selfId = String(raw?.self_id ?? cfg.selfId ?? '')
+      const groupId = raw?.group_id == null ? null : String(raw.group_id)
+      // 旧项目坑：群里的任意 poke 都被当成戳她。这里必须严格校验 target 是机器人自己；
+      // 没有 target 也不猜，直接丢弃。
+      if (!selfId || !targetId || targetId !== selfId) return { accept: false, code: 'poke-not-me' }
+      if (fromId && fromId === selfId) return { accept: false, code: 'poke-self' }
+      const allowed = groupId
+        ? (cfg.groupPolicy === 'allowlist' && cfg.allowGroups.map(String).includes(groupId))
+        : ((cfg.ownerQQ != null && fromId === String(cfg.ownerQQ))
+          || cfg.allowAllPrivate === true
+          || cfg.allowPrivate.map(String).includes(fromId))
+      if (!allowed) return { accept: false, code: groupId ? 'group-not-allowlisted' : 'not-allowlisted' }
       const at = now()
       const name = senderKindOf(fromId) === 'owner' ? '主人' : `QQ ${fromId}`
       stats.poke = (stats.poke ?? 0) + 1
+      const activity = groupId ? activityIdForGroup(groupId) : `qq:private:${fromId}`
+      const groupName = String(raw?.group_name ?? raw?.group?.name ?? '')
       ctx.signals.offer({
-        from: { plugin: 'qq', activity: `qq:private:${fromId}` },
+        from: { plugin: 'qq', activity },
         kind: 'notice',
-        text: `[QQ戳一戳] ${name} 戳了戳你（这不是对方发来的消息；可以回应，也可以发回一个戳一戳）`,
-        tags: ['qq', 'private', 'poke'],
+        text: groupId
+          ? `[QQ群戳一戳] ${groupName ? `[QQ群·${groupName}] ` : ''}${name} 戳了戳你（这不是对方发来的消息；可以回应，也可以发回一个戳一戳）`
+          : `[QQ戳一戳] ${name} 戳了戳你（这不是对方发来的消息；可以回应，也可以发回一个戳一戳）`,
+        tags: groupId ? ['qq', 'group', 'poke'] : ['qq', 'private', 'poke'],
         meta: {
           qq: {
-            poke: { from: fromId, target: targetId, at, fromSelf: fromId === String(raw?.self_id ?? '') },
-            envelope: { channel: 'qq', scope: 'private', senderKind: senderKindOf(fromId), peerId: fromId, activity: `qq:private:${fromId}`, at },
+            scope: groupId ? 'group' : 'private',
+            groupId,
+            groupName,
+            poke: { from: fromId, target: targetId, at, fromSelf: false },
+            envelope: {
+              channel: 'qq',
+              scope: groupId ? 'group' : 'private',
+              groupId,
+              groupName,
+              senderId: fromId,
+              senderName: name,
+              peerId: groupId ?? fromId,
+              activity,
+              at,
+            },
           },
         },
       })
@@ -1308,7 +1331,9 @@ export async function apply(ctx) {
           at: decision.messageAt,
           sentAt: decision.messageAt,
           receivedAt: decision.receivedAt,
-          sender: decision.senderName,
+          sender: signal.meta?.qq?.scope === 'group' && decision.senderId
+            ? `${decision.senderName ?? ''}（QQ${decision.senderId}）`
+            : decision.senderName,
           text: signal.text,
           mention: Array.isArray(signal.tags) && signal.tags.includes('mention'),
           media: signal.meta.qq.mediaFiles ?? null,

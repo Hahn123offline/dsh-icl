@@ -635,6 +635,7 @@ test('群聊 G1：安静群普通消息直达，@ 直达；focus 该群后普通
   ws.emit('message', eventFrame(groupMessageEvent({ text: '普通消息一', messageId: 8811 })))
   const quiet = host.services.delivery.drain('session').map((b) => b.text).join('\n')
   assert.match(quiet, /普通消息一/, '安静群的普通消息应能叫醒')
+  assert.match(quiet, /QQ10001/, '群消息必须带发送者 QQ 号，跨群才能认人')
   assert.equal(focus.backlog().length, 0)
 
   ws.emit('message', eventFrame(groupMessageEvent({ text: '@你 急事', messageId: 8812, at: 2593621742 })))
@@ -763,3 +764,27 @@ test('群聊 busyness：安静群普通消息直达；短窗口刷屏后进 ambi
   host.disable('focus')
 })
 
+
+test('触发戳一戳只在目标是自己时生效：群里戳别人/私聊戳别人都丢弃', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig({ groupPolicy: 'allowlist', allowGroups: ['601357169'] }) })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  const base = {
+    post_type: 'notice', notice_type: 'notify', sub_type: 'poke',
+    time: Math.floor(NOW / 1000), self_id: 2593621742,
+    user_id: 10001, sender: { user_id: 10001, nickname: '测试' },
+  }
+  ws.emit('message', eventFrame({ ...base, group_id: 601357169, target_id: 20002 }))
+  assert.equal(host.services.delivery.pendingCount(), 0, '群戳别人不能当成戳她')
+  ws.emit('message', eventFrame({ ...base, target_id: 20002 }))
+  assert.equal(host.services.delivery.pendingCount(), 0, '私聊戳别人不能当成戳她')
+  ws.emit('message', eventFrame({ ...base, group_id: 601357169 }))
+  assert.equal(host.services.delivery.pendingCount(), 0, '缺 target 不能猜')
+  ws.emit('message', eventFrame({ ...base, group_id: 601357169, target_id: 2593621742 }))
+  const text = host.services.delivery.drain('session').map((b) => b.text).join('\n')
+  assert.match(text, /\[QQ群戳一戳\]/)
+  host.disable('qq')
+})

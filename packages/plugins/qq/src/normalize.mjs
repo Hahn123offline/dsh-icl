@@ -200,6 +200,7 @@ export function buildGroupSignal({
   const gid = String(groupId)
   const sender = String(senderId ?? '')
   const name = str(senderName) || sender || gid
+  const senderLabel = sender ? `${name}（QQ${sender}）` : name
   const clip = (s) => {
     const t = str(s)
     return t.length > maxTextChars ? `${t.slice(0, maxTextChars)}…` : t
@@ -216,7 +217,7 @@ export function buildGroupSignal({
     from: { plugin: 'qq', activity },
     kind: 'notice',
     to: 'model',
-    text: `${name}：${body}`,
+    text: `${senderLabel}：${body}`,
     focus: activity,
     tags,
     createdAt: at,
