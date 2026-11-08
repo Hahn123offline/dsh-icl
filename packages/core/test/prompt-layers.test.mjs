@@ -29,10 +29,10 @@ test('提示词分层：人格不出现工具名，仿真不抄工具参数表',
   assert.match(cfg.simulation, /安静/)
 })
 
-test('MC 手册只由 MC preset 追加，产品仿真不含 MC', () => {
+test('MC 暂停：产品 preset 不再包含 icl-mc，产品仿真不含 MC', () => {
   const product = presetConfig('preset-icl')
-  const mc = presetConfig('preset-icl-mc')
+  const doc = yaml.load(fs.readFileSync(path.join(ROOT, 'packages/dsh-icl/presets/icl.patch.yml'), 'utf8'))
+  const insert = doc.find((item) => item?.insert)?.insert ?? []
+  assert.equal(insert.some((item) => item?.id === 'preset-icl-mc'), false, 'icl-mc 已移除')
   assert.doesNotMatch(product.simulation, /mcb_|## 玩 Minecraft/)
-  assert.match(mc.simulation, /## 玩 Minecraft/)
-  assert.match(mc.simulation, /mcb_help|mcb_join|mcb_do/)
 })
