@@ -788,13 +788,14 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   /** 重启后 delivery 队列是空的，但 QQ 账本里可能还有 attended 之前的旧消息；主动冷恢复一次。 */
   async function promptUnreadWithoutAgent() {
     if (state.coldUnreadTried) return 0
-    state.coldUnreadTried = true
     const qq = (() => { try { return host.shared.get('qq') ?? null } catch { return null } })()
     if (!qq?.unreadDigest) return 0
     const sessionId = state.session?.id ?? lastSessionIdHint()
     if (!sessionId) return 0
     const text = String(qq.unreadDigest(1500) ?? '').trim()
     if (!text) return 0
+    // 只有真正拿到可投递文本后才锁一次；否则首次 tick 可能早于 qq 插件就绪。
+    state.coldUnreadTried = true
     try {
       const result = await callColdPrompt(sessionId, text)
       if (!result.ok) {

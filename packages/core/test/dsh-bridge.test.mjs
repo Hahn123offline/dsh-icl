@@ -1316,3 +1316,20 @@ test('桥：没有 live agent 时用 Host 的 iclHost.prompt 冷恢复并投递'
   assert.equal(host.services.delivery.pendingCount(), 0)
   bridge.dispose()
 })
+
+test('桥：冷启动没有 delivery 队列时，用未读摘要冷恢复会话', async () => {
+  const root = tempRoot('prompt-cold-unread')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let prompted = null
+  ctx.get = (name) => name === 'iclHost'
+    ? { prompt: async ({ sessionId, text }) => { prompted = { sessionId, text }; return { ok: true } } }
+    : null
+  host.shared.set('qq', { unreadDigest: () => 'QQ 还有没看过的消息：旧消息', markUnreadDigest: () => {} })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), sessionId: 'session-cold' } })
+  bridge.start()
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
+  assert.equal(prompted?.sessionId, 'session-cold')
+  assert.match(prompted?.text ?? '', /旧消息/)
+  bridge.dispose()
+})
