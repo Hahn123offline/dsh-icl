@@ -80,7 +80,11 @@
                   outboxEnabled: true
                   outboxMaxPending: 20
                   outboxTtlMs: 300000
-                  globalSendMaxPerMinute: 24
+                  # 不做发送条数限流：她需要连说几句时不该被“本轮最多 1 条”打断。
+                  maxSendsPerTurn: 0
+                  sendMaxPerMinute: 0
+                  sendMaxPerHour: 0
+                  globalSendMaxPerMinute: 0
                   # 不在发送后自动 replyCheck：那会在回合结束后额外叫醒一次。
                   replyCheckEnabled: false
                   # 入站防抖：群聊/连发先攒 6s 再合成一次投递；最长 20s 必须交。

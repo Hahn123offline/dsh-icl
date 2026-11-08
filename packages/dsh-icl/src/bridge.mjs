@@ -722,9 +722,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
    * 这条路径就是 old dsh-qq 的 ensureSession + sessions.prompt；不再依赖 Host 侧自己 resume。
    */
   async function promptWithoutAgent() {
-    const api = state.apiProxy?.sessions
+    let hostApi = null
+    try { hostApi = ctx.iclHost ?? (typeof ctx.get === 'function' ? ctx.get('iclHost') : null) } catch { /* 老 Host 没有该服务 */ }
+    const direct = state.apiProxy?.sessions
     const sessionId = state.session?.id ?? lastSessionIdHint()
-    if (!api?.prompt || !sessionId) return 0
+    if ((!hostApi?.prompt && !direct?.prompt) || !sessionId) return 0
     if (state.ticking) return 0
     state.ticking = true
     const batches = host.services.delivery.drain('session')
@@ -736,18 +738,24 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       return 0
     }
     try {
-      const out = await api.prompt({
-        rpcId: randomUUID(),
-        payload: {
-          sessionId,
-          mode: 'queue',
-          content: [{ type: 'text', text: text.slice(0, 12000) }],
-        },
-      })
-      const ok = out?.result ? out.result.ok !== false : out?.ok !== false
+      const out = hostApi?.prompt
+        ? await hostApi.prompt({ sessionId, text })
+        : await direct.prompt({
+          rpcId: randomUUID(),
+          payload: {
+            sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: text.slice(0, 12000) }],
+          },
+        })
+      const ok = out == null
+        ? false
+        : (out.ok !== undefined
+          ? out.ok === true
+          : (out.result ? out.result.ok !== false : out.ok !== false))
       if (!ok) {
-        for (const batch of batches) host.services.delivery.nack(batch.id, out?.result?.error?.message ?? 'session.prompt rejected')
-        report('delivery.prompt-no-agent', out?.result?.error ?? out)
+        for (const batch of batches) host.services.delivery.nack(batch.id, out?.error ?? out?.result?.error?.message ?? 'session.prompt rejected')
+        report('delivery.prompt-no-agent', out?.error ?? out?.result?.error ?? out)
         return 0
       }
       for (const batch of batches) host.services.delivery.ack(batch.id)
@@ -1095,6 +1103,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
           diag({ event: 'bridge.apiproxy', ok: Boolean(state.apiProxy?.sessions?.prompt) })
         })
       }
+      // preset 作用域若能直接解析到 Host service，也当成 fallback。
+      try { if (!state.apiProxy && ctx.apiProxy) state.apiProxy = ctx.apiProxy } catch { /* 需要 inject */ }
+      try { if (!state.apiProxy && typeof ctx.get === 'function') state.apiProxy = ctx.get('apiProxy') } catch { /* 未声明 */ }
     } catch (error) {
       diag({ event: 'bridge.apiproxy-fail', error: String(error?.message ?? error) })
       report('apiproxy.inject', error)

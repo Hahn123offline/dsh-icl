@@ -55,6 +55,48 @@ export function apply(ctx, config = {}) {
   let timer = null
   let handle = null
   let started = false
+  let apiProxy = null
+
+  // 标准消息投递入口：供 preset 里的 bridge 在“没有 live agent”时冷恢复会话。
+  // 使用 DSH 官方 ApiProxy.session.prompt，不在 Host 里自己 resume/猜时机。
+  const iclHost = {
+    prompt: async ({ sessionId: target = null, text = '' } = {}) => {
+      if (!apiProxy?.sessions?.prompt) return { ok: false, error: 'apiProxy unavailable' }
+      if (!target) return { ok: false, error: 'sessionId missing' }
+      try {
+        const out = await apiProxy.sessions.prompt({
+          rpcId: randomUUID(),
+          payload: {
+            sessionId: String(target),
+            mode: 'queue',
+            content: [{ type: 'text', text: String(text).slice(0, 12000) }],
+          },
+        })
+        const ok = out?.result ? out.result.ok !== false : out?.ok !== false
+        if (!ok) diag({ msg: 'icl-host.prompt-fail', sessionId: String(target), error: out?.result?.error?.message ?? null })
+        return { ok, error: out?.result?.error?.message ?? null }
+      } catch (error) {
+        diag({ msg: 'icl-host.prompt-error', sessionId: String(target), error: String(error?.message ?? error) })
+        return { ok: false, error: String(error?.message ?? error) }
+      }
+    },
+  }
+  try {
+    ctx.provide('iclHost', iclHost)
+    diag({ msg: 'icl-host.provided' })
+  } catch (error) {
+    diag({ msg: 'icl-host.provide-fail', error: String(error?.message ?? error) })
+  }
+  try {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['apiProxy'], (sub) => {
+        apiProxy = sub.apiProxy
+        diag({ msg: 'icl-host.apiproxy', ok: Boolean(apiProxy?.sessions?.prompt) })
+      })
+    }
+  } catch (error) {
+    diag({ msg: 'icl-host.apiproxy-fail', error: String(error?.message ?? error) })
+  }
 
   const log = (level, data) => {
     try {

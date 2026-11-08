@@ -40,3 +40,20 @@ test('icl-host：没有 live agent 时自动 resume 并挂 preset', async () => 
   assert.equal(typeof resumed?.setup, 'function')
   dispose()
 })
+
+test('icl-host：提供 iclHost.prompt，内部走 apiProxy.sessions.prompt', async () => {
+  let provided = null
+  let request = null
+  const ctx = {
+    logger: () => ({}),
+    provide: (name, value) => { if (name === 'iclHost') provided = value },
+    inject: (_deps, callback) => callback({ apiProxy: { sessions: { prompt: async (value) => { request = value; return { result: { ok: true } } } } } }),
+  }
+  const dispose = apply(ctx, { autoResume: false, diag: false })
+  assert.ok(provided?.prompt)
+  const out = await provided.prompt({ sessionId: 's1', text: 'hello' })
+  assert.equal(out.ok, true)
+  assert.equal(request?.payload?.sessionId, 's1')
+  assert.equal(request?.payload?.content?.[0]?.text, 'hello')
+  dispose()
+})

@@ -1960,7 +1960,10 @@ export async function apply(ctx) {
       text: () => {
         const s = status()
         if (!s.enabled || !s.connection.connected) return ''
-        if (s.send?.registered) return `QQ 已连接：本轮收到 ${s.stats.delivered} 条私聊；可以调用 qq_send 回一条（只能回 owner/白名单私聊，每轮最多 ${s.send.perTurn?.limit ?? 1} 条）。`
+        if (s.send?.registered) {
+          const limit = Number(s.send.perTurn?.limit ?? 0)
+          return `QQ 已连接：本轮收到 ${s.stats.delivered} 条私聊；可以调用 qq_send 回（只能回 owner/白名单私聊${limit > 0 ? `，每轮最多 ${limit} 条` : '，本轮不限条数'}）。`
+        }
         return `QQ 只读影子：已连接，本轮收到 ${s.stats.delivered} 条私聊（不能回复）。`
       },
     })
