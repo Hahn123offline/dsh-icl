@@ -65,6 +65,8 @@ const DEFAULTS = Object.freeze({
   allowGroupSend: false,
   allowGroupAdmin: false,
   allowGroupAtAll: false,
+  allowGroupMute: false,
+  muteGroups: [],
   allowPoke: false,
   allowRecall: false,
   groupPolicy: 'ignore',
@@ -216,6 +218,8 @@ export function normalizeQqConfig(input = {}) {
   cfg.allowGroupSend = cfg.allowGroupSend === true
   cfg.allowGroupAdmin = cfg.allowGroupAdmin === true
   cfg.allowGroupAtAll = cfg.allowGroupAtAll === true
+  cfg.allowGroupMute = cfg.allowGroupMute === true
+  cfg.muteGroups = pickList(cfg.muteGroups)
   cfg.allowPoke = cfg.allowPoke === true
   cfg.allowRecall = cfg.allowRecall === true
   cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
@@ -1304,9 +1308,12 @@ export async function apply(ctx) {
   function ingestEvent(event, { backfilled = false } = {}) {
     const decision = gate.admit(event, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
     if (!decision.accept) {
-      stats.recent.lastDropped = { at: now(), code: decision.code }
-      // 群消息不落记录（整类忽略，避免把群内容写进影子证据文件）
-      if (!['group', 'meta', 'not-message', 'invalid'].includes(decision.code)) {
+      const groupId = event?.message_type === 'group' && event?.group_id != null ? String(event.group_id) : null
+      stats.recent.lastDropped = { at: now(), code: decision.code, scope: event?.message_type === 'group' ? 'group' : 'private', groupId }
+      // 群消息不落正文；只落 groupId + 丢弃码，方便定位 allowlist/静音误判。
+      if (groupId && decision.code === 'not-allowlisted') {
+        record({ kind: 'dropped-group', code: decision.code, groupId, at: now() })
+      } else if (!['group', 'meta', 'not-message', 'invalid'].includes(decision.code)) {
         record({ kind: 'dropped', code: decision.code, at: now() })
       }
       return decision
@@ -1368,6 +1375,17 @@ export async function apply(ctx) {
       segments: signal.meta.qq.segments,
       envelope: signal.meta.qq.envelope ?? null,
     })
+    // 群级静音：仍入账为未读，但不投递/不叫醒；账本 blockedReason='muted'
+    // 让 qq_unread / qq_group_history 明确显示“是因为静音，不是没看”。
+    if (signal.meta?.qq?.scope === 'group' && cfg.muteGroups.map(String).includes(String(decision.groupId))) {
+      signal.meta.qq.muted = true
+      markLedgerBlocked(signal, 'muted')
+      stats.blocked += 1
+      bump(stats.blockedReasons, 'muted')
+      stats.recent.lastBlocked = { at: now(), reason: 'muted', id: signal.id, groupId: String(decision.groupId) }
+      record({ kind: 'blocked', reason: 'muted', id: signal.id, groupId: String(decision.groupId) })
+      return decision
+    }
     // 发送中收到新消息：通知发送链在"当前气泡发完后"停下（finish-then-handle）。
     try { sendHandle?.noteInbound?.(signal.meta?.qq?.envelope?.peerId ?? null) } catch { /* 发送链未注册不阻塞入站 */ }
     // 显式 wait 正在等这个会话：消息交给 waiter，不再走正常 debounce/delivery，避免双投。
@@ -1577,6 +1595,9 @@ export async function apply(ctx) {
       allowGroups: [...cfg.allowGroups],
       allowGroupSend: cfg.allowGroupSend,
       allowGroupAdmin: cfg.allowGroupAdmin,
+      allowGroupAtAll: cfg.allowGroupAtAll,
+      allowGroupMute: cfg.allowGroupMute,
+      muteGroups: [...cfg.muteGroups],
       groupPolicy: cfg.groupPolicy,
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
@@ -1664,7 +1685,7 @@ export async function apply(ctx) {
       lines.push('最近一条私聊：还没有')
     }
     if (recent.lastBlocked) lines.push(`最近被 time 锁拦下：${stamp(recent.lastBlocked.at)}（${recent.lastBlocked.reason}）`)
-    if (recent.lastDropped) lines.push(`最近被本地闸门丢弃：${stamp(recent.lastDropped.at)}（${recent.lastDropped.code}）`)
+    if (recent.lastDropped) lines.push(`最近被本地闸门丢弃：${stamp(recent.lastDropped.at)}（${recent.lastDropped.code}${recent.lastDropped.groupId ? `，群 ${recent.lastDropped.groupId}` : ''}）`)
     if (s.recordFile) lines.push(`影子记录：${s.recordFile}（已写 ${s.stats.recorded} 行${s.stats.recordErrors ? `，写失败 ${s.stats.recordErrors}` : ''}）`)
     const send = s.send ?? {}
     if (send.registered) {
@@ -1822,6 +1843,31 @@ export async function apply(ctx) {
       })
       if (!rows.length) return { text: `私聊 ${targetPeer} 没有符合条件的记录（afterSeq/beforeSeq/limit）。` }
       return { text: `私聊 ${targetPeer} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_group_mute',
+    summary: '设置群级静音：静音后群消息仍入账为未读（blockedReason=muted），但不投递/不叫醒；再解除后恢复。',
+    when: ['明确想暂时不被打扰的群', '确认某个群只是因为静音而未读'],
+    avoid: ['把静音当删除/清空（消息仍在账本）', '对非白名单群操作'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        group: { type: 'string', description: '白名单群号' },
+        muted: { type: 'boolean', description: 'true 静音，false 解除静音' },
+      },
+      required: ['group', 'muted'],
+    },
+    async execute({ group, muted } = {}) {
+      if (cfg.allowGroupMute !== true) return { text: '群静音未启用（allowGroupMute=false）。', outcome: 'refused' }
+      const target = String(group ?? '').trim()
+      if (!cfg.allowGroups.map(String).includes(target)) return { text: `群 ${target || '（空）'} 不在 allowGroups 白名单里。`, outcome: 'refused' }
+      const set = new Set(cfg.muteGroups.map(String))
+      if (muted === true) set.add(target)
+      else set.delete(target)
+      cfg.muteGroups = [...set]
+      return { text: `${muted === true ? '已静音' : '已解除静音'}群 ${target}；当前静音：${cfg.muteGroups.length ? cfg.muteGroups.join('、') : '无'}。静音期间消息仍入账为未读（原因 muted），不会叫醒。` }
     },
   })
 

@@ -77,6 +77,8 @@
                   allowGroupSend: true
                   allowGroupAdmin: false
                   allowGroupAtAll: false
+                  allowGroupMute: true
+                  muteGroups: []
                   allowPoke: true
                   allowRecall: true
                   allowSend: true

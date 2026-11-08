@@ -8,6 +8,7 @@
     "qq_unread",
     "qq_history",
     "qq_groups",
+    "qq_group_mute",
     "qq_group_history",
     "qq_replied",
     "qq_mark_read",
