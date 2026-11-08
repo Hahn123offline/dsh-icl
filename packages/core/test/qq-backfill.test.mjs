@@ -242,3 +242,32 @@ test('HTTP 客户端：成功解析 data；retcode 非 0 抛错', async () => {
     await assert.rejects(() => ok.call('get_friend_msg_history', { user_id: Number(OWNER) }), /失败/)
   } finally { await fake.close() }
 })
+
+test('补课器群：群历史只走 allowlist 群，事件 message_type=group、activity 正确', async () => {
+  const calls = []
+  const http = {
+    ok: true,
+    async call(action, params) {
+      calls.push({ action, params })
+      return { messages: [{ message_id: 7001, time: Math.floor(Date.now() / 1000), user_id: 20002, sender: { user_id: 20002, nickname: '群友' }, message: [{ type: 'text', data: { text: '群补一条' } }] }] }
+    },
+  }
+  const ingested = []
+  const ledger = {
+    hasMessage: () => false,
+    lastKnown: () => ({ lastAt: 0, attendedSeq: 0 }),
+  }
+  const backfill = createBackfill({
+    http, ledger, selfId: '2593621742',
+    peers: () => [],
+    groups: () => ['601357169'],
+    ingest: (event) => { ingested.push(event); return { accept: true } },
+  })
+  const r = await backfill.run({ reason: 'test' })
+  assert.equal(calls[0].action, 'get_group_msg_history')
+  assert.equal(calls[0].params.group_id, 601357169)
+  assert.equal(r.groups, 1)
+  assert.equal(r.filled, 1)
+  assert.equal(ingested[0].message_type, 'group')
+  assert.equal(ingested[0].group_id, 601357169)
+})

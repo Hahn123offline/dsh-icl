@@ -13,9 +13,10 @@
 //   · **不调用 `mark_msg_as_read` / `mark_private_msg_as_read`**：那会把"已读"同步到用户自己的 QQ，
 //     属于产品决定；P0 只做补课，已读留给 P1 的 qq_mark_read 显式动作。
 //   · 失败不抛：记 gap.failed 并在 status 可见；绝不因为补课失败影响实时入站。
-import { activityIdForPrivate } from './normalize.mjs'
+import { activityIdForPrivate, activityIdForGroup } from './normalize.mjs'
 
 const HISTORY_ACTIONS = Object.freeze(['get_friend_msg_history'])
+const GROUP_HISTORY_ACTIONS = Object.freeze(['get_group_msg_history'])
 
 function timeMs(value) {
   const n = Number(value)
@@ -36,7 +37,7 @@ function senderIdOf(item) {
   return item?.user_id ?? item?.sender?.user_id ?? item?.userId ?? null
 }
 
-function convertToEvent(item, { peerId, selfId }) {
+function convertToEvent(item, { peerId, groupId = null, selfId }) {
   const userId = senderIdOf(item)
   const message = Array.isArray(item?.message)
     ? item.message
@@ -46,15 +47,16 @@ function convertToEvent(item, { peerId, selfId }) {
     : null
   return {
     post_type: item?.post_type ?? 'message',
-    message_type: 'private',
-    sub_type: item?.sub_type ?? 'friend',
+    message_type: groupId == null ? 'private' : 'group',
+    sub_type: item?.sub_type ?? (groupId == null ? 'friend' : 'normal'),
     time: item?.time ?? null,
     self_id: item?.self_id ?? selfId ?? null,
-    user_id: userId ?? Number(peerId),
+    group_id: groupId == null ? undefined : Number(groupId),
+    user_id: userId ?? (groupId == null ? Number(peerId) : null),
     message_id: item?.message_id ?? item?.messageId ?? item?.id ?? null,
     message: message ?? fallback ?? [],
     raw_message: typeof item?.raw_message === 'string' ? item.raw_message : '',
-    sender: item?.sender ?? { user_id: userId ?? Number(peerId) },
+    sender: item?.sender ?? { user_id: userId ?? (groupId == null ? Number(peerId) : null) },
   }
 }
 
@@ -65,6 +67,7 @@ function convertToEvent(item, { peerId, selfId }) {
  * @param {object} deps.ledger                          账本（ledger.mjs）
  * @param {(event:object, opts:{backfilled:true})=>object} deps.ingest  把补课消息送进入站闸门/投递
  * @param {()=>string[]} [deps.peers]                   哪些私聊要补（owner/白名单/账本里见过的）
+ * @param {()=>string[]} [deps.groups]                  哪些白名单群要补
  * @param {number} [deps.count]                         每次拉多少条（默认 50）
  * @param {number} [deps.maxAgeMs]                      超过多久的旧消息不补（默认 6h）
  * @param {number} [deps.maxPeers]                      一次最多补几个会话（默认 5）
@@ -74,6 +77,7 @@ export function createBackfill({
   ledger = null,
   ingest = () => ({ accept: false, code: 'no-ingest' }),
   peers = () => [],
+  groups = () => [],
   now = () => Date.now(),
   log = () => {},
   selfId = null,
@@ -81,6 +85,7 @@ export function createBackfill({
   maxAgeMs = 6 * 3600_000,
   maxPeers = 5,
   action = HISTORY_ACTIONS[0],
+  groupAction = GROUP_HISTORY_ACTIONS[0],
 } = {}) {
   const state = {
     runs: 0,
@@ -94,6 +99,7 @@ export function createBackfill({
     lastError: null,
     lastReason: null,
     lastPeers: 0,
+    lastGroups: 0,
     inFlight: false,
   }
 
@@ -162,9 +168,56 @@ export function createBackfill({
           }
         }
       }
+      let groupList = Array.isArray(peerList) ? [] : (typeof groups === 'function' ? groups() : [])
+      groupList = [...new Set((Array.isArray(groupList) ? groupList : []).map(String).filter(Boolean))].slice(0, Math.max(1, maxPeers))
+      state.lastGroups = groupList.length
+      for (const group of groupList) {
+        const activity = activityIdForGroup(group)
+        const known = ledger?.lastKnown?.(activity) ?? null
+        let data
+        try {
+          data = await http.call(groupAction, { group_id: Number(group), count })
+        } catch (error) {
+          failedHere += 1
+          state.failed += 1
+          state.lastError = String(error?.message ?? error)
+          log({ level: 'warn', msg: 'qq.backfill.group-fetch-fail', group, error: state.lastError })
+          continue
+        }
+        const items = extractMessages(data)
+        for (const item of items) {
+          const qqId = item?.message_id ?? item?.messageId ?? item?.id
+          if (qqId == null) continue
+          if (ledger?.hasMessage?.(activity, qqId)) continue
+          const senderId = senderIdOf(item)
+          if (selfId != null && senderId != null && String(senderId) === String(selfId)) continue
+          const at = timeMs(item?.time)
+          if (known?.lastAt != null && at != null && at < Number(known.lastAt) - 2000) continue
+          if (maxAgeMs > 0 && at != null && now() - at > maxAgeMs) {
+            droppedHere += 1
+            state.dropped += 1
+            log({ level: 'info', msg: 'qq.backfill.group-old-skip', group, ageMs: now() - at })
+            continue
+          }
+          const event = convertToEvent(item, { peerId: group, groupId: group, selfId })
+          let decision
+          try { decision = await ingest(event, { backfilled: true }) } catch (error) {
+            failedHere += 1
+            state.failed += 1
+            state.lastError = String(error?.message ?? error)
+            log({ level: 'warn', msg: 'qq.backfill.group-ingest-fail', group, error: state.lastError })
+            continue
+          }
+          if (decision?.accept) { filledHere += 1; state.filled += 1 } else {
+            droppedHere += 1
+            state.dropped += 1
+            log({ level: 'info', msg: 'qq.backfill.group-drop', group, code: decision?.code ?? null })
+          }
+        }
+      }
       state.lastDurationMs = now() - startedAt
-      log({ msg: 'qq.backfill.done', reason, peers: list.length, filled: filledHere, dropped: droppedHere, failed: failedHere, ms: state.lastDurationMs })
-      return { runs: state.runs, filled: filledHere, dropped: droppedHere, failed: failedHere, peers: list.length }
+      log({ msg: 'qq.backfill.done', reason, peers: list.length, groups: groupList.length, filled: filledHere, dropped: droppedHere, failed: failedHere, ms: state.lastDurationMs })
+      return { runs: state.runs, filled: filledHere, dropped: droppedHere, failed: failedHere, peers: list.length, groups: groupList.length }
     } finally {
       state.inFlight = false
     }
@@ -177,4 +230,4 @@ export function createBackfill({
   }
 }
 
-export { HISTORY_ACTIONS }
+export { HISTORY_ACTIONS, GROUP_HISTORY_ACTIONS }

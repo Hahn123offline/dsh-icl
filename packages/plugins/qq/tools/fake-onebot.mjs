@@ -122,6 +122,11 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
           const limit = Math.max(1, Math.min(100, Number(params.count) || 20))
           const matched = history.filter((item) => String(item.user_id ?? item.sender?.user_id ?? '') === uid || String(item.peer_id ?? '') === uid)
           data = { messages: matched.slice(-limit) }
+        } else if (action === 'get_group_msg_history') {
+          const gid = String(params.group_id ?? '')
+          const limit = Math.max(1, Math.min(100, Number(params.count) || 20))
+          const matched = history.filter((item) => String(item.group_id ?? item.groupId ?? item.peer_id ?? '') === gid)
+          data = { messages: matched.slice(-limit) }
         } else if (action === 'get_msg') {
           const found = messageStore.get(String(params.message_id ?? '')) ?? history.find((item) => String(item.message_id) === String(params.message_id ?? ''))
           if (!found) {

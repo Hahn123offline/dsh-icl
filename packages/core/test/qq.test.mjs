@@ -788,3 +788,22 @@ test('触发戳一戳只在目标是自己时生效：群里戳别人/私聊戳�
   assert.match(text, /\[QQ群戳一戳\]/)
   host.disable('qq')
 })
+
+test('wait 同一工具支持私聊与群聊；群消息由 waiter 消费，不再重复投递', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig({ groupPolicy: 'allowlist', allowGroups: ['601357169'] }) })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  const tool = host.services.tools.list().find((t) => t.name === 'qq_wait_for_messages')
+  assert.ok(tool)
+  const pending = tool.execute({ peer: '601357169', timeoutMs: 5000, quietMs: 1000 })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  ws.emit('message', eventFrame(groupMessageEvent({ text: '群等待消息', messageId: 9901 })))
+  const result = await pending
+  assert.equal(result.outcome, 'messages')
+  assert.match(result.text, /群等待消息/)
+  assert.equal(host.services.delivery.pendingCount(), 0, 'waiter 消费后不应再走正常投递')
+  host.disable('qq')
+})

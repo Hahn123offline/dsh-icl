@@ -557,6 +557,18 @@ export async function apply(ctx) {
     return [...list].slice(0, Math.max(1, cfg.backfillMaxPeers))
   }
 
+  function groupPeerList() {
+    if (cfg.groupPolicy !== 'allowlist') return []
+    const list = new Set(cfg.allowGroups.map(String))
+    if (ledger) {
+      for (const row of ledger.activities()) {
+        const match = /^qq:group:(\d+)$/.exec(String(row.activity ?? ''))
+        if (match && cfg.allowGroups.map(String).includes(match[1])) list.add(match[1])
+      }
+    }
+    return [...list].slice(0, Math.max(1, cfg.backfillMaxPeers))
+  }
+
   /** 补课只认"已进投递队列"：signals 接受（或幂等去重）后推进账本水位；被 time/focus 拦下的不推进。 */
   function ledgerSeqsOf(signal) {
     const batch = signal?.meta?.qq?.batch
@@ -601,7 +613,7 @@ export async function apply(ctx) {
   function runBackfill(reason) {
     if (!cfg.backfillEnabled || !backfill) return
     if (!backfill.busy) {
-      ctx.log({ msg: 'qq.backfill.start', reason, peers: peerList().length, http: Boolean(http?.ok) })
+      ctx.log({ msg: 'qq.backfill.start', reason, peers: peerList().length, groups: groupPeerList().length, http: Boolean(http?.ok) })
     }
     void backfill.run({ reason }).then((result) => {
       gapFromBackfill()
@@ -619,7 +631,7 @@ export async function apply(ctx) {
     gap.reconnects = Math.max(0, Number(info.openCount ?? 1) - 1)
     if (info.first !== true && info.downtimeMs != null) gap.lastDowntimeMs = Number(info.downtimeMs) || 0
     // 每次都尝试补课：首次启动补"进程不在时"的消息；重连补断线窗口。没有 peer 就跳过。
-    if (peerList().length) runBackfill(info.first === true ? 'start' : 'reconnect')
+    if (peerList().length || groupPeerList().length) runBackfill(info.first === true ? 'start' : 'reconnect')
   }
 
   /** 三把钥匙是否打开；每次都重读 live config（kill switch 立即生效）。 */
@@ -912,15 +924,15 @@ export async function apply(ctx) {
    * 等待是独立动作，不附在 send 上；等待期间到达的消息由 waiter 消费，
    * 不进正常 debounce/delivery，避免"工具返回了、下一回合又收到一遍"。
    */
-  function waitForMessages({ peer, timeoutMs = 45_000, quietMs = 10_000 } = {}) {
-    const activity = activityIdForPrivate(peer)
-    if (waiters.has(activity)) return Promise.resolve({ text: `已经在等 ${peer} 的新消息了，不要重复 wait。`, outcome: 'busy' })
+  function waitForMessages({ target, kind = 'private', timeoutMs = 45_000, quietMs = 10_000 } = {}) {
+    const activity = kind === 'group' ? activityIdForGroup(target) : activityIdForPrivate(target)
+    if (waiters.has(activity)) return Promise.resolve({ text: `已经在等 ${target} 的新消息了，不要重复 wait。`, outcome: 'busy' })
     const seed = inboundDebouncer?.take(activity) ?? []
     const timeout = Math.max(5_000, Math.min(600_000, Number(timeoutMs) || 45_000))
     const quiet = Math.max(1_000, Math.min(30_000, Number(quietMs) || 10_000))
     const startedAt = now()
     return new Promise((resolve) => {
-      const waiter = { activity, peer, signals: seed.slice(), quietMs: quiet, timeoutMs: timeout, startedAt, timers: {}, done: false, resolve }
+      const waiter = { activity, peer: target, kind, signals: seed.slice(), quietMs: quiet, timeoutMs: timeout, startedAt, timers: {}, done: false, resolve }
       waiters.set(activity, waiter)
       const clear = () => {
         for (const timer of Object.values(waiter.timers)) { try { clearTimeout(timer) } catch { /* 已触发 */ } }
@@ -1479,6 +1491,7 @@ export async function apply(ctx) {
       maxAgeMs: cfg.maxBackfillAgeMs,
       maxPeers: cfg.backfillMaxPeers,
       peers: peerList,
+      groups: groupPeerList,
       ingest: (event, opts) => handleEvent(event, opts),
       log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
     })
@@ -1927,27 +1940,30 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_wait_for_messages',
-    summary: '留在当前私聊里等下一批新消息（显式等待；不是 sleep）。wait 返回的消息不会在下一轮再投一遍。',
-    when: ['你刚回完一句，想等对方把话说完再决定下一步', '你想在同一个回合里观察到对方的补充/追问'],
-    avoid: ['不要用它代替回复（等不到不会自动生成回复）', '不要和 qq_send 同时开多个 wait', '群聊不存在'],
+    summary: '留在当前私聊或白名单群里等下一批新消息（显式等待；不是 sleep）。wait 返回的消息不会在下一轮再投一遍。',
+    when: ['你刚回完一句，想等对方把话说完再决定下一步', '你想在同一个回合里观察到对方的补充/追问', '群聊里想等下一批群消息'],
+    avoid: ['不要用它代替回复（等不到不会自动生成回复）', '不要和 qq_send 同时开多个 wait'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        peer: { type: 'string', description: '私聊 QQ 号；不填用 owner/唯一白名单。' },
+        peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填用 owner/唯一白名单私聊。' },
+        to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
         timeoutMs: { type: 'number', description: '最长等多久（毫秒，5000–600000，默认 45000）。' },
         quietMs: { type: 'number', description: '对方最后一条之后还要安静多久才算“说完了”（毫秒，1000–30000，默认 10000）。' },
       },
     },
-    async execute({ peer, timeoutMs, quietMs } = {}) {
+    async execute({ peer, to, timeoutMs, quietMs } = {}) {
       const fallback = cfg.ownerQQ != null && String(cfg.ownerQQ).trim()
         ? String(cfg.ownerQQ).trim()
         : (cfg.allowPrivate.length === 1 ? String(cfg.allowPrivate[0]) : '')
-      const targetPeer = String(peer ?? fallback).trim()
-      if (!targetPeer) return { text: '没有可等待的私聊目标。', outcome: 'refused' }
-      if (!cfg.allowPrivate.map(String).includes(targetPeer) && String(cfg.ownerQQ ?? '') !== targetPeer) {
-        return { text: `目标 ${targetPeer} 不在私聊白名单里，不能等它的消息。`, outcome: 'refused' }
+      const target = String(peer ?? to ?? fallback).trim()
+      if (!target) return { text: '没有可等待的目标（私聊或白名单群）。', outcome: 'refused' }
+      const groups = new Set((cfg.allowGroups ?? []).map(String))
+      const kind = cfg.groupPolicy === 'allowlist' && groups.has(target) ? 'group' : 'private'
+      if (kind === 'private' && !cfg.allowPrivate.map(String).includes(target) && String(cfg.ownerQQ ?? '') !== target) {
+        return { text: `目标 ${target} 不在私聊白名单里，不能等它的消息。`, outcome: 'refused' }
       }
-      return waitForMessages({ peer: targetPeer, timeoutMs, quietMs })
+      return waitForMessages({ target, kind, timeoutMs, quietMs })
     },
   })
 

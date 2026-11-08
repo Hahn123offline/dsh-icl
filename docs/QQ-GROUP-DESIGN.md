@@ -175,10 +175,13 @@ rate 高，普通消息被压成摘要。
 - `qq_poke`/`qq_recall` 已实现；`qq_group_admin` 实现但默认关闭
 - `@all` 仍未开放；群发送策略/频率按真实群调参
 
-### G3：群聊完整体验
+### G3：群聊完整体验（进行中）
 
-- 群 wait、群补课、群未读水位细化、`@all` 受控实验
-- 可选：focus 切换只回放目标群 backlog、群级静音
+- **群 wait 已实现**：复用 `qq_wait_for_messages`，`peer/to` 同时接受 QQ 号/群号，不新增群专用工具
+- **群补课已实现**：`get_group_msg_history` 按 allowlist 群补课；失败只记 gap
+- **群未读/历史**：`qq_groups` + `qq_group_history` 已可用
+- `@all` 已实现但默认关闭；群管理默认关闭
+- 待做：群级静音/免打扰、focus 只回放目标群 backlog、真实群补课参数验证
 
 ## 9. 已拍板 / 待定
 

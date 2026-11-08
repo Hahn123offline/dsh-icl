@@ -52,6 +52,7 @@
 - 安静的小群，普通群消息可以直接到；短时间刷屏时会进该群 `focus` backlog。
 - `focus_enter {activity:"qq:group:<id>"}` 进入某个群后，该群普通消息直达；别群普通消息继续攒着，别群 @ 可按 pierce 规则穿透。
 - 群消息用 `qq_groups` 看未读、`qq_group_history` 看账本。
+- 等下一批消息用同一个 `qq_wait_for_messages`：私聊传 QQ 号，群聊传群号；不要找群专用 wait。
 - 发群消息：`qq_send {to:"群号", text/messages}`，没有单独的群发工具；只有 `allowGroupSend=true` 且群在 `allowGroups` 时可用。引用群消息用 `replyToMessageId`。
 - 戳一戳：`qq_poke {to:"QQ号"}`；群戳 `qq_poke {to:"群号", userId:"成员QQ号"}`。
 - 群管理（禁言/踢人/名片/全员禁言）走 `qq_group_admin`，默认关闭（`allowGroupAdmin=false`），不要在普通聊天里调用。`@all` 目前没有开放。
