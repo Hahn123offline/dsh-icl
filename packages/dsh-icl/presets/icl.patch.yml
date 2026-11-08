@@ -68,11 +68,17 @@
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false
-                  # G1 群聊只读：两个旧的小群；普通群消息进 focus backlog，@ 直达，不发群消息。
+                  # G1 群聊只读：两个旧的小群；普通群消息进 focus backlog，@ 直达。
                   groupPolicy: allowlist
                   allowGroups:
                     - '601357169'
                     - '1057812765'
+                  # G2：qq_send 的 to 直接接受群号；群管理动作仍单独开关（默认关）。
+                  allowGroupSend: true
+                  allowGroupAdmin: false
+                  allowGroupAtAll: false
+                  allowPoke: true
+                  allowRecall: true
                   allowSend: true
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: 'auto'

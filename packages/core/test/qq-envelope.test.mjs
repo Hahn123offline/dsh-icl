@@ -117,11 +117,12 @@ test('qq_help：按需读策略（不进静态 system 段）；列表/全文/未
   } finally { await env.cleanup() }
 })
 
-test('工具描述承载边界：qq_status/qq_send 写清"不发群/何时回/按需 help"', async () => {
+test('工具描述承载边界：qq_status/qq_send 写清"群能力/何时回/按需 help"', async () => {
   const env = await setup()
   try {
     const status = env.tool('qq_status')
-    assert.match(status.summary ?? '', /QQ 私聊/)
+    assert.match(status.summary ?? '', /QQ/)
+    assert.match(status.summary ?? '', /群/)
     assert.match((status.avoid ?? []).join(' '), /群/)
     assert.match((status.avoid ?? []).join(' '), /qq_send/)
     // qq_send 只在三把钥匙打开时注册；这里至少验证 qq_help 的"何时用"指向它

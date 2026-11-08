@@ -42,6 +42,43 @@ export function checkSendTarget(cfg = {}, peerId) {
   return { ok: true, peer }
 }
 
+/** 群发目标校验：只有显式 allowGroupSend + allowGroups 白名单。 */
+export function checkGroupSendTarget(cfg = {}, groupId) {
+  if (!sendEnabled(cfg)) return { ok: false, error: '出站未启用（需要 enabled + allowSend + sendApproval=lead-approved）' }
+  if (cfg.allowGroupSend !== true) return { ok: false, error: '群发送未启用（allowGroupSend=false）' }
+  const group = String(groupId ?? '').trim()
+  if (!/^\d+$/.test(group)) return { ok: false, error: `群号必须是数字，不能是「${group}」` }
+  const allow = new Set((Array.isArray(cfg.allowGroups) ? cfg.allowGroups : []).map(String))
+  if (!allow.has(group)) return { ok: false, error: `群 ${group} 不在 allowGroups 白名单里` }
+  return { ok: true, groupId: group, peer: group, kind: 'group' }
+}
+
+/** 群管理动作校验：额外要求 allowGroupAdmin + 目标群在白名单。 */
+export function checkGroupAdminTarget(cfg = {}, groupId) {
+  const base = checkGroupSendTarget(cfg, groupId)
+  if (!base.ok) return base
+  if (cfg.allowGroupAdmin !== true) return { ok: false, error: '群管理动作未启用（allowGroupAdmin=false）' }
+  return base
+}
+
+/** 通用动作回执：retcode=0 即成功；不要求 message_id（poke/delete/管理类没有）。 */
+export function classifyActionReply(reply) {
+  if (!reply || typeof reply !== 'object') return { ok: false, outcome: 'unknown', error: '没有回执' }
+  const retcode = reply.retcode
+  const failed = reply.status === 'failed' || (retcode != null && Number(retcode) !== 0)
+  if (failed) return { ok: false, outcome: 'rejected', error: `后端拒绝：retcode=${retcode ?? '?'} ${reply.wording ?? reply.msg ?? ''}`.trim() }
+  return { ok: true, outcome: 'ok', messageId: reply.data?.message_id == null ? null : String(reply.data.message_id) }
+}
+
+/** 目标解析：群号优先走群发送（需 allowGroupSend），否则按私聊白名单。 */
+export function resolveSendTarget(cfg = {}, targetId) {
+  const id = String(targetId ?? '').trim()
+  if (!id) return { ok: false, error: '没有发送目标' }
+  const groups = new Set((Array.isArray(cfg.allowGroups) ? cfg.allowGroups : []).map(String))
+  if (groups.has(id) && cfg.allowGroupSend === true) return checkGroupSendTarget(cfg, id)
+  return { ...checkSendTarget(cfg, id), kind: 'private' }
+}
+
 /** 内容边界：纯文本、非空、不超长、无敏感信息。 */
 export function checkSendContent(cfg = {}, text) {
   const body = String(text ?? '').trim()
@@ -262,6 +299,90 @@ export function createOutbound({
     }
   }
 
+  /** 单条群文本（可选 reply/@ 段）。 */
+  async function sendGroup(groupId, text, { replyToMessageId = null, atUserIds = [], atAll = false } = {}) {
+    const startedAt = now()
+    const body = String(text ?? '').trim()
+    const segments = []
+    if (replyToMessageId != null && String(replyToMessageId).trim() !== '') {
+      segments.push({ type: 'reply', data: { id: String(replyToMessageId).trim() } })
+    }
+    if (atAll) segments.push({ type: 'at', data: { qq: 'all' } })
+    for (const id of Array.isArray(atUserIds) ? atUserIds : []) {
+      if (/^\d+$/.test(String(id))) segments.push({ type: 'at', data: { qq: String(id) } })
+    }
+    segments.push({ type: 'text', data: { text: body } })
+    const message = segments.length === 1 ? body : segments
+    log({ msg: 'qq.outbound.attempt', groupId: String(groupId), chars: body.length, replyTo: replyToMessageId == null ? null : String(replyToMessageId), atAll, atCount: atUserIds.length })
+    try {
+      const reply = await call('send_group_msg', { group_id: Number(groupId), message })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now(), replyToMessageId: replyToMessageId == null ? null : String(replyToMessageId) }
+      state.lastSent = { at: result.at, groupId: String(groupId), outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, groupId: String(groupId), outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 单条群图片（本地字节 → base64 段）。 */
+  async function sendGroupImage(groupId, { data, mimeType = 'image/png', name = null } = {}) {
+    const startedAt = now()
+    if (!data || !data.byteLength) return { ok: false, outcome: 'rejected', error: '图片字节为空', ms: 0, at: now() }
+    const base64 = Buffer.from(data).toString('base64')
+    const message = [{ type: 'image', data: { file: `base64://${base64}`, ...(name ? { name: String(name) } : {}) } }]
+    log({ msg: 'qq.outbound.attempt', groupId: String(groupId), kind: 'sticker', bytes: data.byteLength, mimeType })
+    try {
+      const reply = await call('send_group_msg', { group_id: Number(groupId), message })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now(), bytes: data.byteLength }
+      state.lastSent = { at: result.at, groupId: String(groupId), outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, groupId: String(groupId), outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 通用 OneBot 动作：poke/recall/group management。 */
+  async function action(name, params = {}) {
+    const startedAt = now()
+    try {
+      const reply = await call(name, params)
+      const verdict = classifyActionReply(reply)
+      return { ...verdict, ms: now() - startedAt, at: now() }
+    } catch (error) {
+      return { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+    }
+  }
+
+  async function sendPoke({ userId = null, groupId = null } = {}) {
+    const params = {}
+    if (groupId != null && String(groupId).trim()) params.group_id = Number(String(groupId).trim())
+    if (userId != null && String(userId).trim()) params.user_id = Number(String(userId).trim())
+    if (params.user_id == null && params.group_id == null) return { ok: false, outcome: 'rejected', error: '戳一戳需要 user_id 或 group_id', ms: 0, at: now() }
+    return action('send_poke', params)
+  }
+
+  async function recall(messageId) {
+    const id = String(messageId ?? '').trim()
+    if (!id) return { ok: false, outcome: 'rejected', error: '撤回需要 messageId', ms: 0, at: now() }
+    return action('delete_msg', { message_id: Number.isFinite(Number(id)) ? Number(id) : id })
+  }
+
+  async function groupAdmin(actionName, { groupId, userId = null, duration = null, card = null, enable = null } = {}) {
+    const gid = Number(String(groupId ?? '').trim())
+    if (!Number.isFinite(gid)) return { ok: false, outcome: 'rejected', error: '群管理需要 groupId', ms: 0, at: now() }
+    if (actionName === 'ban') return action('set_group_ban', { group_id: gid, user_id: Number(userId), duration: Math.max(1, Number(duration) || 60) })
+    if (actionName === 'kick') return action('set_group_kick', { group_id: gid, user_id: Number(userId), reject_add_request: false })
+    if (actionName === 'card') return action('set_group_card', { group_id: gid, user_id: Number(userId), card: String(card ?? '') })
+    if (actionName === 'whole-ban') return action('set_group_whole_ban', { group_id: gid, enable: enable !== false })
+    return { ok: false, outcome: 'rejected', error: `未知群管理动作 ${actionName}`, ms: 0, at: now() }
+  }
+
   return {
     start() {
       if (started) return { started: false, already: true }
@@ -284,6 +405,11 @@ export function createOutbound({
     call,
     sendPrivate,
     sendPrivateImage,
+    sendGroup,
+    sendGroupImage,
+    sendPoke,
+    recall,
+    groupAdmin,
     status() {
       return {
         state: state.state,

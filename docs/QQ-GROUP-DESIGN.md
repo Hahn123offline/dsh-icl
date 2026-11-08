@@ -1,12 +1,12 @@
 # QQ 群聊设计草案（基于现有 focus）
 
-> 状态：**G1 只读多群已实现**；G2 群回复尚未开始。目标是在不重写 focus 的前提下把 QQ
+> 状态：**G2 群发送/戳一戳已实现并默认群发送开启**；群管理默认关闭，`@all` 未开放。目标是在不重写 focus 的前提下把 QQ
 > 从"只做 owner 私聊"扩到"多群 + 私聊"的完整 QQ 实现。人格/情绪/精力的动态系统不在本设计里。
 
-## 0. G1 已落地
+## 0. G1/G2 已落地
 
 - 配置：`groupPolicy:'allowlist'` + `allowGroups:[...]`；默认 `ignore`，产品 preset 已开两个旧小群
-  `601357169` / `1057812765`（只读）。
+  `601357169` / `1057812765`。G2 产品 `allowGroupSend:true`，群号直接作为 `qq_send.to`。
 - 入站：白名单群 `message_type=group` 进 gate；普通消息默认不预标 ambient，按 per-activity rate
   决定：安静群直达，短时间刷屏时标 `ambient` 进 focus backlog；@ self 带 `at/mention`。
   群账本按 `qq:group:<id>`，群信封 `[QQ群·群名]`。
@@ -14,9 +14,12 @@
   当前 focus 的群直达，别群 ambient backlog；focus 进入群时回放积压摘要。
 - 繁忙度：新增 `attention-window.mjs`（旧 focus-core 公式），群 debounce 用 per-activity
   5s rate 自适应延迟；安静小群 6s/3s，刷屏群按 5s 步长后压，硬上限 60s/20 条。
-- 只读工具：`qq_groups`（群水位/未交付）、`qq_group_history`（群账本）；G1 不发群消息。
+- 出站：`qq_send {to:"群号"}` 走 OneBot `send_group_msg`；`qq_send_sticker` 也可发群；
+  `qq_poke` 私聊/群戳、`qq_recall`、`qq_group_admin`（默认关）。只有 `allowGroupSend` 且群在
+  `allowGroups` 才发；`allowPoke`/`allowRecall` 独立开关。
+- 只读工具：`qq_groups`（群水位/未交付）、`qq_group_history`（群账本）。
 - 测试：群 gate、无 focus backlog、@ 直达、focus 群直达、别群 backlog、群只读工具、
-  attention-window 纯函数。
+  attention-window 纯函数、群发送/戳/撤回/群管理 fake OneBot。
 
 
 ## 1. 现有接缝
@@ -143,7 +146,7 @@ rate 高，普通消息被压成摘要。
   接受度高的群里作为实验性动作开放。
 - 复用 humanize/短队列/幂等指纹；增加 per-group 限速与全局限速。
 - 发送后审计只存 hash/长度；禁止把私聊内容发到群。
-- 首版只读群聊，不自动回复；手动回复在 G2 开放。
+- G1 只读；G2 起通过通用 `qq_send` 发群，群号直接作为 `to`。
 
 待定：`qq_send` 省略 `to` 时用 focus 会不会误把私聊回复发到群？实现时应要求
 **focus 是群且工具调用上下文确认是群**，或者显式 `to`；不允许"当前 focus 是群"
@@ -166,15 +169,15 @@ rate 高，普通消息被压成摘要。
 - **已实现**：per-activity adaptive window（attention-window.mjs）
 - **不发群消息**；产品 preset 已开两个小群只读，要加群改 `allowGroups`
 
-### G2：群回复
+### G2：群回复（已实现）
 
-- 通用 `qq_send` 支持群目标 + 白名单 + 引用 + 限速/队列/幂等 + 测试
-- `@all`/群管理能力实现但默认关闭；只在受控实验群开放
-- 发送策略/频率按真实群调参
+- 通用 `qq_send` 支持群目标 + `allowGroupSend` + 引用 + 限速/队列/幂等 + 测试
+- `qq_poke`/`qq_recall` 已实现；`qq_group_admin` 实现但默认关闭
+- `@all` 仍未开放；群发送策略/频率按真实群调参
 
 ### G3：群聊完整体验
 
-- 群 wait、poke、recall/notice、群补课、群未读水位细化
+- 群 wait、群补课、群未读水位细化、`@all` 受控实验
 - 可选：focus 切换只回放目标群 backlog、群级静音
 
 ## 9. 已拍板 / 待定
@@ -182,7 +185,7 @@ rate 高，普通消息被压成摘要。
 已拍板（2026-11-08）：
 
 1. 无 focus 时群 @ **直达**；普通群消息按 ambient/繁忙度处理。
-2. G1 **只读**，不发群消息；G2 再开通用 send 的群目标。
+2. G1 **只读**，G2 用通用 `qq_send` 的群目标（`to:"群号"`，需 `allowGroupSend`）。
 3. `@all` 和群管理动作**实现保留但默认关闭**；只在小范围、接受度高的群里作为实验性动作。
 4. 多群同时 @：按 per-activity rate + 先到/pierce 优先级处理，不要求全局串行抢答。
 5. 群发送复用通用 `qq_send`，支持用当前 focus 做快捷目标；不新增单独工具。

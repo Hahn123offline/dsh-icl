@@ -61,6 +61,12 @@ const DEFAULTS = Object.freeze({
   allowAllPrivate: false,
   // 群聊只读：默认整类忽略；显式 groupPolicy:'allowlist' + allowGroups 才接。
   allowGroups: [],
+  // 群出站：默认关；显式 allowGroupSend 后才允许 qq_send 发 allowGroups 群。
+  allowGroupSend: false,
+  allowGroupAdmin: false,
+  allowGroupAtAll: false,
+  allowPoke: false,
+  allowRecall: false,
   groupPolicy: 'ignore',
   // 准入闸门
   maxPerMinute: 30,
@@ -207,6 +213,11 @@ export function normalizeQqConfig(input = {}) {
   cfg.stickerLibraryFile = String(cfg.stickerLibraryFile ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
   cfg.allowGroups = pickList(cfg.allowGroups)
+  cfg.allowGroupSend = cfg.allowGroupSend === true
+  cfg.allowGroupAdmin = cfg.allowGroupAdmin === true
+  cfg.allowGroupAtAll = cfg.allowGroupAtAll === true
+  cfg.allowPoke = cfg.allowPoke === true
+  cfg.allowRecall = cfg.allowRecall === true
   cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
   for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
@@ -627,7 +638,7 @@ export async function apply(ctx) {
     }
     try {
       const { registerSendTool } = await import('./send-tool.mjs')
-      const activityFor = (peerId) => activityIdForPrivate(String(peerId))
+      const activityFor = (peerId, kind = 'private') => kind === 'group' ? `qq:group:${String(peerId)}` : activityIdForPrivate(String(peerId))
       sendHandle = await registerSendTool({
         ctx,
         cfg,
@@ -635,21 +646,21 @@ export async function apply(ctx) {
         endpoint,
         now,
         log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
-        validateReply: ({ peerId, messageId }) => Boolean(ledger?.hasMessage(activityFor(peerId), messageId)),
-        onSendStart: ({ peerId }) => ledger?.lastKnown(activityFor(peerId))?.lastSeq ?? 0,
-        onSent: ({ peerId, replyToMessageId, throughSeq, at }) => {
+        validateReply: ({ peerId, kind, messageId }) => Boolean(ledger?.hasMessage(activityFor(peerId, kind), messageId)),
+        onSendStart: ({ peerId, kind }) => ledger?.lastKnown(activityFor(peerId, kind))?.lastSeq ?? 0,
+        onSent: ({ peerId, kind, replyToMessageId, throughSeq, at }) => {
           if (!ledger) return
-          const activity = activityFor(peerId)
+          const activity = activityFor(peerId, kind)
           let through = Number(throughSeq) || 0
           if (replyToMessageId) {
             const target = ledger.replyState(activity, { messageId: replyToMessageId })
             if (target?.found) through = Math.max(through, Number(target.seq) || 0)
           }
           if (through > 0) ledger.markReplied(activity, { throughSeq: through, at })
-          noteWakeOutbound(activity)
+          if (kind !== 'group') noteWakeOutbound(activity)
         },
       })
-      ctx.log({ msg: 'qq.send.enabled', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate, audit: cfg.auditFile || null })
+      ctx.log({ msg: 'qq.send.enabled', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate, allowGroups: cfg.allowGroups, allowGroupSend: cfg.allowGroupSend, allowGroupAdmin: cfg.allowGroupAdmin, audit: cfg.auditFile || null })
     } catch (error) {
       // 出站装配失败不拖垮只读入站；必须留痕（不能静默半残）
       ctx.log({ level: 'error', msg: 'qq.send.start-fail', error: String(error?.stack ?? error) })
@@ -1526,6 +1537,8 @@ export async function apply(ctx) {
       allowPrivate: [...cfg.allowPrivate],
       allowAllPrivate: cfg.allowAllPrivate,
       allowGroups: [...cfg.allowGroups],
+      allowGroupSend: cfg.allowGroupSend,
+      allowGroupAdmin: cfg.allowGroupAdmin,
       groupPolicy: cfg.groupPolicy,
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
@@ -1620,7 +1633,7 @@ export async function apply(ctx) {
       const recent = send.recent
       const outcomeText = recent ? `最近一次发送：${stamp(recent.at)} → ${recent.peerId}，结果=${recent.outcome}${Number.isFinite(Number(recent.total)) ? `（${recent.sent ?? 0}/${recent.total} 条）` : ''}${recent.messageId ? `，messageId=${recent.messageId}` : ''}${recent.error ? `（${recent.error}）` : ''}` : '最近一次发送：还没有'
       const counts = send.counts ?? {}
-      lines.push(`出站：已启用（phase 1 只回 owner/白名单私聊；本轮已发 ${send.perTurn?.sent ?? 0}/${send.perTurn?.limit ?? '?'} 条；累计 ok ${counts.ok ?? 0} / rejected ${counts.rejected ?? 0} / unknown ${counts.unknown ?? 0} / 拒绝 ${counts.refused ?? 0}）`)
+      lines.push(`出站：已启用（私聊 owner/白名单${send.allowGroupSend ? `；群发送白名单 ${send.allowGroups?.join('、') || '（空）'}` : '；群发送关闭'}；戳一戳 ${send.allowPoke ? '开' : '关'}；撤回 ${send.allowRecall ? '开' : '关'}；群管理 ${send.allowGroupAdmin ? '开' : '关'}；本轮已发 ${send.perTurn?.sent ?? 0}/${send.perTurn?.limit || '不限'} 次；累计 ok ${counts.ok ?? 0} / rejected ${counts.rejected ?? 0} / unknown ${counts.unknown ?? 0} / 拒绝 ${counts.refused ?? 0}）`)
       lines.push(`${outcomeText}${send.auditFile ? `；审计：${send.auditFile}` : ''}`)
       if (send.transport) lines.push(`出站连接：${send.transport.connected ? '已连接' : send.transport.state}；客户端已发帧 ${send.transport.framesSent ?? 0}；在途 ${send.transport.pending ?? 0}`)
     } else {
@@ -1650,18 +1663,18 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_status',
-    summary: '查看 QQ 私聊的当前状态：最近一条消息、最近一次发送回执（ok/rejected/unknown）、断线补课与积压计数。只读，不发送。',
-    when: ['回复前确认是否真的有人找你', '怀疑 QQ 消息丢了，或断线后想知道补课结果', '发送结果未知时核对回执'],
-    avoid: ['把它当每轮必查的仪表盘（会占上下文）', '想看群消息（G1 用 qq_groups / qq_group_history）', '想发消息（用 qq_send）'],
+    summary: '查看 QQ 当前状态：私聊/群消息、最近一次发送回执（ok/rejected/unknown）、群发送/戳一戳开关、断线补课与积压计数。只读，不发送。',
+    when: ['回复前确认是否真的有人找你', '怀疑 QQ 消息丢了，或断线后想知道补课结果', '发送结果未知时核对回执', '确认群发送/戳一戳是否开启'],
+    avoid: ['把它当每轮必查的仪表盘（会占上下文）', '想看群消息（用 qq_groups / qq_group_history）', '想发消息（用 qq_send）'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() { return { text: statusText() } },
   })
 
   ctx.tools.register({
     name: 'qq_help',
-    summary: '读 QQ 聊天策略（按需，不常驻）：何时该回/不回、私聊优先级、群聊 G1 只读边界、谁在说话（说话人信封）。不带参数列出条目。',
-    when: ['不确定 QQ 消息该不该回、该怎么理解 [补课]/积压/信封', '第一次处理 QQ 私聊'],
-    avoid: ['需要现状或回执（用 qq_status）', '要发消息（用 qq_send）'],
+    summary: '读 QQ 聊天策略（按需，不常驻）：何时该回/不回、私聊/群聊边界、谁在说话（说话人信封）、出站能力边界。不带参数列出条目。',
+    when: ['不确定 QQ 消息该不该回、该怎么理解 [补课]/积压/信封', '第一次处理 QQ 私聊/群聊'],
+    avoid: ['需要现状或回执（用 qq_status）', '要发消息（用 qq_send / qq_poke / qq_group_admin）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: { skill: { type: 'string', description: '策略 id（当前只有 reply）；不填列出可用条目。' } },
@@ -1979,7 +1992,7 @@ export async function apply(ctx) {
         if (!s.enabled || !s.connection.connected) return ''
         if (s.send?.registered) {
           const limit = Number(s.send.perTurn?.limit ?? 0)
-          return `QQ 已连接：本轮收到 ${s.stats.delivered} 条私聊；可以调用 qq_send 回（只能回 owner/白名单私聊${limit > 0 ? `，每轮最多 ${limit} 条` : '，本轮不限条数'}）。`
+          return `QQ 已连接：本轮收到 ${s.stats.delivered} 条消息；可以调用 qq_send 回（私聊 owner/白名单${s.send.allowGroupSend ? `，也可发群 ${s.send.allowGroups?.join('、') || ''}` : '，群发送关闭'}；戳一戳 ${s.send.allowPoke ? '可用' : '关闭'}${limit > 0 ? `；每轮最多 ${limit} 条` : '；本轮不限条数'}）。`
         }
         return `QQ 只读影子：已连接，本轮收到 ${s.stats.delivered} 条私聊（不能回复）。`
       },

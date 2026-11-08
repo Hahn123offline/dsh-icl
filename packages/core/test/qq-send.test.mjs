@@ -406,3 +406,59 @@ test('finish-then-handle：发送多气泡中来了新消息，当前气泡后�
     assert.match(result.text, /停发剩余气泡|已发 1\/3/)
   } finally { await env.cleanup() }
 })
+
+test('G2 群发送：qq_send 的 to 直接接受 allowGroups 群号，动作是 send_group_msg', async () => {
+  const env = await setup({ allowGroups: ['601357169'], allowGroupSend: true })
+  try {
+    const result = await env.tool().execute({ to: '601357169', text: '群测试一句' })
+    assert.equal(result.outcome, 'ok')
+    const actions = env.fake.sendActions()
+    assert.equal(actions.length, 1)
+    assert.equal(actions[0].action, 'send_group_msg')
+    assert.equal(actions[0].params.group_id, 601357169)
+    assert.equal(actions[0].params.message, '群测试一句')
+    assert.equal(env.audit().at(-1).targetKind, 'group')
+    assert.equal(env.audit().at(-1).peerId, '601357169')
+  } finally { await env.cleanup() }
+})
+
+test('G2 群发送默认关闭：allowGroupSend=false 时拒绝，且零帧', async () => {
+  const env = await setup({ allowGroups: ['601357169'], allowGroupSend: false })
+  try {
+    const result = await env.tool().execute({ to: '601357169', text: '不该发' })
+    assert.equal(result.refused, true)
+    assert.match(result.text, /群发送未启用|不在私聊白名单/)
+    assert.equal(env.fake.sendActions().length, 0)
+  } finally { await env.cleanup() }
+})
+
+test('G2 戳一戳/撤回/群管理走 OneBot 动作机', async () => {
+  const env = await setup({ allowGroups: ['601357169'], allowGroupSend: true, allowPoke: true, allowRecall: true, allowGroupAdmin: true })
+  try {
+    const tools = env.host.services.tools.list()
+    const poke = tools.find((t) => t.name === 'qq_poke')
+    const recall = tools.find((t) => t.name === 'qq_recall')
+    const admin = tools.find((t) => t.name === 'qq_group_admin')
+    assert.ok(poke && recall && admin)
+
+    const p1 = await poke.execute({ to: OWNER })
+    assert.equal(p1.outcome, 'ok')
+    assert.equal(env.fake.actions().at(-1).action, 'send_poke')
+    assert.equal(env.fake.actions().at(-1).params.user_id, Number(OWNER))
+
+    const p2 = await poke.execute({ to: '601357169', userId: '20002' })
+    assert.equal(p2.outcome, 'ok')
+    assert.equal(env.fake.actions().at(-1).action, 'send_poke')
+    assert.equal(env.fake.actions().at(-1).params.group_id, 601357169)
+    assert.equal(env.fake.actions().at(-1).params.user_id, 20002)
+
+    const r = await recall.execute({ messageId: '123456' })
+    assert.equal(r.outcome, 'ok')
+    assert.equal(env.fake.actions().at(-1).action, 'delete_msg')
+
+    const a = await admin.execute({ group: '601357169', action: 'ban', userId: '20002', duration: 120 })
+    assert.equal(a.outcome, 'ok')
+    assert.equal(env.fake.actions().at(-1).action, 'set_group_ban')
+    assert.equal(env.fake.actions().at(-1).params.duration, 120)
+  } finally { await env.cleanup() }
+})

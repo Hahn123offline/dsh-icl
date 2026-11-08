@@ -17,8 +17,10 @@ import path from 'node:path'
 import {
   SEND_APPROVAL_TOKEN,
   checkSendContent,
+  checkGroupAdminTarget,
   checkSendTarget,
   createOutbound,
+  resolveSendTarget,
   sendEnabled,
 } from './outbound.mjs'
 import { BURST, delay, mdToPlain, planBurst, splitLongText } from './humanize.mjs'
@@ -309,13 +311,13 @@ export async function registerSendTool({
   }
 
   /** 真正执行一批发送（execute 与队列 worker 共用）。 */
-  async function performSend({ peer, bubbles, key, replyToMessageId = null, args = {}, fingerprint = null, fromQueue = false }) {
+  async function performSend({ peer, targetId = peer, kind = 'private', bubbles, key, replyToMessageId = null, args = {}, fingerprint = null, fromQueue = false }) {
     const ps = peerState(peer)
     const at = now()
     ps.lastText = key
     ps.lastTextAt = at
     let throughSeq = null
-    try { throughSeq = typeof onSendStart === 'function' ? await onSendStart({ peerId: peer, replyToMessageId, at }) : null } catch { throughSeq = null }
+    try { throughSeq = typeof onSendStart === 'function' ? await onSendStart({ peerId: targetId, kind, replyToMessageId, at }) : null } catch { throughSeq = null }
     const plan = planBurst(bubbles, {
       random: randomImpl,
       gapMode: args.gapMode ?? gapMode,
@@ -352,11 +354,17 @@ export async function registerSendTool({
         ps.times.push(bubbleAt)
         pruneGlobal(bubbleAt)
         globalTimes.push(bubbleAt)
-        const result = await outbound.sendPrivate(peer, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
+        const result = kind === 'group'
+          ? await outbound.sendGroup(targetId, step.text, {
+            replyToMessageId: i === 0 ? replyToMessageId : null,
+            atAll: i === 0 && args.atAll === true,
+            atUserIds: i === 0 && Array.isArray(args.mentionUserIds) ? args.mentionUserIds : [],
+          })
+          : await outbound.sendPrivate(targetId, step.text, { replyToMessageId: i === 0 ? replyToMessageId : null })
         const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
         state.counts[outcome] += 1
         audit({
-          kind: 'send', peerId: peer, chars: step.text.length, textHash: hash(step.text),
+          kind: 'send', peerId: targetId, targetKind: kind, chars: step.text.length, textHash: hash(step.text),
           outcome, messageId: result.messageId ?? null, ms: result.ms ?? null,
           batch: { index: i + 1, total: plan.length }, replyTo: i === 0 ? replyToMessageId : null,
           queued: fromQueue || undefined,
@@ -379,7 +387,8 @@ export async function registerSendTool({
     const outcome = !failure && sent.length === plan.length ? 'ok' : (failure?.outcome ?? 'unknown')
     state.recent = {
       at: now(),
-      peerId: peer,
+      peerId: targetId,
+      targetKind: kind,
       outcome,
       replyToMessageId,
       messageId: sent[0]?.messageId ?? null,
@@ -393,7 +402,7 @@ export async function registerSendTool({
     if (typeof onSent === 'function' && sent.length > 0) {
       try {
         await onSent({
-          peerId: peer, replyToMessageId, sent: sent.length, total: plan.length,
+          peerId: targetId, kind, replyToMessageId, sent: sent.length, total: plan.length,
           outcome, throughSeq, at: now(),
         })
       } catch (error) {
@@ -452,27 +461,34 @@ export async function registerSendTool({
 
   async function execute(args = {}) {
     if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
-    const peer = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
-    if (!peer) return refuse('没有可发送的私聊目标（owner/白名单为空）')
-    const target = checkSendTarget(targetCfg, peer)
-    if (!target.ok) return refuse(target.error, { peerId: peer })
+    const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
+    if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
+    const target = resolveSendTarget(targetCfg, targetInput)
+    if (!target.ok) return refuse(target.error, { peerId: targetInput })
+    const kind = target.kind === 'group' ? 'group' : 'private'
+    const targetId = String(target.peer ?? target.groupId ?? targetInput)
+    const peer = kind === 'group' ? `group:${targetId}` : targetId
+    const atAll = args.atAll === true
+    const mentionUserIds = Array.isArray(args.mentionUserIds) ? args.mentionUserIds.map(String).filter((id) => /^\d+$/.test(id)) : []
+    if (kind !== 'group' && (atAll || mentionUserIds.length)) return refuse('@ 只能用于群消息', { peerId: targetId })
+    if (atAll && cfg.allowGroupAtAll !== true) return refuse('@all 未启用（allowGroupAtAll=false）', { peerId: targetId })
     const prepared = prepareBubbles(args)
-    if (prepared.error) return refuse(prepared.error, { peerId: peer, ...(prepared.detail ?? {}) })
+    if (prepared.error) return refuse(prepared.error, { peerId: targetId, ...(prepared.detail ?? {}) })
     const { bubbles, key } = prepared
     const replyToMessageId = args.replyToMessageId == null || String(args.replyToMessageId).trim() === ''
       ? null
       : String(args.replyToMessageId).trim()
     if (replyToMessageId != null) {
-      if (bubbles.length > 1) return refuse('引用回复只支持单条气泡（把内容合并成一条，或去掉 replyToMessageId）', { peerId: peer, chars: key.length, hash: hash(key) })
+      if (bubbles.length > 1) return refuse('引用回复只支持单条气泡（把内容合并成一条，或去掉 replyToMessageId）', { peerId: targetId, chars: key.length, hash: hash(key) })
       if (typeof validateReply === 'function') {
         let allowed = false
-        try { allowed = validateReply({ peerId: peer, messageId: replyToMessageId }) } catch { allowed = false }
-        if (!allowed) return refuse(`引用的消息不在这个私聊的账本里（id=${replyToMessageId}），不伪造引用`, { peerId: peer, chars: key.length, hash: hash(key) })
+        try { allowed = validateReply({ peerId: targetId, kind, messageId: replyToMessageId }) } catch { allowed = false }
+        if (!allowed) return refuse(`引用的消息不在这个${kind === 'group' ? '群' : '私聊'}的账本里（id=${replyToMessageId}），不伪造引用`, { peerId: targetId, chars: key.length, hash: hash(key) })
       }
     }
     const at = now()
     if (maxPerTurn > 0 && state.turnSent >= maxPerTurn) {
-      return refuse(`本轮最多 ${maxPerTurn} 条（等下一轮再发）`, { peerId: peer, chars: key.length, hash: hash(key) })
+      return refuse(`本轮最多 ${maxPerTurn} 条（等下一轮再发）`, { peerId: targetId, chars: key.length, hash: hash(key) })
     }
     const fingerprint = fingerprintOf(peer, bubbles, replyToMessageId)
     if (outboxEnabled) {
@@ -484,29 +500,30 @@ export async function registerSendTool({
         return { text: '这批内容上次发送结果未知；不要重发，先用 qq_status 核对。', outcome: 'unknown', deduped: true }
       }
     } else if (sameTextWindowMs > 0 && peerState(peer).lastText === key && at - peerState(peer).lastTextAt < sameTextWindowMs) {
-      return refuse(`重复内容（${Math.round(sameTextWindowMs / 1000)} 秒内已发过同样的话）`, { peerId: peer, chars: key.length, hash: hash(key) })
+      return refuse(`重复内容（${Math.round(sameTextWindowMs / 1000)} 秒内已发过同样的话）`, { peerId: targetId, chars: key.length, hash: hash(key) })
     }
 
-    const job = { peer, bubbles, key, replyToMessageId, args, fingerprint, fromQueue: false }
+    const job = { peer, targetId, kind, bubbles, key, replyToMessageId, args, fingerprint, fromQueue: false }
     const issue = rateIssue(peer, bubbles.length)
     state.turnSent += 1
     if (outboxEnabled && (issue || outbox.length)) {
       return enqueueOutbox(job, issue)
     }
-    if (issue) return refuse(`限流：${issue}`, { peerId: peer, chars: key.length, hash: hash(key) })
+    if (issue) return refuse(`限流：${issue}`, { peerId: targetId, chars: key.length, hash: hash(key) })
 
     return performSend(job)
   }
 
   ctx.tools.register({
     name: 'qq_send',
-    summary: '发 QQ 私聊（唯一 QQ 发送工具）：一段话或 1–8 条短气泡，只能 owner/白名单私聊，群不存在。限流时可能返回“已排队”，不要重复调用。',
+    summary: '发 QQ 消息（唯一 QQ 发送工具）：一段话或 1–8 条短气泡；可发 owner/白名单私聊，或 allowGroupSend 打开的 allowGroups 群。群号和 QQ 号一样直接放 to。',
     when: [
-      '你刚看到一条 QQ 私聊、判断该回',
+      '你刚看到一条 QQ 私聊/群消息、判断该回',
       '想把回复拆成几条短气泡，而不是一大段',
+      '要发到 allowGroups 白名单群，直接传 to: "群号"',
     ],
     avoid: [
-      '群消息（群发送不存在）',
+      '未启用 allowGroupSend 时发群；不在 allowGroups 的群',
       '图片/语音/文件（这些能力不存在，别用文字假装；表情用 qq_send_sticker）',
       '结果 unknown 时盲目重发（可能双发；用 qq_status 核对）',
       '看到“已排队”或“刚发过”后再次调用（队列/幂等会处理，重复调用没有意义）',
@@ -521,8 +538,10 @@ export async function registerSendTool({
           type: 'array', items: { type: 'string' },
           description: '1–8 条短消息，逐条作为气泡发送；过长内容可能再拆，总气泡数受上限约束。',
         },
-        to: { type: 'string', description: '目标 QQ 号（只能私聊）。省略则用配置的 owner / 唯一白名单私聊。' },
-        replyToMessageId: { type: 'string', description: '要引用的消息 messageId（必须是这个私聊账本里收到的消息；只能配单条 text，不能配 messages[]）。' },
+        to: { type: 'string', description: '目标 QQ 号（私聊）或群号（allowGroups + allowGroupSend）。省略则用配置的 owner / 唯一白名单私聊。' },
+        atAll: { type: 'boolean', description: '群消息 @全体成员；默认关闭，需 allowGroupAtAll=true。' },
+        mentionUserIds: { type: 'array', items: { type: 'string' }, description: '群消息 @ 指定成员 QQ 号（最多 10 个）。' },
+        replyToMessageId: { type: 'string', description: '要引用的消息 messageId（必须是在这个私聊/群账本里收到的消息；只能配单条 text，不能配 messages[]）。' },
         pace: { type: 'string', description: 'gapMode=typing 时的打字节奏：thoughtful | normal | quick | blast。' },
         gapMode: { type: 'string', description: '气泡间隔：auto（默认，1–3s，偶尔 5–10s）| fixed | typing | byLength。' },
         gapMs: { type: 'number', description: 'gapMode=fixed 时的固定间隔（毫秒）。' },
@@ -533,27 +552,32 @@ export async function registerSendTool({
 
   async function sendSticker(args = {}) {
     if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
-    const peer = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
-    if (!peer) return refuse('没有可发送的私聊目标（owner/白名单为空）')
-    const target = checkSendTarget(targetCfg, peer)
-    if (!target.ok) return refuse(target.error, { peerId: peer })
+    const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
+    if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
+    const target = resolveSendTarget(targetCfg, targetInput)
+    if (!target.ok) return refuse(target.error, { peerId: targetInput })
+    const kind = target.kind === 'group' ? 'group' : 'private'
+    const targetId = String(target.peer ?? target.groupId ?? targetInput)
+    const peer = kind === 'group' ? `group:${targetId}` : targetId
     let sticker
-    try { sticker = readSticker(args.id) } catch (error) { return refuse(String(error?.message ?? error), { peerId: peer }) }
+    try { sticker = readSticker(args.id) } catch (error) { return refuse(String(error?.message ?? error), { peerId: targetId }) }
     const rateError = stickerRateError(peer)
-    if (rateError) return refuse(rateError, { peerId: peer })
+    if (rateError) return refuse(rateError, { peerId: targetId })
     state.turnSent += 1
     const startedAt = now()
-    const result = await outbound.sendPrivateImage(peer, { data: sticker.buffer, mimeType: sticker.mimeType, name: sticker.id })
+    const result = kind === 'group'
+      ? await outbound.sendGroupImage(targetId, { data: sticker.buffer, mimeType: sticker.mimeType, name: sticker.id })
+      : await outbound.sendPrivateImage(targetId, { data: sticker.buffer, mimeType: sticker.mimeType, name: sticker.id })
     const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
     state.counts[outcome] += 1
     peerState(peer).times.push(now())
     audit({
-      kind: 'sticker', peerId: peer, sticker: sticker.id, bytes: sticker.bytes,
+      kind: 'sticker', peerId: targetId, targetKind: kind, sticker: sticker.id, bytes: sticker.bytes,
       outcome, messageId: result.messageId ?? null, ms: result.ms ?? null, error: result.error ?? null,
     })
     const ms = now() - startedAt
     state.recent = {
-      at: now(), peerId: peer, kind: 'sticker', sticker: sticker.id, outcome,
+      at: now(), peerId: targetId, targetKind: kind, kind: 'sticker', sticker: sticker.id, outcome,
       messageId: result.messageId ?? null, messageIds: result.messageId ? [result.messageId] : [],
       sent: result.ok ? 1 : 0, total: 1, ms, chars: 0, error: result.error ?? null,
     }
@@ -638,18 +662,128 @@ export async function registerSendTool({
 
   ctx.tools.register({
     name: 'qq_send_sticker',
-    summary: '把本地表情包库里的一个图片发给 QQ 私聊（owner/白名单，同 qq_send 的限速/审计）。只接受本地库文件，不下载远程。',
+    summary: '把本地表情包库里的一个图片发给 QQ 私聊或 allowGroupSend 白名单群（同 qq_send 的限速/审计）。只接受本地库文件，不下载远程。',
     when: ['对方语气适合用表情回应，且本地库里有合适的', '你已经用 qq_stickers 选好了 id'],
-    avoid: ['群里发（群不存在）', '发送任意路径/网络图片（只接受 stickerDir 下的单层文件名）', '结果 unknown 时重发'],
+    avoid: ['未启用 allowGroupSend 时发群', '发送任意路径/网络图片（只接受 stickerDir 下的单层文件名）', '结果 unknown 时重发'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         id: { type: 'string', description: 'qq_stickers 列出的文件名（单层，不能带路径）。' },
-        to: { type: 'string', description: '目标 QQ 号（只能私聊）。省略则用 owner / 唯一白名单私聊。' },
+        to: { type: 'string', description: '目标 QQ 号（私聊）或群号（allowGroups + allowGroupSend）。省略则用 owner / 唯一白名单私聊。' },
       },
       required: ['id'],
     },
     async execute(args) { return sendSticker(args) },
+  })
+
+  async function poke(args = {}) {
+    if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
+    if (cfg.allowPoke !== true) return refuse('戳一戳未启用（allowPoke=false）')
+    const input = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
+    if (!input) return refuse('戳一戳需要目标 QQ 号或群号')
+    const target = resolveSendTarget(targetCfg, input)
+    if (!target.ok) return refuse(target.error, { peerId: input })
+    const kind = target.kind === 'group' ? 'group' : 'private'
+    const targetId = String(target.peer ?? target.groupId ?? input)
+    const userId = kind === 'group' ? String(args.userId ?? '').trim() : targetId
+    if (kind === 'group' && !userId) return refuse('群戳一戳需要 userId（要戳的群成员）', { peerId: targetId })
+    const result = await outbound.sendPoke({ userId, groupId: kind === 'group' ? targetId : null })
+    const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+    state.counts[outcome] += 1
+    audit({ kind: 'poke', peerId: targetId, targetKind: kind, userId: userId || null, outcome, ms: result.ms ?? null, error: result.error ?? null })
+    if (result.ok) return { text: `戳了戳 ${kind === 'group' ? `群 ${targetId} 的 ${userId}` : targetId}（${result.ms ?? 0}ms）。`, outcome: 'ok' }
+    return { text: `没戳成：${result.error ?? '未知原因'}（不自动重试）。`, outcome, error: result.error ?? null }
+  }
+
+  async function recallMessage(args = {}) {
+    if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
+    if (cfg.allowRecall !== true) return refuse('撤回未启用（allowRecall=false）')
+    const messageId = String(args.messageId ?? '').trim()
+    if (!messageId) return refuse('撤回需要 messageId')
+    if (args.to != null && String(args.to).trim() !== '') {
+      const target = resolveSendTarget(targetCfg, String(args.to).trim())
+      if (!target.ok) return refuse(target.error, { peerId: String(args.to) })
+    }
+    const result = await outbound.recall(messageId)
+    const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+    state.counts[outcome] += 1
+    audit({ kind: 'recall', messageId, outcome, ms: result.ms ?? null, error: result.error ?? null })
+    if (result.ok) return { text: `已撤回消息 ${messageId}（${result.ms ?? 0}ms）。`, outcome: 'ok' }
+    return { text: `没撤回：${result.error ?? '未知原因'}（不自动重试）。`, outcome, error: result.error ?? null }
+  }
+
+  async function groupAdmin(args = {}) {
+    if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
+    if (cfg.allowGroupAdmin !== true) return refuse('群管理未启用（allowGroupAdmin=false）')
+    const target = checkGroupAdminTarget(targetCfg, args.group)
+    if (!target.ok) return refuse(target.error, { peerId: String(args.group ?? '') })
+    const action = String(args.action ?? '').trim()
+    if (!['ban', 'kick', 'card', 'whole-ban'].includes(action)) return refuse(`不支持的群管理动作：${action || '（空）'}`)
+    if (action !== 'whole-ban' && (args.userId == null || String(args.userId).trim() === '')) return refuse(`${action} 需要 userId`)
+    const result = await outbound.groupAdmin(action, {
+      groupId: target.groupId,
+      userId: args.userId,
+      duration: args.duration,
+      card: args.card,
+      enable: args.enable,
+    })
+    const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+    state.counts[outcome] += 1
+    audit({ kind: 'group-admin', groupId: target.groupId, action, userId: args.userId ?? null, outcome, ms: result.ms ?? null, error: result.error ?? null })
+    if (result.ok) return { text: `群管理已执行：${action}（群 ${target.groupId}${args.userId ? `，用户 ${args.userId}` : ''}，${result.ms ?? 0}ms）。`, outcome: 'ok' }
+    return { text: `群管理失败：${result.error ?? '未知原因'}（不自动重试）。`, outcome, error: result.error ?? null }
+  }
+
+  ctx.tools.register({
+    name: 'qq_poke',
+    summary: '戳一戳（私聊或群成员）；和 qq_send 共用发送白名单。群戳需要群号 + userId。',
+    when: ['想轻提醒对方一下', '对方戳了你，想戳回去'],
+    avoid: ['没有明确对象/群成员时乱戳', '以为它等于发消息（它没有正文）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        to: { type: 'string', description: 'QQ 号（私聊）或群号（群戳）' },
+        userId: { type: 'string', description: '群戳时要戳的群成员 QQ 号；私聊时省略。' },
+      },
+      required: ['to'],
+    },
+    async execute(args) { return poke(args) },
+  })
+
+  ctx.tools.register({
+    name: 'qq_recall',
+    summary: '撤回一条已发出的 QQ 消息（需要 messageId；群/私聊都可用，受 allowRecall 控制）。',
+    when: ['刚发错/发重复，需要撤回'],
+    avoid: ['撤回别人的消息', '没有 messageId 时猜一个'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        messageId: { type: 'string', description: '要撤回的消息 messageId。' },
+        to: { type: 'string', description: '可选：私聊 QQ 号或群号，用于校验目标白名单。' },
+      },
+      required: ['messageId'],
+    },
+    async execute(args) { return recallMessage(args) },
+  })
+
+  ctx.tools.register({
+    name: 'qq_group_admin',
+    summary: '群管理动作（默认关闭）：禁言/解禁、踢人、改群名片、全员禁言；需要 allowGroupAdmin=true。',
+    when: ['明确需要执行群管理且已获授权'],
+    avoid: ['日常聊天/普通群消息', '没有明确 userId/时长时操作', '未启用时尝试绕过'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        group: { type: 'string', description: '群号' },
+        action: { type: 'string', description: 'ban | kick | card | whole-ban' },
+        userId: { type: 'string', description: '目标成员 QQ 号（ban/kick/card 必填）' },
+        duration: { type: 'number', description: 'ban 时长秒（默认 60）' },
+        card: { type: 'string', description: 'card 的新群名片' },
+        enable: { type: 'boolean', description: 'whole-ban：true 开启全员禁言，false 关闭' },
+      },
+      required: ['group', 'action'],
+    },
+    async execute(args) { return groupAdmin(args) },
   })
 
   const offTurnEnd = ctx.signals.on({ tags: ['turn-end'] }, () => { state.turnSent = 0 })
@@ -667,6 +801,12 @@ export async function registerSendTool({
         enabled: keysNow(),
         owner: cfg.ownerQQ ?? null,
         allowPrivate: [...(cfg.allowPrivate ?? [])],
+        allowGroups: [...(cfg.allowGroups ?? [])],
+        allowGroupSend: cfg.allowGroupSend === true,
+        allowGroupAdmin: cfg.allowGroupAdmin === true,
+        allowGroupAtAll: cfg.allowGroupAtAll === true,
+        allowPoke: cfg.allowPoke === true,
+        allowRecall: cfg.allowRecall === true,
         perTurn: { limit: maxPerTurn, sent: state.turnSent },
         limits: { minIntervalMs, maxPerMinute, maxPerHour, sameTextWindowMs, burstMaxMessages, maxMessageChars, gapMode, globalMaxPerMinute },
         outbox: { enabled: outboxEnabled, pending: outbox.length, maxPending: outboxMaxPending, ttlMs: outboxTtlMs, counts: { ...state.outboxCounts } },
