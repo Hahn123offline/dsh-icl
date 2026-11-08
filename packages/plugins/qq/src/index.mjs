@@ -1314,7 +1314,7 @@ export async function apply(ctx) {
   }
 
   function ingestEvent(event, { backfilled = false } = {}) {
-    const decision = gate.admit(event, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs })
+    const decision = gate.admit(event, { receivedAt: now(), backfilled, maxBackfillAgeMs: cfg.maxBackfillAgeMs, selfId: cfg.selfId ?? connector?.seenSelfId ?? null })
     if (!decision.accept) {
       const groupId = event?.message_type === 'group' && event?.group_id != null ? String(event.group_id) : null
       stats.recent.lastDropped = { at: now(), code: decision.code, scope: event?.message_type === 'group' ? 'group' : 'private', groupId }

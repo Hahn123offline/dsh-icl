@@ -286,3 +286,12 @@ test('补课器：selfId 可为 getter，补课必须跳过机器人自己发的
   assert.equal(r.filled, 0)
   assert.equal(ingested.length, 0)
 })
+
+test('gate：构造时 selfId 未知时，可用逐条 selfId 过滤自己的群/私聊消息', () => {
+  const gate = createInboundGate({ selfId: null, allowPrivate: [OWNER], groupPolicy: 'allowlist', allowGroups: ['601357169'], now: () => Date.now() })
+  const base = { post_type: 'message', self_id: '2593621742', message_id: 8001, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: '我自己' } }], raw_message: '我自己' }
+  const group = { ...base, message_type: 'group', group_id: 601357169, user_id: 2593621742, sender: { user_id: 2593621742, nickname: '鱼鱼' } }
+  assert.equal(gate.admit(group, { selfId: '2593621742' }).code, 'self')
+  const priv = { ...base, message_type: 'private', sub_type: 'friend', user_id: 2593621742, sender: { user_id: 2593621742 } }
+  assert.equal(gate.admit(priv, { selfId: '2593621742' }).code, 'self')
+})

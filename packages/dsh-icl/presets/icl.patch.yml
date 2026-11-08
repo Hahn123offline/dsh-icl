@@ -68,6 +68,7 @@
                 qq:
                   enabled: true
                   ownerQQ: '3429502459'
+                  selfId: '2593621742'
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false

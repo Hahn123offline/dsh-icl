@@ -155,10 +155,14 @@ export function createInboundGate({
      * backfilled=true 时：用 maxBackfillAgeMs 单独判旧（补课消息本来就会晚到，不能用实时 maxStaleMs 丢），
      * 并在 signal 上打 `[补课]` / tag / meta 标记，让模型知道这条不是刚发生的。
      */
-    admit(event, { receivedAt = now(), backfilled = false, maxBackfillAgeMs = 0 } = {}) {
+    admit(event, { receivedAt = now(), backfilled = false, maxBackfillAgeMs = 0, selfId: selfIdOverride = null } = {}) {
       counters.received += 1
       if (!event || typeof event !== 'object') return drop('invalid')
 
+      // selfId 可能在连上之后才由 OneBot 事件暴露；调用方可逐条传入最新值。
+      const effectiveSelfId = selfIdOverride != null && String(selfIdOverride).trim() !== ''
+        ? String(selfIdOverride).trim()
+        : selfId
       // meta_event/heartbeat/lifecycle：连接健康信号，不是消息
       if (event.post_type === 'meta_event') return drop('meta')
       if (event.post_type !== 'message') return drop('not-message')
@@ -172,7 +176,7 @@ export function createInboundGate({
         if (!allowGroupsSet.has(groupId)) return drop('not-allowlisted')
         const senderId = senderIdOf(event)
         if (!senderId) return drop('invalid')
-        if (selfId != null && String(selfId) === senderId) return drop('self')
+        if (effectiveSelfId != null && String(effectiveSelfId) === senderId) return drop('self')
         const { segments, text, rich } = normalizeSegments(event.message, event.raw_message)
         if (!text.trim()) return drop('empty')
         const sentAt = sentAtOf(event)
@@ -192,12 +196,12 @@ export function createInboundGate({
           messageSeq,
           sentAt,
           receivedAt,
-          selfId,
+          selfId: effectiveSelfId,
           maxTextChars,
           rich: {
             ...(rich ?? {}),
             replyId: rich?.replyId ?? (event.__qqReplyId ?? null),
-            atSelf: Array.isArray(event.message) && hasAtSelf(event.message, selfId),
+            atSelf: Array.isArray(event.message) && hasAtSelf(event.message, effectiveSelfId),
           },
         })
         if (store.has(signal.id)) return drop('duplicate')
@@ -224,7 +228,7 @@ export function createInboundGate({
 
       const senderId = senderIdOf(event)
       if (!senderId) return drop('invalid')
-      if (selfId != null && String(selfId) === senderId) return drop('self')
+      if (effectiveSelfId != null && String(effectiveSelfId) === senderId) return drop('self')
 
       // 白名单：空 = 一个都不收。默认安全，必须显式打开。
       if (!(allowAllPrivate === true || allow.has(senderId))) return drop('not-allowlisted')
@@ -255,12 +259,12 @@ export function createInboundGate({
         messageId,
         sentAt,
         receivedAt,
-        selfId,
+        selfId: effectiveSelfId,
         maxTextChars,
         rich: {
           ...(rich ?? {}),
           replyId: rich?.replyId ?? (event.__qqReplyId ?? null),
-          atSelf: Array.isArray(event.message) && hasAtSelf(event.message, selfId),
+          atSelf: Array.isArray(event.message) && hasAtSelf(event.message, effectiveSelfId),
         },
       })
       if (backfilled) {
