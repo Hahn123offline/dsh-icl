@@ -7,9 +7,30 @@
 // 这是兜底：若失败（用户没建过会话、UI 先一步恢复、persistence 未就绪），
 // 仍回退到原来的行为，由用户打开会话后 bindSession 保留队列并补投。
 
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+
 export const name = 'icl-host'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function diagFileOf() {
+  const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+  return path.join(home, 'icl', 'state', 'icl-host.jsonl')
+}
+
+let diagEnabled = true
+
+function diag(event) {
+  if (!diagEnabled) return
+  try {
+    const file = diagFileOf()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.appendFileSync(file, `${JSON.stringify({ at: Date.now(), ...event })}\n`, 'utf8')
+  } catch { /* 诊断失败不影响启动 */ }
+}
 
 /**
  * 从持久化 header 中挑最近一个 ICL 顶层会话。
@@ -24,6 +45,7 @@ export function pickResumeSession(headers, { presetId = 'icl', sessionId = null 
 }
 
 export function apply(ctx, config = {}) {
+  diagEnabled = config.diag !== false
   const presetId = String(config.presetId ?? 'icl')
   const autoResume = config.autoResume !== false
   const sessionId = config.resumeSessionId ? String(config.resumeSessionId) : null
@@ -36,6 +58,9 @@ export function apply(ctx, config = {}) {
 
   const log = (level, data) => {
     try {
+      diag({ level, ...(typeof data === 'object' ? data : { message: data }) })
+    } catch { /* ignore */ }
+    try {
       if (typeof ctx.logger === 'function') {
         const logger = ctx.logger('icl-host')
         const fn = logger?.[level]
@@ -47,20 +72,21 @@ export function apply(ctx, config = {}) {
   }
 
   async function resumeOnce(sub) {
-    if (disposed || handle) return
+    if (disposed || handle) return 'skip'
     const agents = sub.agents
     const persistence = sub.sessionPersistence
     const presets = sub.agentPresets
-    if (!agents?.resume || !persistence?.list) return
+    if (!agents?.resume || !persistence?.list) return 'not-ready'
     const headers = await persistence.list()
+    diag({ msg: 'icl-host.list', sessions: Array.isArray(headers) ? headers.length : null })
     const picked = pickResumeSession(headers, { presetId, sessionId })
     if (!picked) {
       log('info', { msg: 'icl-host.resume-skip', reason: 'no-session', presetId })
-      return
+      return 'no-session'
     }
     if (agents.get?.(picked.id)) {
       log('info', { msg: 'icl-host.resume-skip', reason: 'already-live', id: picked.id })
-      return
+      return 'live'
     }
     const resumed = await agents.resume({
       resumeSessionId: picked.id,
@@ -70,23 +96,27 @@ export function apply(ctx, config = {}) {
     })
     if (disposed) {
       try { resumed?.dispose?.() } catch { /* ignore */ }
-      return
+      return 'disposed'
     }
     handle = resumed
     log('info', { msg: 'icl-host.resumed', id: picked.id })
+    return 'resumed'
   }
 
   function schedule(sub) {
     if (disposed || started) return
     started = true
+    diag({ msg: 'icl-host.schedule', delayMs })
     timer = setTimeout(() => {
       timer = null
       void (async () => {
         for (let i = 0; i < attempts && !disposed && !handle; i += 1) {
           try {
-            await resumeOnce(sub)
-            return
+            const result = await resumeOnce(sub)
+            if (result === 'resumed' || result === 'live' || result === 'disposed') return
+            if (i + 1 < attempts) await sleep(Math.min(5000, 1000 * (i + 1)))
           } catch (error) {
+            diag({ msg: 'icl-host.resume-fail', attempt: i + 1, error: String(error?.message ?? error), stack: String(error?.stack ?? '').slice(0, 600) })
             log('warn', { msg: 'icl-host.resume-fail', attempt: i + 1, error: String(error?.message ?? error) })
             if (i + 1 < attempts) await sleep(Math.min(5000, 1000 * (i + 1)))
           }
@@ -97,13 +127,18 @@ export function apply(ctx, config = {}) {
   }
 
   if (autoResume) {
+    diag({ msg: 'icl-host.apply', presetId, delayMs, attempts, sessionId })
     try {
       ctx.inject(['agents', 'sessionPersistence', 'agentPresets'], (sub) => {
+        diag({ msg: 'icl-host.injected' })
         schedule(sub)
       })
     } catch (error) {
+      diag({ msg: 'icl-host.inject-fail', error: String(error?.message ?? error) })
       log('warn', { msg: 'icl-host.inject-fail', error: String(error?.message ?? error) })
     }
+  } else {
+    diag({ msg: 'icl-host.disabled' })
   }
 
   return () => {

@@ -34,7 +34,7 @@ test('icl-host：没有 live agent 时自动 resume 并挂 preset', async () => 
       })
     },
   }
-  const dispose = apply(ctx, { autoResumeDelayMs: 0, autoResumeAttempts: 1 })
+  const dispose = apply(ctx, { autoResumeDelayMs: 0, autoResumeAttempts: 1, diag: false })
   await sleep(10)
   assert.equal(resumed?.resumeSessionId, 's1')
   assert.equal(typeof resumed?.setup, 'function')
