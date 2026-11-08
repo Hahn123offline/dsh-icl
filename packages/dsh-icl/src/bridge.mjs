@@ -772,7 +772,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.factsCache = { turn: null, text: null }
     state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     // 新会话从空投递队列开始；旧会话/旧 run 留在 host 队列里的消息不能先于第一轮漏进来。
-    try { host.services.delivery.clear() } catch { /* ignore */ }
+    // 例外：time 的闹钟/睡醒/安静结束不能因为"会话当时没绑定"被清掉，否则第二天早上不会醒。
+    try { host.services.delivery.clear({ preserve: (item) => String(item?.source?.plugin ?? '') === 'time' }) } catch { /* ignore */ }
     log({ msg: 'icl.session', id })
   }
 
@@ -786,8 +787,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.factsCache = { turn: null, text: null }
     state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     state.injected.clear()
-    // 旧会话的待投递不能漏给下一条会话。
-    try { host.services.delivery.clear() } catch { /* ignore */ }
+    // 旧会话的待投递不能漏给下一条会话；time 的闹钟/睡醒保留到下一次绑定。
+    try { host.services.delivery.clear({ preserve: (item) => String(item?.source?.plugin ?? '') === 'time' }) } catch { /* ignore */ }
   }
 
   function bindAgent(agent) {
