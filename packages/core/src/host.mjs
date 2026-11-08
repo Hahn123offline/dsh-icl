@@ -76,7 +76,11 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
   // 走 signals.offer 而不是 delivery.push：这样静音/睡眠 gate 与 focus.admit 都能裁决，
   // 睡眠中释放焦点不会把摘要直接塞进会话（会进积压，醒来再放）。
   focus.onChange(() => {
-    const rows = focus.drainBacklog()
+    const currentLabel = focus.current()?.label ?? null
+    // 进入某个群焦点时只回放该群的 backlog；别的群继续留着，等切过去再回放。
+    const rows = focus.drainBacklog(currentLabel && String(currentLabel).startsWith('qq:group:')
+      ? (row) => row.focus === currentLabel
+      : null)
     if (!rows.length) return
     const total = rows.reduce((sum, row) => sum + row.count, 0)
     const body = rows

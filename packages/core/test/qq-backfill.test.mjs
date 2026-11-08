@@ -271,3 +271,18 @@ test('补课器群：群历史只走 allowlist 群，事件 message_type=group�
   assert.equal(ingested[0].message_type, 'group')
   assert.equal(ingested[0].group_id, 601357169)
 })
+
+test('补课器：selfId 可为 getter，补课必须跳过机器人自己发的消息', async () => {
+  const http = { ok: true, async call() { return { messages: [{ message_id: 7101, time: Math.floor(Date.now() / 1000), group_id: 601357169, user_id: 2593621742, sender: { user_id: 2593621742, nickname: '鱼鱼' }, message: [{ type: 'text', data: { text: '机器人自己' } }] }] } } }
+  const ingested = []
+  const backfill = createBackfill({
+    http,
+    ledger: { hasMessage: () => false, lastKnown: () => ({ lastAt: 0 }) },
+    selfId: () => '2593621742',
+    groups: () => ['601357169'],
+    ingest: (event) => { ingested.push(event); return { accept: true } },
+  })
+  const r = await backfill.run({ reason: 'test' })
+  assert.equal(r.filled, 0)
+  assert.equal(ingested.length, 0)
+})

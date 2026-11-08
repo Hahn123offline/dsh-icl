@@ -87,6 +87,7 @@ export function createBackfill({
   action = HISTORY_ACTIONS[0],
   groupAction = GROUP_HISTORY_ACTIONS[0],
 } = {}) {
+  const selfIdNow = () => (typeof selfId === 'function' ? selfId() : selfId)
   const state = {
     runs: 0,
     filled: 0,
@@ -143,7 +144,7 @@ export function createBackfill({
           if (ledger?.hasMessage?.(activity, qqId)) continue
           const senderId = senderIdOf(item)
           // 历史是双向的：自己发出去的消息不进入站账本（它由发送审计负责）
-          if (selfId != null && senderId != null && String(senderId) === String(selfId)) continue
+          if (selfIdNow() != null && senderId != null && String(senderId) === String(selfIdNow())) continue
           const at = timeMs(item?.time)
           if (known?.lastAt != null && at != null && at < Number(known.lastAt) - 2000) continue
           if (maxAgeMs > 0 && at != null && now() - at > maxAgeMs) {
@@ -152,7 +153,7 @@ export function createBackfill({
             log({ level: 'info', msg: 'qq.backfill.old-skip', peer, ageMs: now() - at })
             continue
           }
-          const event = convertToEvent(item, { peerId: peer, selfId })
+          const event = convertToEvent(item, { peerId: peer, selfId: selfIdNow() })
           let decision
           try { decision = await ingest(event, { backfilled: true }) } catch (error) {
             failedHere += 1
@@ -190,7 +191,7 @@ export function createBackfill({
           if (qqId == null) continue
           if (ledger?.hasMessage?.(activity, qqId)) continue
           const senderId = senderIdOf(item)
-          if (selfId != null && senderId != null && String(senderId) === String(selfId)) continue
+          if (selfIdNow() != null && senderId != null && String(senderId) === String(selfIdNow())) continue
           const at = timeMs(item?.time)
           if (known?.lastAt != null && at != null && at < Number(known.lastAt) - 2000) continue
           if (maxAgeMs > 0 && at != null && now() - at > maxAgeMs) {
@@ -199,7 +200,7 @@ export function createBackfill({
             log({ level: 'info', msg: 'qq.backfill.group-old-skip', group, ageMs: now() - at })
             continue
           }
-          const event = convertToEvent(item, { peerId: group, groupId: group, selfId })
+          const event = convertToEvent(item, { peerId: group, groupId: group, selfId: selfIdNow() })
           let decision
           try { decision = await ingest(event, { backfilled: true }) } catch (error) {
             failedHere += 1

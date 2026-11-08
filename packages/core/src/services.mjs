@@ -510,11 +510,14 @@ export function createFocusService({ now = () => Date.now() } = {}) {
     },
     /** 当前积压（按命名空间）。 */
     backlog() { return [...backlog.values()].map((row) => ({ ...row, items: row.items.map((item) => ({ ...item })) })) },
-    /** 取走并清空积压；焦点释放时由宿主投递给模型。 */
-    drainBacklog() {
+    /** 取走并清空积压；可只取指定 focus（群切换时只回放目标群的 backlog）。 */
+    drainBacklog(filter = null) {
       const rows = this.backlog()
-      backlog.clear()
-      return rows
+      const picked = typeof filter === 'function' ? rows.filter(filter) : rows
+      if (!picked.length) return []
+      const keys = new Set(picked.map((row) => row.focus))
+      for (const key of keys) backlog.delete(key)
+      return picked
     },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
     /** 积压变化单独通知：宿主只关心"焦点变了"，持久化两边都要。 */

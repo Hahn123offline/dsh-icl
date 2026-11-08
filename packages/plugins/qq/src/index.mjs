@@ -1504,7 +1504,7 @@ export async function apply(ctx) {
       http,
       ledger,
       now,
-      selfId: cfg.selfId,
+      selfId: () => cfg.selfId ?? connector?.seenSelfId ?? null,
       count: cfg.backfillCount,
       maxAgeMs: cfg.maxBackfillAgeMs,
       maxPeers: cfg.backfillMaxPeers,
