@@ -63,6 +63,11 @@
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false
+                  # G1 群聊只读：两个旧的小群；普通群消息进 focus backlog，@ 直达，不发群消息。
+                  groupPolicy: allowlist
+                  allowGroups:
+                    - '601357169'
+                    - '1057812765'
                   allowSend: true
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: 'auto'

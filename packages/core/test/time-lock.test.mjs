@@ -1389,3 +1389,22 @@ test('P3 同一消息只被时间 gate 计一次：配额按消息消耗、重�
   assert.equal(api.status().lock.emergency.used, 1, '超配额后不再计数')
   assert.equal(api.queue()[0]?.priority, 'alarm')
 })
+
+test('睡眠积压跨过信号 TTL 也不丢；重复 sleep lease 醒来全部释放', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, withFocus: true })
+  api.sleep({ message: '睡了', durationMin: 60 })
+  drainText(host)
+  const queued = host.services.signals.offer({
+    from: { plugin: 'qq' }, kind: 'content', text: '长睡期间的消息', expiresAt: virtualNow + 1000,
+  })
+  assert.equal(queued.accepted, false)
+  // 模拟重启/重复恢复留下的第二个 sleep lease
+  host.services.focus.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
+  assert.equal(host.services.focus.list().filter((lease) => lease.label === 'sleep').length, 2)
+  virtualNow += 6 * 3600_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /长睡期间的消息/, '睡眠积压不能被 30 分钟信号 TTL 判过期')
+  assert.equal(host.services.focus.list().filter((lease) => lease.label === 'sleep').length, 0, '醒来释放全部重复 sleep lease')
+})

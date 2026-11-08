@@ -773,16 +773,22 @@ test('prompt.assemble 支持 minOrder/maxOrder 过滤，默认全量不变', () 
   assert.equal(host.services.prompt.assemble({}, { minOrder: 100, maxOrder: 200 }), '')
 })
 
-test('桥：绑定新会话清空旧投递队列', async () => {
+test('桥：绑定新会话清空旧投递队列，但保留 time 闹钟/睡醒', async () => {
   const root = tempRoot('bind-clear')
   const host = await hostWithMemory(root)
   const ctx = fakeCtx()
   const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
   bridge.start()
-  host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '旧会话的消息' } })
+  host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: '旧会话的消息' } })
   assert.equal(host.services.delivery.pendingCount(), 1)
   bridge.bindSession(fakeSession('s1'))
-  assert.equal(host.services.delivery.pendingCount(), 0, '新会话不应继承旧队列')
+  assert.equal(host.services.delivery.pendingCount(), 0, '普通旧消息不应继承')
+
+  // 会话未绑定时到点的 time 闹钟/睡醒不能因为 bind 清队列而丢失。
+  host.services.delivery.push({ source: { plugin: 'time', activity: 'schedule' }, content: { text: '该起床了' } })
+  bridge.bindSession(fakeSession('s2'))
+  assert.equal(host.services.delivery.pendingCount(), 1, 'time 唤醒要保留')
+  assert.match(host.services.delivery.drain('session')[0].text, /该起床了/)
   bridge.dispose()
 })
 

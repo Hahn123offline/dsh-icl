@@ -735,11 +735,16 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
       return { ok: true }
     },
 
-    /** 清空待投递与在飞条目（会话切换/归档时用，避免把旧会话的消息投给新会话）。 */
-    clear() {
-      const n = queue.length + inflight.size
+    /** 清空待投递与在飞条目（会话切换/归档时用）；preserve 可保留时间闹钟等不能丢的条目。 */
+    clear({ preserve = null } = {}) {
+      const keep = typeof preserve === 'function' ? queue.filter((item) => { try { return preserve(item) } catch { return false } }) : []
+      const keptInflight = typeof preserve === 'function'
+        ? [...inflight.entries()].filter(([, items]) => items.every((item) => { try { return preserve(item) } catch { return false } }))
+        : []
+      const n = queue.length + inflight.size - keep.length - keptInflight.length
       queue.length = 0
-      inflight.clear()
+      queue.push(...keep)
+      for (const [batchId] of [...inflight.entries()]) if (!keptInflight.some(([id]) => id === batchId)) inflight.delete(batchId)
       return n
     },
 

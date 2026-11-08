@@ -878,6 +878,32 @@ export function apply(ctx) {
   const goalLeases = new Map()
   let sleepLease = null
 
+  /** 重启/重复入睡时可能留下多个 owner=time,label=sleep 的租约；统一收敛成一个。 */
+  function sleepLeases() {
+    try { return (focusApi?.list?.() ?? []).filter((lease) => lease?.owner === 'time' && lease?.label === 'sleep') } catch { return [] }
+  }
+
+  function releaseSleepLeases() {
+    let released = 0
+    for (const lease of sleepLeases()) {
+      try { lease.release?.(); released += 1 } catch { /* 已经释放 */ }
+    }
+    sleepLease = null
+    return released
+  }
+
+  function ensureSleepLease() {
+    const existing = sleepLeases()
+    if (existing.length) {
+      sleepLease = existing[0]
+      for (const extra of existing.slice(1)) { try { extra.release?.() } catch { /* 已经释放 */ } }
+      return sleepLease
+    }
+    if (!focusApi?.enter) return null
+    sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
+    return sleepLease
+  }
+
   let ticking = false
 
   /**
@@ -1331,7 +1357,9 @@ export function apply(ctx) {
       replayQq: signalReplayQq(signal),
       at: nowTime(),
       createdAt: signal.createdAt ?? null,
-      expiresAt: signal.expiresAt ?? null,
+      // 睡眠/安静是"故意攒到醒来"的状态：不能沿用信号的 30 分钟 TTL，
+      // 否则 6 小时睡眠会把积压全部判过期（2026-11-08 早上的事故）。
+      expiresAt: (reason === 'sleeping' || reason === 'quiet') ? null : (signal.expiresAt ?? null),
     })
     persist()
   }
@@ -1939,11 +1967,9 @@ export function apply(ctx) {
           log('info', 'time.sleep-boundary.entry', { inFlight, turnAgeAtEntrySec: state.sleepBoundary.turnAgeAtEntrySec, graceSec: sleepGraceSec })
           recordEvent('sleep-boundary-entry', { sleepingId: schedule.id, sleepUntil: endAt, inFlight, turnAgeAtEntrySec: state.sleepBoundary.turnAgeAtEntrySec, graceSec: sleepGraceSec })
           recordEvent('sleep-start', { sleepingId: schedule.id, sleepUntil: endAt })
-          if (focusApi?.enter && !sleepLease) {
-            try {
-              sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
-            } catch (error) { log('warn', 'time.sleep.focus', { error: String(error?.message ?? error) }) }
-          }
+          try {
+            ensureSleepLease()
+          } catch (error) { log('warn', 'time.sleep.focus', { error: String(error?.message ?? error) }) }
         }
         if (!schedule.silent) {
           // 普通 span 在开始时说 message；睡眠/安静的 message 属于"结束时"，开始时只说 startMessage
@@ -2087,7 +2113,7 @@ export function apply(ctx) {
       recordEvent('sleep-end', { sleepingId: span.id, released, boundary: state.lastSleepBoundary ? { inFlight: Boolean(state.lastSleepBoundary.inFlight), turnEndedAfterSec: state.lastSleepBoundary.turnEndedAfterSec ?? null, postSleepTurn: Boolean(state.lastSleepBoundary.postSleepTurn), overrun: Boolean(state.lastSleepBoundary.overrun) } : null })
       if (wakeBrief) recordEvent('wake-brief', { sleepingId: span.id, released, backlog: wakeBrief.backlog, sources: wakeBrief.sources, anomalies: wakeBrief.anomalies, dream: wakeBrief.dream, durationSec: wakeBrief.durationSec })
       // 最后再释放睡眠租约：focus 的积压摘要会走 signals.offer，醒来后再进队，避免顺序打乱。
-      if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+      if (sleepLease) { try { releaseSleepLeases() } catch { /* 已经释放 */ } }
       // 醒来后如果没有新的 turn 触发，清醒节拍负责在 idleSec 内叫起一次自检。
       armAwakeTick()
       persist()
@@ -2184,7 +2210,7 @@ export function apply(ctx) {
         state.lastSleepBoundary = { ...state.sleepBoundary, endedAt: nowTime() }
         state.sleepBoundary = null
       }
-      if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+      if (sleepLease) { try { releaseSleepLeases() } catch { /* 已经释放 */ } }
       resetWakeCount('manual-wake')
       sendWake({ text: '你醒了。', payload: '你醒了。', producer: 'manual-wake', kind: 'wake', tags: ['wake'] })
       armAwakeTick()
@@ -2355,7 +2381,7 @@ export function apply(ctx) {
         case 'reset': {
           for (const lease of goalLeases.values()) { try { lease.release?.() } catch { /* 已经释放 */ } }
           goalLeases.clear()
-          if (sleepLease) { try { sleepLease.release?.() } catch { /* 已经释放 */ } sleepLease = null }
+          if (sleepLease) { try { releaseSleepLeases() } catch { /* 已经释放 */ } }
           const offset = state.inboxOffset
           state = blank()
           state.inboxOffset = offset
@@ -3143,9 +3169,8 @@ export function apply(ctx) {
   // 重启后恢复 focus 租约：睡眠租约、目标绑定的 focus（否则状态在、租约丢了）。
   try {
     const span = activeSleepSpan()
-    if (span && focusApi?.enter && !sleepLease) {
-      sleepLease = focusApi.enter({ label: 'sleep', owner: 'time', reason: 'sleeping', title: '睡眠', kind: 'idle', interruptible: false })
-    }
+    if (span) ensureSleepLease()
+    else releaseSleepLeases()
     for (const goal of state.goals) {
       if (!goal.focus || goalLeases.has(goal.id) || !focusApi?.enter) continue
       goalLeases.set(goal.id, focusApi.enter({ label: goal.focus, owner: 'time', reason: `goal:${goal.id}`, title: goal.theme, goal: goal.theme, interruptible: true, kind: 'goal' }))

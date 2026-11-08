@@ -5,7 +5,8 @@
 
 ## 0. G1 已落地
 
-- 配置：`groupPolicy:'allowlist'` + `allowGroups:[...]`；默认 `ignore`，产品 preset 尚未打开真实群。
+- 配置：`groupPolicy:'allowlist'` + `allowGroups:[...]`；默认 `ignore`，产品 preset 已开两个旧小群
+  `601357169` / `1057812765`（只读）。
 - 入站：白名单群 `message_type=group` 进 gate；普通消息 `tags:['qq','group','ambient']`，@ self
   带 `at/mention`；群账本按 `qq:group:<id>`，群信封 `[QQ群·群名]`。
 - 注意力：`focus.admit` 无 focus 时把 ambient 群消息 defer 到该群 backlog；@ 直达；
@@ -150,7 +151,7 @@ rate 高，普通消息被压成摘要。
 - **已实现**：ambient 无 focus 进 focus backlog；focus 进群后摘要回放
 - **已实现**：`qq_groups/qq_group_history` 支持群；world QQ 源显示群未读数
 - **已实现**：per-activity adaptive window（attention-window.mjs）
-- **不发群消息**；产品 preset 默认 `groupPolicy:'ignore'`，要真实只读群需显式配 allowGroups
+- **不发群消息**；产品 preset 已开两个小群只读，要加群改 `allowGroups`
 
 ### G2：群回复
 
