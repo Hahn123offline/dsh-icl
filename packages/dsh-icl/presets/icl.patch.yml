@@ -14,10 +14,9 @@
       name: ../host.mjs
       config:
         presetId: icl
-        autoResume: true
-        # 启动后等 UI/agent factory 就绪，再恢复最近一个 ICL 顶层会话。
-        autoResumeDelayMs: 2500
-        autoResumeAttempts: 4
+        # 消息到达时由 bridge 走 DSH 官方 apiProxy.sessions.prompt 冷恢复并投递
+        # （见 bridge.mjs）；不再由 Host 自己猜时机 resume。
+        autoResume: false
     - id: preset-icl
       name: '@deepseek-ai/dsh-agent-preset'
       config:
