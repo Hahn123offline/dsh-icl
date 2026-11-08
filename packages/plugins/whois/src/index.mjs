@@ -23,14 +23,14 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'whois',
-    summary: 'Look up a person you already have a file on: exact by account, candidates by name.',
-    when: ['someone mentions a person and you need to know who they are', 'you need their account ids or how close you are'],
-    avoid: ['when you just want to remember something that happened (use recall)', 'when the name is ambiguous - pick from the candidates instead of guessing'],
+    summary: 'Look up a person by exact account (QQ number) or name; the same QQ is one person across private chat and groups.',
+    when: ['someone mentions a person and you need to know who they are', 'the same QQ appears in another group/private chat and you want their file', 'you need their account ids or how close you are'],
+    avoid: ['when you just want to remember something that happened (use recall)', 'when the name is ambiguous - pick from the candidates instead of guessing', 'treating a group card/nickname as identity; use the QQ number'],
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        qq: { type: 'string', description: 'QQ number (exact).' },
+        qq: { type: 'string', description: 'QQ number (exact; same account across groups and private chat).' },
         idKind: { type: 'string', description: 'Other account kind, e.g. mc / steam.' },
         subjectKind: { type: 'string', description: 'Generic identity kind, e.g. qq / mc / discord.' },
         value: { type: 'string', description: 'Account value for idKind.' },

@@ -27,6 +27,8 @@ test('提示词分层：人格不出现工具名，仿真不抄工具参数表',
   assert.doesNotMatch(cfg.simulation, /time_arrange\s*\{/)
   assert.match(cfg.simulation, /## 时间、安排与心跳/)
   assert.match(cfg.simulation, /安静/)
+  assert.match(cfg.simulation, /QQ 号才是身份/)
+  assert.match(cfg.simulation, /同一个 QQ 号在私聊和不同群出现/)
 })
 
 test('MC 暂停：产品 preset 不再包含 icl-mc，产品仿真不含 MC', () => {
