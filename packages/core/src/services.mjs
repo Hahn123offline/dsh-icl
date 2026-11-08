@@ -467,10 +467,18 @@ export function createFocusService({ now = () => Date.now() } = {}) {
      */
     admit(signal = {}) {
       const cur = this.current()
-      if (!cur) return { deliver: true, reason: 'no-focus' }
       const from = String(signal.from?.plugin ?? '')
       const tags = Array.isArray(signal.tags) ? signal.tags.map(String) : []
       const privileged = from === 'time' || tags.includes('admin') || tags.includes('alarm')
+      const ambient = tags.includes('ambient') || signal.meta?.ambient === true
+      // 群聊 ambient 即使没有 focus 也先攒在活动 backlog，不叫醒；
+      // @/mention 不是 ambient，私聊也不是 ambient（保持"空闲私聊直达"）。
+      if (!cur) {
+        if (ambient && !privileged && !tags.includes('mention') && !tags.includes('at')) {
+          return { deliver: false, reason: 'ambient-no-focus' }
+        }
+        return { deliver: true, reason: 'no-focus' }
+      }
       if (privileged) return { deliver: true, reason: 'privileged', focus: cur.label }
       if (cur.interruptible === false) return { deliver: false, reason: 'focus-sacred', focus: cur.label }
       const label = signal.focus == null ? '' : String(signal.focus)

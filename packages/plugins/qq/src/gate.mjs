@@ -4,14 +4,14 @@
 //   认事件 → 私聊/群 → 自发 → 白名单 → 内容 → 消息时间是否过旧 → 幂等去重 → 每分钟限流
 //
 // 关键约定（与 docs/QQ.md §4 对应）：
-//   · **群消息整类拒绝**：本轮连只读都不接群；这里只计数，不解析内容。
+//   · **群消息默认整类拒绝**（groupPolicy:'ignore'）；显式 allowlist + allowGroups 才只读接收。
 //   · **去重按 signal id**（signalIdFor），跨重连/重启也认；id 也是 signals 层的幂等键。
 //   · 被 rate/stale/allowlist 丢掉的**不占用 id**：将来允许重放时不会因此被当成重复。
 //   · 闸门只做本地裁决；时间静音锁（time gate）、focus 门控在 signals/delivery 里，
 //     这里不读、不复制它们的判断，避免两处状态不一致。
 import fsModule from 'node:fs'
 import pathModule from 'node:path'
-import { buildPrivateSignal, messageIdOf, normalizeSegments, senderIdOf, senderNameOf, sentAtOf } from './normalize.mjs'
+import { buildGroupSignal, buildPrivateSignal, messageIdOf, messageSeqOf, normalizeSegments, senderIdOf, senderNameOf, sentAtOf } from './normalize.mjs'
 import { hasAtSelf } from './rich.mjs'
 
 export const DROP_CODES = Object.freeze([
@@ -113,6 +113,8 @@ export function createRateLimiter({ now = () => Date.now(), maxPerMinute = 30 } 
  * @param {object} options
  * @param {number[]|string[]} options.allowPrivate  允许的私聊 QQ 号；空数组 = 一律拒绝（默认安全）
  * @param {boolean} options.allowAllPrivate         显式"全部私聊都收"（仍需 enabled 总开关）
+ * @param {number[]|string[]} options.allowGroups   允许只读的群号；空数组 = 不收群
+ * @param {'ignore'|'allowlist'} options.groupPolicy 群策略；默认 ignore，显式 allowlist 才接群
  * @param {string|null} options.selfId              机器人自己的 QQ 号，用于过滤自发
  * @param {number} options.maxStaleMs               消息时间超过多久算过旧（0/负数 = 不判）
  * @param {boolean} options.deliverBackfill         是否允许补课旧消息进模型
@@ -122,6 +124,8 @@ export function createInboundGate({
   now = () => Date.now(),
   allowPrivate = [],
   allowAllPrivate = false,
+  allowGroups = [],
+  groupPolicy = 'ignore',
   selfId = null,
   maxStaleMs = 600_000,
   deliverBackfill = false,
@@ -130,6 +134,7 @@ export function createInboundGate({
   dedupe = null,
 } = {}) {
   const allow = new Set((Array.isArray(allowPrivate) ? allowPrivate : []).map(String))
+  const allowGroupsSet = new Set((Array.isArray(allowGroups) ? allowGroups : []).map(String))
   const limiter = createRateLimiter({ now, maxPerMinute })
   const store = dedupe ?? createDedupeStore({ now })
   const counters = {
@@ -159,7 +164,62 @@ export function createInboundGate({
       if (event.post_type !== 'message') return drop('not-message')
 
       const messageType = String(event.message_type ?? '')
-      if (messageType === 'group') return drop('group')
+      if (messageType === 'group') {
+        // 默认 groupPolicy=ignore（群整类不接）；显式 allowlist 才只读白名单群。
+        if (groupPolicy !== 'allowlist') return drop('group')
+        const groupId = String(event.group_id ?? '').trim()
+        if (!groupId) return drop('invalid')
+        if (!allowGroupsSet.has(groupId)) return drop('not-allowlisted')
+        const senderId = senderIdOf(event)
+        if (!senderId) return drop('invalid')
+        if (selfId != null && String(selfId) === senderId) return drop('self')
+        const { segments, text, rich } = normalizeSegments(event.message, event.raw_message)
+        if (!text.trim()) return drop('empty')
+        const sentAt = sentAtOf(event)
+        if (sentAt != null && maxStaleMs > 0 && !backfilled && !deliverBackfill && receivedAt - sentAt > maxStaleMs) {
+          return { ...drop('stale'), ageMs: receivedAt - sentAt }
+        }
+        const messageId = messageIdOf(event)
+        const messageSeq = messageSeqOf(event)
+        const signal = buildGroupSignal({
+          groupId,
+          groupName: event.group_name == null ? '' : String(event.group_name),
+          senderId,
+          senderName: senderNameOf(event, senderId),
+          text,
+          segments,
+          messageId,
+          messageSeq,
+          sentAt,
+          receivedAt,
+          selfId,
+          maxTextChars,
+          rich: {
+            ...(rich ?? {}),
+            replyId: rich?.replyId ?? (event.__qqReplyId ?? null),
+            atSelf: Array.isArray(event.message) && hasAtSelf(event.message, selfId),
+          },
+        })
+        if (store.has(signal.id)) return drop('duplicate')
+        if (!limiter.take(`group:${groupId}`)) return drop('rate')
+        store.add(signal.id, receivedAt)
+        counters.accepted += 1
+        return {
+          accept: true,
+          code: 'ok',
+          scope: 'group',
+          signal,
+          text,
+          peerId: groupId,
+          groupId,
+          senderId,
+          senderName: senderNameOf(event, senderId),
+          messageId,
+          messageAt: sentAt ?? receivedAt,
+          receivedAt,
+          backfilled: backfilled === true,
+        }
+      }
       if (messageType !== 'private') return drop('unsupported-message-type')
 
       const senderId = senderIdOf(event)

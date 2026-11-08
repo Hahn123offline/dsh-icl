@@ -1,7 +1,8 @@
 // qq：只读入站影子（OneBot / SnowLuma → ICL signals）。
 //
 // 本轮定位（docs/QQ.md §7 的落地顺序第 1 步）：
-//   · **只收私聊、只进 signals、不发任何 QQ 消息**；群消息整类忽略（连只读都不接）。
+//   · **私聊默认只读；群聊 G1 只读白名单群**（groupPolicy:'allowlist' + allowGroups）；
+//     群普通消息进 focus backlog，@ 才直达；G1 不发任何群消息。
 //   · 默认 `enabled:false`：不显式打开就完全不建连接。
 //   · 出站是另一个文件（outbound.mjs），三把钥匙 + 默认关闭；本插件**没有发送调用**：
 //     只 import `sendEnabled`/`SEND_APPROVAL_TOKEN` 两个纯判定用于状态展示，不 import `createOutbound`、不调 `sendPrivate`。
@@ -29,7 +30,7 @@ import { createBackfill } from './backfill.mjs'
 import { createReplyResolver, pendingReplyText, replyContextText } from './reply-cache.mjs'
 import { expandForwardIds } from './forward.mjs'
 import { extractForwardIds, extractReplyId, extractMedia } from './rich.mjs'
-import { senderIdOf, activityIdForPrivate } from './normalize.mjs'
+import { senderIdOf, activityIdForPrivate, activityIdForGroup } from './normalize.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, fetchImageMedia, formatBytes, safeFetchBuffer, saveInboxMedia } from './media.mjs'
 import { createWakePlanner } from './wake.mjs'
 import { createInboundDebouncer, mergeSignals, normalizeDebounceConfig } from './debounce.mjs'
@@ -42,7 +43,7 @@ export const name = 'qq'
 const PLUGIN_DIR = path.join(import.meta.dirname, '..')
 const SKILL_DIR = path.join(PLUGIN_DIR, 'skills')
 const SKILLS = Object.freeze([
-  { id: 'reply', file: 'reply.md', title: 'QQ 聊天策略：何时回/不回、私聊优先级、群边界、谁在说话' },
+  { id: 'reply', file: 'reply.md', title: 'QQ 聊天策略：何时回/不回、私聊优先级、群聊 G1 边界、谁在说话' },
 ])
 
 const DEFAULTS = Object.freeze({
@@ -57,6 +58,9 @@ const DEFAULTS = Object.freeze({
   selfId: null,
   allowPrivate: [],
   allowAllPrivate: false,
+  // 群聊只读：默认整类忽略；显式 groupPolicy:'allowlist' + allowGroups 才接。
+  allowGroups: [],
+  groupPolicy: 'ignore',
   // 准入闸门
   maxPerMinute: 30,
   maxStaleMs: 600_000,
@@ -201,6 +205,8 @@ export function normalizeQqConfig(input = {}) {
   cfg.stickerDir = String(cfg.stickerDir ?? '')
   cfg.stickerLibraryFile = String(cfg.stickerLibraryFile ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
+  cfg.allowGroups = pickList(cfg.allowGroups)
+  cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
   for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
@@ -283,6 +289,8 @@ export async function apply(ctx) {
     now,
     allowPrivate: cfg.allowPrivate,
     allowAllPrivate: cfg.allowAllPrivate,
+    allowGroups: cfg.allowGroups,
+    groupPolicy: cfg.groupPolicy,
     selfId: cfg.selfId,
     maxStaleMs: cfg.maxStaleMs,
     deliverBackfill: cfg.deliverBackfill,
@@ -436,6 +444,24 @@ export async function apply(ctx) {
           undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
         }
       })
+  }
+
+  function groupWatermarks() {
+    if (!ledger) return []
+    return (ledger.activities() ?? [])
+      .filter((row) => /^qq:group:\d+$/.test(String(row.activity ?? '')))
+      .map((row) => {
+        const known = ledger.lastKnown(row.activity) ?? {}
+        return {
+          activity: String(row.activity),
+          groupId: String(row.activity).slice('qq:group:'.length),
+          lastSeq: known.lastSeq ?? row.total ?? 0,
+          deliveredSeq: known.deliveredSeq ?? 0,
+          attendedSeq: known.attendedSeq ?? 0,
+          undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
+        }
+      })
+      .filter((row) => row.undelivered > 0)
   }
 
   function peerList() {
@@ -1107,6 +1133,26 @@ export async function apply(ctx) {
    */
   function applySenderEnvelope(signal, decision) {
     if (!cfg.senderEnvelope) return
+    const scope = signal.meta?.qq?.scope === 'group' ? 'group' : 'private'
+    if (scope === 'group') {
+      const groupName = String(signal.meta?.qq?.groupName ?? decision.groupId ?? '')
+      const groupLabel = groupName ? `[QQ群·${groupName}]` : '[QQ群]'
+      signal.text = `${groupLabel} ${signal.text}`
+      signal.meta.qq.envelope = {
+        channel: 'qq',
+        scope: 'group',
+        groupId: String(decision.groupId ?? ''),
+        groupName,
+        senderId: decision.senderId == null ? null : String(decision.senderId),
+        senderName: String(decision.senderName ?? ''),
+        activity: signal.from.activity,
+        backfilled: decision.backfilled === true,
+        at: decision.messageAt ?? null,
+        receivedAt: decision.receivedAt ?? null,
+        messageId: decision.messageId == null ? null : String(decision.messageId),
+      }
+      return
+    }
     const kind = senderKindOf(decision.peerId)
     signal.text = `${envelopeLabelFor(kind)} ${signal.text}`
     signal.meta.qq.envelope = {
@@ -1136,7 +1182,8 @@ export async function apply(ctx) {
     }
     const signal = decision.signal
     applySenderEnvelope(signal, decision)
-    noteWakeInbound(signal.from.activity)
+    // 群聊 G1 没有 per-group wake 矩阵：群消息只走 focus ambient/pierce，不生成 nudge。
+    if (signal.meta?.qq?.scope !== 'group') noteWakeInbound(signal.from.activity)
     const inboundMedia = event.__qqMedia
     if (inboundMedia) {
       if (inboundMedia.images?.length) signal.images = inboundMedia.images
@@ -1167,7 +1214,7 @@ export async function apply(ctx) {
           receivedAt: decision.receivedAt,
           sender: decision.senderName,
           text: signal.text,
-          mention: true,
+          mention: Array.isArray(signal.tags) && signal.tags.includes('mention'),
           media: signal.meta.qq.mediaFiles ?? null,
         })
         signal.meta.qq.ledger = { activity: signal.from.activity, seq: appended.seq }
@@ -1381,7 +1428,8 @@ export async function apply(ctx) {
       selfId: cfg.selfId ?? conn.seenSelfId ?? null,
       allowPrivate: [...cfg.allowPrivate],
       allowAllPrivate: cfg.allowAllPrivate,
-      groupPolicy: 'ignore',
+      allowGroups: [...cfg.allowGroups],
+      groupPolicy: cfg.groupPolicy,
       gate: gate.counters(),
       gap: { ...gap, backfill: backfill?.status() ?? null, peers: peerList() },
       wake: wakePlanner?.status() ?? null,
@@ -1420,7 +1468,10 @@ export async function apply(ctx) {
     if (!s.enabled) lines.push('QQ 只读影子：未启用（enabled=false，没有建任何连接）。')
     else if (c.connected) lines.push(`QQ 只读影子：已连接 ${s.url}${c.stale ? '（心跳过期，可能已掉线）' : ''}。`)
     else lines.push(`QQ 只读影子：未连接（state=${c.state}${c.lastError ? `，最近错误：${c.lastError}` : ''}）。`)
-    lines.push(`机器人账号：${s.selfId ?? '未知'}；可收私聊：${s.allowAllPrivate ? '全部（显式打开）' : (s.allowPrivate.length ? s.allowPrivate.join('、') : '无（白名单为空）')}；群消息：整类忽略`)
+    const groupText = s.groupPolicy === 'allowlist'
+      ? `只读白名单群 ${s.allowGroups.length ? s.allowGroups.join('、') : '（空，实际不收）'}`
+      : '整类忽略'
+    lines.push(`机器人账号：${s.selfId ?? '未知'}；可收私聊：${s.allowAllPrivate ? '全部（显式打开）' : (s.allowPrivate.length ? s.allowPrivate.join('、') : '无（白名单为空）')}；群消息：${groupText}`)
     if (s.enabled) {
       const gp = s.gap ?? {}
       const bk = gp.backfill ?? {}
@@ -1504,14 +1555,14 @@ export async function apply(ctx) {
     name: 'qq_status',
     summary: '查看 QQ 私聊的当前状态：最近一条消息、最近一次发送回执（ok/rejected/unknown）、断线补课与积压计数。只读，不发送。',
     when: ['回复前确认是否真的有人找你', '怀疑 QQ 消息丢了，或断线后想知道补课结果', '发送结果未知时核对回执'],
-    avoid: ['把它当每轮必查的仪表盘（会占上下文）', '想看群消息（本轮群整类不接）', '想发消息（用 qq_send）'],
+    avoid: ['把它当每轮必查的仪表盘（会占上下文）', '想看群消息（G1 用 qq_groups / qq_group_history）', '想发消息（用 qq_send）'],
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     async execute() { return { text: statusText() } },
   })
 
   ctx.tools.register({
     name: 'qq_help',
-    summary: '读 QQ 聊天策略（按需，不常驻）：何时该回/不回、私聊优先级、群为什么没接、谁在说话（说话人信封）。不带参数列出条目。',
+    summary: '读 QQ 聊天策略（按需，不常驻）：何时该回/不回、私聊优先级、群聊 G1 只读边界、谁在说话（说话人信封）。不带参数列出条目。',
     when: ['不确定 QQ 消息该不该回、该怎么理解 [补课]/积压/信封', '第一次处理 QQ 私聊'],
     avoid: ['需要现状或回执（用 qq_status）', '要发消息（用 qq_send）'],
     parameters: {
@@ -1601,7 +1652,7 @@ export async function apply(ctx) {
     name: 'qq_history',
     summary: '按私聊/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]，来源信封带 [QQ私聊·主人] 等）。',
     when: ['想回看某条 QQ 私聊之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
-    avoid: ['以为这里能看群消息（群整类不接）', '把它当实时未读（用 qq_unread）'],
+    avoid: ['以为这里能看群消息（群聊用 qq_groups / qq_group_history）', '把它当实时未读（用 qq_unread）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -1623,6 +1674,60 @@ export async function apply(ctx) {
       })
       if (!rows.length) return { text: `私聊 ${targetPeer} 没有符合条件的记录（afterSeq/beforeSeq/limit）。` }
       return { text: `私聊 ${targetPeer} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_groups',
+    summary: '列出只读白名单群及各自账本水位/未交付数（群聊 G1 只读，不发群消息）。',
+    when: ['想看看哪些群有未处理消息', '准备 focus_enter 某个群之前'],
+    avoid: ['以为这里能发群消息（G1 只读）', '把它当群消息正文（用 qq_group_history）'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      if (!ledger) return { text: '账本未启用，无法查询群。' }
+      const ids = [...new Set([...(cfg.allowGroups ?? []).map(String), ...groupWatermarks().map((row) => row.groupId)])]
+      if (!ids.length) return { text: cfg.groupPolicy === 'allowlist' ? '白名单群为空。' : '群消息当前整类忽略（groupPolicy=ignore）。' }
+      const lines = ids.map((groupId) => {
+        const activity = activityIdForGroup(groupId)
+        const known = ledger.lastKnown(activity) ?? {}
+        const unread = Math.max(0, Number(known.lastSeq ?? 0) - Number(known.deliveredSeq ?? 0))
+        const last = (ledger.messages(activity, { limit: 1 }) ?? []).at(-1)
+        const focusMark = String(ctx.focus?.current?.()?.label ?? '') === activity ? '（当前 focus）' : ''
+        return `· ${groupId}${focusMark}：最后 #${known.lastSeq ?? 0}，未交付 ${unread} 条${last?.text ? `；最近：${String(last.text).slice(0, 80)}` : ''}`
+      })
+      return { text: `只读群（${ids.length}）：\n${lines.join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'qq_group_history',
+    summary: '按群/seq 补看 QQ 群账本历史（只读；群聊 G1 不发群消息）。',
+    when: ['想回看某个白名单群之前说了什么', 'focus_enter 群之后需要具体上下文'],
+    avoid: ['把它当实时未读（用 qq_groups）', '想发群消息（G1 只读）'],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        group: { type: 'string', description: '群号；不填用第一个白名单群/最近有记录的群。' },
+        afterSeq: { type: 'number', description: '只看这个 seq 之后。' },
+        beforeSeq: { type: 'number', description: '只看这个 seq 之前。' },
+        limit: { type: 'number', description: '最多几条（默认 20，上限 200）。' },
+      },
+    },
+    async execute({ group, afterSeq, beforeSeq, limit } = {}) {
+      if (!ledger) return { text: '账本未启用，无法查询群历史。' }
+      const allowed = new Set([...(cfg.allowGroups ?? []).map(String)])
+      const raw = String(group ?? '').trim()
+      const target = raw || [...allowed][0] || groupWatermarks()[0]?.groupId
+      if (!target) return { text: '没有可查询的白名单群。' }
+      if (!allowed.has(target)) return { text: `群 ${target} 不在 allowGroups 白名单里。` }
+      const activity = activityIdForGroup(target)
+      const rows = ledger.messages(activity, {
+        afterSeq: afterSeq == null ? 0 : Number(afterSeq),
+        beforeSeq: beforeSeq == null ? null : Number(beforeSeq),
+        limit: limit == null ? 20 : Number(limit),
+      })
+      if (!rows.length) return { text: `群 ${target} 没有符合条件的记录。` }
+      return { text: `群 ${target} 的账本记录（${rows.length} 条）：\n${rows.map(formatLedgerRow).join('\n')}` }
     },
   })
 
@@ -1658,7 +1763,7 @@ export async function apply(ctx) {
     name: 'qq_mark_read',
     summary: '手动推进 QQ 私聊账本的**已读水位**（只动本地水位；不发消息、不自动回复、不标记"已回"）。只能推进到"连续已交付"高水位：被 time/focus 拦下、从未交付的消息**不许被跨过**。',
     when: ['你已经看过/处理了这些私聊，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
-    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回', '群消息（群不接）'],
+    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回', '群消息（群聊 G1 使用 qq_group_history，且不发群）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -1727,9 +1832,18 @@ export async function apply(ctx) {
           const s = status()
           if (!s.enabled) return [{ key: 'disabled', brief: '未启用。' }]
           if (!s.connection.connected) return [{ key: 'offline', brief: '未连接。' }]
-          const unread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
-          if (unread > 0) return [{ key: 'unread', brief: `私聊还有 ${unread} 条没交付。`, detail: `未交付 ${unread} 条；用 qq_unread / qq_replied 查看。` }]
-          return []
+          const privateUnread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
+          const groups = groupWatermarks()
+          const groupUnread = groups.reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
+          const parts = []
+          if (privateUnread > 0) parts.push(`私聊 ${privateUnread} 条`)
+          if (groupUnread > 0) parts.push(`${groups.length} 个群 ${groupUnread} 条`)
+          if (!parts.length) return []
+          return [{
+            key: 'unread',
+            brief: `消息未交付：${parts.join('，')}。`,
+            detail: `私聊未交付 ${privateUnread} 条；群未交付 ${groupUnread} 条（${groups.length} 个群）。用 qq_unread / qq_groups 查看。`,
+          }]
         },
       })
     }

@@ -8,6 +8,7 @@
 // 否则模型会永远等下去。
 //
 // 纯逻辑 + 可注入 timer，便于测试；不做 IO、不碰发送。
+import { RATE_WINDOW_MS, windowDelayMs } from './attention-window.mjs'
 
 export const DEBOUNCE_DEFAULTS = Object.freeze({
   enabled: false,
@@ -15,6 +16,10 @@ export const DEBOUNCE_DEFAULTS = Object.freeze({
   mentionQuietMs: 4_000,
   maxHoldMs: 30_000,
   maxBatchMessages: 20,
+  // 群聊：安静小群可以更快进入；刷屏时用 5s-rate 自适应窗口往后压。
+  groupQuietMs: 6_000,
+  groupMentionQuietMs: 3_000,
+  groupMaxHoldMs: 60_000,
 })
 
 const clamp = (value, min, max, fallback) => {
@@ -28,6 +33,9 @@ export function normalizeDebounceConfig(input = {}) {
     enabled: raw.enabled === true,
     quietMs: clamp(raw.quietMs, 1_000, 60_000, DEBOUNCE_DEFAULTS.quietMs),
     mentionQuietMs: clamp(raw.mentionQuietMs, 500, 30_000, DEBOUNCE_DEFAULTS.mentionQuietMs),
+    groupQuietMs: clamp(raw.groupQuietMs, 500, 30_000, DEBOUNCE_DEFAULTS.groupQuietMs),
+    groupMentionQuietMs: clamp(raw.groupMentionQuietMs, 500, 30_000, DEBOUNCE_DEFAULTS.groupMentionQuietMs),
+    groupMaxHoldMs: clamp(raw.groupMaxHoldMs, 2_000, 300_000, DEBOUNCE_DEFAULTS.groupMaxHoldMs),
     maxHoldMs: clamp(raw.maxHoldMs, 2_000, 300_000, DEBOUNCE_DEFAULTS.maxHoldMs),
     maxBatchMessages: clamp(raw.maxBatchMessages, 1, 100, DEBOUNCE_DEFAULTS.maxBatchMessages),
   }
@@ -147,8 +155,21 @@ export function createInboundDebouncer({
   function armQuiet(entry) {
     if (entry.quietTimer) { try { clearTimer(entry.quietTimer) } catch { /* 已触发 */ } }
     const last = entry.items[entry.items.length - 1]
-    const mentioned = Boolean(last?.meta?.qq?.envelope?.mentioned || last?.meta?.mentioned)
-    const quiet = mentioned ? cfg.mentionQuietMs : cfg.quietMs
+    const tags = Array.isArray(last?.tags) ? last.tags : []
+    const mentioned = Boolean(last?.meta?.qq?.envelope?.mentioned || last?.meta?.mentioned || tags.includes('mention') || tags.includes('at'))
+    const isGroup = entry.isGroup === true
+    const base = isGroup
+      ? (mentioned ? cfg.groupMentionQuietMs : cfg.groupQuietMs)
+      : (mentioned ? cfg.mentionQuietMs : cfg.quietMs)
+    // 旧 focus-core 的繁忙度：只对群做 per-activity 5s 速率窗口。
+    let quiet = base
+    if (isGroup) {
+      const at = now()
+      entry.arrivals = (entry.arrivals ?? []).filter((t) => at - t < RATE_WINDOW_MS)
+      const rate = entry.arrivals.length
+      const adaptive = windowDelayMs(rate, mentioned ? 'pierce' : 'ambient')
+      quiet = Math.max(base, adaptive)
+    }
     entry.quietTimer = setTimer(() => flush(entry.activity), Math.max(1, quiet))
     if (typeof entry.quietTimer?.unref === 'function') entry.quietTimer.unref()
   }
@@ -160,19 +181,31 @@ export function createInboundDebouncer({
     stats.pushed += 1
     let entry = buffers.get(activity)
     if (!entry) {
-      entry = { activity, items: [], firstAt: now(), lastAt: now(), quietTimer: null, hardTimer: null }
+      const isGroup = activity.startsWith('qq:group:')
+      entry = {
+        activity,
+        isGroup,
+        items: [],
+        arrivals: [],
+        firstAt: now(),
+        lastAt: now(),
+        quietTimer: null,
+        hardTimer: null,
+      }
       buffers.set(activity, entry)
-      entry.hardTimer = setTimer(() => flush(activity), Math.max(1, cfg.maxHoldMs))
+      const hold = isGroup ? cfg.groupMaxHoldMs : cfg.maxHoldMs
+      entry.hardTimer = setTimer(() => flush(activity), Math.max(1, hold))
       if (typeof entry.hardTimer?.unref === 'function') entry.hardTimer.unref()
     }
     entry.items.push(signal)
+    entry.arrivals.push(now())
     entry.lastAt = now()
     if (entry.items.length >= cfg.maxBatchMessages) {
       flush(activity)
       return null
     }
     armQuiet(entry)
-    return { activity, count: entry.items.length, quietMs: cfg.quietMs, maxHoldMs: cfg.maxHoldMs }
+    return { activity, count: entry.items.length, quietMs: entry.isGroup ? cfg.groupQuietMs : cfg.quietMs, maxHoldMs: entry.isGroup ? cfg.groupMaxHoldMs : cfg.maxHoldMs }
   }
 
   function flushAll() {

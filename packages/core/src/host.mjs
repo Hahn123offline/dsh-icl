@@ -88,6 +88,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
       from: { plugin: 'focus', activity: 'backlog' },
       kind: 'notice',
       text: `你离开焦点期间，别处积压了 ${total} 条：\n${body}`,
+      focus: focus.current()?.label ?? null,
       tags: ['focus-backlog'],
       // 若被 time 拦下，摘要会带着这些 seq 进 time 队列，在真正释放时再补推 QQ。
       meta: qqSeqs.length ? { replayQq: qqSeqs.map((row) => ({ activity: row.activity, seq: row.seq })) } : null,

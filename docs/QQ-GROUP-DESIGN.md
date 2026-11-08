@@ -1,7 +1,21 @@
 # QQ 群聊设计草案（基于现有 focus）
 
-> 状态：设计讨论稿，未实现。目标是在不重写 focus 的前提下把 QQ 从"只做 owner 私聊"
-> 扩到"多群 + 私聊"的完整 QQ 实现。人格/情绪/精力的动态系统不在本设计里。
+> 状态：**G1 只读多群已实现**；G2 群回复尚未开始。目标是在不重写 focus 的前提下把 QQ
+> 从"只做 owner 私聊"扩到"多群 + 私聊"的完整 QQ 实现。人格/情绪/精力的动态系统不在本设计里。
+
+## 0. G1 已落地
+
+- 配置：`groupPolicy:'allowlist'` + `allowGroups:[...]`；默认 `ignore`，产品 preset 尚未打开真实群。
+- 入站：白名单群 `message_type=group` 进 gate；普通消息 `tags:['qq','group','ambient']`，@ self
+  带 `at/mention`；群账本按 `qq:group:<id>`，群信封 `[QQ群·群名]`。
+- 注意力：`focus.admit` 无 focus 时把 ambient 群消息 defer 到该群 backlog；@ 直达；
+  当前 focus 的群直达，别群 ambient backlog；focus 进入群时回放积压摘要。
+- 繁忙度：新增 `attention-window.mjs`（旧 focus-core 公式），群 debounce 用 per-activity
+  5s rate 自适应延迟；安静小群 6s/3s，刷屏群按 5s 步长后压，硬上限 60s/20 条。
+- 只读工具：`qq_groups`（群水位/未交付）、`qq_group_history`（群账本）；G1 不发群消息。
+- 测试：群 gate、无 focus backlog、@ 直达、focus 群直达、别群 backlog、群只读工具、
+  attention-window 纯函数。
+
 
 ## 1. 现有接缝
 
@@ -132,10 +146,11 @@ rate 高，普通消息被压成摘要。
 
 ### G1：只读多群 + focus（最小可用）
 
-- allowGroups 配置、群 gate/ledger、群信封、@ 标记
-- ambient 无 focus 进 focus backlog；focus 进群后摘要回放
-- `qq_unread/qq_history` 支持群；world QQ 源显示群未读数
-- **不发群消息**；先验证多群不抢话、不刷屏
+- **已实现**：allowGroups 配置、群 gate/ledger、群信封、@ 标记
+- **已实现**：ambient 无 focus 进 focus backlog；focus 进群后摘要回放
+- **已实现**：`qq_groups/qq_group_history` 支持群；world QQ 源显示群未读数
+- **已实现**：per-activity adaptive window（attention-window.mjs）
+- **不发群消息**；产品 preset 默认 `groupPolicy:'ignore'`，要真实只读群需显式配 allowGroups
 
 ### G2：群回复
 

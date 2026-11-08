@@ -14,6 +14,8 @@ import * as qqModule from '../../plugins/qq/src/index.mjs'
 import manifest from '../../plugins/qq/manifest.json' with { type: 'json' }
 import * as timeModule from '../../plugins/time/src/index.mjs'
 import timeManifest from '../../plugins/time/manifest.json' with { type: 'json' }
+import * as focusModule from '../../plugins/focus/src/index.mjs'
+import focusManifest from '../../plugins/focus/manifest.json' with { type: 'json' }
 import { activityIdForPrivate, messageIdOf, normalizeSegments, buildPrivateSignal, sentAtOf } from '../../plugins/qq/src/normalize.mjs'
 import { createDedupeStore, createInboundGate } from '../../plugins/qq/src/gate.mjs'
 import { checkSendTarget, sendEnabled } from '../../plugins/qq/src/outbound.mjs'
@@ -602,3 +604,99 @@ test('睡眠中唤醒矩阵的主动提醒不塞进 time 积压（只保留原�
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
+
+function groupMessageEvent({ groupId = 601357169, groupName = '测试群', from = 10001, name = '群友', text = '群里说话', messageId = 8801, at = null } = {}) {
+  const message = []
+  if (at != null) message.push({ type: 'at', data: { qq: String(at) } })
+  message.push({ type: 'text', data: { text } })
+  return {
+    post_type: 'message', message_type: 'group', sub_type: 'normal',
+    time: Math.floor(NOW / 1000), self_id: 2593621742,
+    group_id: groupId, group_name: groupName, user_id: from,
+    message_id: messageId, message_seq: messageId,
+    message,
+    sender: { user_id: from, nickname: name, card: name },
+  }
+}
+
+test('群聊 G1：无 focus 普通消息进 focus backlog，@ 直达；focus 该群后普通消息直达', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(focusManifest, focusModule, {})
+  host.registerPlugin(manifest, qqModule, {
+    config: makePluginConfig({ groupPolicy: 'allowlist', allowGroups: ['601357169', '1057812765'] }),
+  })
+  await host.enable('focus')
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  const focus = host.services.focus
+
+  ws.emit('message', eventFrame(groupMessageEvent({ text: '普通消息一', messageId: 8811 })))
+  assert.equal(host.services.delivery.pendingCount(), 0, '普通群消息不应叫醒')
+  assert.equal(focus.backlog().length, 1)
+  assert.equal(focus.backlog()[0].focus, 'qq:group:601357169')
+
+  ws.emit('message', eventFrame(groupMessageEvent({ text: '@你 急事', messageId: 8812, at: 2593621742 })))
+  const direct = host.services.delivery.drain('session').map((b) => b.text).join('\n')
+  assert.match(direct, /@你 急事/)
+  host.services.delivery.drain('session').forEach((b) => host.services.delivery.ack(b.id))
+
+  const enter = host.services.tools.list().find((t) => t.name === 'focus_enter')
+  await enter.execute({ title: '测试群', activity: 'qq:group:601357169' })
+  host.services.delivery.drain('session').forEach((b) => host.services.delivery.ack(b.id))
+  ws.emit('message', eventFrame(groupMessageEvent({ text: '本群普通消息', messageId: 8813 })))
+  const inFocus = host.services.delivery.drain('session').map((b) => b.text).join('\n')
+  assert.match(inFocus, /本群普通消息/)
+
+  ws.emit('message', eventFrame(groupMessageEvent({ groupId: 1057812765, groupName: '另一个群', text: '别群消息', messageId: 8814 })))
+  assert.equal(host.services.delivery.pendingCount(), 0, '别群普通消息进 backlog')
+  assert.ok(focus.backlog().some((row) => row.focus === 'qq:group:1057812765'))
+
+  host.disable('qq')
+  host.disable('focus')
+})
+
+test('群聊 gate：默认忽略，allowlist 才收；普通 ambient、@ self 带 at/mention', () => {
+  const off = createInboundGate({ groupPolicy: 'ignore', allowGroups: ['601357169'], selfId: '2593621742' })
+  assert.equal(off.admit(groupMessageEvent({ text: '群' })).code, 'group')
+
+  const gate = createInboundGate({ groupPolicy: 'allowlist', allowGroups: ['601357169'], selfId: '2593621742' })
+  const plain = gate.admit(groupMessageEvent({ text: '普通', messageId: 8901 }))
+  assert.equal(plain.accept, true)
+  assert.equal(plain.scope, 'group')
+  assert.ok(plain.signal.tags.includes('ambient'))
+  assert.ok(!plain.signal.tags.includes('mention'))
+  assert.equal(plain.signal.from.activity, 'qq:group:601357169')
+
+  const at = gate.admit(groupMessageEvent({ text: '@你', messageId: 8902, at: 2593621742 }))
+  assert.equal(at.accept, true)
+  assert.ok(at.signal.tags.includes('at'))
+  assert.ok(at.signal.tags.includes('mention'))
+  assert.equal(at.signal.tags.includes('ambient'), false)
+
+  assert.equal(gate.admit(groupMessageEvent({ groupId: 999, messageId: 8903 })).code, 'not-allowlisted')
+})
+
+
+test('群聊只读工具：qq_groups 报未读，qq_group_history 能看群账本', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(focusManifest, focusModule, {})
+  host.registerPlugin(manifest, qqModule, {
+    config: makePluginConfig({ groupPolicy: 'allowlist', allowGroups: ['601357169'] }),
+  })
+  await host.enable('focus')
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(groupMessageEvent({ text: '群历史一条', messageId: 8911 })))
+  const tools = host.services.tools.list()
+  const groups = await tools.find((t) => t.name === 'qq_groups').execute()
+  assert.match(groups.text, /601357169/)
+  assert.match(groups.text, /未交付 1 条/)
+  const history = await tools.find((t) => t.name === 'qq_group_history').execute({ group: '601357169' })
+  assert.match(history.text, /群历史一条/)
+  host.disable('qq')
+  host.disable('focus')
+})

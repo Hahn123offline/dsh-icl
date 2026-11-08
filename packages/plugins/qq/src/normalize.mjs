@@ -2,7 +2,7 @@
 //
 // 为什么单独一层：QQ 的形状（post_type / message_type / message 段 / message_seq）
 // 不该漏进 ICL 的核心。这里只做三件事：
-//   1. 认事件：只认私聊消息；群消息整类忽略（本轮连只读都不接群）
+//   1. 认事件：默认只认私聊；groupPolicy:'allowlist' 时也认白名单群（G1 只读）
 //   2. 把消息段变成可读文本 + 结构化 meta（图片/语音/文件只留占位与引用，不下载）
 //   3. 生成 ICL signal 的形状（id / from / focus / tags / createdAt）
 //
@@ -177,6 +177,70 @@ export function buildPrivateSignal({
         forwardIds: richInfo.forwardIds ?? [],
         replyId: richInfo.replyId ?? null,
         atSelf: richInfo.atSelf === true,
+      },
+    },
+  }
+}
+
+/** OneBot 群消息的 message_seq（群游标）；没有就返回 null。 */
+export function messageSeqOf(event) {
+  const seq = event?.message_seq
+  return seq == null || String(seq) === '' ? null : String(seq)
+}
+
+/**
+ * 群消息 signal：只产出数据，不投递。
+ * 普通消息带 ambient（无 focus 时进该群 backlog）；@ 到自己不带 ambient，走 pierce。
+ */
+export function buildGroupSignal({
+  groupId, groupName = '', senderId, senderName = '', text, segments = [],
+  messageId = null, messageSeq = null, sentAt = null, receivedAt = Date.now(),
+  selfId = null, maxTextChars = 2000, rich = null,
+}) {
+  const gid = String(groupId)
+  const sender = String(senderId ?? '')
+  const name = str(senderName) || sender || gid
+  const clip = (s) => {
+    const t = str(s)
+    return t.length > maxTextChars ? `${t.slice(0, maxTextChars)}…` : t
+  }
+  const body = clip(text)
+  const at = Number.isFinite(Number(sentAt)) ? Number(sentAt) : receivedAt
+  const activity = activityIdForGroup(gid)
+  const richInfo = rich && typeof rich === 'object' ? rich : emptyRich()
+  const atSelf = richInfo.atSelf === true
+  const tags = ['qq', 'group']
+  if (atSelf) tags.push('at', 'mention')
+  else tags.push('ambient')
+  return {
+    id: signalIdFor({ scope: 'group', peerId: gid, messageId, at, text: body }),
+    from: { plugin: 'qq', activity },
+    kind: 'notice',
+    to: 'model',
+    text: `${name}：${body}`,
+    focus: activity,
+    tags,
+    createdAt: at,
+    expiresAt: null,
+    meta: {
+      qq: {
+        scope: 'group',
+        groupId: gid,
+        groupName: str(groupName),
+        peerId: gid,
+        senderId: sender || null,
+        senderName: name,
+        messageId: messageId == null ? null : String(messageId),
+        messageSeq: messageSeq == null ? null : String(messageSeq),
+        at,
+        receivedAt,
+        selfId: selfId == null ? null : String(selfId),
+        segments,
+        media: richInfo.media ?? [],
+        files: richInfo.files ?? [],
+        forwardIds: richInfo.forwardIds ?? [],
+        replyId: richInfo.replyId ?? null,
+        atSelf,
       },
     },
   }
