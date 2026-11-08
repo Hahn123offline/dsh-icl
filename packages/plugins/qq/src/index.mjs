@@ -746,9 +746,11 @@ export async function apply(ctx) {
     }
     // "醒来第一眼"快照：oldest-first、≤12 条/6000 字；超预算标 partial + readThroughSeq。
     let snapshot = { text: '', count: 0, included: 0, partial: false, readThroughSeq: null }
+    let snapshotSeqs = []
     try {
       const rows = ledger?.unread(emission.activity, { limit: 12 })?.messages ?? []
       snapshot = buildWakeSnapshot(rows)
+      snapshotSeqs = rows.map((row) => Number(row.seq)).filter((seq) => Number.isFinite(seq))
     } catch { /* 快照失败不影响提醒本身 */ }
     if (snapshot.text) {
       text += `\n\n醒来第一眼（未读 ${snapshot.count} 条，从旧到新）：\n${snapshot.text}`
@@ -786,7 +788,19 @@ export async function apply(ctx) {
         }
       }
       if (out?.accepted && (out.queued === true || out.delivered === false)) { stats.wakeQueued = (stats.wakeQueued ?? 0) + 1; return false }
-      if (out?.accepted) { stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1; return true }
+      if (out?.accepted) {
+        // 快照已经真正进入本轮上下文：把其中展示到的行自动标已读，
+        // 避免回完消息后 nudge 再把同一批旧消息提醒一遍。
+        if (snapshot.readThroughSeq != null && ledger) {
+          try {
+            const shown = snapshotSeqs.filter((seq) => seq <= snapshot.readThroughSeq)
+            if (shown.length) ledger.markDeliveredSeqs(emission.activity, shown)
+            ledger.markRead(emission.activity, { throughSeq: snapshot.readThroughSeq })
+          } catch { /* 水位失败不影响唤醒 */ }
+        }
+        stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1
+        return true
+      }
       if (out?.blocked) { stats.wakeBlocked = (stats.wakeBlocked ?? 0) + 1; return false }
       if (out?.deduped) { stats.wakeDeduped = (stats.wakeDeduped ?? 0) + 1; return false }
       if (out?.expired) { stats.wakeExpired = (stats.wakeExpired ?? 0) + 1; return false }

@@ -124,6 +124,9 @@ test('集成：积压 nudge 正文带醒来第一眼快照（oldest-first）', a
     assert.match(captured, /醒来第一眼/)
     assert.match(captured, /#1/)
     assert.ok(captured.indexOf('#1') < captured.indexOf('#2'), 'oldest-first')
+    const wm = env.qq.status().ledger.watermarks.find((row) => String(row.peer) === String(OWNER))
+    assert.equal(wm.attendedSeq, 2, '醒来第一眼快照投递后应自动标已读')
+    assert.equal(wm.undelivered, 0)
   } finally { await env.cleanup() }
 })
 
