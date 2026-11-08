@@ -102,6 +102,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     session: null,
     agent: null,
     apiProxy: null,
+    coldUnreadTried: false,
     releaseClaim: null,
     tools: new Map(),          // name -> { off, def }
     // 兼容旧 DSH：0.2.0-rc.2 不接受 image output schema，会抛错并丢掉全部工具。
@@ -718,16 +719,43 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return null
   }
 
-  /**
-   * 没有 live Agent 时的标准投递：用 DSH 官方 apiProxy.sessions.prompt 冷恢复目标会话。
-   * 这条路径就是 old dsh-qq 的 ensureSession + sessions.prompt；不再依赖 Host 侧自己 resume。
-   */
-  async function promptWithoutAgent() {
+  async function callColdPrompt(sessionId, text) {
     let hostApi = null
     try { hostApi = ctx.iclHost ?? (typeof ctx.get === 'function' ? ctx.get('iclHost') : null) } catch { /* 老 Host 没有该服务 */ }
     const direct = state.apiProxy?.sessions
+    if (hostApi?.prompt) {
+      const out = await hostApi.prompt({ sessionId, text })
+      return { ok: out?.ok === true, out }
+    }
+    if (direct?.prompt) {
+      const out = await direct.prompt({
+        rpcId: randomUUID(),
+        payload: { sessionId, mode: 'queue', content: [{ type: 'text', text: text.slice(0, 12000) }] },
+      })
+      const ok = out?.result ? out.result.ok !== false : out?.ok !== false
+      return { ok, out }
+    }
+    if (process.env.DSH_WEB_URL) {
+      // 最后回退：老 dsh-qq 的 DSH HTTP 门面（session/prompt 会冷恢复）。
+      const client = new NodeApiClient(process.env.DSH_WEB_URL, 15000, {})
+      const out = await client.callUnary('session/prompt', {
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: text.slice(0, 12000) }],
+      })
+      const ok = out?.result ? out.result.ok !== false : out?.ok !== false
+      return { ok, out }
+    }
+    return { ok: false, error: 'no cold prompt transport' }
+  }
+
+  /**
+   * 没有 live Agent 时的标准投递：用 DSH 官方 session.prompt 冷恢复目标会话。
+   * 这条路径就是 old dsh-qq 的 ensureSession + sessions.prompt；不再依赖 Host 侧自己 resume。
+   */
+  async function promptWithoutAgent() {
     const sessionId = state.session?.id ?? lastSessionIdHint()
-    if ((!hostApi?.prompt && !direct?.prompt && !process.env.DSH_WEB_URL) || !sessionId) return 0
+    if (!sessionId) return 0
     if (state.ticking) return 0
     state.ticking = true
     const batches = host.services.delivery.drain('session')
@@ -739,35 +767,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       return 0
     }
     try {
-      let out
-      if (hostApi?.prompt) {
-        out = await hostApi.prompt({ sessionId, text })
-      } else if (direct?.prompt) {
-        out = await direct.prompt({
-          rpcId: randomUUID(),
-          payload: {
-            sessionId,
-            mode: 'queue',
-            content: [{ type: 'text', text: text.slice(0, 12000) }],
-          },
-        })
-      } else {
-        // 老 dsh-qq 的 DSH HTTP 门面：session/prompt 本身会冷恢复。
-        const client = new NodeApiClient(process.env.DSH_WEB_URL, 15000, {})
-        out = await client.callUnary('session/prompt', {
-          sessionId,
-          mode: 'queue',
-          content: [{ type: 'text', text: text.slice(0, 12000) }],
-        })
-      }
-      const ok = out == null
-        ? false
-        : (out.ok !== undefined
-          ? out.ok === true
-          : (out.result ? out.result.ok !== false : out.ok !== false))
-      if (!ok) {
-        for (const batch of batches) host.services.delivery.nack(batch.id, out?.error ?? out?.result?.error?.message ?? 'session.prompt rejected')
-        report('delivery.prompt-no-agent', out?.error ?? out?.result?.error ?? out)
+      const result = await callColdPrompt(sessionId, text)
+      if (!result.ok) {
+        for (const batch of batches) host.services.delivery.nack(batch.id, result.out?.result?.error?.message ?? result.error ?? 'session.prompt rejected')
+        report('delivery.prompt-no-agent', result.out?.result?.error ?? result.error ?? result.out)
         return 0
       }
       for (const batch of batches) host.services.delivery.ack(batch.id)
@@ -782,10 +785,39 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     }
   }
 
+  /** 重启后 delivery 队列是空的，但 QQ 账本里可能还有 attended 之前的旧消息；主动冷恢复一次。 */
+  async function promptUnreadWithoutAgent() {
+    if (state.coldUnreadTried) return 0
+    state.coldUnreadTried = true
+    const qq = (() => { try { return host.shared.get('qq') ?? null } catch { return null } })()
+    if (!qq?.unreadDigest) return 0
+    const sessionId = state.session?.id ?? lastSessionIdHint()
+    if (!sessionId) return 0
+    const text = String(qq.unreadDigest(1500) ?? '').trim()
+    if (!text) return 0
+    try {
+      const result = await callColdPrompt(sessionId, text)
+      if (!result.ok) {
+        state.coldUnreadTried = false
+        report('delivery.prompt-unread', result.out?.result?.error ?? result.error ?? result.out)
+        return 0
+      }
+      try { qq.markUnreadDigest?.(1500) } catch { /* 水位失败不影响唤醒 */ }
+      return 1
+    } catch (error) {
+      state.coldUnreadTried = false
+      report('delivery.prompt-unread', error)
+      return 0
+    }
+  }
+
   async function tick() {
     if (!state.agent) {
       if (host.services.delivery.pendingCount() > 0) {
         const sent = await promptWithoutAgent()
+        if (sent > 0) return { sent }
+      } else {
+        const sent = await promptUnreadWithoutAgent()
         if (sent > 0) return { sent }
       }
       return { sent: 0, skipped: 'no-agent' }

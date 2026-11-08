@@ -448,7 +448,7 @@ export async function apply(ctx) {
       })
   }
 
-  function groupWatermarks() {
+  function groupWatermarks({ unattended = false } = {}) {
     if (!ledger) return []
     return (ledger.activities() ?? [])
       .filter((row) => /^qq:group:\d+$/.test(String(row.activity ?? '')))
@@ -463,7 +463,7 @@ export async function apply(ctx) {
           undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
         }
       })
-      .filter((row) => row.undelivered > 0)
+      .filter((row) => (unattended ? row.lastSeq > row.attendedSeq : row.undelivered > 0))
   }
 
   /**
@@ -478,20 +478,22 @@ export async function apply(ctx) {
       if (!marks.has(activity)) marks.set(activity, [])
       for (const msg of msgs) marks.get(activity).push(msg.seq)
     }
-    const privateRows = ledgerWatermarks().filter((row) => Number(row.undelivered) > 0)
+    const privateRows = ledgerWatermarks().filter((row) => Number(row.lastSeq) > Number(row.attendedSeq))
     for (const row of privateRows.slice(0, 4)) {
       const activity = activityIdForPrivate(row.peer)
-      const msgs = (ledger.undelivered(activity, { limit: 4 }) ?? []).slice(0, 4)
+      const msgs = (ledger.unread(activity, { limit: 4 })?.messages ?? []).slice(0, 4)
       collect(activity, msgs)
+      const unread = Math.max(0, Number(row.lastSeq) - Number(row.attendedSeq))
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
-      blocks.push(`私聊 ${row.peer}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
+      blocks.push(`私聊 ${row.peer}（${unread} 条未读）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
-    const groupRows = groupWatermarks()
+    const groupRows = groupWatermarks({ unattended: true })
     for (const row of groupRows.slice(0, 4)) {
-      const msgs = (ledger.undelivered(row.activity, { limit: 4 }) ?? []).slice(0, 4)
+      const msgs = (ledger.unread(row.activity, { limit: 4 })?.messages ?? []).slice(0, 4)
       collect(row.activity, msgs)
+      const unread = Math.max(0, Number(row.lastSeq) - Number(row.attendedSeq))
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
-      blocks.push(`群 ${row.groupId}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
+      blocks.push(`群 ${row.groupId}（${unread} 条未读）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     if (!blocks.length) return ''
     if (markDelivered) {
@@ -1958,6 +1960,7 @@ export async function apply(ctx) {
       flushInbound: () => inboundDebouncer?.flushAll() ?? null,
       notifyPending: (reason = 'session-bind') => notifyPending(reason),
       unreadDigest: (maxChars = 700) => unreadDigest(maxChars),
+      markUnreadDigest: (maxChars = 1500) => unreadDigest(maxChars, { markDelivered: true }),
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
       skills: () => SKILLS.map((s) => ({ ...s })),
