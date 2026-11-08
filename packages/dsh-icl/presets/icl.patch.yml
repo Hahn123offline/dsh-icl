@@ -30,7 +30,7 @@
             config:
               presetId: icl
               # 产品化 A1（2026-11-06，lead 批准）：首屏净化 4 段 + 显式插件白名单（去 mc-link）。
-              # MC 只走 icl-mc 场景；产品工具面 66/44,316 → 49/31,824。
+              # MC 暂下线（2026-11-08）：icl-mc preset 已移除；产品工具面 66/44,316 → 49/31,824。
               purifySections:
                 - 'harness:identity'
                 - 'ui:deliverable-file-references'
@@ -142,51 +142,6 @@
                 - editor
                 - bili
                 - loop-probe
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          # 覆盖 DSH 全局 coding-agent 身份（与 ICL 人格段冲突，见 docs/PROMPT-CONTRACT.md）
-          - id: tool-persona
-            name: '@deepseek-ai/dsh-persona'
-            config:
-              prefix: ''
-              suffix: ''
-    - id: preset-icl-mc
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: icl-mc
-        name: ICL MC
-        description: ICL + MC 只读观察接缝：真实局域网事件进 signals，默认只读、限速发言。
-        order: 13
-        plugins:
-          - id: icl-mc-core
-            name: dsh-icl/index.mjs
-            config:
-              presetId: icl-mc
-              stateDir: mc-state
-              personaFile: prompts/persona.md
-              simulationFile: prompts/sim.md
-              simulationExtraFiles:
-                - prompts/sim-mc.md
-              tickMs: 500
-              timeTickMs: 1000
-              mcBaseUrl: http://127.0.0.1:54836
-              plugins:
-                - memory
-                - world-state
-                - recall
-                - note
-                - lexicon
-                - whois
-                - persona
-                - focus
-                - eager-recall
-                - model-manager
-                - time
-                - dream
-                - editor
-                - mc-link
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
