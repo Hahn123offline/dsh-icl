@@ -1298,3 +1298,21 @@ test('renderTail：错误/图片结果不追加；关闭开关完全无效', asy
     assert.equal(out.text, 'ok')
   } finally { off.bridge.dispose() }
 })
+
+test('桥：没有 live agent 时用 apiProxy.sessions.prompt 冷恢复并投递', async () => {
+  const root = tempRoot('prompt-no-agent')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let prompted = null
+  ctx.inject = (deps, cb) => {
+    if (deps.includes('apiProxy')) cb({ apiProxy: { sessions: { prompt: async (request) => { prompted = request; return { result: { ok: true, value: { accepted: true } } } } } } })
+  }
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), sessionId: 'session-cold' } })
+  bridge.start()
+  host.services.delivery.push({ source: { plugin: 'qq' }, content: { text: '冷会话里的 QQ 消息' } })
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
+  assert.equal(prompted?.payload?.sessionId, 'session-cold')
+  assert.match(prompted?.payload?.content?.[0]?.text ?? '', /冷会话里的 QQ 消息/)
+  assert.equal(host.services.delivery.pendingCount(), 0)
+  bridge.dispose()
+})

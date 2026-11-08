@@ -100,6 +100,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   const state = {
     session: null,
     agent: null,
+    apiProxy: null,
     releaseClaim: null,
     tools: new Map(),          // name -> { off, def }
     // 兼容旧 DSH：0.2.0-rc.2 不接受 image output schema，会抛错并丢掉全部工具。
@@ -706,8 +707,69 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     })
   }
 
+  function lastSessionIdHint() {
+    if (config.sessionId) return String(config.sessionId)
+    const raw = Array.isArray(state.raw) ? state.raw : []
+    for (let i = raw.length - 1; i >= 0; i -= 1) {
+      const id = raw[i]?.sessionId
+      if (id) return String(id)
+    }
+    return null
+  }
+
+  /**
+   * 没有 live Agent 时的标准投递：用 DSH 官方 apiProxy.sessions.prompt 冷恢复目标会话。
+   * 这条路径就是 old dsh-qq 的 ensureSession + sessions.prompt；不再依赖 Host 侧自己 resume。
+   */
+  async function promptWithoutAgent() {
+    const api = state.apiProxy?.sessions
+    const sessionId = state.session?.id ?? lastSessionIdHint()
+    if (!api?.prompt || !sessionId) return 0
+    if (state.ticking) return 0
+    state.ticking = true
+    const batches = host.services.delivery.drain('session')
+    if (!batches.length) { state.ticking = false; return 0 }
+    const text = batches.map((batch) => String(batch.text ?? '').trim()).filter(Boolean).join('\n\n')
+    if (!text) {
+      for (const batch of batches) host.services.delivery.ack(batch.id)
+      state.ticking = false
+      return 0
+    }
+    try {
+      const out = await api.prompt({
+        rpcId: randomUUID(),
+        payload: {
+          sessionId,
+          mode: 'queue',
+          content: [{ type: 'text', text: text.slice(0, 12000) }],
+        },
+      })
+      const ok = out?.result ? out.result.ok !== false : out?.ok !== false
+      if (!ok) {
+        for (const batch of batches) host.services.delivery.nack(batch.id, out?.result?.error?.message ?? 'session.prompt rejected')
+        report('delivery.prompt-no-agent', out?.result?.error ?? out)
+        return 0
+      }
+      for (const batch of batches) host.services.delivery.ack(batch.id)
+      state.stats.delivered += batches.length
+      return batches.length
+    } catch (error) {
+      for (const batch of batches) host.services.delivery.nack(batch.id, error?.message ?? error)
+      report('delivery.prompt-no-agent', error)
+      return 0
+    } finally {
+      state.ticking = false
+    }
+  }
+
   async function tick() {
-    if (!state.agent) return { sent: 0, skipped: 'no-agent' }
+    if (!state.agent) {
+      if (host.services.delivery.pendingCount() > 0) {
+        const sent = await promptWithoutAgent()
+        if (sent > 0) return { sent }
+      }
+      return { sent: 0, skipped: 'no-agent' }
+    }
     // 图片通道会让 tick 变 async；定时器可能重入，用 busy 标志避免同一批被 drain 两次。
     if (state.ticking) return { sent: 0, skipped: 'busy' }
     state.ticking = true
@@ -1024,6 +1086,19 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     registerRaw()
     registerHistory()
     syncTools()
+    // 没有 live Agent 时，走 DSH 官方 apiProxy.sessions.prompt 冷恢复会话；
+    // 这是 old dsh-qq/ensureSession 使用过的标准入口，不自己造 resume。
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['apiProxy'], (sub) => {
+          state.apiProxy = sub.apiProxy
+          diag({ event: 'bridge.apiproxy', ok: Boolean(state.apiProxy?.sessions?.prompt) })
+        })
+      }
+    } catch (error) {
+      diag({ event: 'bridge.apiproxy-fail', error: String(error?.message ?? error) })
+      report('apiproxy.inject', error)
+    }
     try { state.offSurface = host.services.surface.onChange(() => { syncTools() }) } catch (error) { report('surface.subscribe', error) }
     try { state.offFocus = host.services.focus.onChange(() => { saveFocus() }) } catch (error) { report('focus.subscribe', error) }
     try { state.offFocusBacklog = host.services.focus.onBacklog(() => { saveFocus() }) } catch (error) { report('focus.backlog-subscribe', error) }
