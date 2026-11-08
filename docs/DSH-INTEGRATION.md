@@ -49,6 +49,11 @@ Plugin Manager**：GUI 侧栏 **Plugins** 页，或它与 GUI 共用的 `pluginM
 
 重启后新建会话选 preset **ICL**（id `icl`）。
 
+> **自动恢复（2026-11-08）**：重启 desktop 后若没有 live agent，QQ 消息只会进 delivery 队列。
+> `packages/dsh-icl/host.mjs` 现在会在 Host 启动后列出持久会话，挑最近一个 `agentPreset=icl`
+> 的顶层会话并 `ctx.agents.resume`，同时挂回 preset；已有 live agent 时跳过。这样 QQ 唤醒不再
+> 依赖用户先手动点开 ICL 会话。首次安装/从未建过 ICL 会话时仍需先建一次。
+
 > 本插件是 preset 作用域的：工具与提示词只对选用 `icl` 的 agent 可见。
 
 `dsh plugin --profile headless add …` 仍会因 DSH 安装缺 `execa` 报
