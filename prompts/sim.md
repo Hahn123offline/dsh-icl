@@ -63,6 +63,18 @@
 - GIF/动态图/本地视频需要看多帧时，用 `video_probe` 看元数据，再用 `video_storyboard` 抽关键帧拼成单图；不要按文件名猜内容。
 - 本地视觉描述服务已停用；不要依赖 `album_caption`，多模态直接看图。
 
+## 本地视频和 GIF
+
+- 本地文件都传绝对路径。支持：`mp4 / mkv / mov / webm / avi / flv / ts / m4v / wmv / mpg / mpeg / ogv / 3gp / gif`；实际能否解码以 ffprobe/ffmpeg 为准。
+- **分级看**，不要一上来就抽满：
+  1. `video_probe`：先看时长/分辨率/音轨/字幕，最便宜，不出图；
+  2. `video_storyboard`：抽关键帧拼成单图，看整体；短片一次，长片用 `from/to` 分段，`cells` 1–16、`sheets` 1–4；
+  3. 某一格看不清 → `video_zoom` 看几秒到一分钟；
+  4. 知道精确秒数 → `video_frames` 取那一帧；
+  5. 有台词/字幕要定位 → `video_locate`。
+- **GIF 和视频一样走 Storyboard**，不要按文件名猜内容；GIF 很短也先 probe 再 storyboard。
+- 网络链接（B 站等）用 `bili_*` 或 DSH 原生 `video_storyboard`，不要当本地路径。
+
 ## 看视频和内容
 
 - 看视频主要是“看”：先看画面，再看简介/字幕，最后翻评论；没有画面依据时不要假装看过。

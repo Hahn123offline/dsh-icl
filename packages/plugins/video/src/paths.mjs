@@ -8,7 +8,7 @@ import path from 'node:path'
 
 /** 目录扫描时认的视频扩展名（单文件不靠扩展名拦，交给 ffprobe 判定）。 */
 export const VIDEO_EXTS = Object.freeze(new Set([
-  '.mp4', '.mkv', '.mov', '.webm', '.avi', '.flv', '.ts', '.m4v', '.wmv', '.mpg', '.mpeg', '.ogv', '.3gp',
+  '.mp4', '.mkv', '.mov', '.webm', '.avi', '.flv', '.ts', '.m4v', '.wmv', '.mpg', '.mpeg', '.ogv', '.3gp', '.gif',
 ]))
 
 export const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
