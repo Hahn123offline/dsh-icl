@@ -773,7 +773,7 @@ test('prompt.assemble 支持 minOrder/maxOrder 过滤，默认全量不变', () 
   assert.equal(host.services.prompt.assemble({}, { minOrder: 100, maxOrder: 200 }), '')
 })
 
-test('桥：绑定新会话清空旧投递队列，但保留 time 闹钟/睡醒', async () => {
+test('桥：绑定新会话清空普通旧队列，但保留 time 与 QQ 对话消息', async () => {
   const root = tempRoot('bind-clear')
   const host = await hostWithMemory(root)
   const ctx = fakeCtx()
@@ -789,6 +789,12 @@ test('桥：绑定新会话清空旧投递队列，但保留 time 闹钟/睡醒'
   bridge.bindSession(fakeSession('s2'))
   assert.equal(host.services.delivery.pendingCount(), 1, 'time 唤醒要保留')
   assert.match(host.services.delivery.drain('session')[0].text, /该起床了/)
+
+  // 会话未绑定时到达的 QQ 私聊/群消息：已经是外部对话，bind 时不能静默丢掉。
+  host.services.delivery.push({ source: { plugin: 'qq', activity: 'qq:private:1', tags: ['qq', 'private'] }, content: { text: '会话没开时来的私聊' } })
+  bridge.bindSession(fakeSession('s3'))
+  assert.equal(host.services.delivery.pendingCount(), 1, 'QQ 对话消息要保留')
+  assert.match(host.services.delivery.drain('session')[0].text, /没开时来的私聊/)
   bridge.dispose()
 })
 

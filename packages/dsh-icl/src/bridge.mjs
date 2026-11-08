@@ -760,12 +760,14 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 会话 / agent ─────────────────────────────────────── */
 
-  /** 跨会话绑定保留：时间闹钟/睡醒 + 明确需要人看见的 poke/@/admin/alarm。 */
+  /** 跨会话绑定保留：时间闹钟/睡醒 + QQ 对话消息 + 明确需要人看见的 poke/@/admin/alarm。 */
   function keepAcrossSessionBind(item) {
     const plugin = String(item?.source?.plugin ?? '')
     if (plugin === 'time') return true
     const tags = Array.isArray(item?.source?.tags) ? item.source.tags : []
     if (item?.source?.pierce === true) return true
+    // QQ 私聊/群消息是外部对话本身：会话未绑定时已经 accepted 的消息不能在 bind 时被清掉。
+    if (tags.includes('private') || tags.includes('group')) return true
     return tags.some((tag) => ['poke', 'mention', 'at', 'admin', 'alarm'].includes(String(tag)))
   }
 
