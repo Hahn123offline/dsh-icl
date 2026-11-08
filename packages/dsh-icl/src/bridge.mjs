@@ -787,6 +787,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     try { host.services.delivery.clear({ preserve: keepAcrossSessionBind }) } catch { /* ignore */ }
     // 会话一绑定就告诉她还有哪些旧消息没交付，避免"她回来却不知道"。
     try { host.shared.get('qq')?.notifyPending?.('session-bind') } catch { /* qq 未启用 */ }
+    diag({ event: 'session.bind', id, agent: Boolean(state.agent), pending: host.services.delivery.pendingCount() })
     log({ msg: 'icl.session', id })
   }
 
@@ -802,6 +803,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.injected.clear()
     // 旧会话的待投递不能漏给下一条会话；time 闹钟与 poke/@ 等提醒保留到下一次绑定。
     try { host.services.delivery.clear({ preserve: keepAcrossSessionBind }) } catch { /* ignore */ }
+    diag({ event: 'session.unbind', id: session?.id ?? null, pending: host.services.delivery.pendingCount() })
   }
 
   function bindAgent(agent) {
@@ -810,6 +812,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     if (!agent.session || String(agent.session.id) !== String(state.session?.id ?? '')) return
     state.agent = agent
     startTimer()
+    diag({ event: 'agent.bind', id: agent.id ?? agent.session?.id ?? null, pending: host.services.delivery.pendingCount() })
     log({ msg: 'icl.agent', id: agent.id ?? agent.session?.id ?? null })
   }
 
