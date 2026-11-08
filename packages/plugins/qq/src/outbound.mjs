@@ -226,7 +226,7 @@ export function createOutbound({
     })
   }
 
-  function call(action, params = {}) {
+  function call(action, params = {}, { timeoutMs = null } = {}) {
     return new Promise((resolve, reject) => {
       if (!ws || state.state !== 'open') {
         reject(Object.assign(new Error('出站连接未就绪'), { code: 'not-connected', outcome: 'unknown' }))
@@ -234,10 +234,11 @@ export function createOutbound({
       }
       echoSeq += 1
       const echo = `qqs-${echoSeq}-${Math.random().toString(36).slice(2, 7)}`
+      const budgetMs = Math.max(100, Number(timeoutMs) || requestTimeoutMs)
       const timer2 = setTimeout(() => {
         pending.delete(echo)
-        reject(Object.assign(new Error(`OneBot ${action} 超时（${Math.round(requestTimeoutMs / 1000)}s），结果未知`), { code: 'timeout', outcome: 'unknown' }))
-      }, Math.max(100, requestTimeoutMs))
+        reject(Object.assign(new Error(`OneBot ${action} 超时（${Math.round(budgetMs / 1000)}s），结果未知`), { code: 'timeout', outcome: 'unknown' }))
+      }, budgetMs)
       if (typeof timer2.unref === 'function') timer2.unref()
       pending.set(echo, { resolve, reject, timer: timer2, action })
       try {
@@ -347,6 +348,101 @@ export function createOutbound({
     }
   }
 
+  /** 通用媒体段（图片/视频/语音）：私聊。 */
+  async function sendPrivateMedia(peerId, segment, { kind = 'media', replyToMessageId = null, timeoutMs = 60_000, label = null } = {}) {
+    const startedAt = now()
+    if (!segment || typeof segment !== 'object') return { ok: false, outcome: 'rejected', error: '媒体段为空', ms: 0, at: now() }
+    const segments = []
+    if (replyToMessageId != null && String(replyToMessageId).trim() !== '') {
+      segments.push({ type: 'reply', data: { id: String(replyToMessageId).trim() } })
+    }
+    segments.push(segment)
+    log({ msg: 'qq.outbound.attempt', peerId: String(peerId), kind, label: label ?? null })
+    try {
+      const reply = await call('send_private_msg', { user_id: Number(peerId), message: segments }, { timeoutMs })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, peerId: String(peerId), kind, outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, peerId: String(peerId), kind, outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 通用媒体段（图片/视频/语音）：群聊。 */
+  async function sendGroupMedia(groupId, segment, { kind = 'media', replyToMessageId = null, timeoutMs = 60_000, label = null } = {}) {
+    const startedAt = now()
+    if (!segment || typeof segment !== 'object') return { ok: false, outcome: 'rejected', error: '媒体段为空', ms: 0, at: now() }
+    const segments = []
+    if (replyToMessageId != null && String(replyToMessageId).trim() !== '') {
+      segments.push({ type: 'reply', data: { id: String(replyToMessageId).trim() } })
+    }
+    segments.push(segment)
+    log({ msg: 'qq.outbound.attempt', groupId: String(groupId), kind, label: label ?? null })
+    try {
+      const reply = await call('send_group_msg', { group_id: Number(groupId), message: segments }, { timeoutMs })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, groupId: String(groupId), kind, outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, groupId: String(groupId), kind, outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 群文件：upload_group_file → send_group_msg(file 段)。 */
+  async function sendGroupFile(groupId, { path: filePath, name = null, bytes = null } = {}) {
+    const startedAt = now()
+    const target = String(groupId ?? '').trim()
+    const safeName = String(name ?? '').trim() || 'file'
+    if (!filePath) return { ok: false, outcome: 'rejected', error: '群文件路径为空', ms: 0, at: now() }
+    log({ msg: 'qq.outbound.attempt', groupId: target, kind: 'file', label: safeName })
+    try {
+      const uploaded = await call('upload_group_file', { group_id: Number(target), file: filePath, name: safeName }, { timeoutMs: 120_000 })
+      const up = classifyActionReply(uploaded)
+      if (!up.ok) return { ...up, ms: now() - startedAt, at: now() }
+      const fileId = uploaded?.data?.file_id ?? uploaded?.data?.fileId ?? null
+      if (!fileId) return { ok: false, outcome: 'unknown', error: '上传群文件没有返回 file_id', ms: now() - startedAt, at: now() }
+      const reply = await call('send_group_msg', {
+        group_id: Number(target),
+        message: [{ type: 'file', data: { file_id: String(fileId), name: safeName, ...(bytes != null ? { file_size: Number(bytes) } : {}) } }],
+      }, { timeoutMs: 60_000 })
+      const verdict = classifyReply(reply)
+      const result = { ...verdict, ms: now() - startedAt, at: now(), fileId: String(fileId) }
+      state.lastSent = { at: result.at, groupId: target, kind: 'file', outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, groupId: target, kind: 'file', outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
+  /** 私聊文件：upload_private_file 自己上传并发送（网关实现如此）。 */
+  async function sendPrivateFile(peerId, { path: filePath, name = null } = {}) {
+    const startedAt = now()
+    const target = String(peerId ?? '').trim()
+    const safeName = String(name ?? '').trim() || 'file'
+    if (!filePath) return { ok: false, outcome: 'rejected', error: '私聊文件路径为空', ms: 0, at: now() }
+    log({ msg: 'qq.outbound.attempt', peerId: target, kind: 'file', label: safeName })
+    try {
+      const uploaded = await call('upload_private_file', { user_id: Number(target), file: filePath, name: safeName }, { timeoutMs: 120_000 })
+      const verdict = classifyActionReply(uploaded)
+      const fileId = uploaded?.data?.file_id ?? uploaded?.data?.fileId ?? null
+      const result = { ...verdict, ms: now() - startedAt, at: now(), ...(fileId ? { fileId: String(fileId) } : {}) }
+      state.lastSent = { at: result.at, peerId: target, kind: 'file', outcome: result.outcome, messageId: result.messageId ?? null, ms: result.ms }
+      return result
+    } catch (error) {
+      const result = { ok: false, outcome: 'unknown', error: String(error?.message ?? error), ms: now() - startedAt, at: now() }
+      state.lastSent = { at: result.at, peerId: target, kind: 'file', outcome: 'unknown', messageId: null, ms: result.ms }
+      return result
+    }
+  }
+
   /** 通用 OneBot 动作：poke/recall/group management。 */
   async function action(name, params = {}) {
     const startedAt = now()
@@ -407,6 +503,10 @@ export function createOutbound({
     sendPrivateImage,
     sendGroup,
     sendGroupImage,
+    sendPrivateMedia,
+    sendGroupMedia,
+    sendGroupFile,
+    sendPrivateFile,
     sendPoke,
     recall,
     groupAdmin,

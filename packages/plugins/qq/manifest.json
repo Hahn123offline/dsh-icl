@@ -13,6 +13,7 @@
     "qq_replied",
     "qq_mark_read",
     "qq_send",
+    "qq_send_media",
     "qq_poke",
     "qq_recall",
     "qq_group_admin",

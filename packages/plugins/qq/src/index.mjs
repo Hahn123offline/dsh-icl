@@ -96,6 +96,7 @@ const DEFAULTS = Object.freeze({
   heartbeatStaleMs: 95_000,
   // 出站（phase 1「只回私聊」；默认全关）
   allowSend: false,
+  allowMediaSend: false,
   sendApproval: '',
   ownerQQ: null,
   auditFile: '',
@@ -105,6 +106,12 @@ const DEFAULTS = Object.freeze({
   sendMaxPerHour: 60,
   sendSameTextWindowMs: 60_000,
   maxSendsPerTurn: 1,
+  maxMediaPerTurn: 3,
+  maxMediaPerHour: 20,
+  maxSendImageBytes: 10 * 1024 * 1024,
+  maxSendVideoBytes: 256 * 1024 * 1024,
+  maxSendFileBytes: 512 * 1024 * 1024,
+  maxSendVoiceBytes: 16 * 1024 * 1024,
   maxSendChars: 2000,
   // Phase 2 出站短队列：限流时排队而不是直接拒绝；默认关，产品 preset 开。
   outboxEnabled: false,
@@ -196,6 +203,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.deliverBackfill = cfg.deliverBackfill === true
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
+  cfg.allowMediaSend = cfg.allowMediaSend === true
   cfg.outboxEnabled = cfg.outboxEnabled === true
   cfg.burstEnabled = cfg.burstEnabled !== false
   cfg.markdownToPlain = cfg.markdownToPlain !== false
@@ -223,11 +231,11 @@ export function normalizeQqConfig(input = {}) {
   cfg.allowPoke = cfg.allowPoke === true
   cfg.allowRecall = cfg.allowRecall === true
   cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxMediaPerTurn', 'maxMediaPerHour', 'maxSendImageBytes', 'maxSendVideoBytes', 'maxSendFileBytes', 'maxSendVoiceBytes', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
-  cfg.gapMode = ['auto', 'fixed', 'typing', 'byLength'].includes(String(cfg.gapMode)) ? String(cfg.gapMode) : 'auto'
+  cfg.gapMode = ['auto', 'adaptive', 'fixed', 'typing', 'byLength'].includes(String(cfg.gapMode)) ? String(cfg.gapMode) : 'auto'
   cfg.proactiveProbability = Math.max(0, Math.min(1, Number(cfg.proactiveProbability) || 0))
   cfg.sleepImpl = typeof input.sleepImpl === 'function' ? input.sleepImpl : null
   cfg.randomImpl = typeof input.randomImpl === 'function' ? input.randomImpl : null

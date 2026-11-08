@@ -54,6 +54,7 @@
 - 群消息用 `qq_unread {to:"群号"}` / `qq_history {to:"群号"}`；`qq_groups`/`qq_group_history` 是群总览兼容视图。
 - 等下一批消息用同一个 `qq_wait_for_messages`：私聊传 QQ 号，群聊传群号；不要找群专用 wait。
 - 发群消息：`qq_send {to:"群号", text/messages}`，没有单独的群发工具；只有 `allowGroupSend=true` 且群在 `allowGroups` 时可用。引用群消息用 `replyToMessageId`。
+- 发本地图片/视频/文件/语音：`qq_send_media {to:"QQ号或群号", path:"本地路径" 或 albumId}`；媒体不要塞进 `qq_send` 文本；表情包仍用 `qq_send_sticker`。
 - 戳一戳：`qq_poke {to:"QQ号"}`；群戳 `qq_poke {to:"群号", userId:"成员QQ号"}`。
 - 群管理（禁言/踢人/名片/全员禁言）走 `qq_group_admin`，默认关闭（`allowGroupAdmin=false`），不要在普通聊天里调用。`@all` 目前没有开放。
 - 群消息不会生成 nudge/主动提醒。

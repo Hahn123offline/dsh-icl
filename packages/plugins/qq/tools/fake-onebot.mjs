@@ -197,7 +197,9 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
           continue
         }
         messageSeq += 1
-        const data = /^send_/.test(record.action) ? { message_id: messageSeq } : {}
+        const data = /^upload_(?:group|private)_file$/.test(record.action)
+          ? { file_id: `fake-file-${messageSeq}` }
+          : (/^send_/.test(record.action) ? { message_id: messageSeq } : {})
         try { socket.write(frame(JSON.stringify({ status: 'ok', retcode: 0, data, echo: payload.echo }))) } catch { /* 已关 */ }
       }
     })

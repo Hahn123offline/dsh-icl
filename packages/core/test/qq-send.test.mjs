@@ -35,6 +35,13 @@ function baseConfig(fake, dir, overrides = {}) {
     allowPrivate: [OWNER],
     ownerQQ: OWNER,
     allowSend: true,
+    allowMediaSend: true,
+    maxMediaPerTurn: 10,
+    maxMediaPerHour: 20,
+    maxSendImageBytes: 1024 * 1024,
+    maxSendVideoBytes: 4 * 1024 * 1024,
+    maxSendFileBytes: 4 * 1024 * 1024,
+    maxSendVoiceBytes: 1024 * 1024,
     sendApproval: 'lead-approved',
     sendTimeoutMs: 500,
     sendMinIntervalMs: 0,
@@ -460,5 +467,65 @@ test('G2 戳一戳/撤回/群管理走 OneBot 动作机', async () => {
     assert.equal(a.outcome, 'ok')
     assert.equal(env.fake.actions().at(-1).action, 'set_group_ban')
     assert.equal(env.fake.actions().at(-1).params.duration, 120)
+  } finally { await env.cleanup() }
+})
+
+test('qq_send_media：图片/视频/群文件走 OneBot 媒体段与上传动作', async () => {
+  const env = await setup({ allowGroups: ['7001'], allowGroupSend: true })
+  try {
+    const tool = env.host.services.tools.list().find((t) => t.name === 'qq_send_media')
+    assert.ok(tool, '应注册 qq_send_media')
+    const png = path.join(env.dir, 'pic.png')
+    fs.writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
+    const image = await tool.execute({ path: png, kind: 'image' })
+    assert.equal(image.outcome, 'ok', image.text)
+    const imageAction = env.fake.sendActions().find((a) => a.action === 'send_private_msg')
+    assert.equal(imageAction.params.message[0].type, 'image')
+    assert.match(imageAction.params.message[0].data.file, /^base64:\/\//)
+
+    const video = path.join(env.dir, 'clip.mp4')
+    fs.writeFileSync(video, Buffer.from('fake mp4 bytes'))
+    const videoResult = await tool.execute({ to: '7001', path: video, kind: 'video' })
+    assert.equal(videoResult.outcome, 'ok')
+    const videoAction = env.fake.sendActions().find((a) => a.action === 'send_group_msg')
+    assert.equal(videoAction.params.message[0].type, 'video')
+    assert.equal(videoAction.params.message[0].data.file, video)
+
+    const file = path.join(env.dir, 'note.txt')
+    fs.writeFileSync(file, 'hello file')
+    const fileResult = await tool.execute({ to: '7001', path: file, kind: 'file' })
+    assert.equal(fileResult.outcome, 'ok', fileResult.text)
+    const allActions = env.fake.actions()
+    assert.ok(allActions.some((a) => a.action === 'upload_group_file'))
+    const fileMsg = allActions.filter((a) => a.action === 'send_group_msg').at(-1)
+    assert.equal(fileMsg.params.message[0].type, 'file')
+    assert.equal(env.audit().at(-1).kind, 'media')
+  } finally { await env.cleanup() }
+})
+
+test('qq_send_media：私聊语音段与私聊文件上传；拒绝 URL/可执行文件', async () => {
+  const env = await setup()
+  try {
+    const tool = env.host.services.tools.list().find((t) => t.name === 'qq_send_media')
+    const voice = path.join(env.dir, 'voice.mp3')
+    fs.writeFileSync(voice, Buffer.from('fake voice'))
+    const voiceResult = await tool.execute({ path: voice, kind: 'voice' })
+    assert.equal(voiceResult.outcome, 'ok', voiceResult.text)
+    const voiceAction = env.fake.sendActions().at(-1)
+    assert.equal(voiceAction.params.message[0].type, 'record')
+    assert.equal(voiceAction.params.message[0].data.file, voice)
+
+    const file = path.join(env.dir, 'doc.pdf')
+    fs.writeFileSync(file, 'fake pdf')
+    const fileResult = await tool.execute({ path: file, kind: 'file' })
+    assert.equal(fileResult.outcome, 'ok', fileResult.text)
+    assert.ok(env.fake.actions().some((a) => a.action === 'upload_private_file'))
+
+    const urlResult = await tool.execute({ path: 'https://example.com/a.jpg' })
+    assert.equal(urlResult.outcome, 'refused')
+    const bad = path.join(env.dir, 'run.exe')
+    fs.writeFileSync(bad, 'MZ')
+    const badResult = await tool.execute({ path: bad, kind: 'file' })
+    assert.equal(badResult.outcome, 'refused')
   } finally { await env.cleanup() }
 })

@@ -85,6 +85,13 @@
                   allowPoke: true
                   allowRecall: true
                   allowSend: true
+                  allowMediaSend: true
+                  maxMediaPerTurn: 3
+                  maxMediaPerHour: 20
+                  maxSendImageBytes: 10485760
+                  maxSendVideoBytes: 268435456
+                  maxSendFileBytes: 536870912
+                  maxSendVoiceBytes: 16777216
                   sendApproval: 'lead-approved'
                   snowlumaHomeDir: 'auto'
                   # Phase 2 出站短队列：限流时排队，短队列满/过期才拒绝；全局每分钟 24 条。

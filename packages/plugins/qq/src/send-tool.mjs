@@ -42,6 +42,27 @@ function num(value, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) 
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback
 }
 
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
+const VIDEO_EXT = new Set(['.mp4', '.mov', '.webm', '.mkv'])
+const VOICE_EXT = new Set(['.mp3', '.wav', '.ogg', '.amr', '.silk', '.m4a', '.flac'])
+const BLOCKED_FILE_EXT = new Set(['.exe', '.bat', '.cmd', '.ps1', '.dll', '.scr', '.msi', '.js', '.vbs', '.com', '.lnk', '.jar'])
+
+/** 本地媒体发送前的文件校验：绝对/相对路径、普通文件、非符号链接、大小上限。 */
+export function inspectMediaFile(filePath, { maxBytes = 0, requireExts = null } = {}) {
+  const raw = String(filePath ?? '').trim()
+  if (!raw) throw new Error('媒体路径为空')
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) throw new Error('只接受本地文件路径，不接受 URL')
+  const abs = path.resolve(raw)
+  const st = fs.lstatSync(abs)
+  if (st.isSymbolicLink()) throw new Error('不接受符号链接')
+  if (!st.isFile()) throw new Error('不是普通文件')
+  if (!st.size) throw new Error('文件为空')
+  if (maxBytes > 0 && st.size > maxBytes) throw new Error(`文件超限：${(st.size / 1048576).toFixed(1)}MB > ${(maxBytes / 1048576).toFixed(0)}MB`)
+  const ext = path.extname(abs).toLowerCase()
+  if (requireExts && !requireExts.has(ext)) throw new Error(`不接受这种文件类型：${ext || '(无扩展名)'}`)
+  return { path: abs, name: path.basename(abs), bytes: st.size, ext }
+}
+
 export async function registerSendTool({
   ctx,
   cfg = {},
@@ -67,6 +88,7 @@ export async function registerSendTool({
 
   const state = {
     turnSent: 0,
+    mediaTurnSent: 0,
     peers: new Map(), // peer -> { times: [], lastText: null, lastTextAt: 0 }
     recent: null,
     counts: { ok: 0, rejected: 0, unknown: 0, refused: 0 },
@@ -524,7 +546,8 @@ export async function registerSendTool({
     ],
     avoid: [
       '未启用 allowGroupSend 时发群；不在 allowGroups 的群',
-      '图片/语音/文件（这些能力不存在，别用文字假装；表情用 qq_send_sticker）',
+      '图片/视频/文件/语音（用 qq_send_media；表情用 qq_send_sticker）',
+      '把媒体当文本发（qq_send 只发文本气泡）',
       '结果 unknown 时盲目重发（可能双发；用 qq_status 核对）',
       '看到“已排队”或“刚发过”后再次调用（队列/幂等会处理，重复调用没有意义）',
       '对方只是发表情/图片且没问话时硬猜内容',
@@ -548,6 +571,146 @@ export async function registerSendTool({
       },
     },
     async execute(args) { return execute(args) },
+  })
+
+  async function sendMedia(args = {}) {
+    if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
+    if (cfg.allowMediaSend !== true) return refuse('媒体发送未启用（allowMediaSend=false）')
+    const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
+    if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
+    const target = resolveSendTarget(targetCfg, targetInput)
+    if (!target.ok) return refuse(target.error, { peerId: targetInput })
+    const kindTarget = target.kind === 'group' ? 'group' : 'private'
+    const targetId = String(target.peer ?? target.groupId ?? targetInput)
+    const peer = kindTarget === 'group' ? `group:${targetId}` : targetId
+    const replyToMessageId = args.replyToMessageId == null || String(args.replyToMessageId).trim() === ''
+      ? null
+      : String(args.replyToMessageId).trim()
+    if (replyToMessageId != null && typeof validateReply === 'function') {
+      let allowed = false
+      try { allowed = validateReply({ peerId: targetId, kind: kindTarget, messageId: replyToMessageId }) } catch { allowed = false }
+      if (!allowed) return refuse(`引用的消息不在这个${kindTarget === 'group' ? '群' : '私聊'}的账本里（id=${replyToMessageId}），不伪造引用`, { peerId: targetId })
+    }
+    const maxImage = Math.max(1024, num(cfg.maxSendImageBytes, 10 * 1024 * 1024))
+    const maxVideo = Math.max(1024, num(cfg.maxSendVideoBytes, 256 * 1024 * 1024))
+    const maxFile = Math.max(1024, num(cfg.maxSendFileBytes, 512 * 1024 * 1024))
+    const maxVoice = Math.max(1024, num(cfg.maxSendVoiceBytes, 16 * 1024 * 1024))
+    const mediaTurnLimit = Math.max(0, Math.floor(num(cfg.maxMediaPerTurn, 3)))
+    if (mediaTurnLimit > 0 && state.mediaTurnSent >= mediaTurnLimit) return refuse(`本轮最多发 ${mediaTurnLimit} 个媒体（等下一轮再发）`, { peerId: targetId })
+    const mediaHourLimit = Math.max(0, Math.floor(num(cfg.maxMediaPerHour, 20)))
+    const recent = peerState(peer).times.filter((t) => now() - t < 3600_000)
+    if (mediaHourLimit > 0 && recent.length >= mediaHourLimit) return refuse(`媒体发送太频繁（每小时最多 ${mediaHourLimit} 个）`, { peerId: targetId })
+    const issue = rateIssue(peer, 1)
+    if (issue) return refuse(`限流：${issue}`, { peerId: targetId })
+
+    let filePath = args.path == null ? '' : String(args.path).trim()
+    if (!filePath && args.albumId != null) {
+      try {
+        const album = ctx.services?.get?.('album')
+        const rows = album?.list ? album.list({}) : []
+        const hit = (Array.isArray(rows) ? rows : []).find((row) => String(row.id) === String(args.albumId))
+        if (!hit?.path) return refuse(`相册里找不到 id=${args.albumId}`, { peerId: targetId })
+        filePath = hit.path
+      } catch (error) {
+        return refuse(`相册查询失败：${String(error?.message ?? error)}`, { peerId: targetId })
+      }
+    }
+    if (!filePath) return refuse('媒体发送需要本地 path 或 albumId', { peerId: targetId })
+
+    const requestedKind = String(args.kind ?? 'auto').toLowerCase()
+    const knownKind = requestedKind === 'image' || requestedKind === 'video' || requestedKind === 'voice' || requestedKind === 'file'
+      ? requestedKind
+      : null
+    let info
+    try {
+      const ext = path.extname(filePath).toLowerCase()
+      const guessed = IMAGE_EXT.has(ext) ? 'image' : (VIDEO_EXT.has(ext) ? 'video' : (VOICE_EXT.has(ext) ? 'voice' : 'file'))
+      const kind = knownKind ?? guessed
+      info = inspectMediaFile(filePath, {
+        maxBytes: kind === 'image' ? maxImage : (kind === 'video' ? maxVideo : (kind === 'voice' ? maxVoice : maxFile)),
+        requireExts: kind === 'image' ? IMAGE_EXT : (kind === 'video' ? VIDEO_EXT : (kind === 'voice' ? VOICE_EXT : null)),
+      })
+      info.kind = kind
+      if (kind === 'file' && BLOCKED_FILE_EXT.has(info.ext)) {
+        return refuse(`不允许发送可执行/脚本文件：${info.ext}`, { peerId: targetId })
+      }
+      if (kind === 'image') {
+        const accepted = acceptImageBuffer(fs.readFileSync(info.path), { maxBytes: maxImage, label: '图片' })
+        info.buffer = accepted.buffer
+        info.mimeType = accepted.mimeType
+      }
+    } catch (error) {
+      return refuse(String(error?.message ?? error), { peerId: targetId })
+    }
+
+    const startedAt = now()
+    let result
+    if (info.kind === 'image') {
+      const segment = { type: 'image', data: { file: `base64://${info.buffer.toString('base64')}`, name: info.name } }
+      result = kindTarget === 'group'
+        ? await outbound.sendGroupMedia(targetId, segment, { kind: 'image', replyToMessageId, timeoutMs: 60_000 })
+        : await outbound.sendPrivateMedia(targetId, segment, { kind: 'image', replyToMessageId, timeoutMs: 60_000 })
+    } else if (info.kind === 'file') {
+      result = kindTarget === 'group'
+        ? await outbound.sendGroupFile(targetId, { path: info.path, name: info.name, bytes: info.bytes })
+        : await outbound.sendPrivateFile(targetId, { path: info.path, name: info.name })
+    } else {
+      const segment = { type: info.kind === 'voice' ? 'record' : 'video', data: { file: info.path } }
+      result = kindTarget === 'group'
+        ? await outbound.sendGroupMedia(targetId, segment, { kind: info.kind, replyToMessageId, timeoutMs: 120_000, label: info.name })
+        : await outbound.sendPrivateMedia(targetId, segment, { kind: info.kind, replyToMessageId, timeoutMs: 120_000, label: info.name })
+    }
+    const outcome = result.ok ? 'ok' : (result.outcome === 'rejected' ? 'rejected' : 'unknown')
+    state.counts[outcome] += 1
+    state.mediaTurnSent += 1
+    if (result.ok) {
+      peerState(peer).times.push(now())
+      globalTimes.push(now())
+    }
+    audit({
+      kind: 'media', peerId: targetId, targetKind: kindTarget, mediaKind: info.kind, name: info.name,
+      bytes: info.bytes, outcome, messageId: result.messageId ?? null, fileId: result.fileId ?? null,
+      ms: result.ms ?? null, error: result.error ?? null,
+    })
+    const ms = now() - startedAt
+    state.recent = {
+      at: now(), peerId: targetId, targetKind: kindTarget, kind: 'media', mediaKind: info.kind,
+      name: info.name, outcome, messageId: result.messageId ?? null, messageIds: result.messageId ? [result.messageId] : [],
+      sent: result.ok ? 1 : 0, total: 1, ms, chars: 0, error: result.error ?? null,
+    }
+    if (result.ok) {
+      return { text: `已发出去（${info.kind} ${info.name}，${info.bytes} 字节${result.messageId ? `，messageId=${result.messageId}` : ''}，${ms}ms）。`, outcome: 'ok', messageId: result.messageId ?? null }
+    }
+    const reason = result.error ?? '未知原因'
+    const label = outcome === 'unknown' ? `结果未知（${reason}）` : reason
+    return { text: `没发出去：${label}。媒体未发送（不自动重试）。`, outcome, error: reason }
+  }
+
+  ctx.tools.register({
+    name: 'qq_send_media',
+    summary: '发本地图片/视频/文件/语音到 QQ 私聊或 allowGroupSend 白名单群；图片可来自 albumId，文件只接受本地普通文件。',
+    when: [
+      '对方想看/需要一张本地图片、相册图片、视频、文件或语音',
+      '你已经确认本地路径或相册 id，并知道该发给谁',
+    ],
+    avoid: [
+      '未启用 allowMediaSend / allowGroupSend 时发群',
+      '网络 URL 或不在本地的文件（只接受本地绝对路径/albumId）',
+      '结果 unknown 时盲目重发（可能重复上传/发送）',
+      '表情包（用 qq_send_sticker）',
+      '把媒体当文本用 qq_send 发送（不会带附件）',
+    ],
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        to: { type: 'string', description: '目标 QQ 号（私聊）或群号（allowGroups + allowGroupSend）。省略则用 owner / 唯一白名单私聊。' },
+        path: { type: 'string', description: '本地文件路径（绝对路径优先）；与 albumId 二选一。' },
+        albumId: { type: 'number', description: '相册图片/媒体的 id；与 path 二选一，发送前从 album 服务取路径。' },
+        kind: { type: 'string', description: 'auto（默认，按扩展名）/ image / video / voice / file。' },
+        replyToMessageId: { type: 'string', description: '引用回复的 messageId（必须在该私聊/群账本里，可选）。' },
+      },
+    },
+    async execute(args) { return sendMedia(args) },
   })
 
   async function sendSticker(args = {}) {
@@ -786,7 +949,7 @@ export async function registerSendTool({
     async execute(args) { return groupAdmin(args) },
   })
 
-  const offTurnEnd = ctx.signals.on({ tags: ['turn-end'] }, () => { state.turnSent = 0 })
+  const offTurnEnd = ctx.signals.on({ tags: ['turn-end'] }, () => { state.turnSent = 0; state.mediaTurnSent = 0 })
 
   ctx.log({ msg: 'qq.send.ready', owner: cfg.ownerQQ ?? null, allowPrivate: cfg.allowPrivate ?? [], perTurn: maxPerTurn, burst: { enabled: burstEnabled, max: burstMaxMessages, chars: maxMessageChars }, stickers: { dir: stickerDir || null, maxBytes: maxStickerBytes }, audit: cfg.auditFile || null })
 
