@@ -86,6 +86,8 @@
                   outboxEnabled: true
                   outboxMaxPending: 20
                   outboxTtlMs: 300000
+                  # 按下一句字数估打字时间，而不是所有气泡固定 1–3s。
+                  gapMode: adaptive
                   # 不做发送条数限流：她需要连说几句时不该被“本轮最多 1 条”打断。
                   maxSendsPerTurn: 0
                   sendMaxPerMinute: 0

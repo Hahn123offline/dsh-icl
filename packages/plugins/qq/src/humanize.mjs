@@ -183,7 +183,7 @@ export function planBurst(messages, {
     .filter(Boolean)
     .slice(0, Math.max(1, Number(maxMessages) || BURST.maxMessages))
     .map((text) => (text.length > maxChars ? splitLongText(text, maxChars).join('') : text))
-  const mode = ['auto', 'fixed', 'typing', 'byLength'].includes(String(gapMode)) ? String(gapMode) : 'auto'
+  const mode = ['auto', 'adaptive', 'fixed', 'typing', 'byLength'].includes(String(gapMode)) ? String(gapMode) : 'auto'
   const hardMin = Math.max(0, Number(minGapMs) || 0)
   const hardMax = Math.max(hardMin, Math.max(Number(clampMaxMs) || BURST.clampMaxMs, Number(maxGapMs) || 0))
   return list.map((text, i) => {
@@ -195,6 +195,12 @@ export function planBurst(messages, {
     }
     if (mode === 'typing') {
       return { text, delayBeforeMs: clamp(typingMs(list[i - 1] ?? '', { pace }), BURST.clampMinMs, hardMax) }
+    }
+    if (mode === 'adaptive') {
+      // 自适应：下一口气泡越长，等得越久（模拟"在打下一句"）。
+      const typed = typingMs(list[i] ?? '', { charsPerSecond: 4, minMs: 600, maxMs: 8_000, pace })
+      const base = randInt(hardMin, Math.max(hardMin, Number(maxGapMs) || hardMin), random)
+      return { text, delayBeforeMs: clamp(Math.max(base, typed), BURST.clampMinMs, hardMax) }
     }
     if (mode === 'byLength') {
       return { text, delayBeforeMs: clamp(800 + 20 * (list[i - 1] ?? '').length, BURST.clampMinMs, hardMax) }

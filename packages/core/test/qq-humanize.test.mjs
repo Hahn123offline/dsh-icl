@@ -95,6 +95,12 @@ test('planBurst：fixed/byLength/typing 模式与上限', () => {
   assert.equal(many.length, BURST.maxMessages)
 })
 
+test('planBurst：adaptive 按下一口气泡字数增加延迟', () => {
+  const short = planBurst(['a', '短'], { gapMode: 'adaptive', random: () => 0 })[1].delayBeforeMs
+  const long = planBurst(['a', '字'.repeat(80)], { gapMode: 'adaptive', random: () => 0 })[1].delayBeforeMs
+  assert.ok(long > short, `long=${long} short=${short}`)
+})
+
 test('planBurst：单条超长时按 maxChars 拆开拼回（不丢内容）', () => {
   const text = '字'.repeat(1200)
   const steps = planBurst([text], { maxChars: 500 })

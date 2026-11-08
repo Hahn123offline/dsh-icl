@@ -543,7 +543,7 @@ export async function registerSendTool({
         mentionUserIds: { type: 'array', items: { type: 'string' }, description: '群消息 @ 指定成员 QQ 号（最多 10 个）。' },
         replyToMessageId: { type: 'string', description: '要引用的消息 messageId（必须是在这个私聊/群账本里收到的消息；只能配单条 text，不能配 messages[]）。' },
         pace: { type: 'string', description: 'gapMode=typing 时的打字节奏：thoughtful | normal | quick | blast。' },
-        gapMode: { type: 'string', description: '气泡间隔：auto（默认，1–3s，偶尔 5–10s）| fixed | typing | byLength。' },
+        gapMode: { type: 'string', description: '气泡间隔：adaptive（产品默认，按下一句字数估打字时间）| auto（1–3s，偶尔 5–10s）| fixed | typing | byLength。' },
         gapMs: { type: 'number', description: 'gapMode=fixed 时的固定间隔（毫秒）。' },
       },
     },
