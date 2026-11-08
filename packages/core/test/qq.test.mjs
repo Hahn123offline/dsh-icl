@@ -700,3 +700,42 @@ test('群聊只读工具：qq_groups 报未读，qq_group_history 能看群账�
   host.disable('qq')
   host.disable('focus')
 })
+
+test('戳一戳在醒着、无 focus 时单独叫醒（不是只在睡眠里入队）', async () => {
+  FakeWebSocket.reset()
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig() })
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame({
+    post_type: 'notice', notice_type: 'poke', sub_type: 'poke',
+    time: Math.floor(NOW / 1000), self_id: 2593621742,
+    user_id: 10001, target_id: 2593621742,
+    sender: { user_id: 10001, nickname: '测试' },
+  }))
+  const text = host.services.delivery.drain('session').map((b) => b.text).join('\n')
+  assert.match(text, /戳了戳你/)
+  host.disable('qq')
+})
+
+test('未读摘要：旧消息在下一轮 turnText 里可见，不依赖主动检查', async () => {
+  FakeWebSocket.reset()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-unread-digest-'))
+  const host = createHost({ log: () => {} })
+  host.registerPlugin(timeManifest, timeModule, { config: { stateFile: path.join(dir, 'time.json'), tickMs: 3_600_000 } })
+  host.registerPlugin(manifest, qqModule, { config: makePluginConfig() })
+  await host.enable('time')
+  host.shared.get('time').sleep({ message: '睡了', durationMin: 30 })
+  host.services.delivery.drain('session').forEach((b) => host.services.delivery.ack(b.id))
+  await host.enable('qq')
+  const ws = FakeWebSocket.last()
+  ws.emit('open', {})
+  ws.emit('message', eventFrame(privateEvent({ text: '睡前没看到的消息', messageId: 9701 })))
+  const turnText = await host.services.prompt.turnText({})
+  assert.match(turnText, /QQ 还有没看过的消息/)
+  assert.match(turnText, /睡前没看到的消息/)
+  host.disable('qq')
+  host.disable('time')
+  fs.rmSync(dir, { recursive: true, force: true })
+})

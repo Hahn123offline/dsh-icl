@@ -464,6 +464,53 @@ export async function apply(ctx) {
       .filter((row) => row.undelivered > 0)
   }
 
+  /**
+   * 模型进入任何一轮前都能看到的未读摘要。只列还没交付的行，不重复当前刚投递的消息；
+   * 目的在于“说话前先看到旧消息”，而不是等下一次主动检查。
+   */
+  function unreadDigest(maxChars = 700) {
+    if (!ledger) return ''
+    const blocks = []
+    const privateRows = ledgerWatermarks().filter((row) => Number(row.undelivered) > 0)
+    for (const row of privateRows.slice(0, 4)) {
+      const activity = activityIdForPrivate(row.peer)
+      const msgs = (ledger.undelivered(activity, { limit: 2 }) ?? []).slice(0, 2)
+      const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
+      blocks.push(`私聊 ${row.peer}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
+    }
+    const groupRows = groupWatermarks()
+    for (const row of groupRows.slice(0, 4)) {
+      const msgs = (ledger.undelivered(row.activity, { limit: 2 }) ?? []).slice(0, 2)
+      const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
+      blocks.push(`群 ${row.groupId}（${row.undelivered} 条未交付）${lines.length ? `\n${lines.join('\n')}` : ''}`)
+    }
+    if (!blocks.length) return ''
+    const text = `QQ 还有没看过的消息（回之前先确认，不要假装没看见）：\n${blocks.join('\n')}`
+    return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
+  }
+
+  let lastPendingNoticeKey = null
+  function notifyPending(reason = 'session-bind') {
+    const digest = unreadDigest(500)
+    if (!digest) { lastPendingNoticeKey = null; return false }
+    const key = digest.slice(0, 300)
+    if (key === lastPendingNoticeKey) return false
+    lastPendingNoticeKey = key
+    try {
+      const out = ctx.signals.offer({
+        from: { plugin: 'qq', activity: 'unread' },
+        kind: 'notice',
+        to: 'model',
+        text: `[QQ未读] ${reason === 'session-bind' ? '你回来时' : ''}还有没处理的消息：\n${digest}`,
+        tags: ['qq', 'unread'],
+      })
+      return Boolean(out?.accepted || out?.delivered)
+    } catch (error) {
+      ctx.log({ level: 'warn', msg: 'qq.unread.notify-fail', error: String(error?.message ?? error) })
+      return false
+    }
+  }
+
   function peerList() {
     const list = new Set(cfg.allowPrivate.map(String))
     if (ledger) {
@@ -1861,6 +1908,8 @@ export async function apply(ctx) {
       noteDeliveredSeqs,
       gateCounters: () => gate.counters(),
       flushInbound: () => inboundDebouncer?.flushAll() ?? null,
+      notifyPending: (reason = 'session-bind') => notifyPending(reason),
+      unreadDigest: (maxChars = 700) => unreadDigest(maxChars),
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
       skills: () => SKILLS.map((s) => ({ ...s })),
@@ -1881,6 +1930,12 @@ export async function apply(ctx) {
         return `QQ 只读影子：已连接，本轮收到 ${s.stats.delivered} 条私聊（不能回复）。`
       },
     })
+  }
+  // 每轮开始前把"还没交付的旧消息"带进上下文；不是主动检查，也不依赖心跳。
+  try {
+    ctx.prompt.onTurn(() => unreadDigest(800))
+  } catch (error) {
+    ctx.log({ level: 'warn', msg: 'qq.prompt.on-turn', error: String(error?.message ?? error) })
   }
 
   start()

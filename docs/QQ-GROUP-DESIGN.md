@@ -116,6 +116,18 @@ rate 高，普通消息被压成摘要。
 - 群补课：`get_group_msg_history(group_id, message_seq)`，按群游标；私聊补课逻辑不改。
 - 群通知（poke/recall/mute）只做低优先级事实，不默认唤醒。
 
+### 5.1 未读的"说话前可见"
+
+吸取 2026-11-08 早上的事故：旧消息只在 `qq_unread`/world 里报数，等模型主动查会延迟到下一次心跳，
+甚至被时间积压过期后彻底静默。现在：
+
+- `qq` 注册 `prompt.onTurn`：每轮开始把**未交付**的私聊/群消息摘要带进上下文；不是主动检查。
+- 会话绑定 `host.shared.get('qq').notifyPending('session-bind')`：她回来时如果还有旧消息，
+  立即发一条 `[QQ未读]` notice，不用等心跳。
+- 两条都只读账本，不伪造已读；模型看到后可用 `qq_unread/qq_history/qq_group_history` 继续看。
+- 这仍不是"保证不漏"：如果消息已经被错误地标 delivered，摘要不会出现；所以交付水位必须继续守住。
+
+
 ## 6. 群发送（复用通用 send）
 
 按用户 2026-11-08 决定：**不新增 `qq_send_group`，仍然用通用 `qq_send`**。

@@ -760,6 +760,15 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 会话 / agent ─────────────────────────────────────── */
 
+  /** 跨会话绑定保留：时间闹钟/睡醒 + 明确需要人看见的 poke/@/admin/alarm。 */
+  function keepAcrossSessionBind(item) {
+    const plugin = String(item?.source?.plugin ?? '')
+    if (plugin === 'time') return true
+    const tags = Array.isArray(item?.source?.tags) ? item.source.tags : []
+    if (item?.source?.pierce === true) return true
+    return tags.some((tag) => ['poke', 'mention', 'at', 'admin', 'alarm'].includes(String(tag)))
+  }
+
   function bindSession(session) {
     if (!session?.id) return
     const id = String(session.id)
@@ -772,8 +781,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.factsCache = { turn: null, text: null }
     state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     // 新会话从空投递队列开始；旧会话/旧 run 留在 host 队列里的消息不能先于第一轮漏进来。
-    // 例外：time 的闹钟/睡醒/安静结束不能因为"会话当时没绑定"被清掉，否则第二天早上不会醒。
-    try { host.services.delivery.clear({ preserve: (item) => String(item?.source?.plugin ?? '') === 'time' }) } catch { /* ignore */ }
+    // 例外：time 的闹钟/睡醒，以及 poke/@/admin/alarm 这类高优先级提醒不能因为当时没绑定而丢。
+    try { host.services.delivery.clear({ preserve: keepAcrossSessionBind }) } catch { /* ignore */ }
+    // 会话一绑定就告诉她还有哪些旧消息没交付，避免"她回来却不知道"。
+    try { host.shared.get('qq')?.notifyPending?.('session-bind') } catch { /* qq 未启用 */ }
     log({ msg: 'icl.session', id })
   }
 
@@ -787,8 +798,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.factsCache = { turn: null, text: null }
     state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
     state.injected.clear()
-    // 旧会话的待投递不能漏给下一条会话；time 的闹钟/睡醒保留到下一次绑定。
-    try { host.services.delivery.clear({ preserve: (item) => String(item?.source?.plugin ?? '') === 'time' }) } catch { /* ignore */ }
+    // 旧会话的待投递不能漏给下一条会话；time 闹钟与 poke/@ 等提醒保留到下一次绑定。
+    try { host.services.delivery.clear({ preserve: keepAcrossSessionBind }) } catch { /* ignore */ }
   }
 
   function bindAgent(agent) {
