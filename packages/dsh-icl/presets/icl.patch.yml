@@ -57,6 +57,9 @@
               # QQ 私聊（真机已验证）：只接 owner 私聊；出站三把钥匙打开但只允许 owner。
               # SnowLuma 安装目录/账号由插件自动发现（~/Downloads/SnowLuma-*），不写死用户名。
               pluginConfig:
+                # 本地视觉描述服务停用：多模态模型直接看图；GIF 需要切帧时走 video_storyboard。
+                album:
+                  captionEnabled: false
                 # 清醒节拍默认关闭：不外部定时注入"该醒了"；唤醒由模型用 time_arrange 闹钟/
                 # 时间安排自己定。产品显式写死 false，避免未来默认值漂移。
                 time:

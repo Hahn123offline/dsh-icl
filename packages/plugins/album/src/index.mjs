@@ -742,6 +742,7 @@ export function apply(ctx) {
     },
   })
 
+  if (ctx.config?.captionEnabled !== false) {
   ctx.tools.register({
     name: 'album_caption',
     summary: 'Manually caption album images with the local vision model (one Chinese sentence); no auto-run.',
@@ -782,6 +783,7 @@ export function apply(ctx) {
       return { text: lines.length ? lines.join('\n') : '没有可处理的图片。' }
     },
   })
+  }
 
   // 给 bili/qq/dream 用的进程内接口（不新增工具、不进提示词）。
   ctx.services.provide('album', {
