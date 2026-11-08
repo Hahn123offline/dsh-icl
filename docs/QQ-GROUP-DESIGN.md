@@ -54,6 +54,35 @@
 这只需要在 focus 的 `admit` 增加 ambient 分支，或让 core 统一识别 `ambient` tag；
 **不引入 note/nudge/push 三套完整等级**，先保持简单。
 
+## 3.1 旧项目的"繁忙度"机制（确认存在，值得借鉴）
+
+旧 `focus-core` / `dsh-qq` 不是用单一数字，而是三层组合：
+
+1. **per-activity 自适应窗口**（`focus-core/apps/dsh-icl/src/domain/attention-window.js`）
+   - 5 秒窗口内该活动 ≤5 条 → 立即给；
+   - 超过 → 延迟 `5s × ceil((rate-5)/5)`；
+   - 硬上限：ambient 10 分钟/20 条，pierce 60 秒/5 条；
+   - **按活动分别测速**：热闹的群不会拖慢安静群的单条消息。
+2. **ambient / pierce 两通道**（`domain/policy.js`）
+   - ambient：普通群消息，攒着；pierce：@/点名/闹钟/管理员，具体内容插话；
+   - 群级静音、sacred、每日唤醒预算可把 pierce 降为 ambient；
+   - 旧版后期把 ambient 改成**只拉不推**：世界状态报数，模型想看自己拉。
+3. **单一活动租约 + 积压提醒**（`core-scheduler.js` / `nudge.js`）
+   - 同一时刻只有一个活跃会话；别处按提及/私聊/最近排序；
+   - nudge 按批次提醒：soft 10 分钟、hard 45 分钟、cooldown 10 分钟、每小时最多 6 次。
+
+结论：**“太忙积压、不忙秒回”不是全局 poll 频率，而是 per-activity 的速率窗口 +
+pierce 优先 + 单租约。** 安静小群的 rate 低，所以 @/戳可以很快进来；大群刷屏时
+rate 高，普通消息被压成摘要。
+
+当前 ICL 已有 10s 固定入站防抖，但缺：
+- 按活动测速（所有活动同一个固定 quiet 窗口）；
+- ambient/pierce 区分；
+- 高繁忙时的自适应延迟与硬上限。
+
+建议在群聊 G1 引入一个**纯函数的 attention-window**（放 core 或 qq 均可），
+先用现有 `inboundDebounce` 的 per-activity 桶喂 rate，不先搭完整事件表。
+
 ## 4. 多群怎么"聚焦"
 
 - 模型用 `focus_enter({ activity: 'qq:group:<id>', title: '群名' })` 主动进入一个群；
@@ -72,25 +101,25 @@
 - 群补课：`get_group_msg_history(group_id, message_seq)`，按群游标；私聊补课逻辑不改。
 - 群通知（poke/recall/mute）只做低优先级事实，不默认唤醒。
 
-## 6. 群发送（单独工具，避免误发）
+## 6. 群发送（复用通用 send）
 
-建议新增 `qq_send_group`，而不是让 `qq_send` 接受群目标：
+按用户 2026-11-08 决定：**不新增 `qq_send_group`，仍然用通用 `qq_send`**。
+让 `qq_send` 支持：
 
-```js
-qq_send_group {
-  group: '123',
-  text?: string,
-  messages?: string[],
-  replyToMessageId?: string,
-  mentionUserIds?: string[]   // 只允许具体成员，禁止 @all
-}
-```
+- `to` 可以是 `qq:group:<id>` / `group:<id>` / `qq:private:<qq>`；省略时用**当前 focus**
+  的 activity（配合 `focus_enter` 的快捷参数）。
+- 群目标必须在 `allowGroups` 白名单；三把钥匙不变。
+- `replyToMessageId` 复用；群引用用消息的 messageId。
+- `mentionUserIds` 只允许具体成员；`@all` 实现保留但默认关闭。
+- 群管理动作（禁言/踢人/改名）实现保留在能力层，默认关闭；将来只在小范围、
+  接受度高的群里作为实验性动作开放。
+- 复用 humanize/短队列/幂等指纹；增加 per-group 限速与全局限速。
+- 发送后审计只存 hash/长度；禁止把私聊内容发到群。
+- 首版只读群聊，不自动回复；手动回复在 G2 开放。
 
-- 只允许 `allowGroups` 白名单；三把钥匙不变
-- 禁止 @all、禁止群管理动作、禁止把私聊内容发到群
-- 复用 humanize/短队列/幂等指纹；增加 per-group 限速与全局限速
-- 每条群消息同样支持引用；发送后审计只存 hash/长度
-- 首版可以先只读群聊 + 手动回复，自动回复策略后置
+待定：`qq_send` 省略 `to` 时用 focus 会不会误把私聊回复发到群？实现时应要求
+**focus 是群且工具调用上下文确认是群**，或者显式 `to`；不允许"当前 focus 是群"
+就静默发群（防止模型混淆）。
 
 ## 7. 等待 / 戳 / 自动唤醒
 
@@ -110,7 +139,8 @@ qq_send_group {
 
 ### G2：群回复
 
-- `qq_send_group` + 白名单 + 引用 + 限速/队列/幂等 + 测试
+- 通用 `qq_send` 支持群目标 + 白名单 + 引用 + 限速/队列/幂等 + 测试
+- `@all`/群管理能力实现但默认关闭；只在受控实验群开放
 - 发送策略/频率按真实群调参
 
 ### G3：群聊完整体验
@@ -118,11 +148,18 @@ qq_send_group {
 - 群 wait、poke、recall/notice、群补课、群未读水位细化
 - 可选：focus 切换只回放目标群 backlog、群级静音
 
-## 9. 开放问题（需要拍板）
+## 9. 已拍板 / 待定
 
-1. 无 focus 时群 @ 是否直接唤醒，还是也进 backlog？
-2. 群发送是否第一版就开放，还是先只读多群？
-3. `@all` 永远禁止吗？群管理动作（禁言/踢人）永远不做吗？
-4. 群补课回溯窗口/频率；群消息是否默认持久化正文（私聊账本已存正文）。
-5. 多群同时 @ 时是否都穿透，还是只保留最高优先级/摘要？
-6. 群聊记忆/人物关系是否复用现有 whois/memory，还是单独人物档案（先复用）。
+已拍板（2026-11-08）：
+
+1. 无 focus 时群 @ **直达**；普通群消息按 ambient/繁忙度处理。
+2. G1 **只读**，不发群消息；G2 再开通用 send 的群目标。
+3. `@all` 和群管理动作**实现保留但默认关闭**；只在小范围、接受度高的群里作为实验性动作。
+4. 多群同时 @：按 per-activity rate + 先到/pierce 优先级处理，不要求全局串行抢答。
+5. 群发送复用通用 `qq_send`，支持用当前 focus 做快捷目标；不新增单独工具。
+
+仍待定：
+
+1. 群补课回溯窗口/频率；群消息是否默认持久化正文（私聊账本已存正文）。
+2. focus 切换时只回放目标群 backlog，还是沿用现有全量摘要。
+3. 群级静音/免打扰是否在 G1 就做；建议 G3。
