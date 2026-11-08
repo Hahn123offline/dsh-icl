@@ -89,7 +89,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     } catch { /* 诊断失败不影响主流程 */ }
   }
   const saveImage = async (file) => {
-    const store = attachmentsService()
+    const store = await waitAttachments(1000)
     if (!store) throw new Error('当前会话没有 attachment 服务')
     const mediaType = imageMediaType(file)
     if (!mediaType) throw new Error(`不支持的图片扩展名：${path.extname(file) || '(无)'}`)
@@ -128,6 +128,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     factsDirty: false,
     attachments: null,
     attachmentsInjected: false,
+    attachmentsWaiters: [],
     ticking: false,
     // 通用重复动作保护：记录同一 session 最近一次工具调用签名与连续次数。
     // 触发条件：连续 N 次（默认 3）完全相同（name + 规范化 args）→ 通过 delivery 注入一条提示；
@@ -599,6 +600,28 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     })
   }
 
+  function resolveAttachmentWaiters() {
+    const list = state.attachmentsWaiters.splice(0)
+    for (const resolve of list) { try { resolve(state.attachments) } catch { /* ignore */ } }
+  }
+
+  /** 取 attachment 服务；如果注入还没完成，等一小会儿再降级（首图竞态修复）。 */
+  async function waitAttachments(timeoutMs = 1000) {
+    const store = attachmentsService()
+    if (store) return store
+    return new Promise((resolve) => {
+      let done = false
+      const timer = setTimeout(() => { if (!done) { done = true; resolve(state.attachments ?? null) } }, Math.max(50, Number(timeoutMs) || 1000))
+      if (typeof timer.unref === 'function') timer.unref()
+      state.attachmentsWaiters.push((value) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve(value ?? state.attachments ?? null)
+      })
+    })
+  }
+
   /** 延迟取 DSH attachment 服务；没有就返回 null（调用方降级为文字提示）。 */
   function attachmentsService() {
     const ok = (store) => Boolean(store && (typeof store.saveImage === 'function' || typeof store.saveImages === 'function'))
@@ -616,9 +639,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
           } else {
             diag({ event: 'attachments.inject-empty', keys: sub ? Object.keys(sub).slice(0, 8) : null })
           }
+          resolveAttachmentWaiters()
         })
       } catch (error) {
         report('attachments.inject', error)
+        resolveAttachmentWaiters()
       }
     }
     // inject 可能是同步回调：这里必须再取一次，不能无条件 null（否则启动后第一张图必被降级）。
@@ -647,7 +672,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     const refs = []
     const fallback = []
     if (descriptors.length) {
-      const store = attachmentsService()
+      const store = await waitAttachments(1000)
       if (store) {
         let candidates = descriptors
         let skipped = 0
@@ -1161,6 +1186,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     try { state.offSurface = host.services.surface.onChange(() => { syncTools() }) } catch (error) { report('surface.subscribe', error) }
     try { state.offFocus = host.services.focus.onChange(() => { saveFocus() }) } catch (error) { report('focus.subscribe', error) }
     try { state.offFocusBacklog = host.services.focus.onBacklog(() => { saveFocus() }) } catch (error) { report('focus.backlog-subscribe', error) }
+    // 预热 attachment 注入，避免会话第一张图因为 inject 尚未回调而被降级成文字。
+    try { attachmentsService() } catch { /* 非图片会话可忽略 */ }
     startTimer()
     return { tools: state.tools.size }
   }

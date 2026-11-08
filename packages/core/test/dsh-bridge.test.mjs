@@ -1333,3 +1333,35 @@ test('桥：冷启动没有 delivery 队列时，用未读摘要冷恢复会话'
   assert.match(prompted?.text ?? '', /旧消息/)
   bridge.dispose()
 })
+
+test('桥：attachment 异步注入时，第一张图等待注入而不是立刻降级', async () => {
+  const root = tempRoot('image-async-inject')
+  const host = await hostWithMemory(root)
+  const saves = []
+  const store = {
+    async saveImages(images) {
+      saves.push(...images)
+      return images.map((img, i) => ({ attachmentId: `async-${i}`, mediaType: img.mediaType, bytes: img.data.byteLength, width: 1, height: 1 }))
+    },
+  }
+  const ctx = fakeCtx()
+  ctx.inject = (deps, cb) => { if (deps.includes('attachments')) setTimeout(() => cb({ attachments: store }), 30) }
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq' },
+      content: { text: '异步第一张图', images: [{ data: new Uint8Array([1, 2, 3]), mediaType: 'image/gif' }] },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    assert.equal(saves.length, 1, '等待异步 inject 后应交给 attachment')
+    assert.equal(agent.steers[0].content[1].type, 'image')
+    assert.doesNotMatch(agent.steers[0].content[0].text, /未能显示/)
+  } finally { bridge.dispose() }
+})
