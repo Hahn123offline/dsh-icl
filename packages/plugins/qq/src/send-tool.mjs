@@ -91,7 +91,7 @@ export async function registerSendTool({
     mediaTurnSent: 0,
     peers: new Map(), // peer -> { times: [], lastText: null, lastTextAt: 0 }
     recent: null,
-    counts: { ok: 0, rejected: 0, unknown: 0, refused: 0 },
+    counts: { ok: 0, rejected: 0, unknown: 0, refused: 0, interrupted: 0 },
   }
 
   const live = liveConfig ?? {}
@@ -209,6 +209,7 @@ export async function registerSendTool({
   const burstMaxMessages = Math.max(1, Math.floor(num(cfg.burstMaxMessages, BURST.maxMessages)))
   const maxMessageChars = Math.max(1, Math.floor(num(cfg.maxMessageChars, BURST.maxChars)))
   const gapMode = String(cfg.gapMode ?? 'auto')
+  const interruptGraceMs = Math.max(0, Math.min(5000, num(cfg.interruptGraceMs, 2000)))
   const targetCfg = { ...cfg, enabled: true, allowSend: true, sendApproval: SEND_APPROVAL_TOKEN }
   // Phase 2 短队列：默认关；产品 preset 开。关闭时保持原有"超限直接拒绝"语义。
   const outboxEnabled = cfg.outboxEnabled === true
@@ -228,12 +229,26 @@ export async function registerSendTool({
     globalTimes = globalTimes.filter((t) => at - t < 60_000)
   }
 
-  /** 发送中收到新消息：只影响正在发送的 peer（finish-then-handle）。 */
+  /** 发送中收到同会话新消息：标记 finish-then-handle，并取消该会话尚未开始发的队列任务。 */
   function noteInbound(peerId) {
     const peer = String(peerId ?? '').trim()
     if (!peer || !activePeers.has(peer)) return false
     interruptedPeers.add(peer)
+    cancelOutboxPeer(peer)
     return true
+  }
+
+  function cancelOutboxPeer(peer) {
+    let removed = 0
+    for (let i = outbox.length - 1; i >= 0; i -= 1) {
+      if (outbox[i].peer !== peer) continue
+      const [job] = outbox.splice(i, 1)
+      removed += 1
+      if (job.fingerprint) idempotency.delete(job.fingerprint)
+      state.outboxCounts.dropped += 1
+      audit({ kind: 'queue', peerId: peer, chars: job.key.length, textHash: hash(job.key), outcome: 'canceled', reason: 'interrupted' })
+    }
+    return removed
   }
 
   /** 统一限速判定；includeTurn=false 时供队列 worker 使用（每轮调用额度只在 execute 判）。 */
@@ -400,6 +415,8 @@ export async function registerSendTool({
           break
         }
       }
+      // 给对方一点时间把插话说完/合并连续几条，再回到模型“接话”。
+      if (failure?.outcome === 'interrupted' && interruptGraceMs > 0) await sleepImpl(interruptGraceMs)
     } finally {
       activePeers.delete(peer)
       interruptedPeers.delete(peer)
@@ -439,6 +456,26 @@ export async function registerSendTool({
     if (outcome === 'ok') {
       if (plan.length === 1) return { text: `已发出去（messageId=${sent[0]?.messageId}，${ms}ms）。`, outcome: 'ok', messageId: sent[0]?.messageId ?? null }
       return { text: `已发出去 ${plan.length} 条（共 ${ms}ms；messageIds=${sent.map((item) => item.messageId).join(',')}）。`, outcome: 'ok', messageIds: sent.map((item) => item.messageId) }
+    }
+    if (outcome === 'interrupted') {
+      state.counts.interrupted += 1
+      const remaining = plan.slice(sent.length).map((step) => step.text)
+      state.recent.remaining = remaining
+      audit({
+        kind: 'send', peerId: targetId, targetKind: kind, outcome: 'interrupted',
+        sent: sent.length, total: plan.length, remaining: remaining.length,
+        chars: remaining.reduce((sum, text) => sum + text.length, 0),
+        replyTo: replyToMessageId, queued: fromQueue || undefined,
+      })
+      return {
+        text: `对面插嘴了：你发到 ${sent.length}/${plan.length} 条时收到新消息；已发 ${sent.length}/${plan.length} 条，剩余 ${remaining.length} 条没发。先接话；不会自动续发，要补发由你自己决定。`,
+        outcome: 'interrupted',
+        interrupted: true,
+        sent: sent.length,
+        total: plan.length,
+        remaining,
+        messageIds: sent.map((item) => item.messageId).filter(Boolean),
+      }
     }
     const reason = failure?.error ?? '未知原因'
     const label = outcome === 'unknown' ? `结果未知（${reason}）` : reason

@@ -402,7 +402,7 @@ test('短队列满：拒绝新任务，不无限堆积', async () => {
 })
 
 test('finish-then-handle：发送多气泡中来了新消息，当前气泡后停，剩余不发', async () => {
-  const env = await setup({ maxSendsPerTurn: 10, burstMaxMessages: 3, burstIntervalMinMs: 500, burstIntervalMaxMs: 600 })
+  const env = await setup({ maxSendsPerTurn: 10, burstMaxMessages: 3, burstIntervalMinMs: 500, burstIntervalMaxMs: 600, interruptGraceMs: 50 })
   try {
     const sending = env.tool().execute({ messages: ['甲', '乙', '丙'] })
     assert.ok(await waitFor(() => env.fake.sendActions().length >= 1, { timeoutMs: 2000 }))
@@ -527,5 +527,47 @@ test('qq_send_media：私聊语音段与私聊文件上传；拒绝 URL/可执�
     fs.writeFileSync(bad, 'MZ')
     const badResult = await tool.execute({ path: bad, kind: 'file' })
     assert.equal(badResult.outcome, 'refused')
+  } finally { await env.cleanup() }
+})
+
+test('多气泡发送被同会话插话：停发剩余、等 grace、返回 interrupted 和剩余内容', async () => {
+  const env = await setup({ gapMode: 'fixed', gapMs: 300, burstIntervalMinMs: 300, burstIntervalMaxMs: 300, interruptGraceMs: 50 })
+  try {
+    const pending = env.tool().execute({ messages: ['第一句', '第二句', '第三句'], to: OWNER })
+    await sleep(100)
+    env.fake.privateMessage({ from: OWNER, text: '插一句', messageId: 88001 })
+    const result = await pending
+    assert.equal(result.outcome, 'interrupted', result.text)
+    assert.equal(result.sent, 1)
+    assert.equal(result.total, 3)
+    assert.deepEqual(result.remaining, ['第二句', '第三句'])
+    assert.match(result.text, /对面插嘴了/)
+    assert.match(result.text, /剩余 2 条没发/)
+    assert.equal(env.fake.sendActions().length, 1, '插话后不应再发剩余气泡')
+  } finally { await env.cleanup() }
+})
+
+test('群多气泡发送也能被同群插话打断（group:<id> 键修复）', async () => {
+  const env = await setup({ gapMode: 'fixed', gapMs: 300, burstIntervalMinMs: 300, burstIntervalMaxMs: 300, interruptGraceMs: 50, groupPolicy: 'allowlist', allowGroups: ['7001'], allowGroupSend: true })
+  try {
+    const pending = env.tool().execute({ to: '7001', messages: ['群第一句', '群第二句', '群第三句'] })
+    await sleep(100)
+    env.fake.groupMessage({ groupId: 7001, from: 10002, name: '群友', text: '群里插一句', messageId: 88002 })
+    const result = await pending
+    assert.equal(result.outcome, 'interrupted', result.text)
+    assert.equal(result.sent, 1)
+    assert.deepEqual(result.remaining, ['群第二句', '群第三句'])
+    assert.equal(env.fake.sendActions().length, 1)
+  } finally { await env.cleanup() }
+})
+
+test('单气泡发送没有“打断”语义；跨会话消息也不打断', async () => {
+  const env = await setup({ groupPolicy: 'allowlist', allowGroups: ['7001'], allowGroupSend: true })
+  try {
+    const pending = env.tool().execute({ to: OWNER, messages: ['单条'] })
+    await sleep(20)
+    env.fake.groupMessage({ groupId: 7001, from: 10002, name: '群友', text: '别群说话', messageId: 88003 })
+    const result = await pending
+    assert.equal(result.outcome, 'ok', result.text)
   } finally { await env.cleanup() }
 })

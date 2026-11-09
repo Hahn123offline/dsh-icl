@@ -382,6 +382,7 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 - **限速**：同 peer 最小间隔 5s、每分钟最多 10、每小时最多 60（按气泡数预留）、同文 60s 去重、每轮最多 1 次调用（`turn-end` 重置）。
 - **回执三态**：`ok`（retcode=0 且有 message_id）/ `rejected`（后端明确拒绝）/ `unknown`（超时/连接断/无回执）。**unknown 不自动重试**（OneBot 无幂等键，盲重试会双发）。
 - **失败不冒充成功**：工具文本明确写"没发出去：原因"；多气泡时如实报"已发 k/N，其余未发送"（失败即停、不重试）；`qq_status` 暴露 `send.recent`（时间/peer/outcome/sent/total/messageId/ms）与计数。
+- **插话打断（G4+）**：同会话新消息到达时，当前气泡发完后停掉剩余气泡，等 `interruptGraceMs`（默认 2s）让插话说完/合并，再返回 `outcome:'interrupted'`、`remaining[]`；不自动续发，剩余内容交给模型决定是否补发；同会话 outbox 待发任务一并取消。单气泡没有“打断”语义；跨会话不打断（@ 穿透另走投递语义）。群目标键 `group:<群号>` 与入站 target 已对齐。
 - **kill switch**：每次调用**和每条气泡前**重读 live config；运行中把 `allowSend` 改成 false，下一次/下一气泡立即拒绝。
 - **审计**：`auditFile` JSONL **每条气泡一行** `{at,kind:'send',peerId,chars,textHash,outcome,messageId,ms,batch:{index,total},replyTo?,error?}`（表情行是 `{kind:'sticker',sticker,bytes,...}`），**不存正文/图片字节**。
 - 传输走**独立的出站 WS 连接**（与只读入站分开）：入站连接仍保持 `framesSent===0`；出站连接单独统计帧数。
@@ -624,7 +625,8 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `markdownToPlain` | `true` | 发送前 Markdown→纯文本 | 关掉则原样发送（不推荐） |
 | `burstEnabled` / `burstMaxMessages` / `maxMessageChars` | `true` / `8` / `500` | 多气泡开关/单次上限/每条长度 | 超过气泡上限整体拒绝；单条超长按 URL/emoji 安全切分 |
 | `burstIntervalMinMs` / `burstIntervalMaxMs` / `longGapProbability` / `longGapMinMs` / `longGapMaxMs` | `1000` / `3000` / `0.2` / `5000` / `10000` | 气泡间隔与长停顿 | `gapMode=auto` 时生效；fixed/typing/byLength 另有参数 |
-| `gapMode` | `auto` | 间隔模式 | `auto｜fixed｜typing｜byLength`；typing 用 1.4 字/秒 |
+| `interruptGraceMs` | `2000` | 同会话插话后的等待窗口 | 只对多气泡；等插话合并后返回 `interrupted`，不自动续发 |
+| `gapMode` | `auto` | 间隔模式 | `adaptive（产品默认）｜auto｜fixed｜typing｜byLength`；typing 用 1.4 字/秒 |
 | `sleepImpl` / `randomImpl` | `null` | 测试注入 | 生产不填 |
 | `ledgerFile` | `''` | 入站账本（SQLite） | 空：有 state 文件时用同目录 `qq-ledger.db`；否则内存模式（重启不保留，状态里会写明） |
 | `httpUrl` / `httpToken` | `''` / `''` | OneBot HTTP 动作端（补课/已读） | 空：用 SnowLuma 发现的 `httpServers[0]`；补课不可用时 gap 记 `unsupported` |

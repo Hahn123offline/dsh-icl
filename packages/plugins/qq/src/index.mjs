@@ -105,6 +105,7 @@ const DEFAULTS = Object.freeze({
   sendMaxPerMinute: 10,
   sendMaxPerHour: 60,
   sendSameTextWindowMs: 60_000,
+  interruptGraceMs: 2000,
   maxSendsPerTurn: 1,
   maxMediaPerTurn: 3,
   maxMediaPerHour: 20,
@@ -231,7 +232,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.allowPoke = cfg.allowPoke === true
   cfg.allowRecall = cfg.allowRecall === true
   cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'maxSendsPerTurn', 'maxMediaPerTurn', 'maxMediaPerHour', 'maxSendImageBytes', 'maxSendVideoBytes', 'maxSendFileBytes', 'maxSendVoiceBytes', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'interruptGraceMs', 'maxSendsPerTurn', 'maxMediaPerTurn', 'maxMediaPerHour', 'maxSendImageBytes', 'maxSendVideoBytes', 'maxSendFileBytes', 'maxSendVoiceBytes', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -1394,8 +1395,10 @@ export async function apply(ctx) {
       record({ kind: 'blocked', reason: 'muted', id: signal.id, groupId: String(decision.groupId) })
       return decision
     }
-    // 发送中收到新消息：通知发送链在"当前气泡发完后"停下（finish-then-handle）。
-    try { sendHandle?.noteInbound?.(signal.meta?.qq?.envelope?.peerId ?? null) } catch { /* 发送链未注册不阻塞入站 */ }
+    // 发送中收到同会话新消息：通知发送链在"当前气泡发完后"停下（finish-then-handle）。
+    const sendEnv = signal.meta?.qq?.envelope
+    const sendTargetKey = sendEnv?.scope === 'group' ? `group:${sendEnv.groupId}` : sendEnv?.peerId
+    try { sendHandle?.noteInbound?.(sendTargetKey ?? null) } catch { /* 发送链未注册不阻塞入站 */ }
     // 显式 wait 正在等这个会话：消息交给 waiter，不再走正常 debounce/delivery，避免双投。
     if (takeWaiterSignal(signal)) return decision
     // debounce 关闭时也要有 busyness：安静群的普通消息直达，短时间刷屏才进 ambient backlog。

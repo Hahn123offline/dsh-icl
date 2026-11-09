@@ -94,6 +94,8 @@
                   maxSendFileBytes: 536870912
                   maxSendVoiceBytes: 16777216
                   sendApproval: 'lead-approved'
+                  # 多气泡发送中被同会话插话：当前气泡发完后停，等 2s 让插话说完再返回模型。
+                  interruptGraceMs: 2000
                   snowlumaHomeDir: 'auto'
                   # Phase 2 出站短队列：限流时排队，短队列满/过期才拒绝；全局每分钟 24 条。
                   outboxEnabled: true
