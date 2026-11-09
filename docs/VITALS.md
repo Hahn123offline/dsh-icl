@@ -51,16 +51,18 @@ awakeMin / 16h * 75
 - dream 仍按天幂等：一天最多一次记忆整理，第一次带 dream:true 的睡眠生效；
 - 当天没有材料时，模型应使用 `dream:false`，或 dream jobs 自然 skip。
 
-## 上下文压缩：仍然是独立通道
+## 上下文压缩：独立通道，但已有延迟工具
 
 **sleep + dream 不会缩小 DSH 的模型上下文。**  
-Dream 是记忆沉淀；上下文压缩是 DSH 的 compaction。当前产品 ICL 工具面**没有** `compact_context` 工具；
-DSH 自带自动 compaction 和 `/compact` 命令，但模型侧不能直接调用。  
-因此 v1 的压力提示只做“建议整理/压缩”，不假装小睡能降低 token；模型可选择收束、写笔记、睡眠，
-或由用户/Dsh 的自动 compaction 处理。
+Dream 是记忆沉淀；上下文压缩是 DSH 的 compaction。  
+现在 bridge 注册了模型工具 `compact_context`（仅在宿主提供原生 `ctx.compaction.compactNow` 时出现）：
 
-如果以后要让模型主动压缩，需要接 DSH native compaction service（`ctx.compaction.compactNow` 等）
-或暴露一个真正的工具；不能在 ICL 里伪造一个只写摘要、不替换历史的 compression。
+- 本轮内不能替换历史，工具只登记；
+- `turn/end` 后异步调用原生 `compactNow`，下一轮看到压缩后的历史；
+- 没有原生 compaction 服务时明确拒绝，不用 ICL 的摘要插件假装压缩；
+- 仍保留 DSH 自带自动 compaction / `/compact` 作为兜底。
+
+如果宿主只有 ICL 的 `compaction` 插件、没有原生 service，`compact_context` 不会注册。
 
 ## 配置
 

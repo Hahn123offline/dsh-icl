@@ -22,7 +22,7 @@ import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'js
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import noteManifest from '../../plugins/note/manifest.json' with { type: 'json' }
 
-function fakeCtx({ withContext = true, attachments = null, rejectImageOutput = false } = {}) {
+function fakeCtx({ withContext = true, attachments = null, rejectImageOutput = false, compaction = null } = {}) {
   const tools = new Map()
   const sections = new Map()
   const contexts = new Map()
@@ -78,6 +78,10 @@ function fakeCtx({ withContext = true, attachments = null, rejectImageOutput = f
     tools_: tools, sections_: sections, contexts_: contexts, handlers_: handlers, logs,
   }
   if (attachments) ctx.attachments = attachments
+  if (compaction) {
+    ctx.inject = (deps, cb) => { if (deps.includes('compaction')) cb({ compaction }) }
+    ctx.compaction = compaction
+  }
   // 真 DSH 的 SystemPrompt 有 context()（运行时上下文快照通道）；旧宿主没有。
   // 两种都要覆盖：有 → 静/动拆开；没有 → 退回单 section 全量。
   if (withContext) {
@@ -396,6 +400,30 @@ test('桥：输入 token 高时 facts 带客观负荷（上下文压力），不
     assert.match(text, /上下文 78%/)
     assert.match(text, /客观指标/)
     assert.doesNotMatch(text, /我好累|心情|情绪化/)
+  } finally { bridge.dispose() }
+})
+
+test('桥：compact_context 登记后在本轮结束调用原生 compactNow，不冒充轮内压缩', async () => {
+  const root = tempRoot('compact')
+  const host = await hostWithMemory(root)
+  let calls = 0
+  const compaction = { async compactNow(agent, signal) { calls += 1; assert.ok(agent); assert.ok(signal); return {} } }
+  const ctx = fakeCtx({ compaction })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    const tool = ctx.tools_.get('compact_context')
+    assert.ok(tool, '有原生 compaction 服务时应注册 compact_context')
+    const out = await tool.execute({})
+    assert.match(out.text, /本轮结束后执行/)
+    assert.equal(calls, 0, '不能在本轮内调用')
+    bridge.onEvent(session, { type: 'turn/end', seq: 2, time: Date.now(), data: {} })
+    await sleep(20)
+    assert.equal(calls, 1, 'turn/end 后应调用原生 compactNow')
   } finally { bridge.dispose() }
 })
 

@@ -126,6 +126,12 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     turn: null,
     lastInputTokens: null,
     lastUsageAt: null,
+    compaction: null,
+    compactionInjected: false,
+    pendingCompact: false,
+    compactInFlight: false,
+    compactOff: null,
+    lastCompactResult: null,
     factsCache: { turn: null, text: null },
     factsDirty: false,
     attachments: null,
@@ -1106,6 +1112,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         meta: { sessionId: String(session.id), seq: Number.isFinite(seq) ? seq : null },
       })
     } catch (error) { report('turn-end.emit', error) }
+    // 原生 compaction 需要 idle agent：turn/end 事件到达后再异步执行，不能卡住当前回合。
+    if (state.pendingCompact) {
+      const timer = setTimeout(() => runDeferredCompaction(), 0)
+      if (typeof timer.unref === 'function') timer.unref()
+    }
   }
 
   /** 客观负荷仪表：上下文占用 + 最近繁忙度；不调模型，不做情绪角色扮演。 */
@@ -1200,6 +1211,76 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 生命周期 ─────────────────────────────────────────── */
 
+  function ensureCompactionService() {
+    if (state.compaction) return state.compaction
+    if (!state.compactionInjected && typeof ctx.inject === 'function') {
+      state.compactionInjected = true
+      try {
+        ctx.inject(['compaction'], (sub) => {
+          if (sub?.compaction) {
+            state.compaction = sub.compaction
+            registerCompactionTool()
+          }
+          diag({ event: 'compaction.injected', ok: Boolean(sub?.compaction) })
+        })
+      } catch (error) { report('compaction.inject', error) }
+    }
+    try { if (!state.compaction && ctx.compaction) state.compaction = ctx.compaction } catch { /* 需要 inject */ }
+    return state.compaction
+  }
+
+  /** 请求在本轮结束后调用 DSH 原生 compaction；不能轮内替换历史。 */
+  function requestCompaction() {
+    const service = ensureCompactionService()
+    if (!service?.compactNow) return { text: '当前宿主没有可用的原生 compaction 服务；不能用 ICL 的摘要插件冒充压缩。' }
+    if (state.pendingCompact) return { text: '已经登记过压缩请求，等本轮结束后执行。' }
+    state.pendingCompact = true
+    return { text: '已登记压缩请求：本轮结束后执行原生上下文压缩，下一轮会看到压缩后的历史。' }
+  }
+
+  function runDeferredCompaction() {
+    if (!state.pendingCompact || state.compactInFlight) return
+    const service = ensureCompactionService()
+    const agent = state.agent
+    if (!service?.compactNow || !agent) { state.pendingCompact = false; return }
+    state.pendingCompact = false
+    state.compactInFlight = true
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = controller ? setTimeout(() => controller.abort(), 120_000) : null
+    if (timer && typeof timer.unref === 'function') timer.unref()
+    void Promise.resolve()
+      .then(() => service.compactNow(agent, controller?.signal ?? undefined))
+      .then((result) => {
+        state.lastCompactResult = { at: Date.now(), ok: result !== null, result }
+        diag({ event: 'compaction.done', ok: result !== null })
+      })
+      .catch((error) => {
+        state.lastCompactResult = { at: Date.now(), ok: false, error: String(error?.message ?? error) }
+        report('compaction.request', error)
+      })
+      .finally(() => {
+        state.compactInFlight = false
+        if (timer) clearTimeout(timer)
+      })
+  }
+
+  function registerCompactionTool() {
+    if (state.compactOff || typeof ctx.tools?.register !== 'function' || !state.compaction?.compactNow) return
+    try {
+      const off = ctx.tools.register(toDshToolDefinition({
+        name: 'compact_context',
+        summary: '请求在本轮结束后压缩当前会话上下文（DSH 原生 compaction）；本轮内不能替换历史，下一轮生效。',
+        when: ['上下文压力高，想把较早的对话折叠成摘要', '需要在本轮收尾前登记压缩，而不是伪造压缩结果'],
+        avoid: ['不要在本轮内期待立即变短', '不要用它代替收尾/记忆整理', '没有原生 compaction 服务时会明确拒绝'],
+        parameters: { type: 'object', additionalProperties: false, properties: {} },
+        execute: async () => requestCompaction(),
+      }, { saveImage, imageOutput: false }))
+      state.compactOff = typeof off === 'function' ? off : () => {}
+    } catch (error) {
+      report('compaction.tool', error)
+    }
+  }
+
   function start() {
     loadRaw()
     loadFocus()
@@ -1207,6 +1288,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     registerRaw()
     registerHistory()
     syncTools()
+    ensureCompactionService()
+    registerCompactionTool()
     // 没有 live Agent 时，走 DSH 官方 apiProxy.sessions.prompt 冷恢复会话；
     // 这是 old dsh-qq/ensureSession 使用过的标准入口，不自己造 resume。
     try {
@@ -1258,6 +1341,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     saveFocus()
     try { state.offFocus?.() } catch { /* ignore */ }
     try { state.offFocusBacklog?.() } catch { /* ignore */ }
+    try { state.compactOff?.() } catch { /* ignore */ }
+    state.compactOff = null
     for (const entry of state.tools.values()) { try { entry.off() } catch { /* ignore */ } }
     state.tools.clear()
     unbindSession()
