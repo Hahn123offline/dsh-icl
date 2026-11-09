@@ -29,6 +29,7 @@
             name: dsh-icl/index.mjs
             config:
               presetId: icl
+              contextWindow: 256000
               # 产品化 A1（2026-11-06，lead 批准）：首屏净化 4 段 + 显式插件白名单（去 mc-link）。
               # MC 暂下线（2026-11-08）：icl-mc preset 已移除；产品工具面 66/44,316 → 49/31,824。
               purifySections:
@@ -65,6 +66,9 @@
                 time:
                   awakeTick:
                     enabled: false
+                # 产品不再自动排 nightly dream；睡眠时按 dream 标志触发。
+                dream:
+                  scheduleEnabled: false
                 qq:
                   enabled: true
                   ownerQQ: '3429502459'

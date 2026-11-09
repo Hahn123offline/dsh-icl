@@ -26,13 +26,13 @@ function fakeChat(script) {
   return { call, calls }
 }
 
-async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null } = {}) {
+async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null, scheduleEnabled = false } = {}) {
   const host = createHost({ log: (entry) => { logs?.push(entry) } })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-dream2-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   host.registerPlugin(timeManifest, time, { config: { dreamAt: '23:59', stateFile: path.join(root, 'time.json') } })
-  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。' } })
+  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。', scheduleEnabled } })
   await host.enable('memory')
   await host.enable('recall')
   await host.enable('time')
@@ -43,15 +43,15 @@ async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null } =
   return { host, tools, chat, memory: host.shared.get('memory'), dream: host.shared.get('dream') }
 }
 
-test('dream 在 time 日历里注册一条 silent 每日安排', async () => {
-  const { host } = await setup()
-  const schedule = host.shared.get('time').schedules().find((s) => s.id === 'dream:nightly')
-  assert.ok(schedule, 'time 里应该有 dream:nightly 安排')
+test('dream 默认不自动排 nightly；显式 scheduleEnabled 才注册（2026-11-10）', async () => {
+  const off = await setup()
+  assert.equal(off.host.shared.get('time').schedules().find((s) => s.id === 'dream:nightly'), undefined, '默认不应有机械 nightly')
+  const on = await setup({ scheduleEnabled: true })
+  const schedule = on.host.shared.get('time').schedules().find((s) => s.id === 'dream:nightly')
+  assert.ok(schedule, '显式开启时仍可注册')
   assert.equal(schedule.at, '23:00')
   assert.deepEqual(schedule.tags, ['dream'])
   assert.equal(schedule.silent, true)
-  assert.equal(schedule.mode, 'wake')
-  assert.equal(schedule.kind, 'single')
 })
 
 test('事件 job：按话题切块、写进 event、note 被标为已消化', async () => {

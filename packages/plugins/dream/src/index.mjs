@@ -1522,24 +1522,32 @@ export function apply(ctx) {
       })
   }
 
-  // 与时间模块的轻耦合：睡觉开始时收到事件就跑一轮（rhythm 是旧兼容，可以没有）
+  // 与时间模块的轻耦合：睡觉开始时收到事件就跑一轮（rhythm 是旧兼容，可以没有）。
+  // sleep 的 dream:false 只休息，不整理记忆。
   try {
     const off = ctx.signals.on({ kind: 'event', tags: ['sleep'] }, (signal) => {
-      if (signal.text === 'sleep-start') runFromSignal({ now: signal.createdAt ?? ctx.now(), reason: 'sleep-start' })
+      if (signal.text !== 'sleep-start') return
+      if (signal.meta?.dream === false) return
+      runFromSignal({ now: signal.createdAt ?? ctx.now(), reason: 'sleep-start' })
     })
     ctx.onDispose(off)
   } catch { /* 没有信号服务时退化为纯手动 */ }
 
-  // 每晚做梦不是 time 里的硬编码分支：它只是 time 日历里的一条 silent 安排，
-  // 到点由 time 发 schedule-start（tags 含 dream），dream 订阅后并行跑自己的流水线。
+  // 产品默认不再自动排“每晚 23:00 必做”的 dream；只有显式 scheduleEnabled:true 才重建旧行为。
+  // 已有旧的 dream:nightly 在 scheduleEnabled=false 时取消，避免机械任务继续跑。
   try {
     const time = ctx.services.get('time')
     if (time?.add) {
       const existing = time.schedules?.().find((s) => s.id === 'dream:nightly')
-      if (!existing) {
-        time.add({ id: 'dream:nightly', at: dreamAt, mode: 'wake', kind: 'single', silent: true, tags: ['dream'], message: '' })
-      } else if (existing.at !== dreamAt) {
-        time.edit('dream:nightly', { at: dreamAt })
+      if (ctx.config.scheduleEnabled === true) {
+        if (!existing) {
+          time.add({ id: 'dream:nightly', at: dreamAt, mode: 'wake', kind: 'single', silent: true, tags: ['dream'], message: '' })
+        } else if (existing.at !== dreamAt) {
+          time.edit('dream:nightly', { at: dreamAt })
+        }
+      } else if (existing && typeof time.cancel === 'function') {
+        time.cancel('dream:nightly')
+        ctx.log({ msg: 'dream.schedule.disabled', id: 'dream:nightly' })
       }
     }
   } catch (error) { ctx.log({ level: 'warn', msg: 'dream.schedule', error: String(error?.message ?? error) }) }

@@ -137,6 +137,25 @@ test('sleep 安排：入睡不立刻叫醒；message 是醒来时说的话', asy
   assert.equal(api.status().phase, 'awake')
 })
 
+test('sleep dream:false：只休息，不触发记忆整理；睡眠语义不变', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow })
+  const tool = host.services.tools.list().find((t) => t.name === 'time_arrange')
+  const out = await tool.execute({ mode: 'wake', kind: 'span', at: 'now', duration: '1m', sleep: true, dream: false, message: '休息好了' })
+  assert.match(out.text, /安排好了/)
+  virtualNow += 1_000
+  api.tick()
+  assert.equal(api.status().phase, 'sleeping')
+  assert.equal(api.status().spans.find((span) => span.sleep)?.dream, false)
+  const plain = host.services.signals.offer({ from: { plugin: 'qq' }, kind: 'content', text: '睡眠中的普通消息' })
+  assert.equal(plain.accepted, false)
+  assert.equal(plain.reason, 'sleeping')
+  virtualNow += 61_000
+  api.tick()
+  assert.match(drainText(host), /休息好了/)
+  assert.equal(api.status().phase, 'awake')
+})
+
 test('quiet 安排：非 @ 消息积压、@ 放行、结束提醒并释放；phase 保持醒着', async () => {
   let virtualNow = MON_0900
   const { host, api } = await boot({ now: () => virtualNow })

@@ -124,6 +124,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 依据：DSH 的 runtime-context 快照只 append 不 replace，step-heavy 回合（MC 可到 39 步）
     // 会按步数线性累积（见 docs/CACHE-MODEL.md §7.7）。
     turn: null,
+    lastInputTokens: null,
+    lastUsageAt: null,
     factsCache: { turn: null, text: null },
     factsDirty: false,
     attachments: null,
@@ -400,7 +402,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       const readFacts = () => {
         if (!throttle) {
           try {
-            return host.services.prompt.assemble({ sessionId: state.session?.id ?? undefined }, { minOrder: FACTS_MIN_ORDER })
+            const facts = host.services.prompt.assemble({ sessionId: state.session?.id ?? undefined }, { minOrder: FACTS_MIN_ORDER })
+            const vitals = vitalsText()
+            return vitals ? `${facts}${facts ? '\n\n' : ''}${vitals}` : facts
           } catch (error) {
             report('prompt.context', error)
             return ''
@@ -414,6 +418,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         } catch (error) {
           report('prompt.context', error)
         }
+        const vitals = vitalsText()
+        if (vitals) text = `${text}${text ? '\n\n' : ''}${vitals}`
         state.factsCache = { turn: state.turn, text }
         state.stats.factsRefreshes += 1
         return text
@@ -1058,6 +1064,14 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 注：silent schedule（如 dream:nightly）走 signals.emit 不走 delivery，不在此列，
     // 允许陈旧到轮末（它通常不产生模型消息）；MC 环境事实按 §7.7 豁免。
     if (event?.type === 'tool/result' && isFactsTool(event.data?.name ?? event.data?.tool)) state.factsDirty = true
+    if (event?.type === 'assistant/message') {
+      const usage = event.data?.usage ?? event.usage
+      const input = Number(usage?.inputTokens)
+      if (Number.isFinite(input) && input > 0) {
+        state.lastInputTokens = input
+        state.lastUsageAt = Number(event.time) || Date.now()
+      }
+    }
     appendRaw(session, event)
     // 通用重复动作保护：所有工具都过，连续 N 次同签名才提示（delivery, append-only）。
     if (event?.type === 'tool/call') guardRepeatedToolCall(event)
@@ -1092,6 +1106,25 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         meta: { sessionId: String(session.id), seq: Number.isFinite(seq) ? seq : null },
       })
     } catch (error) { report('turn-end.emit', error) }
+  }
+
+  /** 客观负荷仪表：上下文占用 + 最近繁忙度；不调模型，不做情绪角色扮演。 */
+  function vitalsText(now = Date.now()) {
+    const window = Math.max(16_000, Number(config.contextWindow) || 256_000)
+    const tokens = Number(state.lastInputTokens) || 0
+    const contextPct = tokens > 0 ? Math.max(0, Math.min(100, Math.round((tokens / window) * 100))) : null
+    const since = now - 15 * 60_000
+    const recent = state.raw.filter((row) => Number(row.time) >= since)
+    const conversations = recent.filter((row) => row.role === 'user' || row.role === 'assistant').length
+    const tools = recent.filter((row) => row.role === 'tool').length
+    let pending = 0
+    try { pending = Number(host.services.delivery.pendingCount()) || 0 } catch { pending = 0 }
+    const workload = Math.max(0, Math.min(100, Math.round(conversations * 2 + tools * 1.5 + pending * 6)))
+    const parts = []
+    if (contextPct != null && contextPct >= 45) parts.push(`上下文 ${contextPct}%（建议整理/压缩）`)
+    if (workload >= 55) parts.push(`繁忙度 ${workload}`)
+    if (!parts.length) return ''
+    return `负荷：${parts.join('；')}（客观指标，不是情绪）`
   }
 
   async function composeTurnContext(message) {

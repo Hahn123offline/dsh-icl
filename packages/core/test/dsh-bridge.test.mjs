@@ -376,6 +376,29 @@ test('桥：系统段只含静态段，动态事实走 systemPrompt.context', as
   assert.equal(ctx.sections_.size, 0)
 })
 
+test('桥：输入 token 高时 facts 带客观负荷（上下文压力），不是情绪角色扮演', async () => {
+  const root = tempRoot('vitals')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => '时间：18:00' })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), factsEveryStep: true, contextWindow: 256000 } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    bridge.onEvent(session, { type: 'assistant/message', seq: 1, time: Date.now(), data: { usage: { inputTokens: 200000 }, message: { role: 'assistant', content: [] } } })
+    const facts = ctx.contexts_.get('icl:facts')
+    const text = facts.text({})
+    assert.match(text, /上下文 78%/)
+    assert.match(text, /客观指标/)
+    assert.doesNotMatch(text, /我好累|心情|情绪化/)
+  } finally { bridge.dispose() }
+})
+
 test('桥：facts 快照按 turn 节流（同一 turn 内不重复追加）', async () => {
   const root = tempRoot('layout-throttle')
   const host = await hostWithMemory(root)

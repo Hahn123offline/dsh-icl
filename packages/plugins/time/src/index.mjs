@@ -505,6 +505,8 @@ export function normalizeSchedule(input = {}, now = Date.now(), options = {}) {
     startMessage: String(input.startMessage ?? ''),
     theme: String(input.theme ?? input.message ?? ''),
     sleep: input.sleep === true,
+    // 睡眠是否顺带整理记忆；显式 dream:false 只休息。默认 true 兼容旧 sleep。
+    dream: input.sleep === true ? input.dream !== false : false,
     quiet: input.quiet === true,
     silent: input.silent === true,
     tags: Array.isArray(input.tags) ? input.tags.map(String).slice(0, 8) : [],
@@ -1994,22 +1996,23 @@ export function apply(ctx) {
             ? (schedule.message || '整理完了。今天看到的东西已经记下来了，接着来吧。')
             : (schedule.quiet ? (schedule.message || '安静结束了。') : `结束了：${schedule.id}`),
           sleep: Boolean(schedule.sleep),
+          dream: Boolean(schedule.sleep && schedule.dream !== false),
           quiet: Boolean(schedule.quiet),
           silent: Boolean(schedule.silent),
           allow: Array.isArray(schedule.allow) ? schedule.allow : (schedule.quiet ? DEFAULT_QUIET_ALLOW : DEFAULT_ALLOW),
         })
-        if (schedule.sleep) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'] })
+        if (schedule.sleep) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'sleep-start', tags: ['sleep'], meta: { sleepingId: schedule.id, dream: schedule.dream !== false, at: now } })
         if (schedule.quiet) emitEvent({ from: { plugin: 'time' }, kind: 'event', text: 'quiet-start', tags: ['quiet'] })
         if (schedule.sleep) {
-          // 醒来简报的底账：睡眠开始时间、dream 触发标记、统计基线（tick 在睡眠中不丢这些）。
+          // 醒来简报的底账：睡眠开始时间、dream 是否允许（不是"一定触发"）、统计基线（tick 在睡眠中不丢这些）。
           state.sleepBrief = {
             startedAt: now,
             sleepingId: schedule.id,
-            dreamTriggered: true,
+            dreamTriggered: schedule.dream !== false,
             statsStart: { missed: state.stats.missed, dropped: state.stats.dropped, expired: state.stats.expired },
             boundaryAtEntry: { inFlight: Boolean(state.sleepBoundary?.inFlight), turnAgeAtEntrySec: state.sleepBoundary?.turnAgeAtEntrySec ?? null },
           }
-          recordEvent('sleep-brief-start', { sleepingId: schedule.id, inFlight: Boolean(state.sleepBoundary?.inFlight), dreamTriggered: true })
+          recordEvent('sleep-brief-start', { sleepingId: schedule.id, inFlight: Boolean(state.sleepBoundary?.inFlight), dreamTriggered: schedule.dream !== false })
         }
         outcome = { started: schedule.id, mode: schedule.mode, kind: schedule.kind }
       }
@@ -2056,6 +2059,8 @@ export function apply(ctx) {
       const detail = clipBriefText(result.text ?? '', 80) || (Number(result.ranJobs) ? `${result.ranJobs} 个任务` : '')
       const shard = Number(result.degraded) ? `；分片降级${Number(result.failedShards) ? `（${result.failedShards} 片失败）` : ''}` : ''
       dream = `记忆整理：${result.ok ? '完成' : '失败'}${detail ? `（${detail}）` : ''}${shard}`
+    } else if (brief.dreamTriggered === false) {
+      dream = '记忆整理：本次睡眠未开 dream（只休息）'
     } else if (brief.dreamTriggered !== false) {
       dream = '记忆整理：入睡时已触发（dream 回执未回传）'
     }
@@ -2512,6 +2517,7 @@ export function apply(ctx) {
       sleepBoundary: state.sleepBoundary ? { ...state.sleepBoundary } : null,
       lastSleepBoundary: state.lastSleepBoundary ? { ...state.lastSleepBoundary } : null,
       lastSleepBrief: state.lastSleepBrief ? { ...state.lastSleepBrief } : null,
+      sleepMetrics: sleepMetrics(now),
       lastDreamResult: state.lastDreamResult ? { ...state.lastDreamResult } : null,
       // 用户语义：暂停 = 任务停止、世界继续、危险穿透。mc-body/mc-link 读它对齐文案。
       pausedMode: {
@@ -2661,6 +2667,24 @@ export function apply(ctx) {
     }
   }
 
+  /** 真实作息指标：清醒时长 + 上次睡眠不足 + 夜间时段，不做角色扮演。 */
+  function sleepMetrics(now = nowTime()) {
+    const sleeping = state.phase === 'sleeping'
+    const lastSleep = state.lastSleepBrief && typeof state.lastSleepBrief === 'object' ? state.lastSleepBrief : null
+    const awakeSince = sleeping ? null : Number(lastSleep?.endedAt ?? state.since ?? now)
+    const awakeMin = sleeping ? 0 : Math.max(0, Math.round((now - awakeSince) / 60_000))
+    const lastSleepMin = Number(lastSleep?.durationSec) > 0 ? Math.round(Number(lastSleep.durationSec) / 60) : null
+    const shortfall = lastSleepMin == null ? 0 : Math.max(0, 480 - lastSleepMin)
+    const p = partsOf(now, timeZone)
+    const night = p.h >= 23 || p.h < 6
+    const pressure = Math.max(0, Math.min(100, Math.round(
+      (sleeping ? 0 : Math.min(1, awakeMin / (16 * 60)) * 75)
+      + Math.min(1, shortfall / 480) * 20
+      + (night ? 5 : 0),
+    )))
+    return { sleeping, awakeMin, lastSleepMin, pressure, night }
+  }
+
   function statusText() {
     const now = nowTime()
     const lines = ['【现在】']
@@ -2678,6 +2702,8 @@ export function apply(ctx) {
     if (quietSpan) bits.push(`安静到 ${stampAt(Number(quietSpan.until), timeZone)}（${fmtRelative(Number(quietSpan.until), now)}）`)
     if (state.queue.length) bits.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
     lines.push(`状态：${bits.join('；')}。`)
+    const metrics = sleepMetrics(now)
+    lines.push(metrics.sleeping ? '作息：睡眠中。' : `作息：清醒 ${Math.round(metrics.awakeMin / 60)}h；睡眠压力 ${metrics.pressure}（0–100）。`)
     // 暂停语义（用户拍板）：任务停止、世界继续、危险会穿透。给 mc-body/mc-link 对齐的口径。
     if (pausedActive()) {
       lines.push('【暂停】')
@@ -2802,6 +2828,9 @@ export function apply(ctx) {
     const next = nextUpcoming(now)
     if (next) tail.push(`下一个安排：${next.schedule.id}（${describeParsed(next.parsed)}，${stampAt(next.point, timeZone)}）`)
     if (state.queue.length) tail.push(`积压 ${state.queue.length} 条（${reasonCounts()}）`)
+    const metrics = sleepMetrics(now)
+    if (metrics.sleeping) tail.push('睡眠中')
+    else tail.push(`清醒 ${Math.round(metrics.awakeMin / 60)}h；睡眠压力 ${metrics.pressure}`)
     return tail.length ? `${line}\n${tail.join('；')}。` : line
   }
 
@@ -2917,7 +2946,7 @@ export function apply(ctx) {
   tool({
     name: 'time_arrange',
     summary: '新建安排：一次/每天/每周/倒计时唤醒、日历日期/跨天/重复、goal 持续目标；mode:"heartbeat" 设置活跃度。',
-    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天；要只响下一次加 once:true）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；长日程/目标会自动暂停心跳。sleep 的 message 是醒来时说的话（不是入睡提示；要入睡提示用 startMessage）。quiet:true 表示安静安排：phase 保持醒着，拦住非 @ 消息（@/管理员可放行），不触发 dream，到点用 message 提醒；必须配 duration/until。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
+    description: 'mode:"wake" 到点唤醒；mode:"goal" 持续目标；mode:"heartbeat" 只调全局活跃度（只认 frequency）。at 支持 "HH:mm"（每天；要只响下一次加 once:true）、"周一 07:30"/"mon,wed 07:30"（每周）、ISO、now；日历事件用 date:"YYYY-MM-DD"（配 at:"HH:mm" 或省略=全天）+ endDate 跨天；allDay 默认只展示不叫醒，wake:true 才叫醒；repeat:{every:"2d"|"2w"|"1mo"|"1y",until?,count?} 在 date 上重复（monthly/yearly 遇到不存在的日期会跳过该次）；skipDates:["YYYY-MM-DD"] 跳过某些天（只跳 occurrence，不改事件）。in 支持 "10m"/"2h"/"1d"；duration 是长日程时长。sleep:true 表示睡觉：进入睡眠、外部消息转积压、醒来批量释放；sleep 的 dream:true/false 决定这次是否顺带整理记忆（默认 true；当天没内容可设 false 只休息）。长日程/目标会自动暂停心跳。sleep 的 message 是醒来时说的话（不是入睡提示；要入睡提示用 startMessage）。quiet:true 表示安静安排：phase 保持醒着，拦住非 @ 消息（@/管理员可放行），不触发 dream，到点用 message 提醒；必须配 duration/until。frequency 是随机唤醒器的活跃度（0.01–1，默认 0.2），系统给预估，不需要算间隔。silent:true 只发事件不发消息。返回安排 id，可用 time_edit/time_cancel；time_view 提供结构化日历。',
     parameters: {
       type: 'object', additionalProperties: false, required: ['mode'], properties: {
         mode: { type: 'string', enum: ['wake', 'goal', 'heartbeat'], description: 'wake=到点唤醒；goal=持续目标；heartbeat=设置全局活跃度' },
@@ -2943,6 +2972,7 @@ export function apply(ctx) {
         focus: { type: 'string', description: 'goal 绑定的注意力空间' },
         turnLimit: { type: 'number', description: 'goal 的回合上限' },
         sleep: { type: 'boolean', description: 'wake+span 进入睡眠：外部消息转积压，醒来用 message 作为唤醒语' },
+        dream: { type: 'boolean', description: 'sleep:true 时是否顺带整理记忆（默认 true；当天没内容或只想休息设 false，不触发 dream）' },
         quiet: { type: 'boolean', description: 'wake+span 进入"安静安排"：非 @ 消息积压、phase 保持醒着、不触发 dream；必须配 duration/until' },
         silent: { type: 'boolean', description: '只发事件、不发消息' },
         allow: { type: 'array', items: { type: 'object' }, description: '睡眠期间的白名单规则 {from,kinds,tags,any}' },
@@ -2984,6 +3014,7 @@ export function apply(ctx) {
       type: 'object', additionalProperties: false, required: ['id'], properties: {
         id: { type: 'string' }, at: { type: 'string' }, in: { type: 'string' },
         message: { type: 'string' }, startMessage: { type: 'string' }, theme: { type: 'string' },
+        dream: { type: 'boolean', description: 'sleep 安排是否触发 dream；false=只休息不整理' },
         mode: { type: 'string', enum: ['wake', 'goal'] }, duration: { type: 'string' },
         silent: { type: 'boolean' }, sleep: { type: 'boolean' }, quiet: { type: 'boolean' }, once: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } },
       },
