@@ -586,6 +586,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return plugin === 'mc' ? 'MC' : plugin === 'time' ? '时间' : plugin === 'focus' ? '焦点' : plugin === 'qq' ? '外部消息' : plugin
   }
 
+  /** 按 Unicode 码点截断，避免把代理对切成孤立 surrogate（DeepSeek 会 400）。 */
+  function truncateCodePoints(value, limit) {
+    const text = String(value ?? '')
+    const chars = Array.from(text)
+    return chars.length > limit ? chars.slice(0, limit).join('') : text
+  }
+
   function noticeMessage(batch, text) {
     const plugin = String(batch?.entries?.[0]?.source?.plugin ?? 'icl').replace(/[^a-z0-9:_-]/gi, '') || 'icl'
     const label = pluginLabel(plugin)
@@ -595,7 +602,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         // DSH v4 规范：kind 必须是 producer-owned，裸 'plugin' 会被会话格式拒绝。
         kind: `plugin:${plugin}`,
         form: 'notice',
-        summary: `${label}：${text.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
+        summary: truncateCodePoints(`${label}：${text.replace(/\s+/g, ' ')}`, 120),
       },
     })
   }
@@ -710,7 +717,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
           }
         } catch (error) {
           const disk = descriptors.map((img) => img.path).filter(Boolean).slice(0, 2)
-          fallback.push(`（${descriptors.length} 张图片未能显示：${String(error?.message ?? error).slice(0, 120)}${disk.length ? `；本地文件：${disk.join('、')}` : ''}）`)
+          fallback.push(`（${descriptors.length} 张图片未能显示：${truncateCodePoints(String(error?.message ?? error), 120)}${disk.length ? `；本地文件：${disk.join('、')}` : ''}）`)
           report('delivery.image-attach', error)
         }
       } else {
@@ -728,7 +735,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       source: {
         kind: `plugin:${plugin}`,
         form: 'notice',
-        summary: `${pluginLabel(plugin)}：${fullText.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
+        summary: truncateCodePoints(`${pluginLabel(plugin)}：${fullText.replace(/\s+/g, ' ')}`, 120),
       },
       images: refs,
     })
@@ -1152,7 +1159,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       source: {
         kind: 'plugin:icl',
         form: 'notice',
-        summary: `上下文：${extra.replace(/\s+/g, ' ').slice(0, 100)}`.slice(0, 120),
+        summary: truncateCodePoints(`上下文：${extra.replace(/\s+/g, ' ')}`, 120),
       },
     })
     return { ...decision, messages: [...messages, injected] }

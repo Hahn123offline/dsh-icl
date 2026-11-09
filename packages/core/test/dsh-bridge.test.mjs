@@ -1365,3 +1365,31 @@ test('桥：attachment 异步注入时，第一张图等待注入而不是立刻
     assert.doesNotMatch(agent.steers[0].content[0].text, /未能显示/)
   } finally { bridge.dispose() }
 })
+
+test('桥：消息 source.summary 按码点截断，不产生孤立 surrogate（400 回归）', async () => {
+  const root = tempRoot('summary-surrogate')
+  const host = await hostWithMemory(root)
+  const bridge = createDshBridge({ ctx: fakeCtx(), host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    const text = `${'a'.repeat(94)}🤔${'b'.repeat(20)}`
+    host.services.delivery.push({ source: { plugin: 'qq' }, content: { text } })
+    await bridge.tick()
+    const summary = agent.steers[0]?.source?.summary ?? ''
+    const bad = []
+    for (let i = 0; i < summary.length; i += 1) {
+      const c = summary.charCodeAt(i)
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        const next = summary.charCodeAt(i + 1)
+        if (!(next >= 0xDC00 && next <= 0xDFFF)) bad.push(i)
+      }
+    }
+    assert.deepEqual(bad, [], 'summary 不能有孤立 surrogate')
+  } finally { bridge.dispose() }
+})
