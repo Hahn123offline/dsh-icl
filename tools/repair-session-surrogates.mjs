@@ -53,10 +53,19 @@ export function repairSessionFile(file, { backup = true, dryRun = false } = {}) 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     fs.copyFileSync(file, `${file}.bak-${stamp}`)
   }
+  // DSH session persistence expects a concatenation of complete checksummed
+  // Zstandard frames: one header frame, then one or more frames per durable batch.
+  // Keep the header alone and put each event in its own valid frame.
+  const checksum = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } }
+  const frame = (text) => zlib.zstdCompressSync(Buffer.from(`${text}\n`, 'utf8'), checksum)
+  const frames = []
+  const body = repaired.filter((line) => line !== '')
+  if (body.length) frames.push(frame(body[0]))
+  for (const line of body.slice(1)) frames.push(frame(line))
   const temp = `${file}.tmp-${process.pid}`
-  fs.writeFileSync(temp, zlib.zstdCompressSync(Buffer.from(repaired.join('\n'), 'utf8')))
+  fs.writeFileSync(temp, Buffer.concat(frames))
   fs.renameSync(temp, file)
-  return { changed: true, bad }
+  return { changed: true, bad, frames: frames.length }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
