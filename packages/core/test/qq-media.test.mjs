@@ -8,6 +8,8 @@ import path from 'node:path'
 import { createHost } from '../src/index.mjs'
 import * as qqModule from '../../plugins/qq/src/index.mjs'
 import manifest from '../../plugins/qq/manifest.json' with { type: 'json' }
+import * as albumModule from '../../plugins/album/src/index.mjs'
+import albumManifest from '../../plugins/album/manifest.json' with { type: 'json' }
 import { createFakeOneBot } from '../../plugins/qq/tools/fake-onebot.mjs'
 import { MEDIA_DEFAULTS, acceptVideoBuffer, inboxMediaPath, saveInboxMedia, sniffVideoMime } from '../../plugins/qq/src/media.mjs'
 
@@ -276,4 +278,43 @@ test('视频类型不对：降级提示、不落盘、不影响消息', async ()
     assert.doesNotMatch(batch.text, /https?:\/\//)
     assert.equal(env.indexRows().length, 0)
   } finally { await env.cleanup() }
+})
+
+test('autoAlbum：owner 私聊图片自动进 album（source/tags/caption），群图默认不自动收', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-autoalbum-'))
+  const fake = await createFakeOneBot({ port: 0, token: TOKEN })
+  const host = createHost({ log: () => {} })
+  const albumRoot = path.join(dir, 'album')
+  host.registerPlugin(albumManifest, albumModule, { config: { root: albumRoot } })
+  await host.enable('album')
+  host.registerPlugin(manifest, qqModule, {
+    config: {
+      enabled: true, url: `ws://127.0.0.1:${fake.port}/`, token: TOKEN, selfId: SELF,
+      allowPrivate: [OWNER], ownerQQ: OWNER,
+      ledgerFile: path.join(dir, 'ledger.db'), mediaInboxDir: path.join(dir, 'media'),
+      mediaFetchImpl: fakeFetch(() => PNG), autoAlbum: true, autoAlbumGroups: false,
+      groupPolicy: 'allowlist', allowGroups: ['601357169'],
+    },
+  })
+  await host.enable('qq')
+  const qq = host.shared.get('qq')
+  try {
+    await waitFor(() => qq.status().connection.connected === true)
+    fake.privateRichMessage({ from: OWNER, name: '主人', messageId: 8200, segments: [{ type: 'image', data: { url: 'https://cdn.example/a.png' } }, { type: 'text', data: { text: '主人发来的图' } }] })
+    const album = host.shared.get('album')
+    await waitFor(() => album.list({ source: 'qq' }).length >= 1)
+    const row = album.list({ source: 'qq' })[0]
+    assert.equal(row.source, 'qq')
+    assert.ok(row.tags.includes('qq'))
+    assert.match(row.caption ?? '', /主人发来的图/)
+
+    fake.groupMessage({ groupId: 601357169, from: 10002, name: '群友', text: '群图', messageId: 8201 })
+    await sleep(50)
+    assert.equal(album.list({ source: 'qq' }).length, 1, '群图默认不自动进 album')
+  } finally {
+    try { host.disable('qq') } catch { /* 已停 */ }
+    try { host.disable('album') } catch { /* 已停 */ }
+    await fake.close()
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* Windows 偶发仍持有 sqlite 句柄，测试结束由系统清理 */ }
+  }
 })

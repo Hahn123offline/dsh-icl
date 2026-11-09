@@ -242,6 +242,8 @@ export function apply(ctx) {
     insert: db.prepare(`INSERT INTO items (sha256, library, kind, path, ext, bytes, width, height, duration_ms, source, origin, caption, tags, pinned, created_at, imported_at, private)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     updateMeta: db.prepare('UPDATE items SET library = COALESCE(?, library), source = COALESCE(?, source), origin = COALESCE(?, origin), caption = COALESCE(?, caption), tags = COALESCE(?, tags) WHERE id = ?'),
+    updateNote: db.prepare('UPDATE items SET caption = COALESCE(?, caption), tags = COALESCE(?, tags), source = COALESCE(?, source), pinned = COALESCE(?, pinned) WHERE id = ?'),
+    markSent: db.prepare('UPDATE items SET sent_at = ? WHERE id = ?'),
     touchDeleted: db.prepare('UPDATE items SET deleted_at = ? WHERE id = ?'),
     total: db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM items WHERE deleted_at IS NULL'),
     all: db.prepare('SELECT * FROM items WHERE deleted_at IS NULL ORDER BY imported_at DESC, id DESC'),
@@ -742,6 +744,44 @@ export function apply(ctx) {
     },
   })
 
+  ctx.tools.register({
+    name: 'album_note',
+    summary: 'Update an album item’s note/caption, tags, source or pinned flag (metadata only; never rewrites the file).',
+    when: ['you remember what a picture is but its caption is empty/wrong', 'you want more searchable tags before sending it later'],
+    avoid: ['changing the image file itself', 'private items without includePrivate+allowPrivate'],
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['id'],
+      properties: {
+        id: { type: 'number', description: 'Album item id.' },
+        caption: { type: 'string', description: 'New one-line note/caption (max 500 chars).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Replace all tags.' },
+        addTags: { type: 'array', items: { type: 'string' }, description: 'Tags to add.' },
+        removeTags: { type: 'array', items: { type: 'string' }, description: 'Tags to remove.' },
+        source: { type: 'string', description: 'Source label (qq / bili / manual / ...).' },
+        pinned: { type: 'boolean', description: 'Pin/unpin this item.' },
+        includePrivate: { type: 'boolean' },
+        allowPrivate: { type: 'boolean' },
+      },
+    },
+    execute({ id, caption, tags, addTags, removeTags, source, pinned, includePrivate = false, allowPrivate = false } = {}) {
+      const row = q.byId.get(Number(id))
+      if (!row) return { text: `相册里没有 #${id}（可能已删除）。` }
+      if (Number(row.private) && !(includePrivate && allowPrivate)) return { text: `#${id} 在隐私相册里；需要 includePrivate:true + allowPrivate:true 才能改备注。` }
+      let nextTags = Array.isArray(tags) ? tagList(tags) : tagList(row.tags)
+      for (const tag of Array.isArray(addTags) ? addTags : []) if (!nextTags.includes(String(tag))) nextTags.push(String(tag))
+      const remove = new Set((Array.isArray(removeTags) ? removeTags : []).map(String))
+      if (remove.size) nextTags = nextTags.filter((tag) => !remove.has(tag))
+      q.updateNote.run(
+        caption == null ? null : String(caption).slice(0, 500),
+        JSON.stringify(nextTags),
+        source == null ? null : String(source),
+        pinned == null ? null : (pinned ? 1 : 0),
+        row.id,
+      )
+      return { text: `已更新备注：${metaLine(q.byId.get(row.id))}。只改 metadata，图片文件未动。` }
+    },
+  })
+
   if (ctx.config?.captionEnabled !== false) {
   ctx.tools.register({
     name: 'album_caption',
@@ -789,7 +829,7 @@ export function apply(ctx) {
   ctx.services.provide('album', {
     root,
     importFile,
-    list: (opts = {}) => queryRows({ ...opts, includePrivate: Boolean(opts.includePrivate && opts.allowPrivate) }).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, caption: row.caption, tags: tagList(row.tags), importedAt: row.imported_at })),
+    list: (opts = {}) => queryRows({ ...opts, includePrivate: Boolean(opts.includePrivate && opts.allowPrivate) }).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, bytes: row.bytes, width: row.width, height: row.height, caption: row.caption, tags: tagList(row.tags), source: row.source, origin: row.origin, pinned: Number(row.pinned) === 1, private: Number(row.private) === 1, sentAt: row.sent_at, importedAt: row.imported_at })),
     search: (query, opts = {}) => q.all.all().filter((row) => (Boolean(opts.includePrivate && opts.allowPrivate) || !Number(row.private)) && describe(query, row)).slice(0, Math.min(50, Number(opts.limit) || 10)).map((row) => ({ id: row.id, path: displayPath(row), kind: row.kind, caption: row.caption })),
     semanticSearch: async (query, opts = {}) => {
       const rows = filterRows({ includePrivate: Boolean(opts.includePrivate), allowPrivate: Boolean(opts.allowPrivate) })
@@ -798,6 +838,25 @@ export function apply(ctx) {
     },
     reindex: (opts = {}) => ({ images: q.all.all().filter((row) => row.kind === 'image').length, vectors: q.vecCount.get().n, dims: q.vecDimCount.all() }),
     vectors: () => ({ enabled: embedEnabled, available: embedAvailable(), count: q.vecCount.get().n, dims: q.vecDimCount.all() }),
+    note({ id, caption = null, tags = null, source = null, pinned = null } = {}) {
+      const row = q.byId.get(Number(id))
+      if (!row || row.deleted_at != null) return { ok: false, error: `相册里没有 #${id}` }
+      if (Number(row.private)) return { ok: false, error: `#${id} 在隐私相册里，服务接口不直接改` }
+      q.updateNote.run(
+        caption == null ? null : String(caption).slice(0, 500),
+        tags == null ? null : JSON.stringify(tagList(tags)),
+        source == null ? null : String(source),
+        pinned == null ? null : (pinned ? 1 : 0),
+        row.id,
+      )
+      return { ok: true, row: q.byId.get(row.id) }
+    },
+    markSent(id, at = ctx.now()) {
+      const row = q.byId.get(Number(id))
+      if (!row || row.deleted_at != null) return { ok: false, error: `相册里没有 #${id}` }
+      q.markSent.run(Number(at) || ctx.now(), row.id)
+      return { ok: true }
+    },
     prune: (opts = {}) => pruneNow(opts),
     status: () => ({ count: Number(q.total.get().n), bytes: Number(q.total.get().b), root, dbFile }),
   })

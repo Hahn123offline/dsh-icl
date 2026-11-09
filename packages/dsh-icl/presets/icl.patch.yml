@@ -69,6 +69,9 @@
                   enabled: true
                   ownerQQ: '3429502459'
                   selfId: '2593621742'
+                  # 私聊图片/表情自动进相册；群图默认不自动收（避免默默收藏群友图片）。
+                  autoAlbum: true
+                  autoAlbumGroups: false
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false

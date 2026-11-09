@@ -172,6 +172,19 @@ export async function registerSendTool({
     return queryStickerEntries(merged, { query, sort }).slice(0, stickerListLimit)
   }
 
+  /** 表情别名：album 里带 sticker 标签的媒体（新的唯一收藏入口在 album）。 */
+  function albumStickerItems(query = '') {
+    try {
+      const album = ctx.services?.get?.('album')
+      const rows = album?.list?.({ tag: 'sticker' }) ?? []
+      const needle = String(query ?? '').trim().toLowerCase()
+      return (Array.isArray(rows) ? rows : []).filter((row) => {
+        if (!needle) return true
+        return [row.caption, JSON.stringify(row.tags ?? []), row.source, row.path].some((v) => String(v ?? '').toLowerCase().includes(needle))
+      })
+    } catch { return [] }
+  }
+
   /** 只接受"本地库里的单层文件名"；符号链接/目录/路径穿越一律拒绝。 */
   function readSticker(id) {
     const safe = String(id ?? '').trim()
@@ -716,6 +729,9 @@ export async function registerSendTool({
       sent: result.ok ? 1 : 0, total: 1, ms, chars: 0, error: result.error ?? null,
     }
     if (result.ok) {
+      if (args.albumId != null) {
+        try { ctx.services?.get?.('album')?.markSent?.(Number(args.albumId), now()) } catch { /* 相册回写失败不影响已发送 */ }
+      }
       return { text: `已发出去（${info.kind} ${info.name}，${info.bytes} 字节${result.messageId ? `，messageId=${result.messageId}` : ''}，${ms}ms）。`, outcome: 'ok', messageId: result.messageId ?? null }
     }
     const reason = result.error ?? '未知原因'
@@ -759,6 +775,11 @@ export async function registerSendTool({
     const kind = target.kind === 'group' ? 'group' : 'private'
     const targetId = String(target.peer ?? target.groupId ?? targetInput)
     const peer = kind === 'group' ? `group:${targetId}` : targetId
+    const albumMatch = /^#?(\d+)$/.exec(String(args.id ?? '').trim())
+    if (albumMatch) {
+      const row = albumStickerItems().find((item) => String(item.id) === albumMatch[1])
+      if (row) return sendMedia({ to: targetInput, albumId: Number(row.id), kind: 'image' })
+    }
     let sticker
     try { sticker = readSticker(args.id) } catch (error) { return refuse(String(error?.message ?? error), { peerId: targetId }) }
     const rateError = stickerRateError(peer)
@@ -797,9 +818,9 @@ export async function registerSendTool({
 
   ctx.tools.register({
     name: 'qq_stickers',
-    summary: '列出本地 QQ 表情包库（只读）：本地文件 + 知识库标签/描述/来源/使用次数；不下载远程、不执行文件。发送用 qq_send_sticker，备注用 qq_sticker_note。',
-    when: ['想挑一个本地表情发给对方', '按标签/描述查本地表情', '确认本地表情库里有哪些文件'],
-    avoid: ['以为这里能收藏网络表情（只支持本地库）', '把表情当图片消息发送（用 qq_send_sticker）'],
+    summary: '列出发送用表情：album 里带 sticker 标签的图片 + 旧本地 stickerDir；新收藏统一走 album_import。发送用 qq_send_sticker。',
+    when: ['想挑一个表情发给对方', '按标签/描述查表情', '确认 album sticker / 本地表情库有哪些'],
+    avoid: ['以为这里能收藏网络表情（用 album_import 导入本地图）', '把表情当普通图片路径发送（用 qq_send_sticker 或 albumId）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -809,11 +830,14 @@ export async function registerSendTool({
       },
     },
     async execute({ query, sort, limit } = {}) {
-      if (!stickerDir) return { text: '表情包库未配置（stickerDir 为空）；把 png/jpeg/gif/webp 放进目录后再用。' }
+      const cap = Math.max(1, Math.min(100, Number(limit) || 30))
       const library = loadLibrary()
-      const list = listStickers({ query, sort }).slice(0, Math.max(1, Math.min(100, Number(limit) || 30)))
-      if (!list.length) return { text: `表情包库是空的：${stickerDir}（只接受 png/jpeg/gif/webp 普通文件）。` }
-      const lines = list.map((item) => {
+      const legacy = stickerDir ? listStickers({ query, sort }).slice(0, cap) : []
+      const album = albumStickerItems(query).slice(0, cap)
+      if (!legacy.length && !album.length) {
+        return { text: `没有可发的表情：album 里没有 sticker 标签，stickerDir ${stickerDir ? `也没有本地文件（${stickerDir}）` : '未配置'}。用 album_import 导入图片并加 tags:["sticker"]，或直接 qq_send_media。` }
+      }
+      const legacyLines = legacy.map((item) => {
         const meta = [
           item.description ? `描述：${item.description}` : null,
           item.tags?.length ? `标签：${item.tags.join('、')}` : null,
@@ -821,9 +845,14 @@ export async function registerSendTool({
         ].filter(Boolean).join('；')
         return `- ${item.id}（${(item.bytes / 1024).toFixed(1)}KB；${meta}）`
       })
-      return {
-        text: `本地表情包（${list.length} 个，来自 ${stickerDir}${library.error ? `；知识库读取失败：${library.error}（本次只读）` : ''}）：\n${lines.join('\n')}\n用 qq_send_sticker {id:"文件名"} 发送；qq_sticker_note 可补标签/描述。`,
-      }
+      const albumLines = album.map((item) => {
+        const tags = Array.isArray(item.tags) ? item.tags.join('、') : String(item.tags ?? '')
+        return `- #${item.id}（album sticker；${item.bytes ?? '?'} 字节；${item.caption || '无备注'}${tags ? `；${tags}` : ''}）`
+      })
+      const sections = []
+      if (albumLines.length) sections.push(`album sticker 标签（${albumLines.length} 个）：\n${albumLines.join('\n')}`)
+      if (legacyLines.length) sections.push(`本地 stickerDir（${legacyLines.length} 个，来自 ${stickerDir}${library.error ? `；知识库读取失败：${library.error}（本次只读）` : ''}）：\n${legacyLines.join('\n')}`)
+      return { text: `${sections.join('\n\n')}\n用 qq_send_sticker {id:"#albumId 或文件名"} 发送；album 表情用 album_note 补备注。` }
     },
   })
 
@@ -835,7 +864,7 @@ export async function registerSendTool({
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        id: { type: 'string', description: '表情文件名（单层，必须在 stickerDir 里存在）。' },
+        id: { type: 'string', description: 'album sticker 的 #id，或旧本地表情文件名。' },
         tags: { type: 'array', items: { type: 'string' }, description: '短标签（最多 10 个，每个 ≤24 字）。' },
         description: { type: 'string', description: '一句话描述它表达什么/什么时候用（≤200 字）。' },
         source: { type: 'string', description: '来源标记：manual（默认）| inbound | ai | unknown。' },
@@ -843,8 +872,17 @@ export async function registerSendTool({
       required: ['id'],
     },
     async execute({ id, tags, description, source } = {}) {
-      if (!stickerDir) return { text: '表情包库未配置（stickerDir 为空）。' }
       const safe = String(id ?? '').trim()
+      const albumMatch = /^#?(\d+)$/.exec(safe)
+      if (albumMatch) {
+        try {
+          const album = ctx.services?.get?.('album')
+          const result = album?.note?.({ id: Number(albumMatch[1]), caption: description ?? null, tags: Array.isArray(tags) ? tags : null, source: source ?? null })
+          if (result?.ok) return { text: `已更新 album #${albumMatch[1]} 的表情备注（caption/tags/source）。` }
+          if (result?.error) return { text: result.error }
+        } catch (error) { return { text: `更新 album 备注失败：${String(error?.message ?? error)}` } }
+      }
+      if (!stickerDir) return { text: 'album 里没有这个 #id，旧本地表情库也未配置（stickerDir 为空）。' }
       const exists = stickerFiles().some((file) => file.id === safe)
       if (!exists) return { text: `表情库里没有这个本地文件：${safe}（只接受 stickerDir 下的单层图片）。` }
       const library = loadLibrary()
@@ -862,13 +900,13 @@ export async function registerSendTool({
 
   ctx.tools.register({
     name: 'qq_send_sticker',
-    summary: '把本地表情包库里的一个图片发给 QQ 私聊或 allowGroupSend 白名单群（同 qq_send 的限速/审计）。只接受本地库文件，不下载远程。',
-    when: ['对方语气适合用表情回应，且本地库里有合适的', '你已经用 qq_stickers 选好了 id'],
-    avoid: ['未启用 allowGroupSend 时发群', '发送任意路径/网络图片（只接受 stickerDir 下的单层文件名）', '结果 unknown 时重发'],
+    summary: '发送一个表情：album 里带 sticker 标签的 #id，或旧本地 stickerDir 文件名；不下载远程。',
+    when: ['对方语气适合用表情回应，且 qq_stickers 里有合适的', '你已经选好了 #albumId 或文件名'],
+    avoid: ['未启用 allowGroupSend 时发群', '发网络图片/远程表情（先 album_import）', '结果 unknown 时重发'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        id: { type: 'string', description: 'qq_stickers 列出的文件名（单层，不能带路径）。' },
+        id: { type: 'string', description: 'qq_stickers 列出的 #albumId 或旧本地文件名。' },
         to: { type: 'string', description: '目标 QQ 号（私聊）或群号（allowGroups + allowGroupSend）。省略则用 owner / 唯一白名单私聊。' },
       },
       required: ['id'],

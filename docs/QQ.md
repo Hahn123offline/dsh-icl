@@ -377,7 +377,7 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 - **内容**：纯文本、非空、≤`maxSendChars`（默认 2000）、敏感信息拦截（`api_key/token/password/sk-…/PRIVATE KEY` 等默认 pattern，可配置）。发送前 Markdown 会转纯文本（`markdownToPlain` 可关）。
 - **引用回复（P1）**：`qq_send {text, replyToMessageId}` → OneBot reply 段（`[{type:'reply',data:{id}},{type:'text',data:{text}}]`）。
   只允许**单条**文本带引用（多气泡 + 引用拒绝）；目标必须在**当前私聊账本**里（防引用别的会话/伪造 id）；成功后账本把"发送前收到的消息"标记为已回（见 §7.7）。
-- **表情包（P1）**：`qq_send_sticker {id}` 发送**本地库**里的图片（png/jpeg/gif/webp、大小/路径校验、base64:// 段），与 qq_send 共享 owner/白名单/限速/每轮/审计；不下载远程、不执行文件（见 §7.8）。
+- **表情包（P1）**：`qq_send_sticker {id}` 发送 album `sticker` 标签的 `#albumId` 或旧本地库图片；album 项走 `qq_send_media`，共享审批/限速/审计；不下载远程。
 - **人类化（P0-3）**：一段回复可拆成 **1–8 条气泡**；条间默认 1–3s、20% 概率 5–10s 长停顿（`gapMode: auto|fixed|typing|byLength`，typing 按 1.4 字/秒估算）；单条超 `maxMessageChars`（默认 500）自动切分，**URL 整条保留、emoji 不被切开**；一条输入被拆成过多气泡时整体拒绝（不发半截）。
 - **限速**：同 peer 最小间隔 5s、每分钟最多 10、每小时最多 60（按气泡数预留）、同文 60s 去重、每轮最多 1 次调用（`turn-end` 重置）。
 - **回执三态**：`ok`（retcode=0 且有 message_id）/ `rejected`（后端明确拒绝）/ `unknown`（超时/连接断/无回执）。**unknown 不自动重试**（OneBot 无幂等键，盲重试会双发）。
@@ -473,7 +473,7 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - **默认限制（用户 2026-11-06 拍板）**：图片 ≤3 张/条、≤8MB/张；视频 ≤1 个/条、**≤512MiB**；文件 ≤2 个/条、**≤512MiB**；
   **保留 = 全部保留/手清**（`mediaRetentionDays` 默认 0 = 不自动删）；总量软上限默认 2GiB，超过只日志/状态告警，
   **不拒绝、不自动删除**；清理由人/`album/prune` 手动决定。
-- **归档手动**：QQ 只落盘 + 给绝对路径，**不自动进 album**；`album_import` 由 misc 侧手动/她主动决定。
+- **归档自动（2026-11-09）**：QQ 私聊 owner 图片/表情可在 `autoAlbum:true` 时自动进 album（群图需 `autoAlbumGroups`）；仍可 `album_import` 手动导入。
 - **隐私**：入站媒体不自动标记/不上传任何外部服务；只做"落盘 + 路径"，不解密/不发送到 QQ 之外。
 - 路径：`mediaInboxDir` 可显式配置；等 paths 子任务落 `ICL_ROOT` 推导后默认改用它（当前仍按 state 同级/config 覆盖）。
 - 安全：只 http(s)、拒 localhost/私网/带凭据 URL、大小上限、魔数嗅探（png/jpeg/gif/webp、mp4/webm）；
@@ -549,21 +549,14 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 - 回执后：`qq_unread` 的行尾 `[未交付]` 标记消失、`deliveredSeq` 前进；用户/模型再 `qq_mark_read` 才能推进 `attendedSeq`。
   未收到回执的（例如 time 重放了但版本不支持该契约）仍保持未交付——安全侧，不静默丢。
 
-### 7.8 P1 表情包：本地库列表 + 发送本地图片 + 知识库
+### 7.8 表情：album sticker 标签 + 旧本地库别名
 
-- 目录：`stickerDir`（默认 state 同级 `media/stickers`；显式配置优先）；只扫描**单层普通文件**，扩展名 png/jpeg/jpg/gif/webp。
-- `qq_stickers {query?, sort?, limit?}`：只读列表（文件名/大小/标签/描述/来源/使用次数），不读图、不下载、不执行；
-  `query` 匹配文件名/标签/描述；`sort=name|recent|used`；目录为空/未配置会明确说明。
-- 知识库：`stickerDir/library.json`（可用 `stickerLibraryFile` 覆盖），每条本地文件可带 `tags/description/source/useCount/lastUsedAt`；
-  `qq_sticker_note {id, tags?, description?, source?}` 只写这个本地 json，**不复制/不下载/不上传**任何图片。
-  库文件损坏时只读列表降级并拒绝写回（避免一次坏文件清空索引）。
-- `qq_send_sticker {id, to?}`：
-  - 只接受库内单层文件名（`path.basename`、拒绝 `..`、拒绝目录/符号链接）；`lstat` + 大小上限（默认 10MB）+ 魔数嗅探（png/jpeg/gif/webp）。
-  - 发送为 OneBot `send_private_msg` 的 `image` 段，`file: "base64://…"`；**正文/审计不含本地路径或图片字节**。
-  - 与 `qq_send` 共享：owner/白名单目标、三把钥匙、每轮上限、同 peer 最小间隔/每分钟/每小时、`turn-end` 重置。
-- **收藏**：只支持"把文件放进 `stickerDir`" + 可选 `qq_sticker_note` 写标签/描述/来源；**不自动下载第三方表情/不上传**。
-  入站表情自动收集留后续（需要单独评审"下载即收藏"的隐私/版权边界）。
-- **唤醒矩阵（见 §7.9）不会把表情/图片当成新用户消息**：提醒信号有单独 tags 和"这不是对方新消息"的正文。
+- **新收藏统一进 album**：QQ 入站图片/`mface` 在 `autoAlbum` 下自动导入（私聊 owner 默认；群需 `autoAlbumGroups`），表情打 `sticker` 标签；不再需要单独的“表情上传入口”。
+- `qq_stickers {query?, sort?, limit?}`：先列 album 里 `sticker` 标签的项（`#albumId`、caption/tags），再列旧 `stickerDir` 文件；只读，不下载/不执行。
+- `qq_sticker_note {id, tags?, description?, source?}`：`#albumId` 走 `album.note`（caption/tags/source）；旧文件名仍写 `stickerDir/library.json`。库文件损坏时只读列表降级并拒绝写回。
+- `qq_send_sticker {id, to?}`：`#albumId` 或旧文件名；album 项走 `qq_send_media`（图片），旧文件仍读本地并 sniff 魔数/大小；与 `qq_send` 共享目标、限速、审计。
+- `stickerDir` 保留只为兼容旧本地文件；**不需要再把文件放进 stickerDir 才能用表情**。
+- 入站 `mface` 仍下载到 inbox；是否自动进 album 由 `autoAlbum`/`autoAlbumGroups` 决定，不发不自动发。
 
 ### 7.9 P1 唤醒矩阵：replyCheck / proactive / nudge（只生成 signal）
 

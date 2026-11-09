@@ -148,6 +148,9 @@ const DEFAULTS = Object.freeze({
   maxFileBytes: MEDIA_DEFAULTS.maxFileBytes,
   mediaRetentionDays: MEDIA_DEFAULTS.retentionDays,
   mediaSoftLimitBytes: MEDIA_DEFAULTS.softLimitBytes,
+  // 入站图片/表情自动进相册（默认只 owner 私聊；群图需显式开）
+  autoAlbum: false,
+  autoAlbumGroups: false,
   // 表情包本地库（只读列表/发送本地文件；不下载远程、不执行文件）
   stickerDir: '',
   stickerLibraryFile: '',
@@ -218,6 +221,8 @@ export function normalizeQqConfig(input = {}) {
   cfg.proactiveEnabled = cfg.proactiveEnabled === true
   cfg.nudgeEnabled = cfg.nudgeEnabled !== false
   cfg.mediaEnabled = cfg.mediaEnabled !== false
+  cfg.autoAlbum = cfg.autoAlbum === true
+  cfg.autoAlbumGroups = cfg.autoAlbumGroups === true
   cfg.mediaFetchImpl = typeof input.mediaFetchImpl === 'function' ? input.mediaFetchImpl : null
   cfg.mediaInboxDir = String(cfg.mediaInboxDir ?? '')
   cfg.stickerDir = String(cfg.stickerDir ?? '')
@@ -1033,6 +1038,45 @@ export async function apply(ctx) {
     return null
   }
 
+  function albumService() {
+    try { return ctx.services?.get?.('album') ?? null } catch { return null }
+  }
+
+  /** 入站图片/表情自动进相册（默认只收 owner 私聊；群图需显式 autoAlbumGroups）。 */
+  function maybeAutoAlbum({ saved, item, raw, senderName = '' } = {}) {
+    if (cfg.autoAlbum !== true || !saved?.path) return
+    const scope = String(raw?.message_type ?? '')
+    if (scope === 'group' && cfg.autoAlbumGroups !== true) return
+    if (scope === 'private' && cfg.ownerQQ != null && String(senderIdOf(raw)) !== String(cfg.ownerQQ)) return
+    const album = albumService()
+    if (!album?.importFile) return
+    const sticker = item?.kind === 'sticker' || item?.kind === 'face'
+    const tags = ['qq', scope, `sender:${String(senderIdOf(raw) ?? '')}`, ...(sticker ? ['sticker'] : [])]
+    if (scope === 'group') tags.push(`group:${String(raw.group_id ?? '')}`)
+    const rawText = String(raw.raw_message ?? '').trim()
+    const segmentText = (Array.isArray(raw.message) ? raw.message : [])
+      .map((seg) => seg?.data && typeof seg.data === 'object' ? (seg.data.text ?? seg.data.summary ?? '') : '')
+      .filter(Boolean).join(' ').trim()
+    const caption = (rawText || segmentText).slice(0, 500) || null
+    const origin = {
+      channel: 'qq', scope,
+      senderId: senderIdOf(raw) == null ? null : String(senderIdOf(raw)),
+      senderName: String(senderName ?? ''),
+      groupId: raw.group_id == null ? null : String(raw.group_id),
+      messageId: raw.message_id == null ? null : String(raw.message_id),
+    }
+    void Promise.resolve().then(() => album.importFile({
+      path: saved.path,
+      source: 'qq',
+      caption,
+      tags,
+      origin,
+      createdAt: inboundAt(raw),
+    })).then((result) => {
+      if (result?.ok === false) ctx.log({ level: 'warn', msg: 'qq.album.auto-import', path: saved.path, error: result.error })
+    }).catch((error) => ctx.log({ level: 'warn', msg: 'qq.album.auto-import', path: saved.path, error: String(error?.message ?? error) }))
+  }
+
   async function collectInboundMedia(raw) {
     if (!cfg.mediaEnabled || !Array.isArray(raw?.message)) return null
     const peerId = senderIdOf(raw)
@@ -1069,6 +1113,7 @@ export async function apply(ctx) {
         appended.push(`\n[图片已保存：${saved.path}]`)
         stats.mediaSaved += 1
         stats.mediaBytes += saved.bytes
+        maybeAutoAlbum({ saved, item, raw, senderName: sender })
         maybeWarnMediaSize()
       } catch (error) {
         imageFailures += 1
@@ -1629,8 +1674,9 @@ export async function apply(ctx) {
         maxVideoBytes: cfg.maxVideoBytes,
         maxFileBytes: cfg.maxFileBytes,
         retentionDays: cfg.mediaRetentionDays,
-        // 归档是手动的：QQ 只落盘/给路径，不自动 album_import、不上传外部。
-        autoAlbum: false,
+        // 图片/表情可自动进相册；群图默认不自动收，需 autoAlbumGroups。
+        autoAlbum: cfg.autoAlbum,
+        autoAlbumGroups: cfg.autoAlbumGroups,
         autoDelete: false,
       },
       stats: { ...stats, blockedReasons: { ...stats.blockedReasons }, queuedReasons: { ...stats.queuedReasons }, retryPending: retry.length, recent: { ...stats.recent } },

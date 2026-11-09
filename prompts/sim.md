@@ -47,7 +47,8 @@
 - 群 @ 会直接找你；别群的普通消息先攒着。想认真看某个群时 `focus_enter` 它的 activity
   `qq:group:<群号>`；离开/换群时会把积压摘要给你。
 - 群消息用 `qq_unread {to:"群号"}` / `qq_history {to:"群号"}`；`qq_groups`/`qq_group_history` 是群总览兼容视图。
-- 发本地图片/视频/文件/语音：用 `qq_send_media {to:"QQ号或群号", path:"本地路径" 或 albumId}`；不要塞进 `qq_send` 文本；表情包仍用 `qq_send_sticker`。
+- 发本地图片/视频/文件/语音：用 `qq_send_media {to:"QQ号或群号", path:"本地路径" 或 albumId}`；不要塞进 `qq_send` 文本。
+- 选图不是必做流程；但图多时先 `album_list`/`album_search`，需要看候选就 `album_collage {ids:[...]}` 拼一张预览，`album_show` 看详情，`album_note` 补备注/标签。表情就是 album 里带 `sticker` 标签的图；`qq_send_sticker` 是它的别名，不再单独维护空表情库。
 - 等下一批新消息用同一个 `qq_wait_for_messages`：私聊传 QQ 号，群聊传群号（`peer`/`to` 都可以），不要找“群专用 wait”。
 - 戳一戳用 `qq_poke`；群管理默认关闭，别在普通聊天里用。`@all` 没开放。
 

@@ -84,7 +84,7 @@ const writePng = (dir, name, png) => { const file = path.join(dir, name); fs.wri
 test('manifest 声明的工具与实际注册一致', async () => {
   const { tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(), [...albumManifest.tools].sort())
-  assert.equal(albumManifest.tools.length, 9)
+  assert.equal(albumManifest.tools.length, 10)
 })
 
 test('导入两张图：落盘、尺寸/大小/路径正确；同一内容重复导入去重', async () => {
@@ -420,4 +420,25 @@ test('album_import 只读文件头：readFileHead 不会把大文件整个读进
   const empty = path.join(src, 'empty.png')
   fs.writeFileSync(empty, Buffer.alloc(0))
   assert.equal(album.readFileHead(empty, 64 * 1024).length, 0)
+})
+
+test('album_note：改备注/标签/来源/置顶；只改 metadata；album_show 能看到', async () => {
+  const { tools, service } = await setup()
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-album-src-'))
+  const a = writePng(src, 'note.png', makePng(2, 2, [20, 30, 40]))
+  const imported = await tools.album_import.execute({ paths: [a], caption: '旧描述', tags: ['旧标签'] })
+  const id = Number(/^#(\d+)/m.exec(imported.text)?.[1])
+  assert.ok(id > 0)
+  const out = await tools.album_note.execute({ id, caption: '新的备注', addTags: ['表情', 'qq'], removeTags: ['旧标签'], source: 'qq', pinned: true })
+  assert.match(out.text, /新的备注/)
+  const shown = await tools.album_show.execute({ id })
+  assert.match(shown.text, /新的备注/)
+  assert.match(shown.text, /表情/)
+  assert.match(shown.text, /qq/)
+  assert.doesNotMatch(shown.text, /旧标签/)
+  const listed = await tools.album_list.execute({ tag: '表情' })
+  assert.match(listed.text, new RegExp(`#${id}`))
+  const marked = service.markSent(id, Date.now())
+  assert.equal(marked.ok, true)
+  assert.match((await tools.album_show.execute({ id })).text, /已发过/)
 })

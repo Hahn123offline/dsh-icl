@@ -2,7 +2,7 @@
   "id": "album",
   "version": "0.2.0",
   "entry": "./src/index.mjs",
-  "tools": ["album_import", "album_list", "album_search", "album_collage", "album_show", "album_prune", "album_status", "album_reindex", "album_caption"],
+  "tools": ["album_import", "album_list", "album_search", "album_collage", "album_show", "album_note", "album_prune", "album_status", "album_reindex", "album_caption"],
   "slots": [
     {
       "id": "image-embed",
