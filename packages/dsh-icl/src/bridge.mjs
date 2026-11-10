@@ -124,7 +124,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 依据：DSH 的 runtime-context 快照只 append 不 replace，step-heavy 回合（MC 可到 39 步）
     // 会按步数线性累积（见 docs/CACHE-MODEL.md §7.7）。
     turn: null,
-    lastInputTokens: null,
+    lastContextTokens: null,
     lastUsageAt: null,
     compaction: null,
     compactionInjected: false,
@@ -1073,8 +1073,11 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     if (event?.type === 'assistant/message') {
       const usage = event.data?.usage ?? event.usage
       const input = Number(usage?.inputTokens)
-      if (Number.isFinite(input) && input > 0) {
-        state.lastInputTokens = input
+      const cacheRead = Number(usage?.cacheReadTokens)
+      const cacheWrite = Number(usage?.cacheWriteTokens)
+      const total = [input, cacheRead, cacheWrite].filter(Number.isFinite).reduce((sum, value) => sum + Math.max(0, value), 0)
+      if (total > 0) {
+        state.lastContextTokens = total
         state.lastUsageAt = Number(event.time) || Date.now()
       }
     }
@@ -1122,7 +1125,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   /** 客观负荷仪表：上下文占用 + 最近繁忙度；不调模型，不做情绪角色扮演。 */
   function vitalsText(now = Date.now()) {
     const window = Math.max(16_000, Number(config.contextWindow) || 256_000)
-    const tokens = Number(state.lastInputTokens) || 0
+    const tokens = Number(state.lastContextTokens) || 0
     const contextPct = tokens > 0 ? Math.max(0, Math.min(100, Math.round((tokens / window) * 100))) : null
     const since = now - 15 * 60_000
     const recent = state.raw.filter((row) => Number(row.time) >= since)
@@ -1226,6 +1229,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       } catch (error) { report('compaction.inject', error) }
     }
     try { if (!state.compaction && ctx.compaction) state.compaction = ctx.compaction } catch { /* 需要 inject */ }
+    try { if (!state.compaction && typeof ctx.get === 'function') state.compaction = ctx.get('compaction') ?? null } catch { /* 不在当前 scope */ }
+    if (state.compaction) registerCompactionTool()
     return state.compaction
   }
 
@@ -1265,7 +1270,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   }
 
   function registerCompactionTool() {
-    if (state.compactOff || typeof ctx.tools?.register !== 'function' || !state.compaction?.compactNow) return
+    if (state.compactOff || typeof ctx.tools?.register !== 'function') return
     try {
       const off = ctx.tools.register(toDshToolDefinition({
         name: 'compact_context',

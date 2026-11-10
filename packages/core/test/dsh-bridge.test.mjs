@@ -394,7 +394,7 @@ test('桥：输入 token 高时 facts 带客观负荷（上下文压力），不
   bridge.bindSession(session)
   bridge.bindAgent(agent)
   try {
-    bridge.onEvent(session, { type: 'assistant/message', seq: 1, time: Date.now(), data: { usage: { inputTokens: 200000 }, message: { role: 'assistant', content: [] } } })
+    bridge.onEvent(session, { type: 'assistant/message', seq: 1, time: Date.now(), data: { usage: { inputTokens: 200, cacheReadTokens: 199800 }, message: { role: 'assistant', content: [] } } })
     const facts = ctx.contexts_.get('icl:facts')
     const text = facts.text({})
     assert.match(text, /上下文 78%/)
@@ -1126,7 +1126,7 @@ test('工具白名单：MC 场景只注册名单内工具（支持 mcb_* 前缀�
   const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), toolAllowlist: ['mcb_*', 'time_status'] } })
   bridge.start()
   try {
-    assert.deepEqual([...ctx.tools_.keys()].sort(), ['mcb_do', 'mcb_status', 'time_status'])
+    assert.deepEqual([...ctx.tools_.keys()].sort(), ['compact_context', 'mcb_do', 'mcb_status', 'time_status'])
   } finally {
     bridge.dispose()
   }
