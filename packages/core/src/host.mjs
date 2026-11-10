@@ -5,7 +5,7 @@
 // 提示词段、focus 租约。没有第二套状态需要同步。
 
 import { validateManifest } from './contracts.mjs'
-import { createContextService, createPresetService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry } from './services.mjs'
+import { createContextService, createPresetService, createRawSourceRegistry, createToolSurface, createToolRegistry, createPromptService, createFocusService, createDeliveryService, createSlotRegistry, createContractRegistry } from './services.mjs'
 import { createModelClient } from './model-client.mjs'
 import { createSignalService } from './signals.mjs'
 import { createVisionService } from './vision.mjs'
@@ -105,6 +105,12 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
   const plugins = new Map()
   /** 插件之间共享能力的注册表：provide/get */
   const shared = new Map()
+  const contracts = createContractRegistry({
+    tools,
+    prompt,
+    hasService: (name) => shared.has(String(name)),
+    log,
+  })
 
   /** QQ 重放回执：只在这些消息**确实重新进入投递管道**后调用；只推 delivered，不推 attended。 */
   function noteQqDelivered(seqs, via) {
@@ -202,6 +208,15 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
           record.dispose.push(dispose)
           return dispose
         },
+      },
+      contracts: {
+        registerFeature(def) {
+          const handle = contracts.registerFeature(def)
+          record.dispose.push(handle.dispose)
+          return handle
+        },
+        status: (id) => contracts.status(id),
+        list: () => contracts.list(),
       },
       focus: {
         enter(options) {
@@ -321,7 +336,7 @@ export function createHost({ log = () => {}, now: systemNow = () => Date.now(), 
 
   return {
     services: {
-      tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals, vision,
+      tools, prompt, focus, delivery, slots, model, raw, context, surface, presets, signals, vision, contracts,
       /** 时间模块接管系统时钟：set 返回恢复函数。 */
       clock: {
         set: (fn) => clockBridge.set(fn),

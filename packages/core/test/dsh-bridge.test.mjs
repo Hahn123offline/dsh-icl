@@ -416,6 +416,7 @@ test('桥：compact_context 登记后在本轮结束调用原生 compactNow，�
   bridge.bindSession(session)
   bridge.bindAgent(agent)
   try {
+    assert.match(host.services.prompt.assemble(), /compact_context/, '原生 service 可用时 Feature Contract 应出现')
     const tool = ctx.tools_.get('compact_context')
     assert.ok(tool, '有原生 compaction 服务时应注册 compact_context')
     const out = await tool.execute({})

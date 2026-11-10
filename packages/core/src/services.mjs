@@ -252,6 +252,27 @@ export function createPresetService({ plugins } = {}) {
   }
 }
 
+/** 工具自带的契约元数据：只做结构校验，不自动注入提示词。 */
+function normalizeToolContract(value) {
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('contract 必须是对象')
+  const out = {}
+  if (value.feature != null) {
+    const feature = String(value.feature).trim()
+    if (!/^[a-z][a-z0-9:_-]*$/i.test(feature)) throw new Error(`contract.feature 不合法：${feature || '(空)'}`)
+    out.feature = feature
+  }
+  if (value.requiresServices != null) {
+    if (!Array.isArray(value.requiresServices)) throw new Error('contract.requiresServices 必须是数组')
+    out.requiresServices = value.requiresServices.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 16)
+  }
+  if (value.fallback != null) out.fallback = String(value.fallback).slice(0, 500)
+  if (value.modelHint != null) out.modelHint = String(value.modelHint).slice(0, 1000)
+  if (value.when != null && typeof value.when !== 'function') throw new Error('contract.when 必须是函数')
+  if (typeof value.when === 'function') out.when = value.when
+  return Object.keys(out).length ? out : null
+}
+
 export function createToolRegistry({ onChange = () => {}, stampTime = null } = {}) {
   const tools = new Map()
   let version = 0
@@ -280,6 +301,7 @@ export function createToolRegistry({ onChange = () => {}, stampTime = null } = {
         execute: stamped,
         summary: summary.slice(0, 160),
         description: composeToolDescription(definition),
+        contract: normalizeToolContract(definition.contract),
       }
       tools.set(name, composed)
       version += 1
@@ -314,6 +336,105 @@ export function createToolRegistry({ onChange = () => {}, stampTime = null } = {
     },
   }
 }
+
+/* ───────────────────────────── contracts ───────────────────────────── */
+
+/**
+ * 功能契约注册表。
+ *
+ * 工具自己的用法说明留在工具 description；跨工具的行为/可见性/失败语义登记在这里。
+ * 只有依赖的工具与服务都可用时，契约段才会进入提示词；工具没注册成功时，
+ * 核心不发布它的契约，避免"提示词里有、工具清单里没有"。
+ */
+export function createContractRegistry({ tools, prompt, hasService = () => false, log = () => {} } = {}) {
+  const features = new Map()
+  const unavailableTools = new Map()
+
+  function requirements(feature) {
+    const missingTools = feature.requiresTools.filter((name) => !tools.has(name) || unavailableTools.has(name))
+    const missingServices = feature.requiresServices.filter((name) => !hasService(name))
+    return { missingTools, missingServices }
+  }
+
+  function active(feature) {
+    const missing = requirements(feature)
+    if (missing.missingTools.length || missing.missingServices.length) return false
+    try {
+      return typeof feature.when === 'function' ? feature.when() !== false : true
+    } catch (error) {
+      log({ msg: 'contract.when-error', id: feature.id, error: String(error?.message ?? error) })
+      return false
+    }
+  }
+
+  function statusOf(feature) {
+    const missing = requirements(feature)
+    const ok = active(feature)
+    return {
+      id: feature.id,
+      active: ok,
+      missingTools: missing.missingTools,
+      missingServices: missing.missingServices,
+      unavailable: !ok,
+    }
+  }
+
+  function registerFeature({ id, order = 780, prompt: text, requiresTools = [], requiresServices = [], when = null } = {}) {
+    const key = String(id ?? '').trim()
+    if (!/^[a-z][a-z0-9:_-]*$/i.test(key)) throw new Error(`契约 id 不合法：${key || '(空)'}`)
+    if (features.has(key)) throw new Error(`契约已存在：${key}`)
+    if (typeof text !== 'string' && typeof text !== 'function') throw new Error(`契约 ${key} 的 prompt 必须是字符串或函数`)
+    if (!Array.isArray(requiresTools) || !Array.isArray(requiresServices)) throw new Error(`契约 ${key} 的 requires* 必须是数组`)
+    const feature = {
+      id: key,
+      order: Number(order) || 780,
+      text,
+      requiresTools: requiresTools.map(String).map((s) => s.trim()).filter(Boolean),
+      requiresServices: requiresServices.map(String).map((s) => s.trim()).filter(Boolean),
+      when: typeof when === 'function' ? when : null,
+    }
+    const sectionName = `contract:${key}`
+    feature.section = prompt.section({
+      name: sectionName,
+      order: feature.order,
+      when: () => active(feature),
+      text,
+    })
+    features.set(key, feature)
+    const status = statusOf(feature)
+    if (!status.active) log({ msg: 'contract.unavailable', id: key, missingTools: status.missingTools, missingServices: status.missingServices })
+    return {
+      id: key,
+      status: () => statusOf(feature),
+      dispose: () => {
+        if (!features.delete(key)) return
+        try { feature.section?.() } catch { /* 注销失败不阻塞 */ }
+      },
+    }
+  }
+
+  return {
+    registerFeature,
+    /** bridge/适配器注册工具失败时调用；同一 feature 会立即从提示词里消失。 */
+    markToolUnavailable(name, reason = '') {
+      const key = String(name ?? '')
+      if (!key) return
+      unavailableTools.set(key, String(reason ?? ''))
+      log({ msg: 'contract.tool-unavailable', tool: key, reason: String(reason ?? '') })
+    },
+    clearToolUnavailable(name) {
+      unavailableTools.delete(String(name ?? ''))
+    },
+    unavailableTools() { return new Map(unavailableTools) },
+    status(id) {
+      const feature = features.get(String(id))
+      return feature ? statusOf(feature) : null
+    },
+    list() { return [...features.values()].map(statusOf) },
+    names() { return [...features.keys()] },
+  }
+}
+
 
 /* ───────────────────────────── 提示词 ───────────────────────────── */
 

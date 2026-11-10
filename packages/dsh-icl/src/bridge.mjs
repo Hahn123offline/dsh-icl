@@ -132,6 +132,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     pendingCompact: false,
     compactInFlight: false,
     compactOff: null,
+    contractOff: null,
     lastCompactResult: null,
     factsCache: { turn: null, text: null },
     factsDirty: false,
@@ -328,6 +329,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         const off = ctx.tools.register(build(!state.outputFallback))
         state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
         added.push(name)
+        try { host.services.contracts?.clearToolUnavailable?.(name) } catch { /* 旧核心没有契约表 */ }
         if (!state.diagImageOk) { state.diagImageOk = true; diag({ event: 'tool.register.image-ok', name, imageOutput: !state.outputFallback }) }
       } catch (error) {
         diag({ event: 'tool.register.failed', name, imageOutput: !state.outputFallback, error: String(error?.message ?? error) })
@@ -345,12 +347,15 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
             const off = ctx.tools.register(build(false))
             state.tools.set(name, { off: typeof off === 'function' ? off : () => {}, def })
             added.push(name)
+            try { host.services.contracts?.clearToolUnavailable?.(name) } catch { /* 旧核心没有契约表 */ }
             continue
           } catch (retryError) {
+            try { host.services.contracts?.markToolUnavailable?.(name, retryError) } catch { /* 旧核心没有契约表 */ }
             report(`tool.register:${name}:text-only-retry`, retryError)
             continue
           }
         }
+        try { host.services.contracts?.markToolUnavailable?.(name, error) } catch { /* 旧核心没有契约表 */ }
         report(`tool.register:${name}`, error)
       }
     }
@@ -1290,6 +1295,22 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       })
   }
 
+  function registerCompactionContract() {
+    if (state.contractOff) return
+    try {
+      const handle = host.services.contracts?.registerFeature?.({
+        id: 'compaction',
+        order: 790,
+        prompt: '上下文压力高时可以调用 `compact_context` 登记压缩；它在**本轮结束后**执行，下一轮才会变短。不要在本轮内假装已经压缩。',
+        // compact_context 是 bridge 原生工具，不在 host tool surface；用 when 看 service 是否真的接上。
+        when: () => Boolean(state.compaction?.compactNow),
+      })
+      state.contractOff = typeof handle?.dispose === 'function' ? handle.dispose : null
+    } catch (error) {
+      report('compaction.contract', error)
+    }
+  }
+
   function registerCompactionTool() {
     if (state.compactOff || typeof ctx.tools?.register !== 'function') return
     try {
@@ -1316,6 +1337,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     syncTools()
     ensureCompactionService()
     registerCompactionTool()
+    registerCompactionContract()
     // 没有 live Agent 时，走 DSH 官方 apiProxy.sessions.prompt 冷恢复会话；
     // 这是 old dsh-qq/ensureSession 使用过的标准入口，不自己造 resume。
     try {
@@ -1369,6 +1391,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     try { state.offFocusBacklog?.() } catch { /* ignore */ }
     try { state.compactOff?.() } catch { /* ignore */ }
     state.compactOff = null
+    try { state.contractOff?.() } catch { /* ignore */ }
+    state.contractOff = null
     for (const entry of state.tools.values()) { try { entry.off() } catch { /* ignore */ } }
     state.tools.clear()
     unbindSession()
