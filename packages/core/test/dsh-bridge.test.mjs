@@ -427,6 +427,25 @@ test('桥：compact_context 登记后在本轮结束调用原生 compactNow，�
   } finally { bridge.dispose() }
 })
 
+test('桥：上下文窗口跟 DSH request/context 动态，1M 下 130k 不算高压', async () => {
+  const root = tempRoot('vitals-window')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  host.services.prompt.section({ name: 'probe-facts', order: 880, text: () => '时间：18:00' })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), factsEveryStep: true, contextWindow: 256000 } })
+  bridge.start()
+  const session = fakeSession('s1')
+  bridge.bindSession(session)
+  try {
+    bridge.onEvent(session, { type: 'request/context', seq: 1, time: Date.now(), data: { contextWindow: 1048576, provider: 'deepseek-account', model: 'deepseek-flash' } })
+    bridge.onEvent(session, { type: 'assistant/message', seq: 2, time: Date.now(), data: { usage: { inputTokens: 3446, cacheReadTokens: 126720 }, message: { role: 'assistant', content: [] } } })
+    const facts = ctx.contexts_.get('icl:facts')
+    assert.doesNotMatch(facts.text({}), /上下文 \d+%/)
+    bridge.onEvent(session, { type: 'assistant/message', seq: 3, time: Date.now(), data: { usage: { inputTokens: 1000, cacheReadTokens: 499000 }, message: { role: 'assistant', content: [] } } })
+    assert.match(facts.text({}), /上下文 48%/)
+  } finally { bridge.dispose() }
+})
+
 test('桥：facts 快照按 turn 节流（同一 turn 内不重复追加）', async () => {
   const root = tempRoot('layout-throttle')
   const host = await hostWithMemory(root)

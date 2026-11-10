@@ -126,6 +126,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     turn: null,
     lastContextTokens: null,
     lastUsageAt: null,
+    contextWindow: null,
     compaction: null,
     compactionInjected: false,
     pendingCompact: false,
@@ -933,6 +934,21 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return tags.some((tag) => ['poke', 'mention', 'at', 'admin', 'alarm'].includes(String(tag)))
   }
 
+  /** 从会话已落盘的 request/context 恢复当前模型 cw（消息重放/重启后也准）。 */
+  function contextWindowFromSession(session) {
+    try {
+      const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : null
+      if (!Array.isArray(events)) return null
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i]
+        if (event?.type !== 'request/context') continue
+        const value = Number(event.data?.contextWindow)
+        if (Number.isFinite(value) && value > 0) return value
+      }
+    } catch { /* 旧宿主没有 snapshotEvents */ }
+    return null
+  }
+
   function bindSession(session) {
     if (!session?.id) return
     const id = String(session.id)
@@ -944,6 +960,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     state.turn = null
     state.factsCache = { turn: null, text: null }
     state.repeat = { sig: null, count: 0, lastNoticeAt: 0 }
+    state.contextWindow = contextWindowFromSession(session)
     // 新会话从空投递队列开始；旧会话/旧 run 留在 host 队列里的消息不能先于第一轮漏进来。
     // 例外：time 的闹钟/睡醒，以及 poke/@/admin/alarm 这类高优先级提醒不能因为当时没绑定而丢。
     try { host.services.delivery.clear({ preserve: keepAcrossSessionBind }) } catch { /* ignore */ }
@@ -1070,6 +1087,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 注：silent schedule（如 dream:nightly）走 signals.emit 不走 delivery，不在此列，
     // 允许陈旧到轮末（它通常不产生模型消息）；MC 环境事实按 §7.7 豁免。
     if (event?.type === 'tool/result' && isFactsTool(event.data?.name ?? event.data?.tool)) state.factsDirty = true
+    if (event?.type === 'request/context') {
+      const contextWindow = Number(event.data?.contextWindow)
+      if (Number.isFinite(contextWindow) && contextWindow > 0) state.contextWindow = contextWindow
+    }
     if (event?.type === 'assistant/message') {
       const usage = event.data?.usage ?? event.usage
       const input = Number(usage?.inputTokens)
@@ -1124,7 +1145,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /** 客观负荷仪表：上下文占用 + 最近繁忙度；不调模型，不做情绪角色扮演。 */
   function vitalsText(now = Date.now()) {
-    const window = Math.max(16_000, Number(config.contextWindow) || 256_000)
+    const window = Math.max(16_000, Number(state.contextWindow) || Number(config.contextWindow) || 256_000)
     const tokens = Number(state.lastContextTokens) || 0
     const contextPct = tokens > 0 ? Math.max(0, Math.min(100, Math.round((tokens / window) * 100))) : null
     const since = now - 15 * 60_000

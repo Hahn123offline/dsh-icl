@@ -14,8 +14,7 @@
 
 ### contextPressure（当前会话）
 
-数据来源：最近一次模型请求的 `usage.inputTokens` / 配置的 `contextWindow`（默认 256000），
-按 45/70/90 分档。只在 ≥45 时才出现在 facts 里，措辞是：
+数据来源：最近一次模型请求的 `usage.inputTokens + cacheReadTokens + cacheWriteTokens` 与 DSH `request/context` 事件里的 `contextWindow`（当前 deepseek-flash 为 1,048,576）；只有没收到 `request/context` 时才退回 dsh-icl 配置的 `contextWindow`（默认 256000）。按 45/70/90 分档。只在 ≥45 时才出现在 facts 里，措辞是：
 
 ```text
 负荷：上下文 78%（建议整理/压缩）（客观指标，不是情绪）
