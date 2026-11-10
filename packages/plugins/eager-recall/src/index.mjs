@@ -69,7 +69,8 @@ export function apply(ctx) {
     if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
-      return `· [${tag}] ${clipLine(h.item.text, 80)}`
+      const unsure = h.clarity?.label ? `[${h.clarity.label}] ` : ''
+      return `· [${tag}] ${unsure}${clipLine(h.item.text, 80)}`
     })
     let text = `你可能记得（检索结果，仅供参考）：\n${lines.join('\n')}`
     if (text.length > maxChars) text = text.slice(0, maxChars - 1).trimEnd() + '…'

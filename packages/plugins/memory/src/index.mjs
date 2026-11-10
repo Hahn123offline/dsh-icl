@@ -71,6 +71,20 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * 从现有连续衰减直接推导清晰度档位。
+   * 不写库、不另跑 job：同一个 decay 既参与排序，也决定召回时的措辞，
+   * 避免"排名一套、清晰度一套"。
+   */
+  function clarityOf(decay) {
+    const value = Math.max(0, Math.min(1, Number(decay) || 0))
+    if (value >= 0.75) return { tier: 'vivid', label: null, decay: value }
+    if (value >= 0.50) return { tier: 'clear', label: null, decay: value }
+    if (value >= 0.30) return { tier: 'fuzzy', label: '有点模糊', decay: value }
+    if (value >= 0.12) return { tier: 'trace', label: '只剩印象', decay: value }
+    return { tier: 'forgotten', label: '几乎想不起来了', decay: value }
+  }
+
   function embedAvailable() {
     try { return Boolean(ctx.slots.resolve(embedSlot)) } catch { return false }
   }
@@ -332,7 +346,7 @@ export function apply(ctx) {
         const decay = Math.exp(-ageDays / Math.max(1, hl))
         const score = sim * item.weight * decay
         if (minScore != null && score < Number(minScore)) continue
-        scored.push({ item, score, sim })
+        scored.push({ item, score, sim, decay, clarity: clarityOf(decay) })
       }
       return scored.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt).slice(0, Math.max(1, Number(limit) || 8))
     },

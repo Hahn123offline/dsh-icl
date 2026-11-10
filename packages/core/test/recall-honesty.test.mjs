@@ -23,6 +23,14 @@ async function setup() {
 
 const eventNotes = (mem) => mem.query({ namespace: 'event', kind: 'note', limit: 50, order: 'desc' })
 
+test('回忆对低清晰度块加不确定标注，不假装细节完整', async () => {
+  const { tools, memory } = await setup()
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:old', text: '很久以前去过一次海边', now: Date.now() - 35 * 86_400_000 })
+  const out = await tools.recall.execute({ query: '海边' })
+  assert.match(out.text, /有点模糊/)
+  assert.match(out.text, /很久以前去过一次海边/)
+})
+
 test('remember 返回可用的 key；forget 用这个 key 能删掉，再删给出明确"没找到"', async () => {
   const { tools } = await setup()
   const wrote = await tools.remember.execute({ text: '下午在河边看到白鹭。', kind: 'event' })

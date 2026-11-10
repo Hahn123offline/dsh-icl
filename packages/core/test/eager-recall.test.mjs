@@ -34,6 +34,13 @@ test('相关消息会带出一小段记忆，且标明是检索结果', async ()
   assert.match(text, /仅供参考/)
 })
 
+test('自动召回也标注低清晰度，避免把模糊印象当细节', async () => {
+  const { host, memory } = await setup({ minScore: 0.01 })
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:old', text: '很久以前看海', now: Date.now() - 35 * 86_400_000 })
+  const text = await host.services.prompt.turnText({ message: '看海' })
+  assert.match(text, /有点模糊/)
+})
+
 test('不相关就不注入（宁缺毋滥）', async () => {
   const { host, memory } = await setup({ minScore: 0.8 })
   memory.put({ namespace: 'event', kind: 'block', key: 'evt:1', text: '他周末要去看海', data: {} })

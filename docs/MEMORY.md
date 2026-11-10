@@ -82,6 +82,8 @@ decay   = exp(-ageDays / max(1, halfLifeDays))
 score   = sim * weight * decay
 ```
 
+`memory.search()` 还会返回 `decay` 与 `clarity`（`tier/label`）。清晰度不是独立状态，而是从同一个 `decay` 推导的档位；详见 [CLARITY.md](CLARITY.md)。
+
 | 项 | 值 | 备注 |
 |---|---|---|
 | 取行上限 | 5000 行（`config.scanLimit`） | `WHERE namespace IN (…) ORDER BY created_at DESC LIMIT ?`；多命名空间共享扫描窗口，拿的是**最新** 5000；5000 覆盖个人库数年，不再几个月就丢老记忆 |

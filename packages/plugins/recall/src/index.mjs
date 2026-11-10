@@ -414,6 +414,7 @@ export function apply(ctx) {
   function renderEntry(entry, tag) {
     const nowOf = () => ctx.now()
     const item = entry.item
+    const unsure = entry.clarity?.label ? `[${entry.clarity.label}] ` : ''
     if (tag === '未整理') {
       // 今天的就叫「今天」；跨天的片段才标「未整理 · 日期」。
       if (Number(item.createdAt) >= dayStart(nowOf(entry))) return `[今天] ${item.text}`
@@ -422,8 +423,8 @@ export function apply(ctx) {
       return `[未整理 · ${day}] ${item.text}`
     }
     if (tag === '今天') return `[今天] ${item.text}`
-    if (item.kind === 'block') return `[${tag}] ${item.text}`
-    return `[${tag} · 随手记] ${item.text}`
+    if (item.kind === 'block') return `[${tag}] ${unsure}${item.text}`
+    return `[${tag} · 随手记] ${unsure}${item.text}`
   }
 
   function label(ns, createdAt, now) {
