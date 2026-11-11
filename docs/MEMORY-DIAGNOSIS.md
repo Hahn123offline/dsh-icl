@@ -231,6 +231,12 @@ judge 三源全部判"提到但没答"→ adequacy-adjusted false injection = 0�
 合成偏好 fresh R 92.9%、typed 60/superseded 40、悬空链 0，但可疑取代 2/40（~5%，单日例外被误当
 长期习惯失效）→ 下一轮加"单日例外不推翻习惯"约束。
 
+**Phase 2 第 20 段（第 21 轮，本轮）**：validity 单日例外守卫上线后的复测——合成偏好 fresh
+可疑取代 **2→0**、悬空链 0、缺失效时间 0（typed live 74/superseded 35/带 subject 53）；串行 focus
+基线补点 formation R 84.4%、端到端 r5 88.2%、miss 11.8%、falseInjection 0。
+typed v2 现状：add 层 + provenance + validity 全链 + entity 第一刀（subject）已落地并有评测收益；
+**完整 entity 图与 schema 迁移**是下一阶段架构决策点，需要与用户确认后再动。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
