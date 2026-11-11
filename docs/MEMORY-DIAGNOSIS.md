@@ -107,11 +107,11 @@ live 只做影子记录（不打扰用户）；每周重放"英雄场景"（称�
 旧结论"5 对未清理"是审计工具把软删块算进去导致的；真正的重复执行证据是账本 attempt/updated_at。
 provenance 0/101 是因为历史 day log 没有 `sources` 表（新数据开始有），不是块本身没证据。
 
-**测试**：全仓 895 tests / 894 pass / 1 skip（skip 为 ffmpeg 依赖样例）。
+**测试**：全仓 897 tests / 896 pass / 1 skip（skip 为 ffmpeg 依赖样例）。
 
 **下一步（Phase 1 收尾 → Phase 2）**：
-1. 等 eval-harness / corpus-builder 交付后，跑三源 fixture 的 formation/retrieval 基线，写第一份改前/改后对照；
-2. 用基线标定 eager/recall 阈值与 lexicon/note 生命周期；
+1. 三源 fixture 与评测工具已落地（docs/MEMORY-PHASE1-REPORT.md §3）：live raw-all→raw-main 门控收益已量化；synthetic 云基线已跑（formation recall 71–79%，retrieval recall@5 仅 11–32%）；
+2. Phase 2 优先修检索层（block 摘要/探针措辞、查询扩展、person 路径、MMR/注入预算）并用 synthetic retrieval 指标证明收益；再标定 eager/recall 阈值；
 3. bridge 侧补 raw 的 sourceKind/channel/speaker 元数据（现在靠 dream 侧文本/角色推断），让"谁在说、说给谁"成为一等公民；
 4. 开始 typed schema v2 设计（`docs/MEMORY-V2-DESIGN.md`），先在 lab shadow。
 
@@ -122,3 +122,4 @@ provenance 0/101 是因为历史 day log 没有 `sources` 表（新数据开始�
 - `docs/MEMORY-EXTERNAL.md`：外部框架/基准/评估方法（29 条文献）
 - `docs/MEMORY-EVAL-SPEC.md`：fixture 格式、指标、runner 契约（Phase 1 交付）
 - `docs/MEMORY.md`：旧算法说明（**已过时**，Phase 1 结束后按代码重写或加显著失效声明）
+

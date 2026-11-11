@@ -67,6 +67,32 @@
 - 历史 day log 无 `sources` 表（provenance 0/101），新数据开始有；这是口径迁移问题，不是块没证据。
 - 37 条 lexicon 中 18 条工具/框架味（历史遗留，新采集已被闸门挡住，旧数据不清理）。
 
+### 3.4 合成场景云基线（10 天/场景，raw-main，seed=formation；构造式 gold）
+
+| fixture | extracted | gold | matched | P | R | dup | noise | selfSource | prov | identity | wrongId |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| alias-and-people | 52 | 14 | 11 | 21.2% | 78.6% | 0% | 1.9% | 1.9% | 100% | 100% | 0% |
+| preference-change | 34 | 14 | 10 | 29.4% | 71.4% | 0 | 2.9% | 2.9% | 100% | 100% | 0% |
+| commitment-followup | 29 | 12 | 9 | 31.0% | 75.0% | 0 | 3.4% | 3.4% | 100% | 66.7% | 33.3% |
+
+- **门控对照（alias，raw-all）**：extracted 74（lexicon 41 vs 19）、selfSource 31.1% vs 1.9%、noise 9.5% vs 1.9%，
+  recall 不变（71.4%）→ 与 live 基线同向。
+- **retrieval（seed=formation，no-embed）**：recall@1 0–13.6%、recall@5 11.1–31.8%，miss 64–89%，falseInjection 50–67%；
+  alias 加 `--embed`（本地 bge-m3）后 r1 18.2%/r5 27.3%——有提升但仍差，**瓶颈在检索层而非嵌入**。
+- **promise/preference 失效**：preference 咖啡旧值已失效（superseded），爬山旧值未失效（staleOldSurvives 1/3）；
+  commitment 3 条 invalidatedBy 链旧值全部与新值同时存活 → **v1 没有 validity，旧值只能靠 cleanup 碰运气**。
+- **身份**：alias 场景别名/小号归并正常；commitment 场景出现 `person:name:白哥` 拆分（模型给的 name 未解析回已有账号主体）。
+  已修：canonicalSubject 现在会查已有 person 档案的 aliases/ids 归并；坏 JSON 现在自动重试一次（askJson）。
+- **解析失败**：alias 03-07 cleanup / 03-10 people、raw-all 03-10/11 people 曾坏 JSON（现已重试；仍坏则如实失败可重试）。
+
+### 3.5 retrieval 低分的已知原因（Phase 2 输入）
+
+1. block 摘要与探针措辞不同（"杭州出差三天" vs "主人下周要去杭州出差"），无嵌入时二元组退化更差；
+2. person 探针走 whois/recall person，formation 产出的 person 块覆盖不足（seed=formation 时 3-person 场景）；
+3. recall 返回多条、injectionPrecision 低（工具默认 limit 6 + 未整理 note 插队）；
+4. 1:1 gold 匹配口径会把"一块覆盖多条 gold"记成漏（alias block137 同时覆盖 trip/catfeed），评估口径要在 Phase 2 改为集合匹配。
+
+
 ## 4. 已知缺口（Phase 2 输入）
 
 1. **raw 层仍缺"谁在说、说给谁"**：QQ 真人消息现在以"未读摘要信封"或插件通知进入 raw，
@@ -75,8 +101,13 @@
    需要 bridge 元数据把 QQ 私聊/群消息稳定送进 raw。
 3. **写入端去重仍弱**：事件 key 仍是 summary 哈希；11 个 shard 可能产出同主题多块。Phase 2 做"证据集合身份"与写时 ADD/UPDATE/NOOP。
 4. **衰减/importance 未动**：`anchor=lastRecalledAt??createdAt` 的慢性失忆问题在 v2 处理（见 `MEMORY-V2-DESIGN.md`）。
-5. **gold 仍薄**：11-10 只有 3 条稀疏哨兵，synthetic 三个场景刚落地，尚未跑 cloud 基线。
+5. **gold 仍薄**：11-10 只有 3 条稀疏哨兵；synthetic 已跑 cloud 基线（§3.4），但 gold 为 `draft` 待抽审。
 6. **阈值标定未做**：eager 0.5 / recall minSim 0.35 还没有用基线数据重新标定。
+7. **检索层是当前最大瓶颈**：seed=formation 的 synthetic retrieval recall@5 只有 11–32%，加 bge-m3 也只到 27%；
+   Phase 2 需要 block 摘要/探针措辞对齐、查询扩展、person 检索路径、MMR 与注入预算重做。
+8. **validity/旧值失效缺失**：commitment 3/3、preference 1/3 旧值仍与新值并存；v1 没有 `invalidatedAt` 机制。
+9. **过度抽取**：synthetic formation extracted 29–52 条 vs gold 12–14，precision 21–31%；
+   一部分是 gold 1:1 口径问题，但事件块仍偏多，需要"值得记"的 salience 门（Phase 2）。
 
 ## 5. 结论
 
