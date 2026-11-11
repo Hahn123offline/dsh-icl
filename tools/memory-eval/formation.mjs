@@ -105,13 +105,24 @@ export function invalidationMetrics({ fixture, extracted, match }) {
         .sort((a, b) => b.sim - a.sim)
         .slice(0, 2)
       : []
+    // 口径修正（2026-11-11 第 5 轮）：旧值只在"同类型 typed 记录"仍存活时才算 stale。
+    // 偏好/承诺/事实的旧值常常同时存在于历史事件块里（"那天他说必须喝美式"），
+    // 那是真实发生过的历史，不该因为偏好变了就被删；它也不代表"当前认知没更新"。
+    const oldType = String(gold.type ?? '')
+    const isStateType = ['preference', 'commitment', 'fact'].includes(oldType)
+    const oldKind = oldMatch?.kindKey ?? oldMatch?.kind ?? null
+    const oldIsTyped = oldKind === oldType
+    const oldHistoricalOnly = Boolean(oldMatch) && isStateType && !oldIsTyped
+    const staleOldSurvives = Boolean(oldMatch) && (isStateType ? oldIsTyped : true)
     cases.push({
       oldGoldId: String(gold.id),
       oldType: gold.type,
       newGoldId: newId,
       oldMatched: Boolean(oldMatch),
+      oldMatchedKind: oldKind,
+      oldHistoricalOnly,
       newMatched: Boolean(newMatch),
-      staleOldSurvives: Boolean(oldMatch),
+      staleOldSurvives,
       newTextSeen: similarToNew.length > 0,
       oldExtractedId: oldMatch?.id ?? null,
       newExtractedId: newMatch?.id ?? null,
@@ -121,6 +132,7 @@ export function invalidationMetrics({ fixture, extracted, match }) {
   const summary = {
     cases: cases.length,
     oldMatched: cases.filter((entry) => entry.oldMatched).length,
+    oldHistoricalOnly: cases.filter((entry) => entry.oldHistoricalOnly).length,
     newMatched: cases.filter((entry) => entry.newMatched).length,
     staleOldSurvives: cases.filter((entry) => entry.staleOldSurvives).length,
     newValuePresentButUnmatched: cases.filter((entry) => !entry.newMatched && entry.newTextSeen).length,

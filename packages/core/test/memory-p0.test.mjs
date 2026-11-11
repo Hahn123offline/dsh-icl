@@ -198,7 +198,7 @@ test('F5 身份链：主人/别名归到 ownerQQ 一份档案，selfQQ 不挂到
   const { memory, dream } = await setup({
     dreamConfig: IDENTITY,
     call: async ({ messages }) => {
-      const system = String(messages?.[0]?.content ?? '')
+      const system = (messages ?? []).map((m) => String(m?.content ?? '')).join('\n')
       if (!system.includes('人物档案')) return '[]'
       // 模型把 selfQQ 也写进了主人档案（旧 live 里真实发生过）
       return JSON.stringify({ profile: '主人（Hahn123）负责维护 dsh-icl，会熬夜调插件。', ids: [{ kind: 'qq', value: '2593621742' }, { kind: 'qq', value: '1057812765' }], aliases: ['Hahn123'], evidence: [] })
@@ -372,7 +372,7 @@ test('模型坏 JSON 会自动重试一次（不把整天记为失败）', async
 test('Phase2 说话人元数据：day log 带 speaker，人物 note 直接按账号落库（不靠模型猜人名）', async () => {
   const { host, memory, dream } = await setup({
     call: async ({ messages }) => {
-      const system = String(messages?.[0]?.content ?? '')
+      const system = (messages ?? []).map((m) => String(m?.content ?? '')).join('\n')
       if (system.includes('人物档案')) return JSON.stringify({ profile: '小白：QQ 私聊里说「在吗」的人。', aliases: [], ids: [], evidence: [] })
       return '[]'
     },
@@ -424,3 +424,62 @@ test('typed v2 add 层：events 顺带抽出的 facts/preferences/commitments �
   const recalled = await tools.recall.execute({ query: '主人怕水吗' })
   assert.match(recalled.text, /怕水/, `recall 应能搜到 typed 事实：${recalled.text}`)
 })
+
+test('typed 旧值失效：新陈述 invalidates 旧陈述 → 旧记录软失效（superseded），不再被 recall', async () => {
+  const { host, memory, dream, tools } = await setup()
+  bindRaw(host, rawRows(2))
+  // 先有一条旧偏好（模拟前几天的整理结果）。
+  memory.put({
+    namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:old',
+    text: '主人爱喝咖啡', data: { body: '主人爱喝咖啡', evidence: [{ type: 'day', id: 1, line: '主人爱喝咖啡' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'typed-invalidates',
+    call: async ({ messages }) => {
+      const system = (messages ?? []).map((m) => String(m?.content ?? '')).join('\n')
+      // 旧值失效是 events 之后的独立小调用：返回 old0→new0 取代关系。
+      if (system.includes('取代或推翻')) return JSON.stringify({ invalidates: [{ old: 0, new: 0 }] })
+      return JSON.stringify([{
+        summary: '主人改喝豆浆了', body: '主人说最近不喝咖啡了，改喝豆浆。', evidence: [1],
+        preferences: [{ text: '主人现在爱喝豆浆', invalidates: ['主人爱喝咖啡'] }],
+      }])
+    },
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  assert.ok(out.results[0].typedInvalidated >= 1, `应至少失效 1 条旧记录：${JSON.stringify(out.results[0])}`)
+  const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:old', limit: 1 })[0]
+  assert.equal(old.data?.superseded, true, '旧偏好必须软失效')
+  assert.ok(old.data?.supersededBy, '要记录被哪条新陈述取代')
+  const fresh = memory.query({ namespace: 'preference', kind: 'block', limit: 10 }).find((row) => row.text.includes('豆浆'))
+  assert.ok(fresh, '新偏好必须落库')
+})
+
+
+test('typed 旧值失效（独立 validity 调用）：events 只写字符串时，由对照调用判定取代关系', async () => {
+  const { host, memory, dream } = await setup()
+  bindRaw(host, rawRows(2))
+  memory.put({
+    namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:old2',
+    text: '主人爱喝咖啡', data: { body: '主人爱喝咖啡', evidence: [{ type: 'day', id: 1, line: '主人爱喝咖啡' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'typed-validity',
+    call: async ({ messages }) => {
+      const system = (messages ?? []).map((m) => String(m?.content ?? '')).join('\n')
+      if (system.includes('取代或推翻')) return JSON.stringify({ invalidates: [{ old: 0, new: 0 }] })
+      // 只写字符串，不写 invalidates：模拟真实模型行为。
+      return JSON.stringify([{ summary: '改成喝豆浆', body: '主人说现在改喝豆浆。', evidence: [1], preferences: ['主人现在爱喝豆浆'] }])
+    },
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  assert.ok(out.results[0].typedInvalidated >= 1, `validity 调用应失效旧记录：${JSON.stringify(out.results[0])}`)
+  const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:old2', limit: 1 })[0]
+  assert.equal(old.data?.superseded, true)
+})
+

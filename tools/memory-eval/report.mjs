@@ -165,11 +165,12 @@ function formationMd(formation) {
   const invalidation = m.invalidation
   if (invalidation && invalidation.cases) {
     lines.push('### 承诺/偏好更新（gold.invalidatedBy）', '')
-    lines.push('| 旧 gold | 类型 | 旧值形成 | 新值形成 | 旧值仍存活 |\n|---|---|---|---|---|')
+    lines.push('| 旧 gold | 类型 | 旧值形成 | 匹配块类型 | 新值形成 | 旧值仍存活 |\n|---|---|---|---|---|---|')
     for (const sample of invalidation.samples) {
-      lines.push(`| ${sample.oldGoldId} → ${sample.newGoldId} | ${sample.oldType} | ${sample.oldMatched ? '是' : '否'} | ${sample.newMatched ? '是' : '否'} | ${sample.staleOldSurvives ? '⚠️ 是' : '否'} |`)
+      lines.push(`| ${sample.oldGoldId} → ${sample.newGoldId} | ${sample.oldType} | ${sample.oldMatched ? '是' : '否'} | ${sample.oldMatchedKind ?? '—'} | ${sample.newMatched ? '是' : '否'} | ${sample.staleOldSurvives ? '⚠️ 是' : (sample.oldHistoricalOnly ? '否（仅历史块）' : '否')} |`)
     }
-    lines.push('', `小结：cases=${invalidation.cases} · 旧值匹配=${invalidation.oldMatched} · 新值匹配=${invalidation.newMatched} · 旧值仍存活=${invalidation.staleOldSurvives} · 新值近似存在但未匹配=${invalidation.newValuePresentButUnmatched}`, '')
+    lines.push('', `小结：cases=${invalidation.cases} · 旧值匹配=${invalidation.oldMatched}（其中仅历史事件块 ${invalidation.oldHistoricalOnly ?? 0}） · 新值匹配=${invalidation.newMatched} · 旧值仍存活（同类型 typed）=${invalidation.staleOldSurvives} · 新值近似存在但未匹配=${invalidation.newValuePresentButUnmatched}`, '')
+    lines.push('口径：旧值只在同类型 typed 记录（偏好/承诺/事实）仍存活时算“未失效”；匹配到 event 块只说明历史叙述还在，不算当前认知没更新。', '')
   }
   lines.push('### 按类型', '', '| type | gold | matched | recall |\n|---|---|---|---|')
   for (const [type, row] of Object.entries(m.byType)) {

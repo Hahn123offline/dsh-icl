@@ -361,7 +361,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       }
     }
     if (options.debug) {
-      const noisy = logs.filter((row) => row.level === 'warn' || row.level === 'error').slice(0, 40)
+      const noisy = logs.filter((row) => row.level !== 'debug' && row.msg !== 'memory.search').slice(0, 60)
       for (const entry of noisy) {
         const brief = { ...entry }
         delete brief.level
@@ -481,5 +481,6 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 

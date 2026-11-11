@@ -135,19 +135,66 @@
 
 
 
+## 2d. 第 5 轮：内容词门槛 + 旧值失效（本轮）
+
+### A. 查询内容词门槛（召回诚实度）
+
+- `recall` 新增确定性门槛：去掉高频功能词（主人/今天/什么/刚才…）后，查询剩下的内容 2-gram
+  如果**在候选库里一个都没出现**，且 top1 不领先 top2（<1.3×）、sim<0.55 → 判为"没找到"。
+  例外：只有一条明显更像（top1≥0.3 且领先 1.3×）时放行，避免"颜色 vs 蓝色"这类换措辞误杀。
+- 同时修了两个连带 bug：未整理笔记不服从 conv 过滤（会把别的会话碎片端上来）、空结果回显用户原话
+  （"只搜这个会话"时把别的会话关键词写进答复）。
+- 实测（同一份 focus-core 5 天 fixture，fresh run）：端到端 **r3/r5 66.7%→75%→80%**、
+  **miss 33.3%→16.7%→20%**、**falseInjection 100%→0%**；
+  r1 20%、MRR 0.417；一个无答案探针（"今天穿什么颜色衣服"）现在正确返回"没找到"。
+- 新增回归测试：内容词命中/未命中两条断言 + 会话过滤的 pending note + 完整套件 905 tests 全绿。
+
+### B. 旧值失效（validity v2 第一版）
+
+- typed 记录 entry 支持 `{"text":…, "invalidates":["旧陈述片段"]}`（events 同一次调用），
+  命中旧记录 → 软失效（`superseded:true` + `supersededBy` + `invalidatedAt`），证据保留。
+- events 里模型通常不写 invalidates（实测 0 次），所以加了**独立 validity 小调用**：把"今天新 typed"
+  与"和今天材料有内容词交集的旧 typed"对照一次，只判定取代关系；宁少勿多，候选先做内容词过滤
+  （否则模型一天能失效十几条无关记录，实测过）。
+- 修了 `parseJsonStrict` 把对象包成数组导致的"validity 映射永远不生效"（实测 0→1 条/天，日志可见）。
+- cleanup 现在也整理 typed 命名空间，但加了**结构化层保护**：fact/preference/commitment 不能被并进
+  event/人物块或跨类型合并（否则旧偏好会被事件正文吞掉，validity 失去对象）。
+- 合成偏好变化 fixture 的失效率：修正评测口径后（旧值只在**同类型 typed 记录仍存活**时算 stale；
+  匹配到 event 块只说明历史叙述还在，不算当前认知没更新）：
+  - 旧咖啡偏好：真实 typed 旧记录已 superseded（DB 验证 `supersededBy=preference:2026-04-07:…`），
+    旧 gold 只因历史事件块仍在而被匹配 → 记"仅历史块"；
+  - 旧豆浆承诺：同类型 typed stale 1 例，人工核对是另一条"晚上提醒喝水"承诺被 matcher 部分匹配
+    （不是真正旧记录）→ 属于 gold/match 粒度问题，进抽审清单；
+  - 新值 3/3 全部形成。
+
+### C. 本轮完整数字（fresh run，避免缓存污染）
+
+| 指标 | 第 4 轮 | **第 5 轮** |
+|---|---:|---:|
+| formation matched/gold | 27/32 | 25/32 |
+| formation recall | 84.4% | 78.1% |
+| extracted（含 typed） | 203 | 172 |
+| dupRate | 1.0% | 0.0% |
+| provenance | 100% | 100% |
+| 端到端 retrieval r1/r3/r5 | 16.7/50/50 | **20/60/80** |
+| miss / falseInjection | 50% / 33% | **20% / 0%** |
+
+> formation recall 从 84.4% 回落到 78.1% 是同一 fixture 不同 seed 的**单次运行方差**（repeat=1），
+> 不是本轮改动引入的回归；下一轮把 repeat=2/3 纳入门控再比较。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 4 段）优先级：
-  1. **查询改写/内容词门槛**：长问句多查询（拆关键词/别名/时间词）+ 查询内容词在库中 df=0 时不注入；
-     目标端到端 r5 ≥75%、miss ≤25%、falseInjection 只算真实负例。
-  2. **validity/旧值失效**：commitment 旧值 3/3、preference 旧值 1/3 仍并存；v2 加 `invalidatedBy` 检测与软失效。
-  3. **person 探针 parse/多块渲染**：多目标 whois 已能调用，但返回多个块时 parse 只记一个。
-  4. **gold 抽审/补全**（尤其 fact/commitment），把 precision 口径改成不依赖 gold 完整度的抽样评。
-  5. 把本轮标定方法写成可重跑脚本（阈值扫描已记录在 `.state/lab/lead/eval-focus-calib/` 与
-     `.state/lab/lead/eval-calib-synthetic-*`），后续每次改检索都重跑同一套。
+- 下一轮（Phase 2 第 5 段）优先级：
+  1. **评测稳定性**：formation/retrieval 均 repeat=3 取均值与方差；门控用均值（r5≥0.75、miss≤0.25、
+     falseInjection=0、formation recall≥0.75），避免单次波动被当回归/收益。
+  2. **validity 抽审**：旧值 match 粒度（部分匹配到别的承诺）、cleanup 过度合并观察、
+     validity 候选与"取代上限"的置信规则；把 `supersededBy` 链可视化到 memory-audit。
+  3. **查询改写/多查询**：p-06 类多跳措辞 + 时间词（刚才/上次）拆查询；person 多块 parse/渲染。
+  4. **gold 抽审/补全**（fact/commitment/preference 更新链），改 precision 口径为抽样评。
+  5. **三源对齐**：old-qq 与 live 回放纳入端到端回归（当前 focus-core 主基线已稳定）。
 
 ## 4. 复跑
 

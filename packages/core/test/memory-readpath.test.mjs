@@ -93,3 +93,15 @@ test('时间旅行保护：召回不返回 created_at 在 now 之后的记忆', 
   assert.doesNotMatch(recalled.text, /搬去另一个城市/, 'recall 工具同样不能翻出未来记忆')
 })
 
+
+test('内容词门槛：泛词面相似但内容词完全不在库里 → 不返回（不把不相关记忆当答案）', async () => {
+  const { memory, tools } = await setup()
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:live', text: '主人说以后想和我一起实时看直播', data: { body: '主人说以后想和我一起实时看直播' } })
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:clothes', text: '主人今天穿了一件蓝色外套', data: { body: '主人今天穿了一件蓝色外套' } })
+  // 问衣服颜色：库里有"蓝色外套"，应该能命中（内容词出现）
+  const hit = await tools.recall.execute({ query: '主人今天穿的什么颜色衣服' })
+  assert.match(hit.text, /蓝色外套/, `有内容词命中时应返回：${hit.text}`)
+  // 问一个库里完全没有内容词的属性：不能用"主人…"泛词面凑数
+  const miss = await tools.recall.execute({ query: '主人最近在读什么书' })
+  assert.doesNotMatch(miss.text, /实时看直播|蓝色外套/, `内容词没出现时不应凑数：${miss.text}`)
+})

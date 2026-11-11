@@ -640,12 +640,17 @@ test('invalidation：旧值仍存活 / 新值形成 / 新值近似存在但未�
     },
   }
   const oldBlock = { id: '1', kindKey: 'event', text: '主人以前每天喝美式咖啡', body: '' }
+  const oldTyped = { id: '3', kindKey: 'preference', text: '主人以前每天喝美式咖啡', body: '' }
   const newBlock = { id: '2', kindKey: 'event', text: '主人现在改喝豆浆了', body: '' }
   const both = invalidationMetrics({ fixture, extracted: [oldBlock, newBlock], match: { pairs: [{ goldId: 'old', extractedId: '1' }, { goldId: 'new', extractedId: '2' }] } })
   assert.equal(both.cases, 1)
   assert.equal(both.oldMatched, 1)
   assert.equal(both.newMatched, 1)
-  assert.equal(both.staleOldSurvives, 1, '旧块没被 superseded → 旧值还能被回忆')
+  assert.equal(both.oldHistoricalOnly, 1, '只有历史事件块匹配 → 不算当前认知没更新')
+  assert.equal(both.staleOldSurvives, 0)
+  // 同类型 typed 记录还活着，才是真正的'旧值仍存活'。
+  const typedAlive = invalidationMetrics({ fixture, extracted: [oldTyped, newBlock], match: { pairs: [{ goldId: 'old', extractedId: '3' }, { goldId: 'new', extractedId: '2' }] } })
+  assert.equal(typedAlive.staleOldSurvives, 1, '同类型 typed 旧值没被 superseded → stale')
   const unmatchedNew = invalidationMetrics({ fixture, extracted: [oldBlock, newBlock], match: { pairs: [{ goldId: 'old', extractedId: '1' }] } })
   assert.equal(unmatchedNew.newMatched, 0)
   assert.equal(unmatchedNew.newValuePresentButUnmatched, 1, '新值以近似正文存在但没被确定性匹配')
@@ -706,3 +711,4 @@ test('临时目录都建在 os.tmpdir 下，不碰仓库 state（评测写路径
   // 默认输出目录在仓库 .state/lab/eval-harness/runs 下（assertSafeOutDir 能过），不是 live。
   assert.ok(assertSafeOutDir(path.join(REPO, '.state', 'lab', 'eval-harness', 'runs', 'tiny')))
 })
+

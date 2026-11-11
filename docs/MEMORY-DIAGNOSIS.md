@@ -135,6 +135,14 @@ seed=formation（端到端）r3 50%——下一轮修"形成→检索"的排序/
 recall minSim 按两套数据重标定为 0.45（seed=gold r5 83.3%/falseInjection 0；端到端 r3/r5 50%→66.7%、miss 50%→33.3%）。
 剩余失败可定位：多跳长问句需查询改写、1 条 gold/probe 时间错位、person 多块 parse、负例内容词门槛 → 下一轮。
 
+**Phase 2 第 4 段（第 5 轮，本轮）**：检索诚实度 + validity 第一版——查询内容词门槛（泛词面相似但
+内容词 df=0 → 判"没找到"；修未整理笔记不服从 conv 过滤、空结果回显用户原话）；端到端 retrieval
+r3/r5 **60%/80%**、miss **20%**、falseInjection **0%**（同一 focus-core 5 天 fixture，fresh run）；
+typed 旧值失效：`invalidates` 字段 + 独立 validity 对照调用 + cleanup 结构化层保护，修掉
+parseJsonStrict 对象包裹导致映射不生效的 bug；合成偏好变化 fixture 的旧咖啡偏好已确认软失效
+（DB 链 supersededBy=preference:2026-04-07:…），评测口径区分"历史事件块"与"同类型 typed 仍存活"。
+下一轮：评测 repeat=3 稳定性 + validity 抽审 + 查询改写/person 多块 parse。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

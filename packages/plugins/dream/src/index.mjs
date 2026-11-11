@@ -168,6 +168,8 @@ export function apply(ctx) {
   // 已知群号：模型常把"群号"误当人物 QQ 写进 ids（live 审计：曾嘉睿的 ids 里挂着群号 1057812765）。
   const groupIds = new Set((Array.isArray(ctx.config.groupIds) ? ctx.config.groupIds : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean))
+  // cleanup 整理的块范围：typed v2 的事实/偏好/承诺也交给整理轮（否则旧值永远不失效）。
+  const CLEANUP_NAMESPACES = ['event', 'person', 'slang', 'fact', 'preference', 'commitment']
   // 形成材料 profile（评测 A/B 用；默认产品口径）：
   //   raw-main（默认）只吃真人/QQ 转述/她可见的回复；raw-human 再砍掉她自己的回复；
   //   raw-all 是"旧无门控基线"，连工具结果/环境通知都喂进去，只用于对照，不用于产品。
@@ -886,6 +888,15 @@ export function apply(ctx) {
         .slice()
         .sort((a, b) => timeOf(a) - timeOf(b))
         .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
+    // 旧值失效上下文：把近期 typed 陈述给模型看，明确取代时用 invalidates 抄旧原文。
+    // 注意：只在"明确取代"时写；没有就不写——避免模型把只是相关的新旧当成无效化。
+    const knownTyped = ['fact', 'preference', 'commitment']
+      .flatMap((ns) => memory.query({ namespace: ns, kind: 'block', limit: 40, order: 'desc' }))
+      .filter((row) => row.data?.superseded !== true)
+      .slice(0, 24)
+    const typedHint = knownTyped.length
+      ? `【已有的事实/偏好/承诺】（如果这次的新陈述明确取代其中一条，就在该条目对象里加 "invalidates": ["旧陈述原文片段"]；没有明确取代就别写）\n${knownTyped.map((row) => `- [${row.namespace}] ${row.text}`).join('\n')}\n\n【今天的对话】\n`
+      : ''
     const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
     const { shards, omitted: omittedShards, segments: experienceSegments } = shardByExperience(material, { gapMin: segmentGapMin })
     // 显式 remember 的 event note 不能因为"当天有 day log"就被排除在材料外（审计 F2）：
@@ -904,6 +915,8 @@ export function apply(ctx) {
       '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id],',
       '  "facts": ["这次对话里出现的稳定事实（关于谁/关系/世界的陈述）"], "preferences": ["偏好、习惯、口味、雷点"], "commitments": ["答应过/还没了结的事（谁答应谁的、还没做的）"]}',
       'facts/preferences/commitments 都是可选的：只有块里明确出现才写，每条一句话、能被同一批 evidence 支持，没有就省略这三个字段。',
+      '元素可以是字符串，也可以是 {"text":"…","invalidates":["旧陈述原文片段"]}；只有这次的新陈述明确取代了「已有的事实/偏好/承诺」里某一条时才写 invalidates（抄旧原文，不要改写），否则不要写。',
+      '如果新材料表明已有列表里的偏好/承诺已经变了（口味变了、计划改了、旧承诺作废），必须写 invalidates：漏掉会让旧值一直活着，比漏记一条新事实更糟。',
       'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
       '如果材料里出现 n<数字> 开头的行，那是她主动记下的笔记，证据要写成对应的 n<数字>（例如 n12）；它们优先归入最相关的一块。',
       '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
@@ -915,7 +928,7 @@ export function apply(ctx) {
      * 拆半是失败路径的兜底，不增加正常日的成本）。
      */
     async function runEventShard(lines, label, depth = 0) {
-      const payload = `${lines.join('\n')}${hint}`
+      const payload = `${typedHint}${lines.join('\n')}${hint}`
       const out = await askJson({ instruction, payload, where: `events#${label}`, maxTokens: 3500 })
       if (!out.ok) {
         if (depth < 1 && lines.length >= 8) {
@@ -956,6 +969,8 @@ export function apply(ctx) {
     const written = []
     let typedWritten = 0
     let typedMerged = 0
+    let typedInvalidated = 0
+    const newTypedStatements = []
     const dayLines = dayLog ? dayLogIndex(dayLog) : null
     for (const block of blocks) {
       const summaryRaw = String(block?.summary ?? '').trim()
@@ -1035,9 +1050,16 @@ export function apply(ctx) {
           for (const [field, namespace] of [['facts', 'fact'], ['preferences', 'preference'], ['commitments', 'commitment']]) {
             const statements = Array.isArray(block?.[field]) ? block[field] : []
             for (const rawStatement of statements.slice(0, 8)) {
-              const statement = String(rawStatement ?? '').trim().slice(0, 200)
+              // 兼容两种元素：字符串，或 {"text": "...", "invalidates": ["旧陈述片段"]}。
+              const invalidates = rawStatement && typeof rawStatement === 'object' && Array.isArray(rawStatement.invalidates)
+                ? rawStatement.invalidates.map((x) => String(x ?? '').trim()).filter((x) => x.length >= 4).slice(0, 4)
+                : []
+              const statement = String(
+                rawStatement && typeof rawStatement === 'object' ? rawStatement.text ?? '' : rawStatement ?? '',
+              ).trim().slice(0, 200)
               if (statement.length < 4 || !evidenceFinal.length) continue
               const similar = findSimilarTyped(namespace, statement)
+              let currentKey = null
               if (similar) {
                 const mergedEvidence = dedupeEvidence([...(similar.data?.evidence ?? []), ...evidenceFinal])
                 const seenDays = [...new Set([...(Array.isArray(similar.data?.days) ? similar.data.days : [similar.data?.day]).filter(Boolean), day])]
@@ -1047,28 +1069,46 @@ export function apply(ctx) {
                   now,
                 })
                 typedMerged += 1
-                continue
+                currentKey = similar.key
+              } else {
+                const typedKey = `${namespace}:${day}:${hash(statement)}`
+                const typed = memory.put({
+                  namespace,
+                  kind: 'block',
+                  key: typedKey,
+                  text: statement,
+                  data: {
+                    body: statement,
+                    evidence: evidenceFinal,
+                    day,
+                    days: [day],
+                    sourceEvent: baseKey,
+                    people: normalizePeople(block?.people),
+                    tags: normalizeTags(block?.tags),
+                    provisional: partEvidence.length === 0,
+                  },
+                  now,
+                })
+                if (typeof memory.index === 'function') void memory.index(typed.id, statement)
+                typedWritten += 1
+                currentKey = typedKey
               }
-              const typedKey = `${namespace}:${day}:${hash(statement)}`
-              const typed = memory.put({
-                namespace,
-                kind: 'block',
-                key: typedKey,
-                text: statement,
-                data: {
-                  body: statement,
-                  evidence: evidenceFinal,
-                  day,
-                  days: [day],
-                  sourceEvent: baseKey,
-                  people: normalizePeople(block?.people),
-                  tags: normalizeTags(block?.tags),
-                  provisional: partEvidence.length === 0,
-                },
-                now,
-              })
-              if (typeof memory.index === 'function') void memory.index(typed.id, statement)
-              typedWritten += 1
+              // 旧值失效：模型在"新陈述明确取代旧陈述"时给出旧原文片段 → 确定性软失效旧记录。
+              // 只按文本匹配，不猜语义；找不到就留一条 warn（可见，不静默）。
+              for (const oldSnippet of invalidates) {
+                const old = findTypedBySnippet(namespace, oldSnippet)
+                if (!old || old.key === currentKey || old.data?.superseded === true) continue
+                memory.put({
+                  namespace,
+                  kind: 'block',
+                  key: old.key,
+                  text: old.text,
+                  data: { ...(old.data ?? {}), superseded: true, supersededBy: currentKey, invalidatedAt: now },
+                  now,
+                })
+                typedInvalidated += 1
+              }
+              newTypedStatements.push({ ns: namespace, key: currentKey, text: statement })
             }
           }
         }
@@ -1080,6 +1120,59 @@ export function apply(ctx) {
           })
         }
         written.push(created.id)
+      }
+    }
+    // 旧值失效（独立小调用）：events 主调用里模型常常只写字符串、不写 invalidates；
+    // 这里把"今天之前已有的 typed 记录"与"今天新落库的 typed"对照一次，只做取代判定（不生成新记忆）。
+    // 候选只取"和今天材料有内容词交集"的旧记录：否则模型会跨话题乱配（实测一天能失效十几条无关记录）。
+    const todayTexts = [
+      ...newTypedStatements.map((row) => row.text),
+      ...blocks.map((block) => `${block?.summary ?? ''} ${block?.body ?? ''}`),
+    ].join('\n')
+    const todayNormalized = normalizeBodyText(todayTexts)
+    const oldCandidates = todayNormalized && newTypedStatements.length
+      ? knownTyped.filter((row) => {
+          const other = normalizeBodyText(row.text)
+          if (other.length < 2) return false
+          for (let i = 0; i + 1 < other.length; i += 1) {
+            const gram = other.slice(i, i + 2)
+            if (/^[\u4e00-\u9fff]{2}$/.test(gram) && todayNormalized.includes(gram)) return true
+          }
+          return false
+        }).slice(0, 30)
+      : []
+    if (newTypedStatements.length && oldCandidates.length) {
+      try {
+        const payload = JSON.stringify({
+          old: oldCandidates.map((row, index) => ({ index, namespace: row.namespace, text: row.text })),
+          new: newTypedStatements.slice(0, 12).map((row, index) => ({ index, namespace: row.ns, text: row.text })),
+        })
+        const verdict = await askJson({
+          instruction: '判断"旧的事实/偏好/承诺"里有没有被"今天的新陈述"明确取代或推翻的（口味变了、计划改了、旧承诺作废）。只输出 JSON：{"invalidates":[{"old":旧序号,"new":新序号}]}；没有就 {"invalidates":[]}。宁少勿多：只有今天的对话明确说旧的那条不再成立才算，并存/只是相关的不算取代。',
+          payload, where: 'validity', maxTokens: 1200,
+        })
+        // parseJsonStrict 把对象也包成单元素数组（事件块/人物都是数组根），这里取第一项。
+        const verdictBody = Array.isArray(verdict.value) ? (verdict.value[0] ?? {}) : (verdict.value ?? {})
+        if (verdict.ok && Array.isArray(verdictBody?.invalidates)) {
+          ctx.log({
+            level: 'info', msg: 'dream.validity-check', where: 'validity',
+            oldCount: oldCandidates.length, newCount: newTypedStatements.length, pairs: verdictBody.invalidates.length,
+          })
+          for (const pair of verdictBody.invalidates.slice(0, 12)) {
+            const oldRow = oldCandidates[Number(pair?.old)]
+            const newRow = newTypedStatements[Number(pair?.new)]
+            if (!oldRow || !newRow || oldRow.key === newRow.key) continue
+            if (oldRow.data?.superseded === true) continue
+            memory.put({
+              namespace: oldRow.namespace, kind: 'block', key: oldRow.key, text: oldRow.text,
+              data: { ...(oldRow.data ?? {}), superseded: true, supersededBy: newRow.key, invalidatedAt: now }, now,
+            })
+            typedInvalidated += 1
+            ctx.log({ level: 'info', msg: 'dream.validity-invalidated', oldKey: oldRow.key, newKey: newRow.key })
+          }
+        }
+      } catch (error) {
+        ctx.log({ level: 'warn', msg: 'dream.validity-fail', error: String(error?.message ?? error).slice(0, 160) })
       }
     }
     // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
@@ -1112,14 +1205,14 @@ export function apply(ctx) {
     const deferred = uncovered.length
     recordRun(day, 'events', {
       blocks: written.length, notes: notes.length, deferred, promoted: 0, uncovered: uncovered.length,
-      typedWritten, typedMerged,
+      typedWritten, typedMerged, typedInvalidated,
       shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
       payloadChars: shardResults.reduce((n, row) => n + row.chars, 0),
       empty: written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok && row.blocks === 0),
     }, now)
     return {
       job: 'events', ok: true, blocks: written.length, notes: notes.length,
-      deferred, promoted: 0, typedWritten, typedMerged,
+      deferred, promoted: 0, typedWritten, typedMerged, typedInvalidated,
       shards: shards.length,
       failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards,
@@ -1470,7 +1563,7 @@ export function apply(ctx) {
   function findBlockByKey(key) {
     const wanted = String(key ?? '')
     if (!wanted) return null
-    for (const ns of ['event', 'person', 'slang']) {
+    for (const ns of CLEANUP_NAMESPACES) {
       const hit = memory.query({ namespace: ns, kind: 'block', key: wanted, limit: 1 })[0]
       if (hit) return hit
     }
@@ -1493,6 +1586,18 @@ export function apply(ctx) {
       const other = normalizeBodyText(row.text)
       if (other.length < 6) continue
       if (other.includes(normalized) || normalized.includes(other) || bigramJaccard(normalized, other) >= 0.78) return row
+    }
+    return null
+  }
+  /** 按"旧陈述片段"找一条已存在的 typed 记录（用于 invalidates 的确定性失效）。 */
+  function findTypedBySnippet(namespace, snippet) {
+    const normalized = normalizeBodyText(snippet)
+    if (normalized.length < 4) return null
+    for (const row of memory.query({ namespace, kind: 'block', limit: 200, order: 'desc' })) {
+      if (row.data?.superseded === true) continue
+      const other = normalizeBodyText(row.text)
+      if (!other.length) continue
+      if (other.includes(normalized) || normalized.includes(other) || bigramJaccard(normalized, other) >= 0.55) return row
     }
     return null
   }
@@ -1670,7 +1775,7 @@ export function apply(ctx) {
       .filter((n) => n.data?.consumed !== true)
 
     const blocks = []
-    for (const ns of ['event', 'person', 'slang']) {
+    for (const ns of CLEANUP_NAMESPACES) {
       for (const b of memory.query({ namespace: ns, kind: 'block', limit: 500, order: 'desc' })) {
         if (b.data?.superseded === true) continue
         blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
@@ -1730,6 +1835,9 @@ export function apply(ctx) {
           '',
           '规则：',
           '· 只合并真正说的是同一件事/同一个人的块；没把握就不合并。',
+          '· 事实/偏好/承诺块出现新旧矛盾时（例如旧偏好已被新偏好替代、旧端口/旧承诺已过时）：保留新的块，把旧的 key 放进 drop（软删保留历史，不丢证据）；分不清新旧就设 uncertain。',
+          '· 事实/偏好/承诺块只在同类型之间合并；不要把它们并进事件块/人物块（结构化层要保留，旧值失效由夜间 validity 判定处理）。',
+          '· 同一事实的多个块可以合并成一条，保留更完整的措辞与双方 evidence。',
           '· 两个块互相矛盾且分不清对错：合并为一块并把 uncertain 设为 true，正文里写明"不确定"。',
           '· 人物块可以用 people 里含该 QQ 的事件块来补充或修正；改写时整块重写，不要丢旧信息。',
           '· 主会话的纠正优,：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
@@ -1784,6 +1892,12 @@ export function apply(ctx) {
       for (const dropKey of drop) {
         const target = findBlockByKey(dropKey)
         if (!target) continue
+        // 结构化层保护：fact/preference/commitment 不能被并进 event/人物/梗块，
+        // 也不能跨 typed 类型合并（否则"旧偏好"会被事件正文吞掉，validity 就失去对象）。
+        const TYPED_NS = ['fact', 'preference', 'commitment']
+        const keepTyped = TYPED_NS.includes(ns)
+        const targetTyped = TYPED_NS.includes(target.namespace)
+        if ((keepTyped || targetTyped) && target.namespace !== ns) continue
         memory.patch(target.id, { data: { ...(target.data ?? {}), superseded: true, supersededBy: keepKey } })
       }
       mergedCount += 1
@@ -2269,6 +2383,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

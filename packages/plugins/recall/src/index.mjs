@@ -81,6 +81,36 @@ export function apply(ctx) {
     return hit / grams.size
   }
 
+  /**
+   * 查询内容词门槛（2026-11-11 第 5 轮）：去掉"主人/今天/什么"这类高频功能词后，
+   * 查询还剩哪些内容 2-gram？如果这些内容词在候选库里**一个都没出现**，那这次命中
+   * 只是泛词面相似（"主人…"），不能当答案端给模型。
+   * 例：「主人今天穿的什么颜色的衣服？」→ 内容词「颜色/衣服」库里 df=0 → 返回"没找到"，
+   * 而不是把"主人说以后一起看直播"当答案。强语义命中（sim≥0.55）不受此限。
+   */
+  const QUERY_STOPWORDS = [
+    '主人', '鱼鱼', '小千', '今天', '昨天', '刚才', '之前', '现在', '什么时候', '什么', '怎么', '为什么',
+    '如何', '一下', '有没有', '有没', '那个', '这个', '我们', '他们', '可以', '已经', '还是', '就是',
+    '事情', '结果', '记得', '上次', '以前', '第一次', '多久', '多少',
+  ]
+  function contentBigramsOf(query) {
+    const raw = String(query ?? '').toLowerCase().replace(/\s+/g, '')
+    let text = raw
+    for (const word of QUERY_STOPWORDS) text = text.split(word).join('，')
+    const grams = new Set()
+    for (const run of (text.match(/[\u4e00-\u9fff]{2,}/g) ?? [])) {
+      for (let i = 0; i + 1 < run.length; i += 1) grams.add(run.slice(i, i + 2))
+    }
+    for (const word of (raw.match(/[a-z][a-z0-9_]{1,}/g) ?? [])) grams.add(word)
+    return [...grams]
+  }
+  function hasContentSignal(question, texts) {
+    const grams = contentBigramsOf(question)
+    if (!grams.length) return true
+    const bodies = (texts ?? []).map((text) => String(text ?? '').toLowerCase().replace(/\s+/g, ''))
+    return grams.some((gram) => bodies.some((body) => body.includes(gram)))
+  }
+
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
     memory.registerNamespace({ id, label: meta.label, recallable: meta.recallable !== false, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
@@ -308,10 +338,32 @@ export function apply(ctx) {
           : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
         const pendingRaw = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
+          // 未整理笔记也要服从会话过滤，否则 "只搜这个会话" 会被别的会话的碎片污染。
+          .filter((item) => !conv || String(item.data?.origin?.conv ?? '') === String(conv))
           .map((item) => ({ item, score: 1.15, namespace: ns })))
         const pendingNotes = question
           ? pendingRaw.filter((entry) => lexicalRelevance(entry.item.text, question) >= floor)
           : pendingRaw
+
+        // 内容词门槛：只拦"弱相似 + 内容词完全没出现"的情况（强语义命中 sim≥0.55 不受限）。
+        // 没有这道门槛时，「主人今天穿的什么颜色衣服」会因为"主人"高频词面把不相关记忆当答案。
+        // 例外：top1 明显领先 top2（≥1.3×）说明确实有一条更像的，即使措辞换过（颜色 vs 蓝色）也放行。
+        const topSim = Number(candidates[0]?.sim ?? 0)
+        const secondSim = Number(candidates[1]?.sim ?? 0)
+        const clearLeader = topSim >= 0.3 && (secondSim === 0 || topSim >= secondSim * 1.3)
+        const contentOk = !question || topSim >= 0.55 || clearLeader
+          || hasContentSignal(question, [
+            ...candidates.slice(0, 20).flatMap((entry) => [entry.item.text, entry.item.data?.body ?? '']),
+            ...pendingNotes.slice(0, 20).map((entry) => entry.item.text),
+          ])
+        const usableCandidates = contentOk ? candidates : []
+        const usableNotes = contentOk ? pendingNotes : []
+        if (!contentOk) {
+          ctx.log({
+            level: 'info', msg: 'recall.content-gate', query: question.slice(0, 60),
+            topSim, secondSim, bigrams: contentBigramsOf(question).slice(0, 12), candidates: candidates.length,
+          })
+        }
 
         const stored = cursor && typeof cursor === 'string' ? safeParseCursor(cursor) : loadCursor()
         const inWindow = new Set((stored.items ?? []).map((it) => it.id))
@@ -333,11 +385,11 @@ export function apply(ctx) {
         }
 
         const noteQuota = Math.max(1, Math.floor(limit / 2))
-        for (const entry of pendingNotes.slice(0, noteQuota)) take(entry, '未整理')
+        for (const entry of usableNotes.slice(0, noteQuota)) take(entry, '未整理')
         // person 最多占 1 条：人物档案很长，允许它回答"他是谁"，但不允许它挤掉事件/fact 的位次。
         const personQuota = 1
         let personTaken = 0
-        for (const entry of candidates.slice(0, 100)) {
+        for (const entry of usableCandidates.slice(0, 100)) {
           if (entry.namespace === 'person') {
             if (personTaken >= personQuota) continue
             personTaken += 1
@@ -381,7 +433,7 @@ export function apply(ctx) {
         //   ① 范围里有候选、但都不够相关（不要端凑数、不要 boost）；
         //   ② 范围过滤后没有、但全局有记忆（不能说"也没记过"——全局假否定）；
         //   ③ 全局真的空（这才是"没记过"）。
-        const anyKnown = pendingNotes.length + candidates.length > 0
+        const anyKnown = usableNotes.length + usableCandidates.length > 0
         const globalItems = (() => { try { return Number(memory.stats?.()?.items ?? 0) } catch { return 0 } })()
         const scopeText = [kind ? `类型=${kind}` : null, tag ? `标签=${tag}` : null, conv ? `会话=${conv}` : null].filter(Boolean).join('、') || '全部类别'
         const searchedCount = rawHitCount + pendingRaw.length
@@ -389,7 +441,8 @@ export function apply(ctx) {
           if (!question) return '最近没有能想起来的（范围内的记忆是空的）。'
           if (anyKnown) return '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。'
           if (searchedCount > 0) {
-            return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}，关键词「${question.slice(0, 40)}」），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？`
+            // 不回显用户原话：一来没必要，二来"只搜这个会话"时别的会话的关键词会误导她以为搜到过。
+            return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？`
           }
           if (globalItems > 0) {
             return `这个范围里没有相关记忆（全局还有 ${globalItems} 条，可能是 ${scopeText} 过滤太窄；去掉限制再试一次？）`
@@ -481,3 +534,4 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
