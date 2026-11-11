@@ -128,6 +128,36 @@ export function apply(ctx) {
   }
 
   /**
+   * 指代消解（2026-11-11 第 13 轮）：问句里有"他/她/TA"时，用会话里**最近一个真人发言者**
+   * 的称呼替换代词再搜一遍（"他凌晨说的新东西"→"Hahn123 凌晨说的新东西"）。
+   * 只依赖 raw 层的 speaker 元数据；拿不到就不加变体，不猜。
+   */
+  async function pronounQueryVariants(question, { now = ctx.now(), conv = null } = {}) {
+    const text = String(question ?? '').trim()
+    if (!text || !/他|她|TA|ta/.test(text)) return []
+    let rows = []
+    try {
+      rows = await Promise.resolve(ctx.services.raw?.list?.({ since: Number(now) - 12 * 3_600_000, until: Number(now) + 1, limit: 60 })) ?? []
+    } catch { rows = [] }
+    if (!Array.isArray(rows) || !rows.length) return []
+    if (conv) {
+      const scoped = rows.filter((row) => String(row?.conv ?? row?.origin?.conv ?? '') === String(conv))
+      if (scoped.length) rows = scoped
+    }
+    const speakers = rows
+      .map((row) => row?.speaker)
+      .filter((speaker) => speaker && String(speaker.kind ?? '') === 'qq' && String(speaker.value ?? '').trim())
+    const last = speakers[speakers.length - 1]
+    if (!last) return []
+    const name = String(last.name ?? '').trim()
+    const value = String(last.value ?? '').trim()
+    const form = name && name !== value ? name : value
+    if (!form || form.length < 2) return []
+    const replaced = text.replace(/他|她|TA|ta/g, form)
+    return replaced !== text ? [replaced] : []
+  }
+
+  /**
    * 查询里的日期词 → 目标日历日（本地时区）。
    * 用户问"10月25日下午…"时，同一天的记忆应优先于别的日子；只做加分不硬过滤，
    * 因为块可能跨天合并、data.day 只记了开始日（硬过滤会误删）。
@@ -399,6 +429,11 @@ export function apply(ctx) {
         if (question && searchQueries.length > 1 && bestById.size < Math.max(2, Math.floor(limit / 2))) {
           for (const subQuery of searchQueries.slice(1)) await collectHits(subQuery)
         }
+        // 指代变体：整句/子句都不足 3 条时，用最近一个真人发言者的称呼替换"他/她/TA"再搜一遍。
+        const pronounVariants = question ? await pronounQueryVariants(question, { now, conv }) : []
+        if (question && pronounVariants.length && bestById.size < 3) {
+          for (const variant of pronounVariants) await collectHits(variant, floor, false)
+        }
         // 模糊兜底：严格 floor 一条都没命中时，用放宽的 floor 再找一轮（标 [记得不太清]）。
         // 没有这一步，"10月25日下午…升级…效果如何"这类转述问句会因为 sim 0.42-0.44 < 0.45 直接空手；
         // 有这一步，内容词门槛仍会挡住"完全没问到的属性"（如"穿什么颜色衣服"）。
@@ -467,14 +502,26 @@ export function apply(ctx) {
         // 实体对加分：问句里出现≥2 个已知实体时，同时提到双方（含别名）的块优先——
         // 关系澄清常常写在"曾嘉睿是舍友，周子涵和离线版都是他"这种块里，正文里同时有两边。
         if (relationshipEntities.length >= 2 && candidates.length) {
-          let boostedByEntity = false
-          for (const entry of candidates) {
+          const RELATION_CUE = /(舍友|室友|同一个人|一个人|朋友|主人|关系|是.{0,6}的|不是)/
+          const entityProfileOf = (entry) => {
             const haystack = `${entry.item.text ?? ''}\n${String(entry.item.data?.body ?? entry.item.data?.profile ?? '')}`.toLowerCase()
             const mentioned = relationshipEntities.filter((entity) => entity.forms.some((form) => haystack.includes(form.toLowerCase()))).length
-            if (mentioned >= 2) { entry.score = Number(entry.score) * 2.2; boostedByEntity = true }
-            else if (mentioned === 1) { entry.score = Number(entry.score) * 1.1; boostedByEntity = true }
+            return { mentioned, relationCue: RELATION_CUE.test(haystack) }
           }
-          if (boostedByEntity) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+          for (const entry of candidates) {
+            const { mentioned, relationCue } = entityProfileOf(entry)
+            // 关系陈述加分：同时提到双方、且正文在说关系（舍友/同一个人/朋友/主人…）的块最该是答案。
+            if (mentioned >= 2) entry.score = Number(entry.score) * (relationCue ? 3.2 : 2.2)
+            else if (mentioned === 1) entry.score = Number(entry.score) * (relationCue ? 1.2 : 1.1)
+          }
+          // 关系陈述块（非人物档案）直接排到前面：这类问题问的是"关系是什么"，
+          // 人物档案只是佐证；只靠分数时低 base 的关系事件块永远进不了 top5。
+          const relationRank = (entry) => {
+            if (entry.namespace === 'person') return 0
+            const { mentioned, relationCue } = entityProfileOf(entry)
+            return mentioned >= 2 && relationCue ? 2 : mentioned >= 1 ? 1 : 0
+          }
+          candidates.sort((a, b) => relationRank(b) - relationRank(a) || b.score - a.score || b.item.createdAt - a.item.createdAt)
         }
 
         // 今天的 note 永远优先展示（带 [今天] 标签）

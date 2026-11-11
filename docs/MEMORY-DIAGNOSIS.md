@@ -183,6 +183,12 @@ person 配额 2）+ 放宽二轮改为"候选<2 就补"（修 QQ 单候选卡死
 QQ 79.2%、live 91.7%；miss 6.3%/16.7%/0%。focus p-19 已进入候选（raw 第 9），距命中只差关系句打分。
 扩 probe 后 gold 未覆盖从 22 降到 12 条。下一轮：关系陈述打分、指代消解、answer-adequacy、方差门控。
 
+**Phase 2 第 12 段（第 13 轮，本轮）**：关系陈述优先排序（问人意图且≥2 实体时，非人物档案的
+"同时提到双方+关系词"块排前）→ focus p-19 转 hit，focus **miss 6.3%→0%、r5→96.9%**；
+新增指代变体（raw 最近发言人替换他/她/TA，三源暂无收益，QQ p-07 根因是 gold↔extracted 映射粒度）。
+三源：focus r5 96.9/miss 0、QQ r5 79.2/miss 16.7、live r5 91.7/miss 0。下一轮：answer-adequacy、
+3-run 方差门控基线、QQ gold 映射抽审、validity 抽审。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
