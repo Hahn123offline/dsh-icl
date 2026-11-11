@@ -58,27 +58,76 @@
 - retrieval（seed=formation）：no-embed recall@1/3/5 = 0/25/25%，MRR 0.083；`--embed`（bge-m3 本地）
   后 r3 33.3%、MRR 0.185、miss 66.7%、falseInjection 83.3% → **检索层仍是最大瓶颈**。
 
+## 2b. 第 3 轮：评测链修复 + 真实基线跃升（commits `a8f88ad` 起）
+
+### 找到并修掉的三个"链路上游"问题
+
+1. **dream 输出预算把繁忙日的 JSON 截断**：events 分片 `maxTokens` 默认 1200，繁忙日模型要写多块，
+   输出超长被截断 → `bad-json` → 整片丢失。修法：events 3500 tokens；坏 JSON/调用失败各重试一次；
+   仍失败则把该片对半拆开重试（失败路径兜底，正常日不加成本）。`--debug` 可打印 dream warn/error 日志。
+   **实测 day27：formation recall 14.3% → 85.7%**（同一份材料只改输出预算/重试）。
+2. **旧 raw 的中英混排 reasoning 被当成"她说的话"**：focus-core 导入把 40 条
+   `"User wants me to…" / "Reply only…"` 归为 `agent_visible`，白天材料大量计划文本。修法：
+   `raw-profile`/importer 的 plan 判定不再要求"无 CJK"，英文为主+计划句首即 `agent_internal`；
+   真人 QQ 行 speaker 渲染为 `主人(QQ)`、她自己渲染为 `我`（不再把 selfQQ 标成第三个人）。
+3. **检索阈值从未标定**：用 seed=gold 的 4 份 fixture 做 minSim 扫描（0.2–0.55）：
+   有嵌入 0.35→**0.5**：falseInjection 100%→0%、recall@5 不降（real r1/r3 79/83%）；
+   无嵌入保持 0.2（升到 0.3 起 recall@3 明显下滑，且无嵌入 falseInjection 本来就是 0）。
+
+### 真实素材端到端结果（real-focuscore-2026-10，5 天 701 行，cloud）
+
+| 指标 | Phase 1 | Phase 2a | **Phase 2b（本轮）** |
+|---|---:|---:|---:|
+| formation matched/gold | 15/32 | 18/32 | **27/32** |
+| formation recall | 46.9% | 56.3% | **84.4%** |
+| event recall | 60% | 70% | ~（分类型见 eval.md） |
+| dupRate（修正口径） | 虚高 | 2.8% | 1.0% |
+| provenance | 100% | 100% | 100% |
+| selfSourceRate | — | 37.5% | 23.6% |
+| extracted | 65 | 144 | 203（含 typed） |
+
+- 事件分片零失败（`--debug` 无 shard-fail）；precision 13.3% 仍是"gold 32 条 vs 抽出 203 条"的分母问题，
+  需要下一轮抽审/补全 gold，而不是判 formation 变差。
+- **检索两段分开看**（这轮的关键结论）：
+  - `--seed gold`（库本身是对的，只测检索）：**recall@1 79.2% / r3 83.3% / r5 83.3%、MRR 0.882、
+    miss 12.5%、falseInjection 0%**（embed + 校准后）；
+  - `--seed formation`（端到端，含形成误差）：r1 16.7% / r3 50% / r5 50%、miss 50%、falseInjection 33.3%。
+  → **检索本身已经可用；端到端损失主要来自形成覆盖与排序（203 条里挑 6 条）**，下一轮先修
+  "形成→检索"之间的桥（typed 记录参与召回的方式、top-k 排序/多样性、person 探针），而不是继续调 sim 阈值。
+
+
+
 ## 3. 结论与下一轮
 
-- 写入侧两类根因已落地：**raw 有来源/说话人**、**事实/偏好/承诺不再被事件块吞掉**；真实 5 天 fixture 的
-  fact recall 0→50%、event 60→70%，无回归。
-- 下一轮（Phase 2 第 2 段）优先级：
-  1. **检索层重做**：block/typed 摘要与探针措辞对齐、查询扩展（称呼/别名/时间词）、person 检索路径、
-     MMR/注入预算；用同一 fixture 的 retrieval 指标 + `--embed`/无 embed 两种条件证明收益。
+- 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
+  **事实/偏好/承诺独立成层**、**检索阈值有标定**；真实 5 天 fixture formation recall 46.9%→84.4%。
+- 下一轮（Phase 2 第 3 段）优先级：
+  1. **形成→检索的桥**：203 条形成结果里挑 6 条——typed 记录参与召回的方式（fact 命中是否该压过 event）、
+     top-k 排序/多样性（MMR）、person 探针路径；目标端到端 r5 ≥ 65%、miss ≤ 35%。
   2. **validity/旧值失效**：commitment 旧值 3/3、preference 旧值 1/3 仍并存；v2 加 `invalidatedBy` 检测与软失效。
   3. **gold 抽审/补全**（尤其 fact/commitment），把 precision 口径改成不依赖 gold 完整度的抽样评。
   4. bridge 侧再补：live QQ 消息在"有 live agent"路径下的 `conv/sender` 元数据回归测试（当前覆盖 steer 与冷启动）。
+  5. 把本轮标定方法写成可重跑脚本（阈值扫描已记录在 `.state/lab/lead/eval-focus-calib/` 与
+     `.state/lab/lead/eval-calib-synthetic-*`），后续每次改检索都重跑同一套。
 
 ## 4. 复跑
 
 ```powershell
-# 真实 5 天 fixture formation（缓存命中后无密钥可跑）
+# 真实 5 天 fixture：旧 fixture 先按新分类器重标 assistant 行（只改 source/visible）
+node .state/lab/lead/reclassify-fixture.mjs .state/lab/memory-corpus/real-focuscore-2026-10/fixture.json
+
+# formation（缓存命中后无密钥可跑；阈值/预算改动会改变 prompt→cache 失效，属预期）
 $env:DEEPSEEK_API_KEY=[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY','User')
 node tools/memory-eval.mjs --fixture .state/lab/memory-corpus/real-focuscore-2026-10 `
-  --mode formation --model cloud --profile raw-main --out .state/lab/lead/eval-focuscore-typed2
+  --mode formation --model cloud --profile raw-main --debug --out .state/lab/lead/eval-focuscore-final
 
-# 加检索（复用 formation 缓存；再加 --embed 用本地 bge-m3）
+# 端到端（formation + retrieval；--embed 用本地 bge-m3）
 node tools/memory-eval.mjs --fixture .state/lab/memory-corpus/real-focuscore-2026-10 `
-  --mode all --seed formation --model cloud --profile raw-main --cache-only `
-  --out .state/lab/lead/eval-focuscore-typed2
+  --mode all --seed formation --model cloud --profile raw-main --embed `
+  --out .state/lab/lead/eval-focuscore-final
+
+# 只测检索（库用 gold 种子，不受形成误差影响）；阈值标定用 --recall-min-sim 扫描
+node tools/memory-eval.mjs --fixture .state/lab/memory-corpus/real-focuscore-2026-10 `
+  --mode retrieval --seed gold --model echo --embed --recall-min-sim 0.5 `
+  --out .state/lab/lead/eval-focus-retrieval3
 ```

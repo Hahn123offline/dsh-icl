@@ -123,6 +123,13 @@ provenance 0/101 是因为历史 day log 没有 `sources` 表（新数据开始�
 - 真实 5 天 focus-core fixture：matched 15→18，recall 46.9%→56.3%，fact recall 0%→50%，event 60%→70%，provenance 100%；
   retrieval 仍差（no-embed r5 25% / embed r3 33%，miss 67%）→ 下一轮主攻检索层。
 
+**Phase 2 第 2 段（第 3 轮，commit `a8f88ad`）**：评测链修复后真实 5 天 focus-core 基线跃升——
+formation matched 18→27/32、recall 56.3%→**84.4%**、dup 1.0%、provenance 100%、selfSource 23.6%；
+根因是 dream 输出 token 预算截断繁忙日 JSON（修：3500 tokens + 调用/解析重试 + 坏片对半拆）、
+旧 raw 中英混排 reasoning 误标为她说的话（修分类器）、recall minSim 无标定（标定为 0.5，falseInjection 100%→0）。
+检索两段验证：seed=gold（只测检索）r1 79%/r3 83%/MRR 0.882/falseInjection 0；
+seed=formation（端到端）r3 50%——下一轮修"形成→检索"的排序/多样性/person 路径。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
