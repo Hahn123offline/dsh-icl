@@ -150,6 +150,15 @@ export function apply(ctx) {
   try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
+  // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
+  // 显示名/别名只是 alias。人格块再也不能按显示名各建一份、也不能把 selfQQ 挂到别人身上。
+  const selfQQ = String(ctx.config.selfQQ ?? '').trim()
+  const ownerQQ = String(ctx.config.ownerQQ ?? '').trim()
+  const ownerNames = (Array.isArray(ctx.config.ownerNames) ? ctx.config.ownerNames : [])
+    .map((x) => String(x ?? '').trim()).filter(Boolean)
+  const ownerNameSet = new Set(ownerNames)
+  const selfNames = (Array.isArray(ctx.config.selfNames) ? ctx.config.selfNames : [])
+    .map((x) => String(x ?? '').trim()).filter(Boolean)
 
   // ── 输入预算（READINESS G-1：繁忙一天的 dream 输入曾到 1MB，整晚白跑） ──
   // 所有发给模型的 payload 都必须 ≤ maxPayloadChars；wash 的 day log 另受 maxDayLogChars 约束。
@@ -291,7 +300,108 @@ export function apply(ctx) {
     parts.sort((a, b) => orderOf(a) - orderOf(b))
     const text = parts.map((row) => String(row.text ?? '')).filter(Boolean).join('\n')
     const times = Array.isArray(parts[0]?.data?.times) ? parts[0].data.times : []
-    return { text, data: { times, parts: parts.length, day, omittedLines: Number(parts[0]?.data?.omittedLines ?? 0), totalLines: Number(parts[0]?.data?.totalLines ?? 0) } }
+    // rowIds/sources 是"绝对行号 → raw 行"的两张表（每段都存了完整数组）；评测做
+    // evidence→fixture rowId provenance 校验、形成阶段做来源门控都要用。
+    const rowIds = Array.isArray(parts[0]?.data?.rowIds) ? parts[0].data.rowIds : []
+    const sources = Array.isArray(parts[0]?.data?.sources) ? parts[0].data.sources : []
+    return { text, data: { times, rowIds, sources, parts: parts.length, day, omittedLines: Number(parts[0]?.data?.omittedLines ?? 0), totalLines: Number(parts[0]?.data?.totalLines ?? 0) } }
+  }
+
+  /**
+   * 形成阶段真正能进模型材料的 day log 行（审计 R2/F6）：
+   * 只保留 human / qq_envelope / agent_visible（视角文本），tool/env/agent_internal 全部剔除；
+   * 行文本与行号保持原样（evidence 的绝对行号映射不丢）。
+   */
+  function formationLines(dayLog) {
+    const lines = String(dayLog?.text ?? '').split('\n')
+    const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
+    const out = []
+    for (let index = 0; index < lines.length; index += 1) {
+      const source = String(sources[index] ?? 'unknown')
+      if (source === 'tool' || source === 'env' || source === 'agent_internal' || source === 'memory') continue
+      out.push(lines[index])
+    }
+    return out
+  }
+
+  /* ── 身份解析：账号优先、显示名是 alias（审计 F5） ───────────── */
+
+  /** 显示名 → 产品已知身份（主人/自己）。匹配不到返回 null。 */
+  function knownIdentityByName(name) {
+    const value = String(name ?? '').trim()
+    if (!value) return null
+    if (ownerQQ && (ownerNameSet.has(value) || ownerNames.some((alias) => value.startsWith(alias)))) {
+      return { kind: 'qq', value: ownerQQ, role: 'owner' }
+    }
+    return null
+  }
+
+  /** 把抽取出来的 subject 规范化：主人/别名归到 ownerQQ；selfQQ 归到自我；其余保留原样。 */
+  function canonicalSubject(subject) {
+    const kind = String(subject?.kind ?? '').trim()
+    const value = String(subject?.value ?? '').trim()
+    if (!kind || !value) return null
+    if (kind === 'qq') {
+      if (selfQQ && value === selfQQ) return { kind: 'qq', value, role: 'self' }
+      if (ownerQQ && value === ownerQQ) return { kind: 'qq', value, role: 'owner' }
+      return { kind: 'qq', value, role: 'other' }
+    }
+    if (kind === 'name') {
+      const known = knownIdentityByName(value)
+      if (known) return known
+    }
+    return { kind, value, role: 'other' }
+  }
+
+  function personKeyOf(subject) {
+    if (!subject?.value) return null
+    return subject.kind === 'qq' ? `person:${subject.value}` : `person:${subject.kind}:${subject.value}`
+  }
+
+  /**
+   * 校验模型给的 ids：不能把 selfQQ 挂到别人档案上；QQ 值必须是 5–12 位数字。
+   * 旧实现让 live 出现"Hahn123 的 ids 里挂着她自己的 QQ"（审计 §6.2）。
+   */
+  function sanitizeIds(ids, subject) {
+    const out = []
+    for (const entry of Array.isArray(ids) ? ids : []) {
+      const kind = String(entry?.kind ?? '').trim()
+      const value = String(entry?.value ?? '').trim()
+      if (!kind || !value) continue
+      if (kind === 'qq') {
+        if (!/^\d{5,12}$/.test(value)) continue
+        const isSelfSubject = subject?.kind === 'qq' && subject.value === selfQQ
+        if (selfQQ && value === selfQQ && !isSelfSubject) continue
+      }
+      if (!out.some((x) => x.kind === kind && x.value === value)) out.push({ kind, value })
+    }
+    if (subject) {
+      const exists = out.some((x) => x.kind === subject.kind && x.value === subject.value)
+      if (!exists) out.unshift({ kind: subject.kind, value: subject.value })
+    }
+    return out.slice(0, 10)
+  }
+
+  /** event.data.people 里常见的是显示名；能解析成账号的写成 QQ，方便 whois/relatedEvents 对齐。 */
+  function normalizePeople(list) {
+    const out = []
+    for (const raw of Array.isArray(list) ? list : []) {
+      const value = String(raw ?? '').trim()
+      if (!value) continue
+      let resolved = value
+      if (!/^\d{5,12}$/.test(value)) {
+        const known = knownIdentityByName(value)
+        if (known) resolved = known.value
+        else {
+          const found = memory.findPerson({ name: value })
+          const person = found.people?.[0]
+          const id = person?.data?.ids?.find((x) => x?.kind === 'qq')?.value
+          if (id) resolved = String(id)
+        }
+      }
+      if (!out.includes(resolved)) out.push(resolved)
+    }
+    return out.slice(0, 20)
   }
 
   /** 把渲染好的 day log 行按字符预算切成多段（每段 ≤ maxSegmentChars，行边界切）。 */
@@ -559,11 +669,19 @@ export function apply(ctx) {
     const inferSource = (r) => {
       const given = String(r.sourceKind ?? '').trim()
       if (given) return given
-      const origin = String(r.role ?? '')
-      if (origin === 'tool') return 'tool'
-      if (origin === 'assistant') return 'agent_visible'
-      if (origin === 'user') {
-        const t = String(r.text ?? '').trim()
+      const role = String(r.role ?? '')
+      const t = String(r.text ?? '').trim()
+      if (role === 'tool') return 'tool'
+      if (role === 'assistant') {
+        // 旧 raw 里混着未发送的英文计划；看不到中文字符且像 plan 的长文本按"内部思考"处理，
+        // 不进入形成主材料（bridge 的 reasoning 修复只管未来数据，历史基线仍需要这道闸）。
+        const cjk = (t.match(/[\u4e00-\u9fff]/g) ?? []).length
+        if (cjk === 0 && t.length > 40 && /\b(?:I|we|let me|maybe|should|need|actually|okay)\b/i.test(t)) return 'agent_internal'
+        return 'agent_visible'
+      }
+      // QQ 未读摘要/私聊信封里包着真人的话：单独一类，形成时保留但要提醒模型"这是转述"。
+      if (t.startsWith('QQ 还有没看过的消息') || /^\[QQ[^\]]*\]/.test(t)) return 'qq_envelope'
+      if (role === 'user') {
         if (t.startsWith('【心跳】') || t.startsWith('[QQ戳一戳]') || /^Alarm fired/.test(t)) return 'env'
         return 'human'
       }
@@ -664,8 +782,9 @@ export function apply(ctx) {
     const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
     // 材料行：dayLog（wash 已按预算截断/分段）优先，否则 notes。先按经历窗口切段，再按请求大小分片。
+    // 形成阶段只吃真人/可见视角的行：工具结果与环境通知在 wash 已有 source 标记，这里被剔除（审计 F6）。
     const material = dayLog
-      ? dayLog.text.split('\n')
+      ? formationLines(dayLog)
       : notes
         .slice()
         .sort((a, b) => timeOf(a) - timeOf(b))
@@ -681,6 +800,7 @@ export function apply(ctx) {
     const instruction = [
       '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
       '块里可以是你做过的事，也可以是你今天看到/刷到/学到的东西（写成“我刷到一个讲…”）。',
+      '只记真实发生过的对话与经历：你自己未发出去的计划、工具操作细节、系统状态都不算经历，不要写进块。',
       '时间优先：先按"一段经历"分组——时间挨得很近、连续发生的笔记算同一次经历；',
       '再在这一次经历内部按话题合并。同一次连续经历里的碎片要放进同一块，不要拆开。',
       '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
@@ -778,7 +898,7 @@ export function apply(ctx) {
             provisional: partEvidence.length === 0,
             day,
             ...(total > 1 && index > 0 ? { parts: { groupId, part, total } } : {}),
-            people: (block?.people ?? []).map(String),
+            people: normalizePeople(block?.people),
             tags: normalizeTags(block?.tags),
             sources: [...new Set([
               ...notes.map((n) => n.key).filter(Boolean),
@@ -861,7 +981,7 @@ export function apply(ctx) {
             '输出 JSON 数组：[{"who":"名字","fact":"一句具体事实","source_id":1}]',
             'who 用原话里的称呼，不要合并不同的人；没有就输出 []。只输出 JSON。',
           ].join('\n'),
-          payload: `${dayLog.text}\n\n（source_id 用上面每行开头的编号）`,
+          payload: dayLog ? `${formationLines(dayLog).join('\n')}\n\n（source_id 用上面每行开头的编号）` : '',
           maxTokens: 900,
         })
         for (const item of parseBlocks(raw)) {
@@ -888,31 +1008,41 @@ export function apply(ctx) {
     const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' }))
     if (!notes.length) return { job: 'people', skipped: 'no-notes' }
 
-    // 按"通用身份"分组：qq 只是其中一种
-    const byQq = new Map()
+    // 按"通用身份"分组：qq 只是其中一种。显示名先用产品已知身份（主人/别名）归一，
+    // 同一主人的多个称呼落进同一个 key（审计 F5：旧实现按显示名各建一块）。
+    const bySubject = new Map()
     for (const note of notes) {
-      const subject = note.data?.subject ?? (note.data?.qq ? { kind: 'qq', value: String(note.data.qq) } : null)
-      if (!subject?.value) continue
-      const key = `${subject.kind}:${subject.value}`
-      byQq.set(key, [...(byQq.get(key) ?? []), { ...note, __subject: subject }])
+      const rawSubject = note.data?.subject ?? (note.data?.qq ? { kind: 'qq', value: String(note.data.qq) } : null)
+      const subject = canonicalSubject(rawSubject)
+      const key = personKeyOf(subject)
+      if (!key) continue
+      bySubject.set(key, [...(bySubject.get(key) ?? []), { ...note, __subject: subject }])
     }
-    if (!notes.length) return { job: 'people', skipped: 'no-notes' }
     const written = []
     const skippedPeople = []
     let degradedPeople = false
-    for (const [qq, list] of byQq) {
-      const [subjectKind, subjectValue] = (() => { const s = list[0]?.__subject ?? { kind: 'qq', value: qq }; return [s.kind, s.value] })()
-      const key = subjectKind === 'qq' ? `person:${subjectValue}` : `person:${subjectKind}:${subjectValue}`
+    for (const [personKey, list] of bySubject) {
+      const subject = list[0]?.__subject ?? { kind: 'qq', value: '' }
+      const subjectKind = subject.kind
+      const subjectValue = subject.value
+      const key = personKey
       const existing = memory.query({ namespace: 'person', kind: 'block', key, limit: 1 })[0]
       // 人物档案要有"全局认识"：把过去提到过这个人的事件块也带上，
       // 否则每天只能拿到一句话，写出来的档案永远认不出是谁。
       const matchesSubject = (entry) => {
-        const subject = entry?.subject ?? (entry?.qq ? { kind: 'qq', value: String(entry.qq) } : null)
-        return Boolean(subject?.value) && String(subject.value) === String(subjectValue)
-          && String(subject.kind ?? 'qq') === String(subjectKind)
+        const canonical = canonicalSubject(entry?.subject ?? (entry?.qq ? { kind: 'qq', value: String(entry.qq) } : null))
+        return Boolean(canonical?.value) && String(canonical.value) === String(subjectValue)
+          && String(canonical.kind) === String(subjectKind)
       }
+      const aliasesOfSubject = new Set([
+        subjectValue,
+        ...(existing?.data?.aliases ?? []).map(String),
+        ...(existing?.data?.ids ?? []).map((x) => String(x?.value ?? '')),
+        ...(subject.role === 'owner' ? ownerNames : []),
+        ...(subject.role === 'self' ? ['鱼鱼'] : []),
+      ].filter(Boolean))
       const relatedEvents = memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
-        .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => String(p) === String(subjectValue)))
+        .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => aliasesOfSubject.has(String(p))))
         .slice(-20)
       const pastNotes = memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' })
         .filter((n) => matchesSubject(n.data) && !list.some((x) => x.id === n.id))
@@ -924,8 +1054,11 @@ export function apply(ctx) {
         const omitted = rows.length - kept.length
         return `${label}：\n${kept.map((n) => `[${n.id}] ${clipText(n.text)}`).join('\n')}${omitted > 0 ? `\n…（省略更早 ${omitted} 条）` : ''}`
       }
+      const identityLabel = subject.role === 'owner' ? `${subjectKind}:${subjectValue}（主人）`
+        : subject.role === 'self' ? `${subjectKind}:${subjectValue}（她自己）`
+          : `${subjectKind}:${subjectValue}`
       const context = clipPayload([
-        `内部编号（不要写进档案）：${qq}`,
+        `内部编号（不要写进档案）：${identityLabel}`,
         existing ? `现有档案：\n${clipText(existing.text, 1200)}\n${clipText(existing.data?.narrative ?? '', 1200)}` : '现有档案：无',
         relatedEvents.length ? `以前提到过 TA 的事：\n${relatedEvents.map((b) => `· ${clipText(b.text, 200)}`).join('\n')}` : '',
         pastNotes.length ? renderNotes(pastNotes, '以前记下的') : '',
@@ -969,7 +1102,7 @@ export function apply(ctx) {
           payload: context,
         })
       } catch (error) {
-        return { job: 'people', ok: false, qq, error: String(error?.message ?? error) }
+        return { job: 'people', ok: false, qq: identityLabel, error: String(error?.message ?? error) }
       }
       // 空输出/垃圾 JSON 不再当成"模型没写"：按失败计，让人物档案下次重试；
       // 只有合法 `{}`（value 为空对象）才走薄档案兜底。
@@ -1002,16 +1135,15 @@ export function apply(ctx) {
         key,
         text: profile.slice(0, 800),
         data: {
-          // 通用身份：以后 mc/discord/自定义都用同一套字段
+          // 通用身份：以后 mc/discord/自定义都用同一套字段。subject 已归一（主人/别名 → ownerQQ）。
           subject: { kind: subjectKind, value: subjectValue },
+          ...(subject.role === 'owner' ? { owner: true } : {}),
+          ...(subject.role === 'self' ? { self: true } : {}),
           qq: subjectKind === 'qq' ? subjectValue : null,
-          ids: (() => {
-            const ids = Array.isArray(parsed?.ids)
-              ? parsed.ids.map((x) => ({ kind: String(x?.kind ?? ''), value: String(x?.value ?? '') })).filter((x) => x.kind && x.value).slice(0, 10)
-              : ((existing?.data?.ids) ?? [])
-            if (!ids.some((x) => x.kind === subjectKind && x.value === subjectValue)) ids.unshift({ kind: subjectKind, value: subjectValue })
-            return ids
-          })(),
+          ids: sanitizeIds(
+            Array.isArray(parsed?.ids) ? parsed.ids : (existing?.data?.ids ?? []),
+            { kind: subjectKind, value: subjectValue },
+          ),
           familiarity: String(parsed?.familiarity ?? existing?.data?.familiarity ?? 'unknown'),
           provisional: thin || evidence.length === 0,
           evidence,
@@ -1021,7 +1153,11 @@ export function apply(ctx) {
           profile: profile.slice(0, 2000),
           narrative: String(parsed?.narrative ?? '').slice(0, 4000),
           facts: Array.isArray(parsed?.facts) ? parsed.facts.slice(0, 50) : [],
-          aliases: Array.isArray(parsed?.aliases) ? parsed.aliases.map(String).slice(0, 10) : ((existing?.data?.aliases) ?? []),
+          aliases: [...new Set([
+            ...(Array.isArray(parsed?.aliases) ? parsed.aliases.map(String) : []),
+            ...(existing?.data?.aliases ?? []).map(String),
+            ...(subject.role === 'owner' ? ownerNames : []),
+          ].filter(Boolean))].slice(0, 10),
           sources: list.map((n) => n.key).filter(Boolean),
           rewrittenAt: now,
         },
@@ -1044,8 +1180,7 @@ export function apply(ctx) {
       return subject?.value ? subject : null
     }
     const blockKeys = new Set(
-      notes.map(subjectsOf).filter(Boolean)
-        .map((s) => (s.kind === 'qq' ? `person:${s.value}` : `person:${s.kind}:${s.value}`)),
+      notes.map((n) => personKeyOf(canonicalSubject(n.data?.subject ?? (n.data?.qq ? { kind: 'qq', value: String(n.data.qq) } : null)))).filter(Boolean),
     )
     for (const key of blockKeys) {
       if (skippedPeople.includes(key)) continue
@@ -1056,8 +1191,8 @@ export function apply(ctx) {
     }
     const writtenNotes = notes.filter((n) => citedPeople.has(Number(n.id)))
     if (writtenNotes.length) markNotes(writtenNotes, now)
-    recordRun(day, 'people', { blocks: written.length, people: byQq.size, skipped: skippedPeople.length, degraded: degradedPeople }, now)
-    return { job: 'people', ok: true, blocks: written.length, people: byQq.size, skipped: skippedPeople.length, degraded: degradedPeople }
+    recordRun(day, 'people', { blocks: written.length, people: bySubject.size, skipped: skippedPeople.length, degraded: degradedPeople }, now)
+    return { job: 'people', ok: true, blocks: written.length, people: bySubject.size, skipped: skippedPeople.length, degraded: degradedPeople }
   }
 
   /* ── slang：新增/更新梗块 ───────────────────────────────────── */
@@ -1253,9 +1388,78 @@ export function apply(ctx) {
     return { merged, pairs }
   }
 
+  /**
+   * 已知身份归并（审计 F5，确定性、零模型调用）：
+   * 旧数据里 主人/Hahn123（离线版）各有一份档案，甚至把 selfQQ 挂到主人档案上。
+   * 只合并"能由产品配置证明是同一身份"的块（ownerQQ/selfQQ/ownerNames/selfNames），
+   * 未知显示名一律不动——宁可留两份，也不能把两个真人合成一个。
+   */
+  function ownerNameMatches(names) {
+    return names.some((name) => ownerNameSet.has(name) || ownerNames.some((alias) => name.startsWith(alias)))
+  }
+  function mergeKnownIdentityBlocks(now) {
+    const canonicalOf = (block) => {
+      const subject = block?.data?.subject ?? {}
+      const aliases = (block?.data?.aliases ?? []).map(String)
+      const nameCandidates = [String(subject.value ?? ''), ...aliases].filter(Boolean)
+      if (subject.kind === 'qq' && selfQQ && String(subject.value) === selfQQ) return `person:${selfQQ}`
+      if (subject.kind === 'qq' && ownerQQ && String(subject.value) === ownerQQ) return `person:${ownerQQ}`
+      if (ownerQQ && ownerNameMatches(nameCandidates)) return `person:${ownerQQ}`
+      if (selfQQ && selfNames.length && nameCandidates.some((name) => selfNames.includes(name))) return `person:${selfQQ}`
+      // 只有账号证据、没有显示名证据时不做归并（防群号/共享号误合并）。
+      return null
+    }
+    const groups = new Map()
+    for (const block of memory.query({ namespace: 'person', kind: 'block', limit: 500, order: 'desc' })) {
+      if (block.data?.superseded === true) continue
+      const canonical = canonicalOf(block)
+      if (!canonical) continue
+      groups.set(canonical, [...(groups.get(canonical) ?? []), block])
+    }
+    let merged = 0
+    for (const [key, blocks] of groups) {
+      if (blocks.length < 2) continue
+      // 保留证据/正文最全的一块做 keeper；key 统一成 canonical。
+      const scoreOf = (row) => (Number(row.data?.evidence?.length ?? 0) * 1000) + String(row.data?.profile ?? row.text ?? '').length
+      const sorted = blocks.slice().sort((a, b) => scoreOf(b) - scoreOf(a) || Number(a.id) - Number(b.id))
+      const keeper = sorted[0]
+      const unionById = new Map()
+      for (const row of sorted) for (const entry of row.data?.ids ?? []) unionById.set(`${entry.kind}:${entry.value}`, entry)
+      const unionIds = [...unionById.values()].slice(0, 10)
+      const unionAliases = [...new Set(sorted.flatMap((row) => row.data?.aliases ?? []).map(String))].slice(0, 10)
+      const unionEvidence = sorted.flatMap((row) => row.data?.evidence ?? [])
+        .filter((entry, index, arr) => arr.findIndex((x) => x?.type === entry?.type && Number(x?.id) === Number(entry?.id)) === index)
+        .slice(0, 30)
+      const canonicalSubjectValue = key.slice('person:'.length)
+      const supersedeKeys = sorted.filter((row) => row.key !== key)
+      memory.put({
+        namespace: 'person', kind: 'block', key,
+        text: keeper.text,
+        data: {
+          ...(keeper.data ?? {}),
+          subject: { kind: 'qq', value: canonicalSubjectValue },
+          qq: canonicalSubjectValue,
+          ids: unionIds,
+          aliases: [...new Set([...unionAliases, canonicalSubjectValue])].slice(0, 10),
+          evidence: unionEvidence,
+          mergedFrom: [...new Set([...(keeper.data?.mergedFrom ?? []), ...supersedeKeys.map((row) => row.key)])],
+          identityMergedAt: now,
+        },
+        now,
+      })
+      for (const row of supersedeKeys) {
+        memory.patch(row.id, { data: { ...(row.data ?? {}), superseded: true, supersededBy: key } })
+        merged += 1
+      }
+    }
+    return { merged }
+  }
+
   async function jobCleanup({ now, force = false }) {
     const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'cleanup')) return { job: 'cleanup', skipped: 'already-ran' }
+    // 先做确定性身份归并（0 模型）：同一主人的多个显示名档案合成一份，再把结果交给模型整理。
+    const identity = mergeKnownIdentityBlocks(now)
 
     const pendingResolves = memory.query({ namespace: 'resolve', kind: 'note', limit: 100, order: 'desc' })
       .filter((n) => n.data?.consumed !== true)
@@ -1267,7 +1471,7 @@ export function apply(ctx) {
         blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
       }
     }
-    if (blocks.length < 2 && !pendingResolves.length) return { job: 'cleanup', skipped: 'nothing-to-do' }
+    if (blocks.length < 2 && !pendingResolves.length && identity.merged === 0) return { job: 'cleanup', skipped: 'nothing-to-do' }
 
     // 跨天近似重复只做"报告"，合不合由模型决定（不做算法合并）
     const grams = (text) => {
@@ -1419,8 +1623,8 @@ export function apply(ctx) {
       if (note) memory.patch(note.id, { data: { ...(note.data ?? {}), consumed: true, consumedAt: now } })
     }
 
-    recordRun(day, 'cleanup', { merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged }, now)
-    return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged }
+    recordRun(day, 'cleanup', { merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged, identityMerged: identity.merged }, now)
+    return { job: 'cleanup', ok: true, merged: mergedCount, rewrites: rewriteCount, consumed: consumed.length, nearDuplicates: near.merged, identityMerged: identity.merged }
   }
 
   /* ── index：补建向量索引（最后一步）───────────────── */
@@ -1475,6 +1679,23 @@ export function apply(ctx) {
   function dayStartOf(now) { return dayRange(now, tzOf()).start }
   function dayEndOf(now) { return dayRange(now, tzOf()).end }
 
+  /**
+   * 语料采集的确定性闸门（审计 §7.1）：工具名/框架标识符不该进"语料"。
+   * 它们既不帮助理解群里的话，又会占 180 天半衰期、长期参与 eager 注入。
+   * 只挡"形式明显是标识符/状态字段"的；中文词仍交给模型判断。
+   */
+  function isLikelyJargon(term) {
+    const word = String(term ?? '').trim()
+    if (!word) return true
+    if (word.length > 16) return true
+    if (/^(?:mcb|time|body|qq|mc|icl|dsh|clip)[:_-]/i.test(word)) return true
+    if (/^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+$/i.test(word)) return true // mcb_join / finish-then-handle / clip-zh
+    if (/^[a-z0-9]+\.[a-z0-9]+$/i.test(word)) return true // 文件名 / 域名
+    if (/^[a-z0-9_ -]*\d+[a-z0-9_ -]*$/i.test(word) && !/[\u4e00-\u9fff]/.test(word)) return true // 纯 ASCII 带数字
+    if (/^(?:status|body|event|note|block|namespace|recall|dream|memory|prompt|token|session|cursor|finish|handle)$/i.test(word)) return true
+    return false
+  }
+
   async function jobLexicon({ now, force = false }) {
     const day = dayKey(now, tzOf())
     if (!force && alreadyRan(day, 'lexicon')) return { job: 'lexicon', skipped: 'already-ran' }
@@ -1482,9 +1703,10 @@ export function apply(ctx) {
     // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
     let sourceLines = []
     try {
-      // 优先用当天洗好的干净原话（可能分多段）；没有才退回原文来源
-      const dayLog = readDayLog(dayKey(now, tzOf()))
-      if (dayLog?.text) sourceLines = dayLog.text.split('\n')
+      // 优先用当天洗好的干净原话（可能分多段）；没有才退回原文来源。
+      // 只取真人/可见视角的行：工具结果里的工具名、系统状态不是"群里的说法"（审计 7.1）。
+      const dayLog = readDayLog(day)
+      if (dayLog?.text) sourceLines = formationLines(dayLog)
       else {
         const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
         sourceLines = rawRows.map((m) => stripStructured(m.text)).filter(Boolean)
@@ -1500,7 +1722,6 @@ export function apply(ctx) {
       return { job: 'lexicon', ok: true, learned: 0, faded: faded0 }
     }
 
-    const known = (ctx.services.get('lexicon').query?.() ?? []).map((x) => x.data?.term).filter(Boolean).slice(0, 50)
     let items = []
     try {
       // 参考旧实现：逐条 <message> 包裹 + 明确规则 + source_id
@@ -1551,9 +1772,12 @@ export function apply(ctx) {
     // 去重：同一个词只建一次档，也只提一次待办
     const seenTerms = new Set((lexicon.query?.() ?? []).map((r) => String(r.data?.term ?? '')))
     let learned = 0
+    let skippedJargon = 0
     for (const item of items) {
       const term = String(item?.term ?? item?.content ?? '').trim()
       if (!term || seenTerms.has(term)) continue
+      // 确定性闸门：工具名/框架标识符/状态字段不进语料（审计 §7.1 的 18/37 噪声）。
+      if (isLikelyJargon(term)) { skippedJargon += 1; continue }
       const res = lexicon.upsert({
         term,
         conv: String(item?.conv ?? '').trim() || 'web',
@@ -1565,8 +1789,8 @@ export function apply(ctx) {
 
     const faded = ageLexicon(now)
 
-    recordRun(day, 'lexicon', { learned, faded }, now)
-    return { job: 'lexicon', ok: true, learned, faded }
+    recordRun(day, 'lexicon', { learned, faded, skippedJargon }, now)
+    return { job: 'lexicon', ok: true, learned, faded, skippedJargon }
   }
 
   /* ── consume：回收已完成的备忘 ──────────────── */
@@ -1811,3 +2035,4 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+

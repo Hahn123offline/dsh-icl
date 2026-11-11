@@ -69,6 +69,17 @@
                 # 产品不再自动排 nightly dream；睡眠时按 dream 标志触发。
                 dream:
                   scheduleEnabled: false
+                  # 身份链的产品已知事实（2026-11-11）：人物档案按账号归一，显示名只是 alias。
+                  selfQQ: '2593621742'
+                  ownerQQ: '3429502459'
+                  ownerNames:
+                    - '主人'
+                    - 'Hahn123'
+                    - 'Hahn123（离线版）'
+                    - '周子涵'
+                  selfNames:
+                    - '鱼鱼'
+                    - '小千'
                 qq:
                   enabled: true
                   ownerQQ: '3429502459'
