@@ -312,7 +312,7 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
       { term: 'mcb_join', meaning: '', reason: 'unknown' },
       { term: 'time_status', meaning: '', reason: 'unknown' },
       { term: 'finish-then-handle', meaning: '', reason: 'unknown' },
-      { term: '白米饭', meaning: '大肥鱼爱吃白米饭的梗', reason: 'in-group' },
+      { term: '白米饭', meaning: '大肥鱼爱吃白米饭的梗', reason: 'in-group', source_id: 1 },
     ]),
   })
   const out = await host.shared.get('dream').run({ now, jobs: ['wash', 'lexicon'] })
@@ -323,4 +323,5 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
   const terms = host.shared.get('memory').query({ namespace: 'lexicon', kind: 'term', limit: 10 }).map((r) => r.data?.term)
   assert.deepEqual(terms, ['白米饭'])
 })
+
 

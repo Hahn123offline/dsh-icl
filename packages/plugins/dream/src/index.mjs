@@ -14,7 +14,7 @@
 // 它是**独立调用**的"她"，不是主会话的她。
 import fs from 'node:fs'
 import path from 'node:path'
-import { inferRawSource, isFormationSource } from '../../../core/src/raw-profile.mjs'
+import { inferRawSource, FORMATION_SOURCES, RAW_SOURCES } from '../../../core/src/raw-profile.mjs'
 
 export const name = 'dream'
 
@@ -160,6 +160,17 @@ export function apply(ctx) {
   const ownerNameSet = new Set(ownerNames)
   const selfNames = (Array.isArray(ctx.config.selfNames) ? ctx.config.selfNames : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean)
+  // 形成材料 profile（评测 A/B 用；默认产品口径）：
+  //   raw-main（默认）只吃真人/QQ 转述/她可见的回复；raw-human 再砍掉她自己的回复；
+  //   raw-all 是"旧无门控基线"，连工具结果/环境通知都喂进去，只用于对照，不用于产品。
+  const formationProfile = String(ctx.config.formationProfile ?? 'raw-main')
+  const profileSources = formationProfile === 'raw-all'
+    ? RAW_SOURCES
+    : formationProfile === 'raw-human'
+      ? ['human', 'qq_envelope', 'unknown']
+      : FORMATION_SOURCES
+  // 人物/语料只该从"人说过的"里长出来（她自己的回复是上下文，不是事实来源）。
+  const groundTruthSources = formationProfile === 'raw-all' ? RAW_SOURCES : ['human', 'qq_envelope', 'unknown']
 
   // ── 输入预算（READINESS G-1：繁忙一天的 dream 输入曾到 1MB，整晚白跑） ──
   // 所有发给模型的 payload 都必须 ≤ maxPayloadChars；wash 的 day log 另受 maxDayLogChars 约束。
@@ -313,13 +324,31 @@ export function apply(ctx) {
    * 只保留 human / qq_envelope / agent_visible（视角文本），tool/env/agent_internal 全部剔除；
    * 行文本与行号保持原样（evidence 的绝对行号映射不丢）。
    */
-  function formationLines(dayLog) {
+  function formationLines(dayLog, allowed = profileSources) {
+    const allow = new Set(allowed)
     const lines = String(dayLog?.text ?? '').split('\n')
     const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
     const out = []
     for (let index = 0; index < lines.length; index += 1) {
-      if (!isFormationSource(sources[index])) continue
+      const source = String(sources[index] ?? 'unknown')
+      if (!allow.has(source)) continue
       out.push(lines[index])
+    }
+    return out
+  }
+
+  /** 形成材料行 → {id, line}；id 是 day log 的绝对行号（evidence 映射用）。 */
+  function formationEntries(dayLog, allowed = profileSources) {
+    const allow = new Set(allowed)
+    const lines = String(dayLog?.text ?? '').split('\n')
+    const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
+    const times = Array.isArray(dayLog?.data?.times) ? dayLog.data.times : []
+    const out = []
+    for (let index = 0; index < lines.length; index += 1) {
+      const source = String(sources[index] ?? 'unknown')
+      if (!allow.has(source)) continue
+      const match = /^\[(\d+)\]/.exec(lines[index])
+      out.push({ id: match ? Number(match[1]) : index + 1, line: lines[index], source, at: Number(times[index]) || 0 })
     }
     return out
   }
@@ -957,7 +986,7 @@ export function apply(ctx) {
             '输出 JSON 数组：[{"who":"名字","fact":"一句具体事实","source_id":1}]',
             'who 用原话里的称呼，不要合并不同的人；没有就输出 []。只输出 JSON。',
           ].join('\n'),
-          payload: dayLog ? `${formationLines(dayLog).join('\n')}\n\n（source_id 用上面每行开头的编号）` : '',
+          payload: dayLog ? `${formationLines(dayLog, groundTruthSources).join('\n')}\n\n（source_id 用上面每行开头的编号）` : '',
           maxTokens: 900,
         })
         for (const item of parseBlocks(raw)) {
@@ -1678,12 +1707,16 @@ export function apply(ctx) {
     // slang 已并入 lexicon：采集范围包括旧的 slang 笔记
     // 采集要看原话，不是看摘要：短梗（如「6」、「彳亠」）根本不会变成 note
     let sourceLines = []
+    let sourceEntries = []
+    let dayLog = null
     try {
       // 优先用当天洗好的干净原话（可能分多段）；没有才退回原文来源。
-      // 只取真人/可见视角的行：工具结果里的工具名、系统状态不是"群里的说法"（审计 7.1）。
-      const dayLog = readDayLog(day)
-      if (dayLog?.text) sourceLines = formationLines(dayLog)
-      else {
+      // 语料只从**真人/QQ 转述**里采集：工具结果、系统状态、她自己转述的话都不是"群里的说法"（审计 7.1）。
+      dayLog = readDayLog(day)
+      if (dayLog?.text) {
+        sourceEntries = formationEntries(dayLog, groundTruthSources)
+        sourceLines = sourceEntries.map((entry) => entry.line)
+      } else {
         const rawRows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 400 }) ?? []
         sourceLines = rawRows.map((m) => stripStructured(m.text)).filter(Boolean)
       }
@@ -1698,12 +1731,16 @@ export function apply(ctx) {
       return { job: 'lexicon', ok: true, learned: 0, faded: faded0 }
     }
 
+    // 材料条目：原文路径用 day log 的绝对行号做 source_id；笔记路径用 note id。
+    const chatSource = sourceEntries.length
+      ? sourceEntries.map((entry) => ({ id: entry.id, text: entry.line }))
+      : notes.map((note) => ({ id: Number(note.id), text: note.text }))
     let items = []
     try {
       // 参考旧实现：逐条 <message> 包裹 + 明确规则 + source_id
-      const chatLines = (sourceLines.length ? sourceLines : notes.map((n) => n.text))
+      const chatLines = chatSource
         .slice(0, 200)
-        .map((line, i) => `<message source_id="${i + 1}">${String(line).replace(/[<>]/g, ' ').slice(0, 300)}</message>`)
+        .map((entry) => `<message source_id="${entry.id}">${String(entry.text).replace(/[<>]/g, ' ').slice(0, 300)}</message>`)
         .join('\n')
       // 采集器不带人格：它只是机械地记下候选，人格在主会话里选用
       const rules = [
@@ -1727,7 +1764,8 @@ export function apply(ctx) {
         '- 只出现一次、又没有任何上下文线索的碎片',
         '',
         '每条输出：',
-        '[{"term":"词","meaning":"只有在你完全确定时才写，否则留空","reason":"unknown|shifted|in-group|frequent"}]',
+        '[{"term":"词","meaning":"只有在你完全确定时才写，否则留空","reason":"unknown|shifted|in-group|frequent","source_id":消息编号}]',
+        'source_id 必须是你判断所依据的那条 <message> 的 source_id（整数），不能编。',
         'meaning 绝不能猜。没有就输出 []。只输出 JSON。',
             ].join('\n')
       const raw = await ctx.slots.call(slot, {
@@ -1754,11 +1792,24 @@ export function apply(ctx) {
       if (!term || seenTerms.has(term)) continue
       // 确定性闸门：工具名/框架标识符/状态字段不进语料（审计 §7.1 的 18/37 噪声）。
       if (isLikelyJargon(term)) { skippedJargon += 1; continue }
+      // 语料也要有出处：source_id → day 行证据（原文路径）或 note 证据（笔记路径）。
+      const evidence = []
+      const sourceId = Number(item?.source_id)
+      if (Number.isFinite(sourceId)) {
+        if (dayLog) {
+          const lines = dayLogIndex(dayLog)
+          if (lines.has(sourceId)) evidence.push(dayEvidence(lines, sourceId))
+        } else {
+          const note = notes.find((row) => Number(row.id) === sourceId)
+          if (note) evidence.push({ type: 'note', id: Number(note.id), line: clipText(note.text, 160), at: Number(note.data?.at ?? note.createdAt ?? now) })
+        }
+      }
       const res = lexicon.upsert({
         term,
         conv: String(item?.conv ?? '').trim() || 'web',
         meaning: String(item?.meaning ?? '').trim(),
         tags: [item?.reason === 'shifted' ? '新义' : item?.reason === 'in-group' ? '本群' : item?.reason === 'frequent' ? '高频' : '待查'],
+        evidence,
       })
       if (res?.ok) { learned += 1; seenTerms.add(term) }
     }
@@ -2011,4 +2062,5 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
