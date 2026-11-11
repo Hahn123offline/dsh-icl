@@ -104,7 +104,7 @@ node tools/memory-fixture-export.mjs --out .state/lab/memory-fixture/latest
 | 2026-11-10 | 80 | 3 | 41 | 36 | 1088 | 8 | 12 | 12 |
 | 2026-11-11 | 15 | 2 | 7 | 6 | 220 | 1 | 0 | 0 |
 
-结论非常直接：
+结论：
 
 - **80 行不等于 80 条消息**；11-10 的 80 行里只有 3 条 user 消息，41 条 assistant、36 条 tool；
 - lexicon/note 的噪声主要来自 **assistant 计划、工具结果、系统状态**，不是来自人类事件密度；
@@ -112,22 +112,19 @@ node tools/memory-fixture-export.mjs --out .state/lab/memory-fixture/latest
 - 11-11 只有 15 行、2 条 user，产出 1 个 event、0 个 lexicon/note，反而是最干净的；
 - 11-10 的 8 个 event 里仍有同一次“醒来/清积压”的重复块，说明重复不只来自双 dream，单次 events 切块也可能重复。
 
-### 修了一个输入污染源
+### 已修输入污染源
 
 bridge 的原文层原来会把 assistant 的 `reasoning` 块也拼进 raw，导致 dream 把内部计划（很多英文）当成她说过的话。  
-已改为：assistant 只保留 `type === 'text'` 的可见消息；reasoning 不进 raw。  
+已改为 assistant 只保留 `type === 'text'` 的可见消息；reasoning 不进 raw。  
 这会影响**之后**的 raw；已有 fixture 仍是旧数据，正好作为“污染基线”保留。
 
-## 下一步：云端 replay
+## 下一轮：不是继续跑同一基线
 
-1. 用 fixture 在临时 stateDir 建空 memory.db；
-2. 注册固定 raw source，按日跑 dream（云端模型）；
-3. 输出 blocks/persons/lexicon/notes；
-4. 与 `current.json` 和 gold 对比；
-5. 再把这批 raw 转成 soul 的提取输入，比较“选择记什么”；
-6. 根据重复率、噪声率、人物正确率、召回命中、boost 结果，决定先修 dream 幂等、lexicon 门槛还是 person alias。
-
-replay 不写 live 库；云端输出可缓存，避免每次重复付费。
+1. 给 replay 增加 `raw-all` / `raw-human` 两种输入 profile；
+2. 对同一份 fixture 比较两种 profile 的 event/lexicon/note/重复率；
+3. 人工填 `gold.template.json`，至少覆盖 11-10 和 11-11；
+4. 再把这批 raw 转成 soul 的提取输入，比较“选择记什么”；
+5. 根据结果决定先修：dream 幂等、lexicon 门槛、person alias 或 raw 过滤。
 
 ### replay 工具
 
@@ -137,23 +134,23 @@ node tools/memory-replay.mjs --fixture ... --days all --max-calls 80
 node tools/memory-replay.mjs --fixture ... --days 2026-11-09 --cache-only
 ```
 
-- 默认云端 provider 来自 `config/icl.local.json` 的第一个 chat provider；
-- 需要 `DEEPSEEK_API_KEY`（或该 provider 的 `apiKeyEnv`）；
-- 输出到 `.state/lab/memory-replay/<timestamp>/`；
-- `cache.json` 按 prompt hash 缓存云端响应；
-- **不修改 live memory.db**。
+输出到 `.state/lab/memory-replay/<timestamp>/`；`cache.json` 按 prompt hash 缓存云端响应；不修改 live memory.db。
 
-当前环境变量 `DEEPSEEK_API_KEY` 在普通 pwsh 里没有；需要在运行 DSH 的环境/终端里提供后，才能跑云端基线。没有 key 时工具会直接报错，不会偷偷转成本地或伪造结果。
+### 凭据
+
+`DEEPSEEK_API_KEY` 在 **Windows 用户变量**里存在，但当前 pwsh 进程不一定继承。  
+运行前用：
+
+```powershell
+$env:DEEPSEEK_API_KEY=[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY','User')
+```
+
+不要把密钥写进仓库、日志或 `cache.json`（cache 只保存模型输出）。
 
 ### 稀疏日测试
 
 fixture 里 2026-11-07 有约 139KB raw，但没有对应 day log；2026-11-11 只有少量 raw。  
-这两个日期优先做低事件量测试，观察：
-
-- 会不会硬造 block；
-- lexicon 会不会继续把一次性词写成语料；
-- note 会不会生成无意义“待查”；
-- 没有上下文压缩时，dream 输入是否仍能保持干净。
+这两个日期优先做低事件量测试。
 
 ## 结论
 
@@ -166,4 +163,5 @@ fixture 里 2026-11-07 有约 139KB raw，但没有对应 day log；2026-11-11 �
 - day log 有缺口（11-07 raw 未沉淀）。
 
 但这也正是 fixture 的价值：不用继续污染 live 记忆，就能在云端重放同一批 raw，先测稀疏日/空闲日，再测密集日。
+
 
