@@ -105,3 +105,11 @@ test('内容词门槛：泛词面相似但内容词完全不在库里 → 不返
   const miss = await tools.recall.execute({ query: '主人最近在读什么书' })
   assert.doesNotMatch(miss.text, /实时看直播|蓝色外套/, `内容词没出现时不应凑数：${miss.text}`)
 })
+
+test('复合问句拆查询：一句话问两件事，子句命中也能被召回', async () => {
+  const { memory, tools } = await setup()
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:exam', text: '小白最近在复习线性代数和概率论，他说公式记不住所以觉得吃力', data: { body: '小白最近在复习线性代数和概率论，他说公式记不住所以觉得吃力' } })
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:food', text: '晚上一起吃了火锅', data: { body: '晚上一起吃了火锅' } })
+  const out = await tools.recall.execute({ query: '小白最近在复习哪些科目？他为什么觉得复习吃力？' })
+  assert.match(out.text, /线性代数|概率论/, `子句命中应返回复习记忆：${out.text}`)
+})

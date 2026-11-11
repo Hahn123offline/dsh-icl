@@ -108,6 +108,7 @@ export function buildEvalJson({ fixture, fixturePath, options, modelStats, forma
             error: entry.error,
             expected: entry.metrics.expectedIds,
             returned: entry.metrics.returnedIds,
+            rawRankedIds: entry.rawRankedIds ?? null,
             returnedText: String(entry.returnedText ?? '').slice(0, 1200),
             debugScores: entry.debugScores ?? null,
             totals: {
@@ -347,3 +348,4 @@ export function writeReports(outDir, evalJson) {
   fs.writeFileSync(mdPath, `${buildEvalMarkdown(evalJson)}\n`, 'utf8')
   return { jsonPath, mdPath }
 }
+

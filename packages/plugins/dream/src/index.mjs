@@ -1688,7 +1688,7 @@ export function apply(ctx) {
             },
             now,
           })
-          memory.patch(other.id, { data: { ...(other.data ?? {}), superseded: true, supersededBy: keeper.key } })
+          memory.patch(other.id, { data: { ...(other.data ?? {}), superseded: true, supersededBy: keeper.key, invalidatedAt: now } })
           dropped.add(other.id)
           merged += 1
           pairs.push(`${other.key}->${keeper.key}`)
@@ -1758,7 +1758,7 @@ export function apply(ctx) {
         now,
       })
       for (const row of supersedeKeys) {
-        memory.patch(row.id, { data: { ...(row.data ?? {}), superseded: true, supersededBy: key } })
+        memory.patch(row.id, { data: { ...(row.data ?? {}), superseded: true, supersededBy: key, invalidatedAt: now } })
         merged += 1
       }
     }
@@ -1898,7 +1898,7 @@ export function apply(ctx) {
         const keepTyped = TYPED_NS.includes(ns)
         const targetTyped = TYPED_NS.includes(target.namespace)
         if ((keepTyped || targetTyped) && target.namespace !== ns) continue
-        memory.patch(target.id, { data: { ...(target.data ?? {}), superseded: true, supersededBy: keepKey } })
+        memory.patch(target.id, { data: { ...(target.data ?? {}), superseded: true, supersededBy: keepKey, invalidatedAt: now } })
       }
       mergedCount += 1
     }
@@ -2383,6 +2383,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

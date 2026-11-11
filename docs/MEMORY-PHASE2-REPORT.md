@@ -182,19 +182,57 @@
 > formation recall 从 84.4% 回落到 78.1% 是同一 fixture 不同 seed 的**单次运行方差**（repeat=1），
 > 不是本轮改动引入的回归；下一轮把 repeat=2/3 纳入门控再比较。
 
+## 2e. 第 6 轮：三源基线 + 复合问句兜底 + 表示等价口径（本轮）
+
+### A. 三源真实素材端到端基线（同一套 eval，cloud + bge-m3，seed=formation）
+
+| 素材 | formation R | extracted | 端到端 r1/r3/r5 | miss | falseInjection |
+|---|---:|---:|---|---:|---:|
+| real-focuscore（5 天 701 行） | 81.3% | 198 | 50.0 / 83.3 / 83.3% | 16.7% | 0% |
+| real-qq（5 天 170 行） | 90.0% | 79 | 35.7 / 35.7 / 35.7% | 57.1% | 100% |
+| real-live（8 天 708 行） | 100%（gold 4 条） | 172 | 66.7 / 83.3 / 83.3% | 16.7% | 50% |
+
+- 三源闭环已经可复现（命令见 §4）；QQ 素材的 gold 是"技术对话多跳问句"，检索明显更难，
+  是下一轮的主要目标；live 的 2 条负例里 1 条返回了泛相关记忆（falseInjection 50%）。
+- formation 侧：QQ P=22.8%（gold 20 条 vs 79 条）、live P=2.3%（gold 只有 4 条草稿），
+  precision 仍受 gold 完整度影响，不作为"变差"读。
+
+### B. 复合问句拆查询（recall，兜底式）
+
+- 真实用户常一句话问几件事（"最近在复习哪些科目？他觉得自己复习吃力的原因是什么？"）；
+  recall 是单查询检索器，整句向量会被稀释。
+- 实现：整句照旧先搜（精度优先），**候选不足（<limit/2）才**拆子句补搜（≤3 个），同一条目取最高分合并。
+  只做主拆分会在 focus-core 上把 r5 从 80% 拖到 60%（实测），所以必须是兜底而不是默认。
+- 新增回归测试：一句话两问、子句命中能召回。全仓 906 tests / 905 pass。
+
+### C. 评测口径修正：同一记忆的"等价表示"
+
+- typed v2 会把同一段原话拆成 event 块 + fact/preference/commitment 记录；召回命中 typed
+  记录时，旧口径按 item id 判定直接算 miss（QQ 素材实测 0%→14.3% 的假性差距）。
+- 修正：返回条目与 expected 的**证据集合 Jaccard ≥0.6** 或正文相似度 ≥0.6 → 视为命中同一记忆
+  （保留 rawRankedIds 供复核）。这是"召回是否找到那段记忆"的度量，不是放宽为"相关即可"。
+- 修正后 same-run 三源：focus r5 83.3%、qq r5 35.7%、live r5 83.3%；QQ 的剩余 miss 是召回
+  真的没返回（floor 过滤/措辞差距），不是口径问题。
+
+### D. memory-audit：typed 旧值失效链
+
+- audit 新增 `typed` 段：live/superseded 计数、悬空 `supersededBy`、缺失 `invalidatedAt`、失效链样本；
+  dream 所有 supersede 写入点统一填 `invalidatedAt`。在合成偏好 DB 上：live 47 / superseded 62、
+  悬空链 0（修正了裸 key 跨命名空间解析），链样本可在 `audit.md` 里逐条复核。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 5 段）优先级：
-  1. **评测稳定性**：formation/retrieval 均 repeat=3 取均值与方差；门控用均值（r5≥0.75、miss≤0.25、
-     falseInjection=0、formation recall≥0.75），避免单次波动被当回归/收益。
-  2. **validity 抽审**：旧值 match 粒度（部分匹配到别的承诺）、cleanup 过度合并观察、
-     validity 候选与"取代上限"的置信规则；把 `supersededBy` 链可视化到 memory-audit。
-  3. **查询改写/多查询**：p-06 类多跳措辞 + 时间词（刚才/上次）拆查询；person 多块 parse/渲染。
-  4. **gold 抽审/补全**（fact/commitment/preference 更新链），改 precision 口径为抽样评。
-  5. **三源对齐**：old-qq 与 live 回放纳入端到端回归（当前 focus-core 主基线已稳定）。
+- 下一轮（Phase 2 第 6 段）优先级：
+  1. **QQ 素材检索难例**：多跳/时间指代（"10月25日下午…升级…效果如何"）——查询改写要加
+     日期归一（"10月25日下午"→day 过滤/时间词扩写）与指代消解（他/TA→已知人物）；目标 r5 ≥60%。
+  2. **负例注入**：live/QQ 各有 1 条负例被泛相关记忆命中；把"内容词门槛"升级为
+     "内容词 + 实体/日期一致性"检查，falseInjection 目标 0。
+  3. **评测稳定性**：同一 fixture 做 3 次独立 fresh run，报告均值±方差；门控用均值。
+  4. **gold 抽审/补全**（尤其 QQ、live 的短 gold），precision 改抽样口径。
+  5. **validity 置信规则**：validity 映射的取代上限/置信标注，配合 audit 失效链抽审。
 
 ## 4. 复跑
 

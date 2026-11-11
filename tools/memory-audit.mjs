@@ -131,6 +131,40 @@ const recall = {
   boostedWeights: allItems.filter((item) => item.weight > 1).map((item) => ({ id: item.id, namespace: item.namespace, text: item.text, weight: item.weight })),
 }
 
+// typed 层审计（v2 add 层）：事实/偏好/承诺的存量、软失效链、悬空 supersededBy。
+// 旧值失效是"软删"：记录还在、可追溯；这里检查链是否指向存在的后继、有多少条没有失效时间。
+const TYPED_NAMESPACES = ['fact', 'preference', 'commitment']
+const typedRows = allItems.filter((item) => TYPED_NAMESPACES.includes(item.namespace) && item.kind === 'block')
+const allKeyIndex = new Map()
+const bareKeyIndex = new Map()
+for (const item of allItems) {
+  allKeyIndex.set(`${item.namespace}:${item.key}`, item)
+  if (!bareKeyIndex.has(item.key)) bareKeyIndex.set(item.key, item)
+}
+const typedSuperseded = typedRows.filter((item) => item.data?.superseded === true)
+const typed = {
+  counts: Object.fromEntries(TYPED_NAMESPACES.map((ns) => [ns, {
+    total: typedRows.filter((item) => item.namespace === ns).length,
+    live: typedRows.filter((item) => item.namespace === ns && item.data?.superseded !== true).length,
+  }])),
+  live: typedRows.filter((item) => item.data?.superseded !== true).length,
+  superseded: typedSuperseded.length,
+  danglingChains: 0,
+  missingInvalidationTime: typedSuperseded.filter((item) => !Number(item.data?.invalidatedAt ?? 0)).length,
+  chains: [],
+}
+for (const item of typedSuperseded) {
+  const successorKey = item.data?.supersededBy == null ? null : String(item.data.supersededBy)
+  const successor = successorKey ? allKeyIndex.get(`${item.namespace}:${successorKey}`) ?? bareKeyIndex.get(successorKey) : null
+  if (!successor) typed.danglingChains += 1
+  typed.chains.push({
+    id: item.id, namespace: item.namespace, text: item.text,
+    supersededBy: successorKey, successorExists: Boolean(successor),
+    invalidatedAt: fmt(item.data?.invalidatedAt ?? null),
+  })
+}
+typed.chains = typed.chains.slice(0, 40)
+
 const noteRows = allItems.filter((item) => item.namespace === 'note')
 const noteStats = {
   total: noteRows.length,
@@ -252,6 +286,7 @@ const report = {
   person: { blocks: personBlocks, aliasCandidates: personAliases },
   recall,
   note: noteStats,
+  typed,
   lexicon: lexiconStats,
   dream: { runs: dreamRows.length, execution: dreamExecution, duplicateGroups: dreamDuplicateRuns, skipPairs: dreamSkipPairs, dayCoverage },
   eager: eagerStats,
@@ -275,6 +310,7 @@ lines.push('')
 lines.push('## 关键信号')
 lines.push('')
 lines.push(`- event block：**${eventBlocks.length}**（superseded **${supersededEventBlocks.length}**）；近重复对：**${eventDupes.length}**`)
+lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**`)
 lines.push(`- 形成来源：真人/QQ 背书块 **${provenance.humanBackedBlocks}**；纯自我活动块 **${provenance.selfSourceBlocks}**；证据解析 **${provenance.resolved}/${provenance.dayEvidence}**`)
 lines.push(`- person block：**${personBlocks.length}**；可疑 alias：**${personAliases.length}**`)
 lines.push(`- lexicon：**${lexiconStats.total}**；工具/框架味：**${lexiconStats.toolish.length}**；候选：**${lexiconStats.candidates}**`)
@@ -310,6 +346,13 @@ if (personAliases.length) {
   lines.push('## 可疑 person alias')
   lines.push('')
   for (const item of personAliases) lines.push(`- ${item.a} ↔ ${item.b}（相似度 ${item.similarity}）`)
+  lines.push('')
+}
+if (typed.superseded) {
+  lines.push('## typed 旧值失效链', '')
+  for (const chain of typed.chains.slice(0, 20)) {
+    lines.push(`- #${chain.id} ${chain.namespace}：${String(chain.text ?? '').slice(0, 60)} → ${chain.supersededBy ?? '?'}（后继${chain.successorExists ? '存在' : '缺失'}，${chain.invalidatedAt ?? '无时间'}）`)
+  }
   lines.push('')
 }
 if (lexiconStats.toolish.length) {
@@ -349,3 +392,5 @@ if (jsonOnly) {
   console.log(md)
 }
 db.close()
+
+

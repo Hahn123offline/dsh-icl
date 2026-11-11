@@ -3,7 +3,7 @@
 //
 // 没有嵌入插槽时 memory.search 走二元组退化路径（产品在无 embedding 时的既有行为），
 // 报告里会标注 retrievalPath/no-embed，不假装是向量检索结果。
-import { mean, percentile, retrievalProbeMetrics } from './metrics.mjs'
+import { mean, percentile, retrievalProbeMetrics, textSimilarity } from './metrics.mjs'
 import { dayAtNoon } from './fixture.mjs'
 
 const PROBE_TOP_K = 5
@@ -16,7 +16,18 @@ function toItemView(entry) {
     namespace: entry.namespace,
     text: String(entry.text ?? ''),
     key: entry.key ?? null,
+    rowIds: Array.isArray(entry.rowIds) ? entry.rowIds.map(String) : [],
   }
+}
+
+/** 证据集合 Jaccard：同一段原话派生的 event 块与 typed 记录视为同一记忆的两种表示。 */
+function evidenceOverlap(a, b) {
+  if (!a?.length || !b?.length) return 0
+  const left = new Set(a)
+  const right = new Set(b)
+  let inter = 0
+  for (const id of left) if (right.has(id)) inter += 1
+  return inter / (left.size + right.size - inter)
 }
 
 /** --seed gold：把 gold.memories 直接写成 block（person → person 块，其余 → event 块）。 */
@@ -320,7 +331,32 @@ export async function runRetrieval({ fixture, indexes, hostBox, corpus, embeddin
     } catch (caught) {
       error = String(caught?.message ?? caught)
     }
-    const metrics = retrievalProbeMetrics(probe, execution?.rankedIds ?? [], relevantIds, {
+    // 等价表示归并（2026-11-11 第 6 轮）：同一段内容可能同时落成 event 块和 typed 事实
+    // （facts/preferences/commitments）；召回命中 typed 记录时，正文等价也算命中 gold 的 event 块。
+    // 只归并正文相似度 ≥0.6 的条目，避免把"相关但不同"的记忆算成命中。
+    const textById = new Map(items.map((item) => [String(item.id), String(item.text ?? '')]))
+    const rowIdsById = new Map(items.map((item) => [String(item.id), item.rowIds ?? []]))
+    const canonicalize = (ranked) => {
+      const out = []
+      const expected = relevantIds.map(String)
+      for (const id of ranked ?? []) {
+        let canonical = String(id)
+        if (!expected.includes(canonical)) {
+          const rankedText = textById.get(canonical) ?? ''
+          const rankedRows = rowIdsById.get(canonical) ?? []
+          const match = expected.find((expectedId) => {
+            const expectedText = textById.get(expectedId) ?? ''
+            if (expectedText && rankedText && textSimilarity(expectedText, rankedText) >= 0.6) return true
+            return evidenceOverlap(rankedRows, rowIdsById.get(expectedId) ?? []) >= 0.6
+          })
+          if (match != null) canonical = String(match)
+        }
+        if (!out.includes(canonical)) out.push(canonical)
+      }
+      return out
+    }
+    const rankedCanonical = canonicalize(execution?.rankedIds ?? [])
+    const metrics = retrievalProbeMetrics(probe, rankedCanonical, relevantIds, {
       topK: PROBE_TOP_K,
       mustNotRecallIds,
       returnedChars: execution?.text?.length ?? 0,
@@ -332,7 +368,8 @@ export async function runRetrieval({ fixture, indexes, hostBox, corpus, embeddin
       metrics,
       error,
       unresolvedExpected: unresolved,
-      rankedIds: execution?.rankedIds ?? [],
+      rankedIds: rankedCanonical,
+      rawRankedIds: execution?.rankedIds ?? [],
       returnedText: String(execution?.text ?? ''),
       debugScores: execution?.debugScores ?? null,
       path: execution?.path ?? 'error',
@@ -351,3 +388,4 @@ export async function runRetrieval({ fixture, indexes, hostBox, corpus, embeddin
 }
 
 export { PROBE_TOP_K, aggregate }
+

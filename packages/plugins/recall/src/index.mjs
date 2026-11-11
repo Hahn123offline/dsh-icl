@@ -111,6 +111,22 @@ export function apply(ctx) {
     return grams.some((gram) => bodies.some((body) => body.includes(gram)))
   }
 
+  /**
+   * 复合问句拆查询（2026-11-11 第 6 轮）：真实用户常一句话问好几件事
+   * （"最近在复习哪些科目？他觉得自己复习吃力的原因是什么？"）。
+   * recall 是单查询检索器，整句的向量/字面会被稀释 → 拆成子句各搜一遍再合并。
+   * 只在问句确实多子句时启用（最多 3 个），整句永远保留作第一优先级。
+   */
+  function expandQueries(question) {
+    const text = String(question ?? '').trim()
+    if (!text) return []
+    const pieces = text
+      .split(/[？?；;]+|(?:以及|还有|另外|同时|顺便)/)
+      .map((part) => part.trim().replace(/[。！!？?，,]+$/, ''))
+      .filter((part) => part.length >= 5)
+    return [...new Set([text, ...pieces])].slice(0, 3)
+  }
+
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
     memory.registerNamespace({ id, label: meta.label, recallable: meta.recallable !== false, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
@@ -303,27 +319,41 @@ export function apply(ctx) {
           // resolve 是纠正反馈队列，不是回忆：即使 cursor 走 includeArchive 也不能混进来。
           : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
         const seen = new Set()
-        const candidates = []
         const deeper = Boolean(cursor)
         const floor = relevanceFloor({ deeper })
         let rawHitCount = 0
-        for (const ns of namespaces) {
-          // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
-          const hits = await memory.search({
-            namespace: ns, query, limit: deeper ? 200 : 50, now,
-            tags: tag ? [tag] : null, conv, includeArchive: deeper,
-          })
-          // 未消化的 note 不管哪天都要能被回忆；
-          // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
-          for (const hit of hits) {
-            if (hit.item.kind === 'note' && hit.item.data?.consolidated === true) continue
-            rawHitCount += 1
-            // 有 query 时按相关度挡凑数；没有 query（纯"最近"视图）不筛。
-            if (question && Number(hit.sim ?? 0) < floor) continue
-            // 主动回忆是"被问到了"：低置信命中可以给，但要显式承认不确定（渲染时加 [记得不太清]）。
-            candidates.push({ ...hit, namespace: ns, uncertain: Number(hit.sim ?? 0) < 0.5 })
+        const rawHitKeys = new Set()
+        const bestById = new Map()
+        // 复合问句拆查询只在"整句搜不够"时兜底：先按整句搜（精度最好），
+        // 候选太少才拆子句补搜（召回兜底），避免拆句把精确结果挤下去（focus-core 实测 r5 80%→60%）。
+        const collectHits = async (subQuery) => {
+          for (const ns of namespaces) {
+            // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
+            const hits = await memory.search({
+              namespace: ns, query: subQuery, limit: deeper ? 200 : 50, now,
+              tags: tag ? [tag] : null, conv, includeArchive: deeper,
+            })
+            // 未消化的 note 不管哪天都要能被回忆；
+            // 已消化的 note 已经变成块了，不能再以 note 身份重复出现。
+            for (const hit of hits) {
+              if (hit.item.kind === 'note' && hit.item.data?.consolidated === true) continue
+              const hitKey = `${ns}:${hit.item.id}`
+              if (!rawHitKeys.has(hitKey)) { rawHitKeys.add(hitKey); rawHitCount += 1 }
+              // 有 query 时按相关度挡凑数；没有 query（纯"最近"视图）不筛。
+              if (question && Number(hit.sim ?? 0) < floor) continue
+              const previous = bestById.get(hitKey)
+              if (previous && Number(previous.score) >= Number(hit.score)) continue
+              // 主动回忆是"被问到了"：低置信命中可以给，但要显式承认不确定（渲染时加 [记得不太清]）。
+              bestById.set(hitKey, { ...hit, namespace: ns, uncertain: Number(hit.sim ?? 0) < 0.5, matchedQuery: subQuery })
+            }
           }
         }
+        const searchQueries = expandQueries(question)
+        await collectHits(searchQueries[0] ?? '')
+        if (question && searchQueries.length > 1 && bestById.size < Math.max(2, Math.floor(limit / 2))) {
+          for (const subQuery of searchQueries.slice(1)) await collectHits(subQuery)
+        }
+        const candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
 
         // 今天的 note 永远优先展示（带 [今天] 标签）

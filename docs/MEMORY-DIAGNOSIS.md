@@ -143,6 +143,12 @@ parseJsonStrict 对象包裹导致映射不生效的 bug；合成偏好变化 fi
 （DB 链 supersededBy=preference:2026-04-07:…），评测口径区分"历史事件块"与"同类型 typed 仍存活"。
 下一轮：评测 repeat=3 稳定性 + validity 抽审 + 查询改写/person 多块 parse。
 
+**Phase 2 第 5 段（第 6 轮，本轮）**：三源闭环首次同时跑通（focus-core / old-qq / live raw）：
+端到端 r5 分别 83.3% / 35.7% / 83.3%，formation recall 81.3% / 90.0% / 100%（live gold 仅 4 条）；
+recall 增加"复合问句拆查询兜底"（整句优先、候选不足才拆子句）；评测口径把"同一段证据派生的
+event 块与 typed 记录"视为等价表示（修掉 QQ 素材 0%→14.3% 的假性 miss）；
+memory-audit 新增 typed 失效链审计（live 47 / superseded 62、悬空链 0）。下一轮攻 QQ 多跳检索与负例注入。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
