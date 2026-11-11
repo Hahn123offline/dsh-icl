@@ -103,3 +103,42 @@ node tools/memory-fixture-export.mjs --out .state/lab/memory-fixture/latest
 6. 根据重复率、噪声率、人物正确率、召回命中、boost 结果，决定先修 dream 幂等、lexicon 门槛还是 person alias。
 
 replay 不写 live 库；云端输出可缓存，避免每次重复付费。
+
+### replay 工具
+
+```text
+node tools/memory-replay.mjs --fixture .state/lab/memory-fixture/latest --days 2026-11-09
+node tools/memory-replay.mjs --fixture ... --days all --max-calls 80
+node tools/memory-replay.mjs --fixture ... --days 2026-11-09 --cache-only
+```
+
+- 默认云端 provider 来自 `config/icl.local.json` 的第一个 chat provider；
+- 需要 `DEEPSEEK_API_KEY`（或该 provider 的 `apiKeyEnv`）；
+- 输出到 `.state/lab/memory-replay/<timestamp>/`；
+- `cache.json` 按 prompt hash 缓存云端响应；
+- **不修改 live memory.db**。
+
+当前环境变量 `DEEPSEEK_API_KEY` 在普通 pwsh 里没有；需要在运行 DSH 的环境/终端里提供后，才能跑云端基线。没有 key 时工具会直接报错，不会偷偷转成本地或伪造结果。
+
+### 稀疏日测试
+
+fixture 里 2026-11-07 有约 139KB raw，但没有对应 day log；2026-11-11 只有少量 raw。  
+这两个日期优先做低事件量测试，观察：
+
+- 会不会硬造 block；
+- lexicon 会不会继续把一次性词写成语料；
+- note 会不会生成无意义“待查”；
+- 没有上下文压缩时，dream 输入是否仍能保持干净。
+
+## 结论
+
+当前 live 数据不足以证明“记忆系统稳定有效”：
+
+- 块重复；
+- lexicon 噪声；
+- person alias；
+- 主动召回和 boost 几乎未发生；
+- day log 有缺口（11-07 raw 未沉淀）。
+
+但这也正是 fixture 的价值：不用继续污染 live 记忆，就能在云端重放同一批 raw，先测稀疏日/空闲日，再测密集日。
+
