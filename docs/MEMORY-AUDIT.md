@@ -93,6 +93,31 @@ node tools/memory-fixture-export.mjs --out .state/lab/memory-fixture/latest
 - `gold.template.json`：人工 gold 标注模板；
 - `manifest.json`：来源、计数、文件说明。
 
+## 云端 replay 第一轮
+
+已用云端 `deepseek-chat` 在临时库跑了 4 天；没有写 live。
+
+| fixture | raw 行 | user | assistant | tool | user 字 | event | lexicon | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2026-11-07 | 130 | 5 | 68 | 57 | 279 | 2 | 30 | 30 |
+| 2026-11-09 | 87 | 4 | 48 | 35 | 786 | 12 | 18 | 16 |
+| 2026-11-10 | 80 | 3 | 41 | 36 | 1088 | 8 | 12 | 12 |
+| 2026-11-11 | 15 | 2 | 7 | 6 | 220 | 1 | 0 | 0 |
+
+结论非常直接：
+
+- **80 行不等于 80 条消息**；11-10 的 80 行里只有 3 条 user 消息，41 条 assistant、36 条 tool；
+- lexicon/note 的噪声主要来自 **assistant 计划、工具结果、系统状态**，不是来自人类事件密度；
+- 11-07 的 130 行里有 68 条 assistant、57 条 tool，只有 5 条 user，结果产出 30 个 lexicon、30 个 note，几乎没有真实人物事件；
+- 11-11 只有 15 行、2 条 user，产出 1 个 event、0 个 lexicon/note，反而是最干净的；
+- 11-10 的 8 个 event 里仍有同一次“醒来/清积压”的重复块，说明重复不只来自双 dream，单次 events 切块也可能重复。
+
+### 修了一个输入污染源
+
+bridge 的原文层原来会把 assistant 的 `reasoning` 块也拼进 raw，导致 dream 把内部计划（很多英文）当成她说过的话。  
+已改为：assistant 只保留 `type === 'text'` 的可见消息；reasoning 不进 raw。  
+这会影响**之后**的 raw；已有 fixture 仍是旧数据，正好作为“污染基线”保留。
+
 ## 下一步：云端 replay
 
 1. 用 fixture 在临时 stateDir 建空 memory.db；
