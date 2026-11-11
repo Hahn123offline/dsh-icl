@@ -44,6 +44,18 @@ export function dayAtNoon(day, timezone = 'Asia/Hong_Kong') {
   return utcNoon - offsetMinutes(guess, timezone) * 60_000
 }
 
+/**
+ * 某天本地 hour:00 的 epoch ms。
+ * formation replay 约定：当天记忆在"当天 05:00 已整理完、可被回忆"，这样同一天的探针
+ * （往往在上午/下午）能看到当天的记忆，又不会看到未来几天的记忆（memory.search 有可用时间护栏）。
+ */
+export function dayAtHour(day, hour = 5, timezone = 'Asia/Hong_Kong') {
+  const [year, month, date] = String(day).split('-').map(Number)
+  const utcHour = Date.UTC(year, month - 1, date, hour, 0, 0)
+  const guess = utcHour - offsetMinutes(utcHour, timezone) * 60_000
+  return utcHour - offsetMinutes(guess, timezone) * 60_000
+}
+
 /** 解析行时间；解析失败返回 NaN（由校验报错）。 */
 export function rowAtMs(row) {
   return Date.parse(String(row?.at ?? ''))

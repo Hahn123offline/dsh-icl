@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createEvalHost, FORMATION_JOBS } from './host.mjs'
-import { dayAtNoon, identityConfigOf, SELF_SOURCE_KINDS } from './fixture.mjs'
+import { dayAtHour, identityConfigOf, SELF_SOURCE_KINDS } from './fixture.mjs'
 import { selectProfileRows } from './profile.mjs'
 import { createProvenance } from './provenance.mjs'
 import { matchFormation } from './matcher.mjs'
@@ -255,7 +255,8 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
   const dayResults = []
   try {
     for (const day of fixture.days ?? []) {
-      const now = dayAtNoon(day.day, indexes.timezone)
+      // replay 约定：当天记忆在 00:00 视为已整理完（同日任意探针可见，未来天不可见；host 关掉 dayCutHour）。
+      const now = dayAtHour(day.day, 0, indexes.timezone)
       let result = null
       try {
         result = await hostBox.shared.dream.run({ now, jobs: [...jobs] })
@@ -332,4 +333,5 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
 

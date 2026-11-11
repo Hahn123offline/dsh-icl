@@ -109,6 +109,7 @@ export function buildEvalJson({ fixture, fixturePath, options, modelStats, forma
             expected: entry.metrics.expectedIds,
             returned: entry.metrics.returnedIds,
             returnedText: String(entry.returnedText ?? '').slice(0, 1200),
+            debugScores: entry.debugScores ?? null,
             totals: {
               expected: entry.metrics.expectedCount,
               returned: entry.metrics.returnedCount,

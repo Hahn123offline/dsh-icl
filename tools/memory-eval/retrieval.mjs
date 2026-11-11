@@ -247,13 +247,31 @@ async function executeProbe({ probe, hostBox, indexes, items }) {
   }
   const latencyMs = Date.now() - started
   const rankedIds = parseRankedIds(text, items, probe.kind)
-  return { text, path, latencyMs, rankedIds }
+  // 调试辅助：记录同一 query 的 memory.search 原始 top-12 分数（不影响指标，放 eval.json 供定位）。
+  let debugScores = null
+  try {
+    if (probe.kind === 'recall' || probe.kind === 'eager') {
+      const query = String(probe.query ?? '')
+      const hits = await hostBox.shared.memory.search({ query, limit: 12, now })
+      debugScores = hits.map((hit) => ({
+        id: String(hit.item.id),
+        ns: hit.item.namespace,
+        kind: hit.item.kind,
+        sim: Number(Number(hit.sim).toFixed(3)),
+        score: Number(Number(hit.score).toFixed(3)),
+        text: String(hit.item.text ?? '').slice(0, 40),
+      }))
+    }
+  } catch { /* 调试信息失败不影响指标 */ }
+  return { text, path, latencyMs, rankedIds, debugScores }
 }
 
 function aggregate(results) {
   const summary = (group) => {
     const expected = group.filter((entry) => entry.metrics.expectedCount > 0)
-    const empty = group.filter((entry) => entry.metrics.expectedCount === 0)
+    // 有 unresolved expected 的探针不是"应该没有记忆"：我们不知道期望条目是哪一个，
+    // 不能把它返回的任何东西算成 false injection（否则会系统性高估误注入）。
+    const empty = group.filter((entry) => entry.metrics.expectedCount === 0 && !(entry.unresolvedExpected ?? []).length)
     return {
       probes: group.length,
       withExpected: expected.length,
@@ -316,6 +334,7 @@ export async function runRetrieval({ fixture, indexes, hostBox, corpus, embeddin
       unresolvedExpected: unresolved,
       rankedIds: execution?.rankedIds ?? [],
       returnedText: String(execution?.text ?? ''),
+      debugScores: execution?.debugScores ?? null,
       path: execution?.path ?? 'error',
     })
   }

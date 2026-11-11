@@ -295,6 +295,11 @@ export function apply(ctx) {
       }
       // 被整理轮合并掉的块不再被回忆（软删：行还在，可追溯）。
       rows = rows.filter((row) => row.data == null || parsedData(row)?.superseded !== true)
+      // 时间旅行保护：召回只能看见"已经入库"的记忆。
+      // replay/时钟回拨/迁移或测试宿主把 now 设到过去时，未来的块不应该出现在回忆里；
+      // 评测侧用"当天 05:00 整理完成"的 replay 约定来保证同日探针可见（见 tools/memory-eval/formation.mjs）。
+      const nowMs = Number(now)
+      if (Number.isFinite(nowMs) && nowMs > 0) rows = rows.filter((row) => Number(row.created_at) <= nowMs)
       if (!rows.length) return []
       // 标签只做"缩小范围"，不参与打分——否则调用方可以靠堆标签把相关度刷上去。
       const wantedTags = Array.isArray(tags) ? tags.map((x) => String(x).toLowerCase()).filter(Boolean) : null

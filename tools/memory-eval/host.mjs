@@ -71,6 +71,8 @@ export async function createEvalHost(options) {
         persona: readDreamPersona(),
         scheduleEnabled: false,
         formationProfile,
+        // replay 语义：评测里"当天 00:00 就整理完"（不等 4 点 dayCut 归前一天），见 formation.mjs。
+        dayCutHour: 0,
         selfQQ: String(identity.selfQQ ?? ''),
         ownerQQ: String(identity.ownerQQ ?? ''),
         ownerNames: Array.isArray(identity.ownerNames) ? identity.ownerNames : [],

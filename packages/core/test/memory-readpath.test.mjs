@@ -79,3 +79,17 @@ test('F10 provisional 块在 recall 里显性标"存疑"', async () => {
   const out = await tools.recall.execute({ query: '周末 看海', overview: false })
   assert.match(out.text, /存疑/, `无出处块应标存疑：${out.text}`)
 })
+
+test('时间旅行保护：召回不返回 created_at 在 now 之后的记忆', async () => {
+  const { memory, tools } = await setup()
+  const now = Date.now()
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:past', text: '过去发生过的事：一起去看海', data: { body: '过去发生过的事：一起去看海' }, now: now - 3600_000 })
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:future', text: '未来才会发生的事：搬去另一个城市', data: { body: '未来才会发生的事：搬去另一个城市' }, now: now + 3600_000 })
+  const hits = await memory.search({ query: '未来 城市 搬家', now, namespaces: ['event'] })
+  assert.ok(!hits.some((h) => h.item.key === 'evt:future'), '未来记忆不能被召回')
+  const later = await memory.search({ query: '未来 城市 搬家', now: now + 2 * 3600_000, namespaces: ['event'] })
+  assert.ok(later.some((h) => h.item.key === 'evt:future'), '时间到了之后应可召回')
+  const recalled = await tools.recall.execute({ query: '未来 城市 搬家' })
+  assert.doesNotMatch(recalled.text, /搬去另一个城市/, 'recall 工具同样不能翻出未来记忆')
+})
+

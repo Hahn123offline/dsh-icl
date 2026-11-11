@@ -55,10 +55,12 @@ export function apply(ctx) {
   // 相关性下限：memory.search 只过滤 sim<=0；这里再按"与 query 的相关度"挡掉
   // "字面碰巧共享一两个二字组"的凑数结果。有嵌入时用混合相似度，没嵌入时用二元组覆盖率。
   // cursor/继续翻 时放宽到 0.05（她要"再想想"，不能因为淡了就再也翻不出来）。
-  // 2026-11-11 用 seed=gold 的 4 份 fixture（real-focuscore + 3 synthetic）标定：
-  //   有嵌入 minSim 0.35→0.5：falseInjection 100%→0%、recall@5 不降（real r1/r3 79/83%）；
+  // 2026-11-11 两轮标定（seed=gold 4 份 fixture + 真实 focus-core 端到端）：
+  //   有嵌入 minSim 0.35→0.45：seed=gold 上 falseInjection 100%→0、r5 不降；
+  //     end-to-end（formation→retrieval）r3/r5 50%→66.7%、miss 50%→33%；
+  //   0.5 更保守（falseInjection 更低、r3 50%），但会漏掉"措辞差距大"的长问句；
   //   无嵌入保持 0.2：0.3 起 recall@3 明显下滑（alias 41.7%→25%），且无嵌入本来 falseInjection=0。
-  const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.5))
+  const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.45))
   const minSimNoEmbed = Math.max(0.01, Number(ctx.config.minSimNoEmbed ?? 0.2))
   const relevanceFloor = ({ deeper }) => {
     let embedded = false
@@ -262,6 +264,10 @@ export function apply(ctx) {
           }
         }
 
+        const question = String(query ?? '').trim()
+        // 人物档案又长又"人味重"，容易占满召回配额；默认仍检索所有类别，
+        // 但在挑选阶段给 person 最多 1 条配额（见下方 personQuota），既保留"是谁"的能力，
+        // 又不让它把事件/fact 的位次全部挤掉（端到端实测 person profile 单条约 1500 tokens）。
         const namespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
           ? [kind]
           // resolve 是纠正反馈队列，不是回忆：即使 cursor 走 includeArchive 也不能混进来。
@@ -270,7 +276,6 @@ export function apply(ctx) {
         const candidates = []
         const deeper = Boolean(cursor)
         const floor = relevanceFloor({ deeper })
-        const question = String(query ?? '').trim()
         let rawHitCount = 0
         for (const ns of namespaces) {
           // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
@@ -285,7 +290,8 @@ export function apply(ctx) {
             rawHitCount += 1
             // 有 query 时按相关度挡凑数；没有 query（纯"最近"视图）不筛。
             if (question && Number(hit.sim ?? 0) < floor) continue
-            candidates.push({ ...hit, namespace: ns })
+            // 主动回忆是"被问到了"：低置信命中可以给，但要显式承认不确定（渲染时加 [记得不太清]）。
+            candidates.push({ ...hit, namespace: ns, uncertain: Number(hit.sim ?? 0) < 0.5 })
           }
         }
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
@@ -296,7 +302,10 @@ export function apply(ctx) {
         // 未消化的 note（任何日期）优先展示，标签用"未整理"
         // 不可回忆的类别（如 resolve 纠正队列）不能以待整理笔记的身份出现在回忆里。
         // 红队 D1/D3：未整理笔记也不能"不管问什么都先塞一半配额"——有 query 时同样要过相关度。
-        const pendingNamespaces = namespaces.filter((ns) => CATEGORIES[ns]?.recallable !== false)
+        // 未整理笔记：显式 kind 时只看该类别；默认视图看所有类别（碎片不该被路由规则吞掉）。
+        const pendingNamespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
+          ? [kind]
+          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
         const pendingRaw = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
           .map((item) => ({ item, score: 1.15, namespace: ns })))
@@ -325,7 +334,16 @@ export function apply(ctx) {
 
         const noteQuota = Math.max(1, Math.floor(limit / 2))
         for (const entry of pendingNotes.slice(0, noteQuota)) take(entry, '未整理')
-        for (const entry of candidates.slice(0, 100)) take(entry, label(entry.namespace, entry.item.createdAt, now))
+        // person 最多占 1 条：人物档案很长，允许它回答"他是谁"，但不允许它挤掉事件/fact 的位次。
+        const personQuota = 1
+        let personTaken = 0
+        for (const entry of candidates.slice(0, 100)) {
+          if (entry.namespace === 'person') {
+            if (personTaken >= personQuota) continue
+            personTaken += 1
+          }
+          take(entry, label(entry.namespace, entry.item.createdAt, now))
+        }
 
         const nextCursor = rollCursor(stored, additions)
         // 空召回/全在窗口内时不要写库；游标只在真的变化时落盘。
@@ -426,6 +444,8 @@ export function apply(ctx) {
     const nowOf = () => ctx.now()
     const item = entry.item
     const unsure = entry.clarity?.label ? `[${entry.clarity.label}] ` : ''
+    // 主动回忆里低于"比较确定"阈值的命中：显式标"记得不太清"，不假装清晰。
+    const lowConfidence = entry.uncertain === true ? '[记得不太清] ' : ''
     // 无出处/证据未核实的块（data.provisional）：不能和"有出处的事实"一样口气。
     const doubt = item.data?.provisional === true ? '[存疑] ' : ''
     if (tag === '未整理') {
@@ -436,8 +456,8 @@ export function apply(ctx) {
       return `[未整理 · ${day}] ${item.text}`
     }
     if (tag === '今天') return `[今天] ${item.text}`
-    if (item.kind === 'block') return `[${tag}] ${doubt}${unsure}${item.text}`
-    return `[${tag} · 随手记] ${doubt}${unsure}${item.text}`
+    if (item.kind === 'block') return `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
+    return `[${tag} · 随手记] ${doubt}${lowConfidence}${unsure}${item.text}`
   }
 
   function label(ns, createdAt, now) {
