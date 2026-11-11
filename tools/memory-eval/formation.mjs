@@ -322,6 +322,7 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
       ...typedBlockRows.map((item) => item.data?.subjectEntity),
       ...eventBlockRows.flatMap((item) => (Array.isArray(item.data?.entities) ? item.data.entities : [])),
     ].filter(Boolean)
+    const relationRows = exported.filter((item) => item.namespace === 'relation' && item.kind === 'relation' && item.data?.superseded !== true)
     metrics.entity = {
       entities: entityRows.length,
       personCoverage: personBlockRows.length ? personBlockRows.filter((item) => item.data?.entityId).length / personBlockRows.length : null,
@@ -329,6 +330,8 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
       eventCoverage: eventBlockRows.length ? eventBlockRows.filter((item) => Array.isArray(item.data?.entities) && item.data.entities.length).length / eventBlockRows.length : null,
       stubs: entityRows.filter((item) => item.data?.stub === true).length,
       danglingRefs: referencedEntityKeys.filter((key) => !entityKeys.has(key)).length,
+      relations: relationRows.length,
+      relationDangling: relationRows.filter((item) => !entityKeys.has(String(item.data?.from ?? '')) || !entityKeys.has(String(item.data?.to ?? ''))).length,
     }
     const samples = failureSamples({ fixture, indexes, extracted, match })
     return {

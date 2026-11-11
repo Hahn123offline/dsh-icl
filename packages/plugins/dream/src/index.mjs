@@ -156,6 +156,8 @@ export function apply(ctx) {
   }
   // typed v2 entity 层（Phase 3，additive，2026-11-12 用户决策）：实体行内部引用，不直接进召回输出。
   try { memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
+  // typed v2 entity 层的关系边（Phase 3 第 3 步）：entity-to-entity，带 evidence；可召回（"关系"类问题）。
+  try { memory.registerNamespace({ id: 'relation', label: '关系', recallable: true, halfLifeDays: 365, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
   // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
@@ -631,6 +633,83 @@ export function apply(ctx) {
       stats.stubs = (stats.stubs ?? 0) + 1
       knownEntityKeys.add(key)
     }
+    // Phase 3 第 3 步：从现有 fact 里抽 entity-to-entity 关系边（确定性，不调模型）。
+    // 例："2173783633 是曾嘉睿，主人的舍友" → (曾嘉睿 entity) --舍友--> (主人 entity)。
+    const entityRows = memory.query({ namespace: 'entity', kind: 'entity', limit: 500, order: 'desc' })
+      .filter((row) => row.data?.stub !== true)
+    const mentionFormsOf = (row) => [...new Set([
+      String(row.text ?? '').trim(),
+      ...(Array.isArray(row.data?.aliases) ? row.data.aliases.map(String) : []),
+      ...(Array.isArray(row.data?.ids) ? row.data.ids.map((id) => String(id?.value ?? '')) : []),
+    ].filter((form) => form.length >= 2))]
+    const ownerEntity = ownerQQ
+      ? entityRows.find((row) => (row.data?.ids ?? []).some((id) => String(id.kind) === 'qq' && String(id.value) === ownerQQ)) ?? null
+      : null
+    const RELATION_CUES = ['舍友', '室友', '同一个人', '朋友', '同事', '同学', '主人', '关系']
+    let relationsTouched = 0
+    // 关系来源：typed fact（"X 是主人的舍友"）+ 事件块（关系澄清常写成事件）。
+    const relationSources = [
+      ...memory.query({ namespace: 'fact', kind: 'block', limit: 1000, order: 'desc' })
+        .filter((row) => row.data?.superseded !== true)
+        .map((row) => ({ key: row.key, text: String(row.text ?? ''), data: row.data ?? {} })),
+      ...memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
+        .filter((row) => row.data?.superseded !== true)
+        .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 600)}`, data: row.data ?? {} })),
+    ]
+    for (const source of relationSources) {
+      const { key: sourceKey, text } = source
+      if (!text) continue
+      const cue = RELATION_CUES.find((label) => text.includes(label))
+      if (!cue) continue
+      const hits = []
+      for (const row of entityRows) {
+        if (mentionFormsOf(row).some((form) => text.includes(form))) hits.push(row)
+      }
+      const unique = []
+      for (const row of hits) if (!unique.some((x) => x.key === row.key)) unique.push(row)
+      // "X 是主人的舍友" 这类：另一个实体是主人，但文本里可能只有"主人"两字。
+      if (unique.length < 2 && ownerEntity && !unique.some((row) => row.key === ownerEntity.key) && text.includes('主人')) unique.push(ownerEntity)
+      if (unique.length < 2) continue
+      const [from, to] = unique.slice(0, 2)
+      const label = cue === '关系' ? '相关' : cue
+      const relationKey = `relation:${from.key}:${label}:${to.key}`
+      const existing = memory.query({ namespace: 'relation', kind: 'relation', key: relationKey, limit: 1 })[0]
+      const evidence = Array.isArray(source.data?.evidence) ? source.data.evidence : []
+      const sourceKeys = [...new Set([...(existing?.data?.sourceKeys ?? []), sourceKey])]
+      const nextData = {
+        from: from.key, to: to.key, label,
+        evidence: (existing?.data?.evidence ?? []).concat(evidence).slice(0, 20),
+        sourceKeys: sourceKeys.slice(0, 20),
+        day: existing?.data?.day ?? source.data?.day ?? null,
+        provisional: evidence.length === 0,
+        updatedAt: Number(now),
+      }
+      const displayText = `${from.text} 与 ${to.text}：${label}`
+      const same = existing && existing.text === displayText
+        && JSON.stringify(existing.data?.sourceKeys ?? []) === JSON.stringify(nextData.sourceKeys)
+      if (!same) memory.put({ namespace: 'relation', kind: 'relation', key: relationKey, text: displayText, data: nextData, now })
+      relationsTouched += 1
+    }
+    // 关系边的 validity：所有来源 fact 都失效时，关系边也软失效（证据不再成立）。
+    let relationsInvalidated = 0
+    for (const relation of memory.query({ namespace: 'relation', kind: 'relation', limit: 1000 })) {
+      if (relation.data?.superseded === true) continue
+      const sources = Array.isArray(relation.data?.sourceKeys) ? relation.data.sourceKeys : []
+      if (!sources.length) continue
+      const anyLive = sources.some((key) => {
+        const namespace = String(key).startsWith('evt:') ? 'event' : 'fact'
+        const row = memory.query({ namespace, kind: 'block', key, limit: 1 })[0]
+        return row && row.data?.superseded !== true
+      })
+      if (anyLive) continue
+      memory.put({
+        namespace: 'relation', kind: 'relation', key: relation.key, text: relation.text,
+        data: { ...(relation.data ?? {}), superseded: true, invalidatedAt: Number(now) }, now,
+      })
+      relationsInvalidated += 1
+    }
+    stats.relations = relationsTouched
+    stats.relationsInvalidated = relationsInvalidated
     return stats
   }
 

@@ -158,6 +158,8 @@ function formationMd(formation) {
       ['event→entity 引用覆盖', fmtPct(m.entity.eventCoverage)],
       ['entity 悬空引用 ↓', String(m.entity.danglingRefs)],
       ['entity stub 行', String(m.entity.stubs ?? 0)],
+      ['关系边（entity-to-entity）', String(m.entity.relations ?? 0)],
+      ['关系边悬空 ↓', String(m.entity.relationDangling ?? 0)],
     ] : []),
   ]))
   lines.push('', `计数：event ${m.counts.kinds.event ?? 0} · person ${m.counts.kinds.person ?? 0} · lexicon ${m.counts.kinds.lexicon ?? 0}；` +

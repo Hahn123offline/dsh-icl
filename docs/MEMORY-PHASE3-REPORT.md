@@ -69,3 +69,34 @@
 2. QQ 硬多跳：问法/日期归一继续修，且验证 entity alias 扩展对 p-01/p-10 的实际收益；
 3. 三源 fresh 方差在 entity 稳定后重跑，更新 baseline。
 
+## 6. 第 3 步：entity-to-entity 关系边（本轮）
+
+### A. 数据与生成（确定性，不调模型）
+
+- 新命名空间 `relation`（可召回，label 关系）：key = `relation:<from>:<label>:<to>`，
+  data 含 from/to（entity key）、label（舍友/室友/同一个人/朋友/同事/同学/主人/相关）、
+  evidence、sourceKeys（来源 fact/evt key）、day、provisional、superseded/invalidatedAt。
+- `syncEntities` 扩展：从 **typed fact** 与 **event 块**（关系澄清常写成事件）里识别
+  "关系词 + ≥2 个实体提及"（ids/aliases/text；"主人"可回退到 ownerQQ 实体），幂等 upsert 并合并证据。
+- 关系 validity：所有来源块都被 superseded 时，关系边随之软失效。
+
+### B. 读路径
+
+- whois：找到 entity 后追加「关系：」段（对端实体显示名 + label），关系类问题可直接回答。
+
+### C. 评测与回归
+
+- formation 新增 `entity.relations`、`entity.relationDangling`（目标 0）；audit 新增关系边/悬空计数。
+- 单测：fact 来源 + 幂等；event 来源 + 来源带 evt key（均通过）。
+- focus fresh：formation R **81.3%**、端到端 r3/r5 **77.8 / 91.1%**、miss **6.7%**、falseInjection 0；
+  entity：relations 1、relationDangling 0、entities 4、personCoverage 100%、
+  typedCoverage 76.4%、eventCoverage 81.1%、stubs 1、danglingRefs 0
+  （focus 素材里显式关系句少，关系边数量低是预期；QQ/live 关系句更多，下一轮验证）。
+- 全仓 **914 tests / 913 pass / 1 skip**；评测自测 28/28。
+
+### D. 下一步
+
+1. QQ/live 上验证关系边数量与 whois 关系问答（必要时给 relation 加"关系对"检索）；
+2. 三源 fresh 方差在 entity/关系稳定后串行重跑，更新 baseline；
+3. 关系标签体系与 validity 冲突（同一对实体先后出现不同 label）抽审。
+

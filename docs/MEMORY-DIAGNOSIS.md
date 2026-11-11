@@ -244,6 +244,13 @@ formation 新增 entity 覆盖/悬空/stub 指标；单测幂等通过。focus f
 端到端 r5 100%/miss 0，entity personCoverage 100%、typedCoverage 78.3%、eventCoverage 84.9%。
 详见 `docs/MEMORY-PHASE3-REPORT.md`。本地 LLM 抽取等显卡释放后再测。
 
+**Phase 3 第 2/3 步（第 22-23 轮）**：entity 读路径（whois 合并多份 person 档/别名/实体事实/关系、
+recall entity 别名扩展）+ entity-to-entity 关系边（`relation` 命名空间，从 fact/event 确定性抽取，
+带 evidence/sourceKeys，来源全失效时关系软失效；whois 输出「关系：」段；formation/audit 关系指标）。
+focus fresh：R 81.3%、r5 86–91%、miss 6.7–11.8%、falseInjection 0；entity personCoverage 100%、
+typedCoverage ~76%、eventCoverage ~81%、relations 1（focus 显式关系句少）、relationDangling 0。
+下一轮：QQ/live 关系问答验证、三源 fresh 方差、关系 label 冲突抽审。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

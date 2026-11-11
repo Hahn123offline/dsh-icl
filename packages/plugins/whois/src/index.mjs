@@ -131,6 +131,17 @@ export function apply(ctx) {
           parts.push('实体事实／承诺：')
           for (const row of facts) parts.push(`· ${String(row.text).slice(0, 120)}`)
         }
+        // Phase 3 关系边：entity-to-entity（带证据），关系类问题直接给出"谁是 TA 的谁"。
+        const relations = memory.query({ namespace: 'relation', kind: 'relation', limit: 500, order: 'desc' })
+          .filter((row) => row.data?.superseded !== true && (row.data?.from === entity.key || row.data?.to === entity.key))
+        if (relations.length) {
+          parts.push('关系：')
+          for (const relation of relations.slice(0, 6)) {
+            const otherKey = relation.data?.from === entity.key ? relation.data?.to : relation.data?.from
+            const other = memory.query({ namespace: 'entity', kind: 'entity', key: otherKey, limit: 1 })[0]
+            parts.push(`· ${String(relation.data?.label ?? '相关')}：${other?.text ?? otherKey}`)
+          }
+        }
       }
 
       // 逐句引用：档案里的每一句都能追到当时的笔记

@@ -273,6 +273,14 @@ const entityStats = {
   aliasConflicts: [...aliasOwners.entries()].filter(([, owners]) => owners.size > 1).slice(0, 20).map(([alias, owners]) => ({ alias, owners: [...owners] })),
   personCoverage: personBlockRows.length ? personBlockRows.filter((item) => item.data?.entityId).length / personBlockRows.length : null,
   typedCoverage: typedBlockRows.length ? typedBlockRows.filter((item) => item.data?.subjectEntity).length / typedBlockRows.length : null,
+  relations: 0,
+  relationDangling: 0,
+}
+{
+  const relationRows = allItems.filter((item) => item.namespace === 'relation' && item.kind === 'relation' && item.data?.superseded !== true)
+  const entityKeySet = new Set(entityRows.map((row) => row.key))
+  entityStats.relations = relationRows.length
+  entityStats.relationDangling = relationRows.filter((row) => !entityKeySet.has(String(row.data?.from ?? '')) || !entityKeySet.has(String(row.data?.to ?? ''))).length
 }
 // 形成来源审计（审计 F6）：把 event 块的 day 证据映射回 day log 的 sources 数组，
 // 看块到底是"真人说的话"还是"她自己的工具活动/环境通知"。
@@ -366,7 +374,7 @@ lines.push('## 关键信号')
 lines.push('')
 lines.push(`- event block：**${eventBlocks.length}**（superseded **${supersededEventBlocks.length}**）；近重复对：**${eventDupes.length}**`)
 lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**；可疑取代 **${typed.suspiciousChains.length}**；带 subject **${typed.withSubject}**`)
-lines.push(`- entity（Phase 3）：行 **${entityStats.total}**（stub **${entityStats.stubs}**，孤立 stub **${entityStats.orphanStubs}**，alias 冲突 **${entityStats.aliasConflicts.length}**）；person→entity 覆盖 **${entityStats.personCoverage == null ? '—' : `${Math.round(entityStats.personCoverage * 100)}%`}**；typed→entity 覆盖 **${entityStats.typedCoverage == null ? '—' : `${Math.round(entityStats.typedCoverage * 100)}%`}**`)
+lines.push(`- entity（Phase 3）：行 **${entityStats.total}**（stub **${entityStats.stubs}**，孤立 stub **${entityStats.orphanStubs}**，alias 冲突 **${entityStats.aliasConflicts.length}**）；person→entity 覆盖 **${entityStats.personCoverage == null ? '—' : `${Math.round(entityStats.personCoverage * 100)}%`}**；typed→entity 覆盖 **${entityStats.typedCoverage == null ? '—' : `${Math.round(entityStats.typedCoverage * 100)}%`}**；关系边 **${entityStats.relations}**（悬空 **${entityStats.relationDangling}**）`)
 lines.push(`- 形成来源：真人/QQ 背书块 **${provenance.humanBackedBlocks}**；纯自我活动块 **${provenance.selfSourceBlocks}**；证据解析 **${provenance.resolved}/${provenance.dayEvidence}**`)
 lines.push(`- person block：**${personBlocks.length}**；可疑 alias：**${personAliases.length}**`)
 lines.push(`- lexicon：**${lexiconStats.total}**；工具/框架味：**${lexiconStats.toolish.length}**；候选：**${lexiconStats.candidates}**`)

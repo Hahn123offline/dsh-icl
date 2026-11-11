@@ -570,3 +570,57 @@ test('typed v2 entity 层：person/typed/event 幂等回填实体引用，重复
   assert.equal(memory.query({ namespace: 'entity', kind: 'entity', limit: 10 }).length, 1, '重复同步不新增实体行')
   assert.equal(second.entitySync?.personPatched, 0, '已回填的记录不再变更')
 })
+
+test('Phase3 关系边：从 fact 里确定性抽 entity-to-entity 关系，幂等且带证据', async () => {
+  const { memory, dream } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: 'Hahn123（主人）',
+    data: { qq: '3429502459', ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['Hahn123', '主人'], familiarity: 'close', evidence: [] },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:2173783633', text: '曾嘉睿（舍友）',
+    data: { qq: '2173783633', ids: [{ kind: 'qq', value: '2173783633' }], aliases: ['曾嘉睿'], familiarity: 'unknown', evidence: [] },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'fact', kind: 'block', key: 'fact:2026-11-01:rel', text: '2173783633 是曾嘉睿，主人的舍友',
+    data: { body: '2173783633 是曾嘉睿，主人的舍友', subject: '2173783633', day: '2026-11-01', evidence: [{ type: 'day', id: 1, line: '2173783633 (主人舍友)', at: NOON - 86_400_000 }] },
+    now: NOON - 86_400_000,
+  })
+  const first = await dream.run({ now: NOON, jobs: [] })
+  assert.ok((first.entitySync?.relations ?? 0) >= 1, `应生成关系边：${JSON.stringify(first.entitySync)}`)
+  const relations = memory.query({ namespace: 'relation', kind: 'relation', limit: 10 })
+  assert.equal(relations.length, 1, '同一对关系只建一条')
+  assert.equal(relations[0].data?.label, '舍友')
+  assert.ok(String(relations[0].data?.from ?? '').startsWith('entity:'), 'from 应是 entity key')
+  assert.ok((relations[0].data?.sourceKeys ?? []).includes('fact:2026-11-01:rel'))
+  assert.ok((relations[0].data?.evidence ?? []).length >= 1)
+  const second = await dream.run({ now: NOON, jobs: [] })
+  assert.equal(memory.query({ namespace: 'relation', kind: 'relation', limit: 10 }).length, 1, '重复同步不新增关系边')
+  assert.ok((second.entitySync?.relations ?? 0) >= 1)
+})
+
+test('Phase3 关系边：事件块里的关系澄清也生成关系边（来源带 evt key）', async () => {
+  const { memory, dream } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: 'Hahn123（主人）',
+    data: { qq: '3429502459', ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['Hahn123', '周子涵'], familiarity: 'close', evidence: [] },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:2173783633', text: '曾嘉睿（舍友）',
+    data: { qq: '2173783633', ids: [{ kind: 'qq', value: '2173783633' }], aliases: ['曾嘉睿'], familiarity: 'unknown', evidence: [] },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'event', kind: 'block', key: 'evt:2026-11-01:rel', text: '主人澄清曾嘉睿是舍友，周子涵和离线版都是他自己',
+    data: { body: '主人澄清曾嘉睿是舍友，周子涵和离线版都是他自己', evidence: [{ type: 'day', id: 1, line: '曾嘉睿是舍友' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  const out = await dream.run({ now: NOON, jobs: [] })
+  assert.ok((out.entitySync?.relations ?? 0) >= 1, JSON.stringify(out.entitySync))
+  const relation = memory.query({ namespace: 'relation', kind: 'relation', limit: 10 })[0]
+  assert.ok(relation, '应从事件块生成关系边')
+  assert.ok((relation.data?.sourceKeys ?? []).some((key) => String(key).startsWith('evt:')), '来源应包含 evt key')
+})
