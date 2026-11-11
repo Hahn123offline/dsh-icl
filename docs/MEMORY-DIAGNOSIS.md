@@ -237,6 +237,13 @@ judge 三源全部判"提到但没答"→ adequacy-adjusted false injection = 0�
 typed v2 现状：add 层 + provenance + validity 全链 + entity 第一刀（subject）已落地并有评测收益；
 **完整 entity 图与 schema 迁移**是下一阶段架构决策点，需要与用户确认后再动。
 
+**Phase 3 第 1 步（第 21 轮决策后）**：用户拍板先做**完整 entity 图与迁移**。已落地：
+设计文档 `docs/MEMORY-V2-ENTITY-DESIGN.md` + `entity` 命名空间与确定性 `syncEntities`
+（每次 dream.run 末尾幂等同步：person→entity、typed→subjectEntity、event→entities、悬空引用补 stub），
+formation 新增 entity 覆盖/悬空/stub 指标；单测幂等通过。focus fresh 首跑：formation R 81.3%、
+端到端 r5 100%/miss 0，entity personCoverage 100%、typedCoverage 78.3%、eventCoverage 84.9%。
+详见 `docs/MEMORY-PHASE3-REPORT.md`。本地 LLM 抽取等显卡释放后再测。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

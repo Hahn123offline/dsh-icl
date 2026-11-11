@@ -532,3 +532,41 @@ test('validity 防误失效：单日例外不推翻长期习惯', async () => {
   const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:habit', limit: 1 })[0]
   assert.notEqual(old.data?.superseded, true, '单日例外不能推翻长期习惯')
 })
+
+test('typed v2 entity 层：person/typed/event 幂等回填实体引用，重复跑不新增行', async () => {
+  const { memory, dream } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: 'Hahn123（主人）',
+    data: {
+      subject: { kind: 'qq', value: '3429502459' }, qq: '3429502459',
+      ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['Hahn123', '周子涵'],
+      evidence: [{ type: 'day', id: 1, line: 'Hahn123' }], familiarity: 'close', provisional: false,
+    },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:1', text: '主人喜欢喝豆浆',
+    data: { body: '主人喜欢喝豆浆', subject: '3429502459', evidence: [{ type: 'day', id: 1, line: '主人喜欢喝豆浆' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  memory.put({
+    namespace: 'event', kind: 'block', key: 'evt:2026-11-01:1', text: '和主人一起喝豆浆',
+    data: { body: '和主人一起喝豆浆', people: ['3429502459'], evidence: [{ type: 'day', id: 1, line: '和主人一起喝豆浆' }], provisional: false },
+    now: NOON - 86_400_000,
+  })
+  const first = await dream.run({ now: NOON, jobs: [] })
+  assert.equal(first.entitySync?.entities, 1, JSON.stringify(first.entitySync))
+  assert.ok(first.entitySync?.personPatched >= 1 && first.entitySync?.typedPatched >= 1 && first.entitySync?.eventPatched >= 1, JSON.stringify(first.entitySync))
+  const entity = memory.query({ namespace: 'entity', kind: 'entity', limit: 5 })[0]
+  assert.ok(entity && entity.key === 'entity:qq:3429502459', '应创建规范实体行')
+  assert.ok((entity.data?.aliases ?? []).includes('周子涵'), 'alias 应并入实体')
+  const person = memory.query({ namespace: 'person', kind: 'block', key: 'person:3429502459', limit: 1 })[0]
+  assert.equal(person.data?.entityId, 'entity:qq:3429502459')
+  const pref = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:1', limit: 1 })[0]
+  assert.equal(pref.data?.subjectEntity, 'entity:qq:3429502459')
+  const event = memory.query({ namespace: 'event', kind: 'block', key: 'evt:2026-11-01:1', limit: 1 })[0]
+  assert.ok((event.data?.entities ?? []).includes('entity:qq:3429502459'))
+  const second = await dream.run({ now: NOON, jobs: [] })
+  assert.equal(memory.query({ namespace: 'entity', kind: 'entity', limit: 10 }).length, 1, '重复同步不新增实体行')
+  assert.equal(second.entitySync?.personPatched, 0, '已回填的记录不再变更')
+})

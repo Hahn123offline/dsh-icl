@@ -154,6 +154,8 @@ export function apply(ctx) {
   for (const [id, label, halfLifeDays] of [['fact', '事实', 365], ['preference', '偏好', 180], ['commitment', '承诺', 60]]) {
     try { memory.registerNamespace({ id, label, recallable: true, halfLifeDays, owner: 'dream' }) } catch { /* recall 先注册了也行 */ }
   }
+  // typed v2 entity 层（Phase 3，additive，2026-11-12 用户决策）：实体行内部引用，不直接进召回输出。
+  try { memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
   // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
@@ -500,6 +502,136 @@ export function apply(ctx) {
       if (!out.includes(resolved)) out.push(resolved)
     }
     return out.slice(0, 20)
+  }
+
+  /**
+   * typed v2 entity 层（Phase 3，additive，2026-11-12 用户拍板）：
+   * 把 person 档案聚合成实体行，并给 person / typed / event 记录补引用字段。
+   * 纯确定性、幂等：重复跑只补缺失字段，不新增行、不改 entity 文本；删 entity 命名空间即可回滚。
+   * @returns {{entities:number, personPatched:number, typedPatched:number, eventPatched:number}}
+   */
+  function syncEntities(now = ctx.now()) {
+    const stats = { entities: 0, personPatched: 0, typedPatched: 0, eventPatched: 0 }
+    const personBlocks = memory.query({ namespace: 'person', kind: 'block', limit: 500, order: 'desc' })
+      .filter((block) => block.data?.superseded !== true)
+    const grouped = new Map()
+    for (const block of personBlocks) {
+      const data = block.data ?? {}
+      const ids = (Array.isArray(data.ids) ? data.ids : [])
+        .filter((id) => id && id.kind && id.value)
+        .map((id) => ({ kind: String(id.kind), value: String(id.value) }))
+      const qq = String(data.qq ?? '').trim()
+      if (qq && !ids.some((id) => id.kind === 'qq' && id.value === qq)) ids.unshift({ kind: 'qq', value: qq })
+      const canonical = ids.find((id) => id.kind === 'qq') ?? ids[0] ?? null
+      if (!canonical) continue
+      const entityKey = `entity:${canonical.kind}:${canonical.value}`
+      const entry = grouped.get(entityKey) ?? {
+        ids: new Map(), aliases: new Set(), personKeys: new Set(),
+        evidenceCount: 0, familiarity: 'unknown', firstSeen: null, lastSeen: null, provisional: false,
+      }
+      for (const id of ids) entry.ids.set(`${id.kind}:${id.value}`, id)
+      for (const alias of (Array.isArray(data.aliases) ? data.aliases : [])) {
+        const text = String(alias ?? '').trim()
+        if (text) entry.aliases.add(text)
+      }
+      if (block.key) entry.personKeys.add(String(block.key))
+      grouped.set(entityKey, entry)
+      entry.evidenceCount += Array.isArray(data.evidence) ? data.evidence.length : 1
+      if (String(data.familiarity ?? '') === 'close') entry.familiarity = 'close'
+      if (data.provisional === true) entry.provisional = true
+      const createdAt = Number(block.createdAt ?? 0) || null
+      if (createdAt && (entry.firstSeen == null || createdAt < entry.firstSeen)) entry.firstSeen = createdAt
+      if (createdAt && (entry.lastSeen == null || createdAt > entry.lastSeen)) entry.lastSeen = createdAt
+    }
+    for (const [entityKey, entry] of grouped) {
+      const canonical = [...entry.ids.values()].find((id) => id.kind === 'qq') ?? [...entry.ids.values()][0]
+      const display = ([...entry.aliases].find((alias) => !/^\d+$/.test(alias)) ?? String(canonical.value)).slice(0, 80)
+      const nextData = {
+        canonicalId: canonical,
+        ids: [...entry.ids.values()].slice(0, 10),
+        aliases: [...entry.aliases].slice(0, 20),
+        personKeys: [...entry.personKeys].slice(0, 20),
+        familiarity: entry.familiarity,
+        evidenceCount: entry.evidenceCount,
+        firstSeen: entry.firstSeen,
+        lastSeen: entry.lastSeen,
+        provisional: entry.provisional,
+        updatedAt: Number(now),
+      }
+      const existing = memory.query({ namespace: 'entity', kind: 'entity', key: entityKey, limit: 1 })[0]
+      const before = existing?.data ?? null
+      const same = before != null
+        && JSON.stringify(before.ids ?? []) === JSON.stringify(nextData.ids)
+        && JSON.stringify(before.aliases ?? []) === JSON.stringify(nextData.aliases)
+        && JSON.stringify(before.personKeys ?? []) === JSON.stringify(nextData.personKeys)
+        && String(before.familiarity ?? '') === nextData.familiarity
+        && Number(before.evidenceCount ?? 0) === nextData.evidenceCount
+        && existing?.text === display
+      if (!same) memory.put({ namespace: 'entity', kind: 'entity', key: entityKey, text: display, data: nextData, now })
+      stats.entities += 1
+      // 给 person 块补 entityId（只补缺失，不改已有值）。
+      for (const personKey of entry.personKeys) {
+        const block = memory.query({ namespace: 'person', kind: 'block', key: personKey, limit: 1 })[0]
+        if (!block || block.data?.entityId) continue
+        memory.put({ namespace: 'person', kind: 'block', key: personKey, text: block.text, data: { ...(block.data ?? {}), entityId: entityKey }, now })
+        stats.personPatched += 1
+      }
+    }
+    // typed 记录补 subjectEntity（subject 是旧兼容字段，可能是 QQ 字符串）。
+    for (const namespace of ['fact', 'preference', 'commitment']) {
+      for (const row of memory.query({ namespace, kind: 'block', limit: 1000, order: 'desc' })) {
+        if (row.data?.superseded === true) continue
+        if (row.data?.subjectEntity) continue
+        const subject = String(row.data?.subject ?? '').trim()
+        if (!subject) continue
+        const entityKey = /^\d{5,12}$/.test(subject) ? `entity:qq:${subject}` : `entity:person:${subject}`
+        memory.put({ namespace, kind: 'block', key: row.key, text: row.text, data: { ...(row.data ?? {}), subjectEntity: entityKey }, now })
+        stats.typedPatched += 1
+      }
+    }
+    // event 块补 entities（来自已有的 people，多值）。
+    for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000, order: 'desc' })) {
+      if (row.data?.superseded === true || Array.isArray(row.data?.entities)) continue
+      const people = normalizePeople(row.data?.people)
+      if (!people.length) continue
+      const entities = people.map((value) => (/^\d{5,12}$/.test(value) ? `entity:qq:${value}` : `entity:person:${value}`))
+      memory.put({ namespace: 'event', kind: 'block', key: row.key, text: row.text, data: { ...(row.data ?? {}), entities: [...new Set(entities)].slice(0, 10) }, now })
+      stats.eventPatched += 1
+    }
+    // 悬空引用补 stub 实体（例如 event.people 里只有显示名、没有 person 档案）：让图闭合；
+    // stub 标 provisional/stub，后续人物档案建起来时会被正式实体覆盖合并。
+    const knownEntityKeys = new Set(memory.query({ namespace: 'entity', kind: 'entity', limit: 2000 }).map((row) => row.key))
+    const referencedKeys = new Set()
+    for (const block of memory.query({ namespace: 'person', kind: 'block', limit: 1000 })) {
+      if (block.data?.entityId) referencedKeys.add(String(block.data.entityId))
+    }
+    for (const namespace of ['fact', 'preference', 'commitment']) {
+      for (const row of memory.query({ namespace, kind: 'block', limit: 1000 })) {
+        if (row.data?.subjectEntity) referencedKeys.add(String(row.data.subjectEntity))
+      }
+    }
+    for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000 })) {
+      for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
+    }
+    for (const key of referencedKeys) {
+      if (!key || knownEntityKeys.has(key)) continue
+      const match = /^entity:(qq|person):(.+)$/.exec(key)
+      if (!match) continue
+      const kind = match[1]
+      const value = match[2]
+      memory.put({
+        namespace: 'entity', kind: 'entity', key, text: (kind === 'qq' ? value : value).slice(0, 80),
+        data: {
+          canonicalId: { kind, value }, ids: [{ kind, value }], aliases: kind === 'person' ? [value] : [],
+          personKeys: [], familiarity: 'unknown', evidenceCount: 0,
+          firstSeen: null, lastSeen: null, provisional: true, stub: true, updatedAt: Number(now),
+        },
+        now,
+      })
+      stats.stubs = (stats.stubs ?? 0) + 1
+      knownEntityKeys.add(key)
+    }
+    return stats
   }
 
   /** 把渲染好的 day log 行按字符预算切成多段（每段 ≤ maxSegmentChars，行边界切）。 */
@@ -2362,12 +2494,17 @@ export function apply(ctx) {
         }
       }
       const ok = results.every((r) => r.ok !== false)
+      // Phase 3 entity 层：每晚 job 结束后做一次幂等同步（纯确定性、不调模型；失败不影响 job 结果）。
+      let entitySync = null
+      try { entitySync = syncEntities(dreamNow) } catch (error) {
+        ctx.log({ level: 'warn', msg: 'dream.entity-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
+      }
       // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
       for (const result of results) recordOutcome(day, result, dreamNow)
       const pruned = pruneRuns(dreamNow)
       // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
       const receipt = emitDreamResult({ now: dreamNow, results })
-      return { ok, day, results, pruned, receipt, targetNow: dreamNow }
+      return { ok, day, results, pruned, receipt, targetNow: dreamNow, entitySync }
     })()
     inFlight = task
     try { return await task } finally { if (inFlight === task) inFlight = null }
@@ -2454,6 +2591,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

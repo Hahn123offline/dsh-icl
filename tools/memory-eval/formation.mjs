@@ -311,6 +311,25 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
     })
     const match = matchFormation({ fixture, indexes, extracted })
     const metrics = formationMetrics({ fixture, indexes, extracted, aux, match })
+    // typed v2 entity 层指标（Phase 3）：只看覆盖率/悬空引用，不参与 P/R、不改召回。
+    const entityRows = exported.filter((item) => item.namespace === 'entity' && item.kind === 'entity')
+    const personBlockRows = exported.filter((item) => item.namespace === 'person' && item.kind === 'block' && item.data?.superseded !== true)
+    const typedBlockRows = exported.filter((item) => ['fact', 'preference', 'commitment'].includes(item.namespace) && item.kind === 'block' && item.data?.superseded !== true)
+    const eventBlockRows = exported.filter((item) => item.namespace === 'event' && item.kind === 'block' && item.data?.superseded !== true)
+    const entityKeys = new Set(entityRows.map((item) => item.key))
+    const referencedEntityKeys = [
+      ...personBlockRows.map((item) => item.data?.entityId),
+      ...typedBlockRows.map((item) => item.data?.subjectEntity),
+      ...eventBlockRows.flatMap((item) => (Array.isArray(item.data?.entities) ? item.data.entities : [])),
+    ].filter(Boolean)
+    metrics.entity = {
+      entities: entityRows.length,
+      personCoverage: personBlockRows.length ? personBlockRows.filter((item) => item.data?.entityId).length / personBlockRows.length : null,
+      typedCoverage: typedBlockRows.length ? typedBlockRows.filter((item) => item.data?.subjectEntity).length / typedBlockRows.length : null,
+      eventCoverage: eventBlockRows.length ? eventBlockRows.filter((item) => Array.isArray(item.data?.entities) && item.data.entities.length).length / eventBlockRows.length : null,
+      stubs: entityRows.filter((item) => item.data?.stub === true).length,
+      danglingRefs: referencedEntityKeys.filter((key) => !entityKeys.has(key)).length,
+    }
     const samples = failureSamples({ fixture, indexes, extracted, match })
     return {
       tempRoot,

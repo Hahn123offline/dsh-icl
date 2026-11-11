@@ -151,6 +151,14 @@ function formationMd(formation) {
     ['provenanceRate ↑（目标 ≥95%）', fmtPct(m.provenance.rate)],
     ['identity（person→entity）', fmtPct(m.identity.identity)],
     ['wrongIdRate ↓', fmtPct(m.identity.wrongIdRate)],
+    ...(m.entity ? [
+      ['entity 行数', String(m.entity.entities)],
+      ['person→entity 引用覆盖', fmtPct(m.entity.personCoverage)],
+      ['typed→entity 引用覆盖', fmtPct(m.entity.typedCoverage)],
+      ['event→entity 引用覆盖', fmtPct(m.entity.eventCoverage)],
+      ['entity 悬空引用 ↓', String(m.entity.danglingRefs)],
+      ['entity stub 行', String(m.entity.stubs ?? 0)],
+    ] : []),
   ]))
   lines.push('', `计数：event ${m.counts.kinds.event ?? 0} · person ${m.counts.kinds.person ?? 0} · lexicon ${m.counts.kinds.lexicon ?? 0}；` +
     `note ${m.counts.aux.notes} · dayLog ${m.counts.aux.dayLogs} · 续块 ${m.counts.aux.continuationParts} · superseded ${m.counts.aux.superseded}；` +
