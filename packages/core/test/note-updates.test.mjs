@@ -43,14 +43,14 @@ test('完成：标记 done，附带结论', async () => {
   assert.match(done, /查一下/)
 })
 
-test('默认只看今天；带 all 能看到更早的', async () => {
+test('默认返回全部 open；不再因为跨天而漏掉旧待办', async () => {
   const { tools, host } = await setup()
   const mem = host.shared.get('memory')
   mem.put({ namespace: 'note', kind: 'note', key: 'old', text: '昨天的待办', data: { status: 'open' }, now: Date.now() - 86400000 })
   await tools.memo.execute({ text: '今天的待办' })
   const today = await tools.memos.execute({})
   assert.match(today.text, /今天的待办/)
-  assert.doesNotMatch(today.text, /昨天的待办/)
+  assert.match(today.text, /昨天的待办/, '默认必须和 note_status 的 open 口径一致')
   const all = await tools.memos.execute({ all: true })
   assert.match(all.text, /昨天的待办/)
 })

@@ -16,6 +16,12 @@ export function apply(ctx) {
   const rows = () => memory.query({ namespace: 'note', kind: 'note', limit: 500, order: 'desc' })
   const isOpen = (n) => (n.data?.status ?? 'open') === 'open'
   const openNotes = () => rows().filter(isOpen)
+  const KIND_LABEL = { memo: '待办', question: '待查', promise: '答应过的' }
+  const kindLabel = (row) => KIND_LABEL[String(row?.data?.kind ?? '')] ?? '惦记'
+  const dayOf = (value) => {
+    const d = new Date(Number(value))
+    return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+  }
 
   function add({ text, about = null, raisedBy = 'session', kind = 'memo' } = {}) {
     const body = String(text ?? '').trim()
@@ -33,11 +39,6 @@ export function apply(ctx) {
     if (!row) return { ok: false, error: 'not-found' }
     memory.patch(row.id, { data: { ...(row.data ?? {}), status: 'resolved', answer, resolvedAt: ctx.now() } })
     return { ok: true, id: row.id }
-  }
-
-  function dayKeyOf(row) {
-    const d = new Date(Number(row.createdAt))
-    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
   }
 
   function count() {
@@ -65,28 +66,29 @@ export function apply(ctx) {
     return { ok: true, id: row.id, status: 'done' }
   }
 
-  // 世界状态里挂一条"还有几件事"（有世界状态插件时才挂，不强制依赖）
-  try {
-    const world = ctx.services.get('world')
-    if (world?.registerSource) {
-      world.registerSource({
-        id: 'note', owner: 'note', title: '待办', order: 5, cap: 1,
-        items: () => {
-          const n = count()
-          return n > 0 ? [{ key: 'open', brief: `还有 ${n} 件事没了结。` }] : []
-        },
-      })
-    }
-  } catch { /* 没有世界状态也不影响备忘录本身 */ }
+  // 未闭合的事由 note 自己的 purpose 契约段呈现（见下方），
+  // 世界状态只保留“还有几件”的旧来源会制造第二套口径，已移除。
+
+  function purposeText() {
+    const items = openNotes().sort((a, b) => Number(a.createdAt) - Number(b.createdAt)).slice(0, 3)
+    if (!items.length) return ''
+    const lines = [
+      '【心里惦记的事】',
+      '（这些不是任务清单，是你自己没放下的事：合适的时候自己提，不需要每轮都提，也不要为了提而提。）',
+      ...items.map((row) => `- （${kindLabel(row)} · ${dayOf(row.createdAt)}）#${row.id} ${String(row.text ?? '').slice(0, 100)}`),
+      '（想看全部用 memos；有结论用 memo_commit，补充用 memo_append。）',
+    ]
+    return lines.join('\n')
+  }
 
   ctx.tools.register({
     name: 'memo',
-    summary: 'Leave yourself a small note about something you do not want to forget to do.',
-    when: ['you want to come back to something later in this session'],
-    avoid: ['facts about the past (use remember)'],
+    summary: '给自己留一条待办/惦记的事，之后可以回来处理。',
+    when: ['你想晚点再处理一件事', '你想记住一个还没解决的问题'],
+    avoid: ['过去发生过的事实（用 remember）'],
     parameters: {
       type: 'object', additionalProperties: false,
-      properties: { text: { type: 'string', description: 'The note, one or two sentences.' } },
+      properties: { text: { type: 'string', description: '一两句话的小纸条。' } },
       required: ['text'],
     },
     async execute({ text } = {}) {
@@ -97,24 +99,22 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'memos',
-    summary: 'See how many notes you left open, and what they are.',
-    when: ['you want to check what you were going to come back to'],
-    avoid: ['when you are looking for a memory (use recall)'],
+    summary: '查看所有还没了结的备忘/待查；默认不按日期过滤。',
+    when: ['你想看看自己还惦记着什么', '事实里出现“心里惦记”时'],
+    avoid: ['找过去的记忆（用 recall）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        all: { type: 'boolean', description: 'Include items from previous days.' },
-        done: { type: 'boolean', description: 'Include finished items too.' },
+        all: { type: 'boolean', description: '兼容旧参数，默认已经返回全部 open 项。' },
+        done: { type: 'boolean', description: '是否连已完成的项一起列出。' },
       },
     },
-    async execute({ all = false, done = false } = {}) {
-      const day = new Date(ctx.now()); const today = `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`
-      const picked = rows().filter((r) => (all || dayKeyOf(r) === today) && (done || isOpen(r)))
+    async execute({ done = false } = {}) {
+      const picked = rows().filter((row) => done || isOpen(row))
       if (!picked.length) return { text: '没有待办。' }
-      return { text: picked.map((r) => {
-        const upd = (r.data?.updates ?? []).map((u) => `\n  + ${u.text}`).join('')
-        // 没有 id 时模型只能猜 memo_commit/append 的参数；把 id 露出来。
-        return `· #${r.id} ${r.text}${upd}`
+      return { text: picked.map((row) => {
+        const upd = (row.data?.updates ?? []).map((u) => `\n  + ${u.text}`).join('')
+        return `· #${row.id} [${kindLabel(row)} · ${dayOf(row.createdAt)}] ${row.text}${upd}`
       }).join('\n') }
     },
   })
@@ -162,6 +162,19 @@ export function apply(ctx) {
       return { text: `待办 ${open} 条，已完成待回收 ${done} 条，已归档 ${archived} 条。` }
     },
   })
+
+  // 未闭合事项的“惦记”契约：只有 note 的读取/收尾工具都在时才出现。
+  // 工具说明负责“怎么用”；这里只负责“什么时候、以什么语气出现”。
+  try {
+    ctx.contracts?.registerFeature({
+      id: 'purpose',
+      order: 879,
+      prompt: purposeText,
+      requiresTools: ['memos', 'memo_commit'],
+    })
+  } catch (error) {
+    ctx.log({ level: 'warn', msg: 'note.purpose-contract', error: String(error?.message ?? error) })
+  }
 
   ctx.services.provide('note', { add, append, commit, resolve, count, open: openNotes })
   ctx.log({ msg: 'note.ready', open: count() })

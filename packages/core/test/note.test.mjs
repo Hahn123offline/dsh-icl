@@ -39,12 +39,15 @@ test('备忘：写一条、看得到、可结掉', async () => {
   assert.match((await tools.memos.execute()).text, /没有待办/)
 })
 
-test('备忘进世界状态：有未结事项就有一条简短提醒', async () => {
+test('未结事项进“心里惦记”契约段：不是世界状态里的裸计数', async () => {
   const { tools, host } = await setup()
-  assert.doesNotMatch(host.services.prompt.assemble(), /件事/)
+  assert.doesNotMatch(host.services.prompt.assemble(), /心里惦记的事/)
   await tools.memo.execute({ text: '回头问一句' })
   const brief = host.services.prompt.assemble()
-  assert.match(brief, /还有 1 件事没了结/)
+  assert.match(brief, /心里惦记的事/)
+  assert.match(brief, /回头问一句/)
+  assert.match(brief, /不是任务清单/)
+  assert.doesNotMatch(brief, /还有 1 件事没了结/)
 })
 
 test('备忘不是记忆：recall 搜不到它', async () => {
