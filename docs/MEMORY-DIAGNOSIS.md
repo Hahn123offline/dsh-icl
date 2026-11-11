@@ -202,6 +202,11 @@ gold↔probe 错配）；补齐 QQ/live 三次 fresh 方差：focus r5 均值 81
 （极差 17.5/4.6/25pt），三源 formation R 均值 80.2/85/100%。下一轮：QQ gold/probe 修整、
 answer-adequacy 指标化、validity 人工抽审、live gold 扩充、门控接 CI。
 
+**Phase 2 第 15 段（第 16 轮，本轮）**：QQ gold/probe 修整（m-0013 类型 person→event、p-08 问法补实体名）：
+QQ 同-run r1/r5 63.6→68.2%、withExpected 10→11，p-03 转 hit；memory-audit 新增「可疑取代」抽审
+（零内容词交集/后继缺失）：31 条 superseded 中可疑 1 条且人工核对为合理取代，悬空链 0、缺失效时间 0。
+下一轮：QQ 剩 3 个 miss、adequacy 指标化、live gold 扩充、门控接 CI、validity 抽审扩大。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

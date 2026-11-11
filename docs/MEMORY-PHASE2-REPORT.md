@@ -508,17 +508,37 @@ r3/r5/miss 全部改善，按"人能否拿到答案"口径是净收益。
 - QQ 的 r3=r5（正确块进 top3 一般也在 top5）、r1 方差最大；live 的 miss 方差 0–33%（gold 只有 4 条，单条 miss 权重高）。
 - 三源均值都明显高于各自最低单次值 → 再次说明门控要用均值/多次，不用单次。
 
+## 2o. 第 16 轮：QQ gold/probe 修整 + 失效链人工抽审（本轮）
+
+### A. QQ gold/probe 修整（先修 gold 再谈检索）
+
+- gold-review 的「零内容词交集」清单定位到两处 gold 问题：
+  1. `m-0013`（"周子涵是学生…10月25日前后集中复习计组…"）类型被标成 `person`，formation 里对应内容
+     实际落成 `event`（"主人说昨晚整到两点，早上还得去上计组实验"）→ matcher 类型过滤导致永远 unmatched；
+     改为 `event` 后 probe p-03 的 expected 正常解析（p-03 从 miss 变 hit）。
+  2. probe p-08 问法只用 QQ 号（"3429502459 是谁"），与 person gold 正文零内容词交集；
+     改为 "Hahn123（QQ 3429502459）是谁？他最近在忙什么、在复习什么？"。
+- 同-run 复测（cache 复用 formation）：QQ **r1 63.6→68.2%、r3/r5 63.6→68.2%**，withExpected 从 8 增到 11；
+  剩余 miss = p-06（深夜测试结果）、p-07（映射粒度）、p-08（多 expected 人物探针）。
+
+### B. 失效链人工抽审（memory-audit 新增「可疑取代」）
+
+- 新增判据：后继文本与旧文本**零非通用内容 bigram 交集**或后继缺失 → 列出待人工确认；
+  在合成偏好库（31 条 superseded）上：**可疑 1/31**，人工核对是"爬山计划作废→骑车"的合理取代；
+  **悬空链 0、缺失效时间 0** → 未发现误失效。
+- `audit.md` 的「typed 旧值失效链」现在显示每条链的共享内容词数，便于复核。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 15 段）优先级：
-  1. **QQ gold/probe 修整**：按 gold-review 的"零内容词交集"清单修 probe 期望与问法，QQ 目标 r5 ≥0.70；
-  2. **answer-adequacy 指标化进 eval 报告**（raw / adequacy-adjusted 双列）；
-  3. **validity 人工抽审** 20 条（capped/deterministic 各 10），确认无误失效；
-  4. **live gold 扩充**（仅 4 条，miss 方差大）；
-  5. **门控接 CI**：默认对三源跑 `--gate-preset`，结果写进 baseline 文档。
+- 下一轮（Phase 2 第 16 段）优先级：
+  1. **QQ 剩余 3 个 miss**：p-06（深夜测试结果，floor/gate）、p-07（gold↔extracted 映射）、p-08（多 expected 人物探针）；
+  2. **answer-adequacy 指标化进 eval 报告**（raw / adequacy-adjusted 双列），负例口径固化；
+  3. **live gold 扩充**（仅 4 条，miss 方差 0–33%），基线重算；
+  4. **门控接 CI**：三源 `--gate-preset` 默认跑，结果写 baseline；
+  5. **validity 抽审扩大**：多跑 2 次合成 fixture，抽查 capped 日志与 deterministic 失效各 10 条。
 
 ## 4. 复跑
 

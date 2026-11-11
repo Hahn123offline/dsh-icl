@@ -55,6 +55,9 @@
 - QQ 的 r3=r5（正确块进 top3 一般也在 top5）、r1 方差最大；live 的 miss 方差大（0–33%），
   与 gold 只有 4 条、单条 miss 权重高有关。
 
+> 第 16 轮 gold/probe 修整后（m-0013 类型修正 + p-08 问法），QQ 同-run（cache 复用同一次 formation）
+> 变为 r1 68.2% / r3 68.2% / r5 68.2%、withExpected 11；上表 3 次 fresh 是修整前的值，修整后 fresh 待重跑。
+
 
 ## 3. 门控（已落地为 `--gate-preset`）
 

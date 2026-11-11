@@ -134,6 +134,18 @@ const recall = {
 // typed 层审计（v2 add 层）：事实/偏好/承诺的存量、软失效链、悬空 supersededBy。
 // 旧值失效是"软删"：记录还在、可追溯；这里检查链是否指向存在的后继、有多少条没有失效时间。
 const TYPED_NAMESPACES = ['fact', 'preference', 'commitment']
+// 失效链抽审：旧记录被取代时，后继文本至少应与旧文本共享一个非通用内容 bigram（咖啡→豆浆也共享"咖啡"）；
+// 一个都不共享 → 可疑（模型跨主题误取代）。抽审清单进 audit.md，人再确认。
+const GENERIC_CHAIN_BIGRAMS = new Set(['主人', '今天', '明天', '昨天', '早上', '晚上', '中午', '周末', '现在', '以前', '时候', '自己', '一个', '不能', '可以', '没有', '什么', '怎么', '还是', '已经', '还是', '就是'])
+const chainBigrams = (text) => {
+  const normalized = normalize(text)
+  const grams = new Set()
+  for (let i = 0; i + 1 < normalized.length; i += 1) {
+    const gram = normalized.slice(i, i + 2)
+    if (/^[\u4e00-\u9fff]{2}$/.test(gram) && !GENERIC_CHAIN_BIGRAMS.has(gram)) grams.add(gram)
+  }
+  return grams
+}
 const typedRows = allItems.filter((item) => TYPED_NAMESPACES.includes(item.namespace) && item.kind === 'block')
 const allKeyIndex = new Map()
 const bareKeyIndex = new Map()
@@ -151,15 +163,27 @@ const typed = {
   superseded: typedSuperseded.length,
   danglingChains: 0,
   missingInvalidationTime: typedSuperseded.filter((item) => !Number(item.data?.invalidatedAt ?? 0)).length,
+  suspiciousChains: [],
   chains: [],
 }
 for (const item of typedSuperseded) {
   const successorKey = item.data?.supersededBy == null ? null : String(item.data.supersededBy)
   const successor = successorKey ? allKeyIndex.get(`${item.namespace}:${successorKey}`) ?? bareKeyIndex.get(successorKey) : null
   if (!successor) typed.danglingChains += 1
+  const oldGrams = chainBigrams(item.text)
+  const newGrams = successor ? chainBigrams(successor.text) : new Set()
+  let shared = 0
+  for (const gram of oldGrams) if (newGrams.has(gram)) shared += 1
+  if (!successor || shared === 0) typed.suspiciousChains.push({
+    id: item.id, namespace: item.namespace, reason: successor ? '后继与旧文本零内容词交集' : '后继不存在',
+    text: String(item.text ?? '').slice(0, 100),
+    successorText: successor ? String(successor.text ?? '').slice(0, 100) : null,
+    supersededBy: successorKey,
+  })
   typed.chains.push({
     id: item.id, namespace: item.namespace, text: item.text,
     supersededBy: successorKey, successorExists: Boolean(successor),
+    sharedContentGrams: shared,
     invalidatedAt: fmt(item.data?.invalidatedAt ?? null),
   })
 }
@@ -310,7 +334,7 @@ lines.push('')
 lines.push('## 关键信号')
 lines.push('')
 lines.push(`- event block：**${eventBlocks.length}**（superseded **${supersededEventBlocks.length}**）；近重复对：**${eventDupes.length}**`)
-lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**`)
+lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**；可疑取代 **${typed.suspiciousChains.length}**`)
 lines.push(`- 形成来源：真人/QQ 背书块 **${provenance.humanBackedBlocks}**；纯自我活动块 **${provenance.selfSourceBlocks}**；证据解析 **${provenance.resolved}/${provenance.dayEvidence}**`)
 lines.push(`- person block：**${personBlocks.length}**；可疑 alias：**${personAliases.length}**`)
 lines.push(`- lexicon：**${lexiconStats.total}**；工具/框架味：**${lexiconStats.toolish.length}**；候选：**${lexiconStats.candidates}**`)
@@ -351,7 +375,15 @@ if (personAliases.length) {
 if (typed.superseded) {
   lines.push('## typed 旧值失效链', '')
   for (const chain of typed.chains.slice(0, 20)) {
-    lines.push(`- #${chain.id} ${chain.namespace}：${String(chain.text ?? '').slice(0, 60)} → ${chain.supersededBy ?? '?'}（后继${chain.successorExists ? '存在' : '缺失'}，${chain.invalidatedAt ?? '无时间'}）`)
+    lines.push(`- #${chain.id} ${chain.namespace}：${String(chain.text ?? '').slice(0, 60)} → ${chain.supersededBy ?? '?'}（后继${chain.successorExists ? '存在' : '缺失'}，共享内容词 ${chain.sharedContentGrams}，${chain.invalidatedAt ?? '无时间'}）`)
+  }
+  lines.push('')
+}
+if (typed.suspiciousChains.length) {
+  lines.push('## 可疑旧值失效（需人工确认）', '')
+  lines.push('> 判据：后继文本与旧文本零非通用内容 bigram 交集或后继缺失；并不一定是错，可能只是换了个说法。', '')
+  for (const chain of typed.suspiciousChains.slice(0, 20)) {
+    lines.push(`- #${chain.id} ${chain.namespace}（${chain.reason}）：${chain.text} → ${chain.successorText ?? '（缺失）'}`)
   }
   lines.push('')
 }
@@ -392,5 +424,6 @@ if (jsonOnly) {
   console.log(md)
 }
 db.close()
+
 
 
