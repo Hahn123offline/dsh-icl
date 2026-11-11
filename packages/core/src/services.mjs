@@ -778,6 +778,8 @@ export function createDeliveryService({ now = () => Date.now(), maxAttempts = 5 
           seq: Number.isFinite(seqNo) ? seqNo : null,
           tags: Array.isArray(source.tags) ? source.tags.map(String) : [],
           pierce: source.pierce === true || source.meta?.pierce === true,
+          // 信号元数据（QQ 信封等）要跟着投递条目走到 batch，bridge 才能给 raw 标记来源/说话人。
+          meta: source.meta && typeof source.meta === 'object' ? source.meta : null,
         },
         content: { text: String(content.text ?? ''), images: content.images ?? [] },
         batchKey: batchKey == null ? `${source.plugin ?? ''}:${source.activity ?? ''}:${channel}` : String(batchKey),

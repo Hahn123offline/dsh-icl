@@ -368,3 +368,59 @@ test('模型坏 JSON 会自动重试一次（不把整天记为失败）', async
   assert.equal(memory.query({ namespace: 'event', kind: 'block', limit: 5 }).length, 1)
 })
 
+
+test('Phase2 说话人元数据：day log 带 speaker，人物 note 直接按账号落库（不靠模型猜人名）', async () => {
+  const { host, memory, dream } = await setup({
+    call: async ({ messages }) => {
+      const system = String(messages?.[0]?.content ?? '')
+      if (system.includes('人物档案')) return JSON.stringify({ profile: '小白：QQ 私聊里说「在吗」的人。', aliases: [], ids: [], evidence: [] })
+      return '[]'
+    },
+  })
+  const t0 = NOON - 3_600_000
+  bindRaw(host, [
+    { id: 'q1', time: t0, text: '[QQ私聊·主人] 小白：在吗', role: 'user', sourceKind: 'qq_envelope', channel: 'qq:private:9001001', speaker: { kind: 'qq', value: '9001001', name: '小白' } },
+    { id: 'q2', time: t0 + 60_000, text: '[QQ私聊·主人] 小白：今天好累', role: 'user', sourceKind: 'qq_envelope', channel: 'qq:private:9001001', speaker: { kind: 'qq', value: '9001001', name: '小白' } },
+    { id: 'e1', time: t0 + 120_000, text: '【心跳】状态：醒着。', role: 'user' },
+  ])
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  const dayLog = memory.query({ namespace: 'day', kind: 'log', limit: 3 })[0]
+  assert.match(dayLog.text, /小白\(9001001\)：在吗/, `day log 行首应带说话人：${dayLog.text.split('\n')[0]}`)
+  assert.equal(dayLog.data.speakers[0]?.value, '9001001')
+  assert.equal(dayLog.data.channels[0], 'qq:private:9001001')
+  assert.equal(dayLog.data.sources[2], 'env', '心跳是 env，不进入形成材料')
+
+  const out = await dream.run({ now: NOON, jobs: ['people'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  const blocks = memory.query({ namespace: 'person', kind: 'block', limit: 10 })
+  const owner = blocks.find((b) => b.key === 'person:9001001')
+  assert.ok(owner, `应按账号建档 person:9001001：${JSON.stringify(blocks.map((b) => b.key))}`)
+  const notes = memory.query({ namespace: 'person', kind: 'note', limit: 20 })
+  assert.ok(notes.some((n) => String(n.data?.subject?.value) === '9001001' && /在吗/.test(n.text)), '说话人证据应落成 person note')
+})
+
+
+test('typed v2 add 层：events 顺带抽出的 facts/preferences/commitments 独立落库、可被 recall 找到', async () => {
+  const { host, memory, dream, tools } = await setup()
+  bindRaw(host, rawRows(2))
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'typed',
+    call: async () => JSON.stringify([{
+      summary: '说好周末去海边', body: '他说周末想去看海，但怕水，我们说好只在岸边走。', evidence: [1],
+      facts: ['主人怕水，但一直想去看海'],
+      preferences: ['主人不喜欢被勉强下水'],
+      commitments: ['说好周末陪他去海边，只在岸边走'],
+    }]),
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  const fact = memory.query({ namespace: 'fact', kind: 'block', limit: 5 })[0]
+  const pref = memory.query({ namespace: 'preference', kind: 'block', limit: 5 })[0]
+  const commit = memory.query({ namespace: 'commitment', kind: 'block', limit: 5 })[0]
+  assert.ok(fact && pref && commit, '三类 typed 记录都应落库')
+  assert.match(fact.text, /怕水/)
+  assert.ok((fact.data?.evidence ?? []).length >= 1, 'typed 记录必须带证据')
+  const recalled = await tools.recall.execute({ query: '主人怕水吗' })
+  assert.match(recalled.text, /怕水/, `recall 应能搜到 typed 事实：${recalled.text}`)
+})

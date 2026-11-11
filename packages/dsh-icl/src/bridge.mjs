@@ -131,6 +131,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     timer: null,
     raw: [],
     rawSeen: new SeqSet(),
+    // 投递通知的"一次性来源映射"：冷启动/steer 时按文本登记来源与 QQ 信封，
+    // appendRaw 收到对应 user/message 时取走并写成 sourceKind/channel/speaker。
+    noticeSources: new Map(),
     injected: new Set(),
     // facts 快照节流：同一 turn 内各 step 复用第一份事实文本，最多 1 条快照/轮。
     // 依据：DSH 的 runtime-context 快照只 append 不 replace，step-heavy 回合（MC 可到 39 步）
@@ -474,6 +477,57 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
 
   /* ── 原文层：实时 session 事件，不扫文件 ───────────────── */
 
+  const NOTICE_SOURCE_TTL_MS = 10 * 60_000
+  const NOTICE_SOURCE_CAP = 200
+
+  /** 登记一条"投递通知"的来源；appendRaw 收到同一文本时取走（一次性）。 */
+  function noteNoticeSource(text, meta = {}) {
+    const key = String(text ?? '')
+    if (!key) return
+    state.noticeSources.set(key, { at: Date.now(), ...meta })
+    if (state.noticeSources.size > NOTICE_SOURCE_CAP) {
+      const oldest = [...state.noticeSources.entries()].sort((a, b) => Number(a[1]?.at ?? 0) - Number(b[1]?.at ?? 0))[0]
+      if (oldest) state.noticeSources.delete(oldest[0])
+    }
+  }
+  function takeNoticeSource(text) {
+    const key = String(text ?? '')
+    const hit = state.noticeSources.get(key)
+    if (!hit) return null
+    state.noticeSources.delete(key)
+    if (Date.now() - Number(hit.at ?? 0) > NOTICE_SOURCE_TTL_MS) return null
+    return hit
+  }
+  /** 一条 delivery batch 的来源与 QQ 信封（signal meta 在 entries[].source.meta）。 */
+  function noticeMetaOf(batch) {
+    const entries = Array.isArray(batch?.entries) ? batch.entries : []
+    const plugin = String(batch?.source?.plugin ?? entries[0]?.source?.plugin ?? entries[0]?.source?.id ?? 'icl')
+      .replace(/[^a-z0-9:_-]/gi, '') || 'icl'
+    const envelope = entries[0]?.source?.meta?.qq?.envelope ?? entries[0]?.meta?.qq?.envelope ?? null
+    return { plugin, ...(envelope ? { envelope } : {}) }
+  }
+  /** 通知来源 → raw.sourceKind；QQ 通知里有真人消息，其余是环境事件。 */
+  function sourceKindOfNotice(meta) {
+    return String(meta?.plugin ?? '') === 'qq' ? 'qq_envelope' : 'env'
+  }
+  /** QQ 信封 → raw 的 channel/speaker（形成阶段用它把人话挂到正确身份上）。 */
+  function envelopeFields(envelope) {
+    if (!envelope) return {}
+    const scope = String(envelope.scope ?? 'private')
+    const peerId = String(envelope.peerId ?? envelope.senderId ?? '')
+    const senderId = envelope.senderId == null ? '' : String(envelope.senderId)
+    const senderName = envelope.senderName == null ? '' : String(envelope.senderName)
+    const channel = scope === 'group'
+      ? `qq:group:${String(envelope.groupId ?? peerId)}`
+      : `qq:private:${peerId}`
+    return {
+      channel,
+      ...(senderId || senderName
+        ? { speaker: { kind: 'qq', value: senderId || senderName, ...(senderName ? { name: senderName } : {}) } }
+        : {}),
+    }
+  }
+
   function loadRaw() {
     if (!config.rawFile) return
     try {
@@ -492,11 +546,28 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
   function appendRaw(session, event) {
     const type = event?.type
     if (!['user/message', 'assistant/message', 'tool/result'].includes(type)) return
-    // DSH 的 user/message 里混着 runtime-context / skill-catalog 等"系统快照"。
-    // 只有 source.kind === 'user' 才是真的有人在说话；旧事件没有 source 时按 user 兼容。
+    const text = textOfEvent(event)
+    let sourceKind = null
+    let extra = {}
     if (type === 'user/message') {
       const kind = String(event?.data?.source?.kind ?? 'user')
-      if (kind !== 'user') return
+      // 先查"投递通知"映射：冷启动/steer 的通知也可能是 user/message，
+      // 其中有 QQ 真人消息（qq_envelope）或环境通知（env），必须按来源而不是按 kind 猜。
+      const notice = takeNoticeSource(text)
+      if (notice) {
+        sourceKind = sourceKindOfNotice(notice)
+        extra = envelopeFields(notice.envelope)
+      } else if (kind === 'user') {
+        // 真人直聊（含旧事件没有 source 的兼容路径）
+        sourceKind = 'human'
+      } else {
+        // runtime-context / skill-catalog 等系统快照：不是人说的话，不进原文层。
+        return
+      }
+    } else if (type === 'assistant/message') {
+      sourceKind = 'agent_visible'
+    } else if (type === 'tool/result') {
+      sourceKind = 'tool'
     }
     const key = `${session?.id ?? ''}:${event?.seq ?? ''}`
     if (event?.seq != null && state.rawSeen.has(key)) return
@@ -510,7 +581,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       type,
       name: String(event?.data?.name ?? event?.data?.tool ?? ''),
       sender: role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : (String(event?.data?.name ?? event?.data?.tool ?? '') || 'tool'),
-      text: textOfEvent(event),
+      text,
+      ...(sourceKind ? { sourceKind } : {}),
+      ...extra,
     }
     if (!row.text.trim()) return
     // 我们注入的每轮上下文不是用户说的话：不进原文层，免得做梦把它当成人话
@@ -781,7 +854,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return null
   }
 
-  async function callColdPrompt(sessionId, text) {
+  async function callColdPrompt(sessionId, text, noticeMeta = null) {
+    // 冷启动投递的文本会变成 user/message；先登记来源，appendRaw 收到时按通知分类
+    // （QQ 未读摘要=qq_envelope，其余=env），否则它会被当成用户直聊污染形成材料。
+    if (noticeMeta) {
+      noteNoticeSource(String(text ?? ''), noticeMeta)
+      noteNoticeSource(String(text ?? '').slice(0, 12000), noticeMeta)
+    }
     let hostApi = null
     try { hostApi = ctx.iclHost ?? (typeof ctx.get === 'function' ? ctx.get('iclHost') : null) } catch { /* 老 Host 没有该服务 */ }
     const direct = state.apiProxy?.sessions
@@ -832,7 +911,10 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
       return 0
     }
     try {
-      const result = await callColdPrompt(sessionId, text)
+      const plugins = [...new Set(batches.map((batch) => noticeMetaOf(batch).plugin).filter(Boolean))]
+      const envelope = batches.map((batch) => noticeMetaOf(batch).envelope).find(Boolean) ?? null
+      const noticeMeta = { plugin: plugins.length === 1 ? plugins[0] : 'icl', ...(envelope ? { envelope } : {}) }
+      const result = await callColdPrompt(sessionId, text, noticeMeta)
       if (!result.ok) {
         for (const batch of batches) host.services.delivery.nack(batch.id, result.out?.result?.error?.message ?? result.error ?? 'session.prompt rejected')
         report('delivery.prompt-no-agent', result.out?.result?.error ?? result.error ?? result.out)
@@ -862,7 +944,7 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     // 只有真正拿到可投递文本后才锁一次；否则首次 tick 可能早于 qq 插件就绪。
     state.coldUnreadTried = true
     try {
-      const result = await callColdPrompt(sessionId, text)
+      const result = await callColdPrompt(sessionId, text, { plugin: 'qq' })
       if (!result.ok) {
         state.coldUnreadTried = false
         report('delivery.prompt-unread', result.out?.result?.error ?? result.error ?? result.out)
@@ -899,6 +981,9 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         if (!text && !hasImages) { host.services.delivery.ack(batch.id); continue }
         try {
           const message = hasImages ? await noticeMessageWithImages(batch, text) : noticeMessage(batch, text)
+          // 登记"这条通知从哪来"：appendRaw 之后会把 source/sourceKind/QQ 信封写进原文行，
+          // 形成阶段才能把人话（qq_envelope）和环境通知（env）分开。
+          noteNoticeSource(textOfMessage(message), noticeMetaOf(batch))
           if (typeof state.agent.steer === 'function') {
             // 插件来源的 notice：空闲起一轮、运行中在下一个 step 边界注入，不是伪造 user。
             state.agent.steer(message)

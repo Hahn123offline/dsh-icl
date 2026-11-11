@@ -74,6 +74,52 @@ function daysOfEvidence(evidenceIds, indexes) {
   return days
 }
 
+function bigramsOf(text) {
+  const normalized = normalizeText(text)
+  const set = new Set()
+  for (let i = 0; i < normalized.length - 1; i += 1) set.add(normalized.slice(i, i + 2))
+  return set
+}
+
+/** part 的二元组有多大比例被 whole 覆盖（0..1）。 */
+function bigramRecallOf(part, whole) {
+  const a = bigramsOf(part)
+  if (!a.size) return 0
+  const b = bigramsOf(whole)
+  if (!b.size) return 0
+  let hit = 0
+  for (const gram of a) if (b.has(gram)) hit += 1
+  return hit / a.size
+}
+
+/**
+ * 文本匹配分：长 gold ↔ 短 extracted（typed 事实）时，Jaccard 天然很低，
+ * 但"短事实的措辞几乎全部出现在长 gold 里"就是命中。所以取三种口径的最大值：
+ *   1) 二元组 Jaccard（近似改写）；
+ *   2) 短 extracted 的二元组召回（≥0.6 才算有效，且规范化长度 ≥8 才允许）；
+ *   3) 长 extracted 覆盖 gold 的某个分句（gold 拆句后某句几乎全出现在 extracted 里）。
+ */
+function textMatchScore(goldText, blockText) {
+  const jaccard = textSimilarity(goldText, blockText)
+  const blockNormalized = normalizeText(blockText)
+  const goldNormalized = normalizeText(goldText)
+  let score = jaccard
+  if (blockNormalized.length >= 8) {
+    const recall = bigramRecallOf(blockText, goldText)
+    if (recall >= 0.6) score = Math.max(score, recall)
+  }
+  const clauses = String(goldText ?? '').split(/[。；！？，,;：:\n]/).map((part) => normalizeText(part)).filter((part) => part.length >= 8)
+  if (clauses.length && blockNormalized.length >= 8) {
+    let covered = 0
+    for (const clause of clauses) {
+      const recall = bigramRecallOf(clause, blockText)
+      if (recall >= 0.85) covered += 1
+    }
+    if (covered) score = Math.max(score, Math.min(0.95, 0.6 + 0.35 * (covered / clauses.length)))
+  }
+  return score
+}
+
 /** 非 person 类 gold 的候选评分（供贪心与失败诊断复用）。 */
 function scoreEventCandidate(gold, block, indexes) {
   const goldEvidence = (gold.evidence ?? []).map(String)
@@ -81,7 +127,7 @@ function scoreEventCandidate(gold, block, indexes) {
   const overlap = goldEvidence.filter((rowId) => blockRowIds.has(rowId))
   const coverage = goldEvidence.length ? overlap.length / goldEvidence.length : 0
   const fullCoverage = goldEvidence.length > 0 && overlap.length === goldEvidence.length
-  const textSim = textSimilarity(gold.text, `${block.text ?? ''} ${block.body ?? ''}`)
+  const textSim = textMatchScore(gold.text, `${block.text ?? ''} ${block.body ?? ''}`)
   let sameSubject = false
   if (/^person:/.test(String(gold.subject ?? ''))) {
     const entityId = indexes.entityIdOfSubject?.(gold.subject) ?? null
@@ -95,7 +141,9 @@ function scoreEventCandidate(gold, block, indexes) {
       || values.has(String(block.data?.subject?.value ?? ''))
   }
   const sameDay = Boolean(block.day) && daysOfEvidence(goldEvidence, indexes).has(block.day)
-  const eligible = fullCoverage || (overlap.length >= 1 && (textSim >= 0.3 || sameSubject || sameDay))
+  const eligible = fullCoverage
+    || (overlap.length >= 1 && (textSim >= 0.3 || sameSubject || sameDay))
+    || textSim >= 0.6
   return { overlap: overlap.length, coverage, textSim, sameSubject, sameDay, fullCoverage, eligible }
 }
 
@@ -117,7 +165,16 @@ export function matchFormation({ fixture, indexes, extracted }) {
 
   for (const gold of goldMemories) {
     const isPerson = String(gold.type) === 'person'
-    const pool = isPerson ? personBlocks : eventBlocks
+    // typed v2：事实/偏好/承诺/概念优先和同类型记录配，再回退到事件块（避免 v1 事件块把 typed gold 全占了）。
+    const pool = isPerson
+      ? personBlocks
+      : String(gold.type) === 'event'
+        ? eventBlocks
+        : [
+          ...(extracted ?? []).filter((item) => item.kindKey === String(gold.type)
+            || (String(gold.type) === 'concept' && item.kindKey === 'lexicon')),
+          ...eventBlocks,
+        ]
     let best = null
     for (const block of pool) {
       let score = null

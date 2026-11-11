@@ -149,6 +149,11 @@ export function apply(ctx) {
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
   try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
+  // typed memory v2 的 add 层（Phase 2，additive）：事实/偏好/承诺先作为普通可召回命名空间存在，
+  // 由 events 的同一次模型调用顺带抽出；v2 再升级为带 validity/entity 的正式记录。
+  for (const [id, label, halfLifeDays] of [['fact', '事实', 365], ['preference', '偏好', 180], ['commitment', '承诺', 60]]) {
+    try { memory.registerNamespace({ id, label, recallable: true, halfLifeDays, owner: 'dream' }) } catch { /* recall 先注册了也行 */ }
+  }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
   // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
@@ -343,7 +348,15 @@ export function apply(ctx) {
     // evidence→fixture rowId provenance 校验、形成阶段做来源门控都要用。
     const rowIds = Array.isArray(parts[0]?.data?.rowIds) ? parts[0].data.rowIds : []
     const sources = Array.isArray(parts[0]?.data?.sources) ? parts[0].data.sources : []
-    return { text, data: { times, rowIds, sources, parts: parts.length, day, omittedLines: Number(parts[0]?.data?.omittedLines ?? 0), totalLines: Number(parts[0]?.data?.totalLines ?? 0) } }
+    const speakers = Array.isArray(parts[0]?.data?.speakers) ? parts[0].data.speakers : []
+    const channels = Array.isArray(parts[0]?.data?.channels) ? parts[0].data.channels : []
+    return { text, data: { times, rowIds, sources, speakers, channels, parts: parts.length, day, omittedLines: Number(parts[0]?.data?.omittedLines ?? 0), totalLines: Number(parts[0]?.data?.totalLines ?? 0) } }
+  }
+
+  /** 行首 `[id]` 是 day log 的绝对行号；没有编号时退回拼接顺序。 */
+  function dayLineIdOf(line, index) {
+    const match = /^\[(\d+)\]/.exec(String(line ?? ''))
+    return match ? Number(match[1]) : index + 1
   }
 
   /**
@@ -357,25 +370,36 @@ export function apply(ctx) {
     const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
     const out = []
     for (let index = 0; index < lines.length; index += 1) {
-      const source = String(sources[index] ?? 'unknown')
+      const id = dayLineIdOf(lines[index], index)
+      const source = String(sources[id - 1] ?? sources[index] ?? 'unknown')
       if (!allow.has(source)) continue
       out.push(lines[index])
     }
     return out
   }
 
-  /** 形成材料行 → {id, line}；id 是 day log 的绝对行号（evidence 映射用）。 */
+  /** 形成材料行 → {id, line, source, at, speaker, channel}；id 是 day log 的绝对行号。 */
   function formationEntries(dayLog, allowed = profileSources) {
     const allow = new Set(allowed)
     const lines = String(dayLog?.text ?? '').split('\n')
-    const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
-    const times = Array.isArray(dayLog?.data?.times) ? dayLog.data.times : []
+    const data = dayLog?.data ?? {}
+    const sources = Array.isArray(data.sources) ? data.sources : []
+    const times = Array.isArray(data.times) ? data.times : []
+    const speakers = Array.isArray(data.speakers) ? data.speakers : []
+    const channels = Array.isArray(data.channels) ? data.channels : []
     const out = []
     for (let index = 0; index < lines.length; index += 1) {
-      const source = String(sources[index] ?? 'unknown')
+      const id = dayLineIdOf(lines[index], index)
+      const source = String(sources[id - 1] ?? sources[index] ?? 'unknown')
       if (!allow.has(source)) continue
-      const match = /^\[(\d+)\]/.exec(lines[index])
-      out.push({ id: match ? Number(match[1]) : index + 1, line: lines[index], source, at: Number(times[index]) || 0 })
+      out.push({
+        id,
+        line: lines[index],
+        source,
+        at: Number(times[id - 1]) || 0,
+        speaker: speakers[id - 1] ?? null,
+        channel: channels[id - 1] ?? null,
+      })
     }
     return out
   }
@@ -735,14 +759,25 @@ export function apply(ctx) {
     for (const r of rows) {
       const at = timeOfRow(r)
       if (at && (at < startMs || at >= endMs)) continue
-      const text = stripStructured(r.text)
+      const source = inferSource(r)
+      const speaker = r.speaker && typeof r.speaker === 'object'
+        ? { kind: String(r.speaker.kind ?? 'qq'), value: r.speaker.value == null ? '' : String(r.speaker.value), ...(r.speaker.name ? { name: String(r.speaker.name) } : {}) }
+        : null
+      let text = stripStructured(r.text)
+      // 有结构化 speaker 时剥掉 QQ 文本信封前缀：行首已经有"名字(QQ)"，正文里再带一遍是噪声。
+      if (source === 'qq_envelope' && speaker && (speaker.value || speaker.name)) {
+        text = text.replace(/^\[QQ[^\]]*\]\s*[^：:\n]{0,32}[：:]\s*/, '')
+      }
       if (!text) continue
       cleaned.push({
         at,
         sender: String(r.sender ?? '').slice(0, 24),
-        source: inferSource(r),
+        source,
         // 每个 raw 行一个稳定 id：评测要拿 evidence → fixture rowId 做 provenance 校验。
         rowId: r.id ?? r.rowId ?? (r.sessionId != null && r.seq != null ? `${r.sessionId}:${r.seq}` : null),
+        // bridge 采集到的会话/说话人元数据（QQ 通知带 envelope 时）：形成阶段用来把话挂到身份上。
+        channel: r.channel == null ? null : String(r.channel),
+        speaker,
         text,
       })
     }
@@ -750,7 +785,17 @@ export function apply(ctx) {
 
     // day log 是后续 events/people/lexicon 的原材料：单行截断 + 总量预算，
     // 超预算时保留头尾、中间显式省略；**编号仍是原话的绝对序号**（evidence 映射不丢）。
-    const renderLine = (x, i) => `[${i + 1}] ${hhmm(x.at || now)}${x.sender ? ` ${x.sender}` : ''}：${clipText(x.text)}`
+    // 有 speaker 元数据时把"名字(QQ)"写进行首，形成阶段才能把人话挂到身份上。
+    const speakerLabelOf = (x) => {
+      const speaker = x.speaker
+      if (speaker && (speaker.name || speaker.value)) {
+        const name = String(speaker.name ?? '').trim()
+        const value = String(speaker.value ?? '').trim()
+        return `${name || 'QQ'}${value && value !== name ? `(${value})` : ''}`
+      }
+      return x.sender
+    }
+    const renderLine = (x, i) => `[${i + 1}] ${hhmm(x.at || now)}${speakerLabelOf(x) ? ` ${speakerLabelOf(x)}` : ''}：${clipText(x.text)}`
     let lines = cleaned.map(renderLine)
     let total = lines.reduce((n, line) => n + line.length + 1, 0)
     let omittedLines = 0
@@ -795,10 +840,13 @@ export function apply(ctx) {
         data: {
           day, part: index + 1, parts: segments.length, lines: partLines.length,
           totalLines: cleaned.length, omittedLines, chars: partText.length,
-          // times/rowIds/sources 用完整数组（绝对行号 id-1 索引），每段都存一份，拼接后 evidence 映射不变。
+          // times/rowIds/sources/speakers/channels 用完整数组（绝对行号 id-1 索引），每段都存一份，
+          // 拼接后 evidence / speaker 映射不变。
           times: cleaned.map((x) => x.at),
           rowIds: cleaned.map((x) => x.rowId ?? null),
           sources: cleaned.map((x) => x.source),
+          speakers: cleaned.map((x) => x.speaker ?? null),
+          channels: cleaned.map((x) => x.channel ?? null),
         },
         now,
       })
@@ -848,7 +896,9 @@ export function apply(ctx) {
       '时间优先：先按"一段经历"分组——时间挨得很近、连续发生的笔记算同一次经历；',
       '再在这一次经历内部按话题合并。同一次连续经历里的碎片要放进同一块，不要拆开。',
       '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
-      '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
+      '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id],',
+      '  "facts": ["这次对话里出现的稳定事实（关于谁/关系/世界的陈述）"], "preferences": ["偏好、习惯、口味、雷点"], "commitments": ["答应过/还没了结的事（谁答应谁的、还没做的）"]}',
+      'facts/preferences/commitments 都是可选的：只有块里明确出现才写，每条一句话、能被同一批 evidence 支持，没有就省略这三个字段。',
       'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
       '如果材料里出现 n<数字> 开头的行，那是她主动记下的笔记，证据要写成对应的 n<数字>（例如 n12）；它们优先归入最相关的一块。',
       '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
@@ -880,6 +930,8 @@ export function apply(ctx) {
       }
     }
     const written = []
+    let typedWritten = 0
+    let typedMerged = 0
     const dayLines = dayLog ? dayLogIndex(dayLog) : null
     for (const block of blocks) {
       const summaryRaw = String(block?.summary ?? '').trim()
@@ -953,6 +1005,49 @@ export function apply(ctx) {
           now,
         })
         if (typeof memory.index === 'function') void memory.index(created.id, `${summary}\n${bodyChunks[index]}`)
+        if (index === 0) {
+          // typed memory v2 的 add 层：同一次模型调用顺带抽出的稳定事实/偏好/承诺。
+          // 每条独立落库（可召回、有证据），v2 再升级 validity/entity；先保证"事实不被事件块吞掉"。
+          for (const [field, namespace] of [['facts', 'fact'], ['preferences', 'preference'], ['commitments', 'commitment']]) {
+            const statements = Array.isArray(block?.[field]) ? block[field] : []
+            for (const rawStatement of statements.slice(0, 8)) {
+              const statement = String(rawStatement ?? '').trim().slice(0, 200)
+              if (statement.length < 4 || !evidenceFinal.length) continue
+              const similar = findSimilarTyped(namespace, statement)
+              if (similar) {
+                const mergedEvidence = dedupeEvidence([...(similar.data?.evidence ?? []), ...evidenceFinal])
+                const seenDays = [...new Set([...(Array.isArray(similar.data?.days) ? similar.data.days : [similar.data?.day]).filter(Boolean), day])]
+                memory.put({
+                  namespace, kind: 'block', key: similar.key, text: similar.text,
+                  data: { ...(similar.data ?? {}), evidence: mergedEvidence, days: seenDays, lastSeenDay: day, updatedAt: now },
+                  now,
+                })
+                typedMerged += 1
+                continue
+              }
+              const typedKey = `${namespace}:${day}:${hash(statement)}`
+              const typed = memory.put({
+                namespace,
+                kind: 'block',
+                key: typedKey,
+                text: statement,
+                data: {
+                  body: statement,
+                  evidence: evidenceFinal,
+                  day,
+                  days: [day],
+                  sourceEvent: baseKey,
+                  people: normalizePeople(block?.people),
+                  tags: normalizeTags(block?.tags),
+                  provisional: partEvidence.length === 0,
+                },
+                now,
+              })
+              if (typeof memory.index === 'function') void memory.index(typed.id, statement)
+              typedWritten += 1
+            }
+          }
+        }
         if (index === 0 && !evidenceFinal.length) {
           raiseQuestion({
             text: `「${summary.slice(0, 40)}」没有出处，以后问一下。`,
@@ -993,13 +1088,14 @@ export function apply(ctx) {
     const deferred = uncovered.length
     recordRun(day, 'events', {
       blocks: written.length, notes: notes.length, deferred, promoted: 0, uncovered: uncovered.length,
+      typedWritten, typedMerged,
       shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
       payloadChars: shardResults.reduce((n, row) => n + row.chars, 0),
       empty: written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok && row.blocks === 0),
     }, now)
     return {
       job: 'events', ok: true, blocks: written.length, notes: notes.length,
-      deferred, promoted: 0,
+      deferred, promoted: 0, typedWritten, typedMerged,
       shards: shards.length,
       failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards,
@@ -1023,7 +1119,8 @@ export function apply(ctx) {
           instruction: [
             '从当天原话里找出被提到的人，只记"这个人做了什么/说过什么"。',
             '输出 JSON 数组：[{"who":"名字","fact":"一句具体事实","source_id":1}]',
-            'who 用原话里的称呼，不要合并不同的人；没有就输出 []。只输出 JSON。',
+            'who 优先用行首“名字(QQ号)”括号里的 QQ 号；行首没有账号时才用称呼。',
+            '不要合并不同的人；没有就输出 []。只输出 JSON。',
           ].join('\n'),
           payload: dayLog ? `${formationLines(dayLog, groundTruthSources).join('\n')}\n\n（source_id 用上面每行开头的编号）` : '',
           maxTokens: 900,
@@ -1047,6 +1144,30 @@ export function apply(ctx) {
           })
         }
       } catch { /* 抽取失败就退回笔记路径 */ }
+
+      // 确定性说话人证据（Phase 2）：raw 行带 QQ envelope 的 speaker 元数据时，
+      // "谁说了什么"直接用元数据落 person note，不再依赖模型从文本猜人名。
+      try {
+        const index = dayLogIndex(dayLog)
+        for (const entry of formationEntries(dayLog, groundTruthSources)) {
+          const speakerValue = String(entry.speaker?.value ?? '').trim()
+          if (!/^\d{5,12}$/.test(speakerValue)) continue
+          const line = index.get(Number(entry.id))
+          const fact = String(line?.text ?? '').trim().slice(0, 160)
+          if (!fact) continue
+          const dup = memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' })
+            .some((n) => String(n.data?.subject?.value ?? '') === speakerValue && String(n.text).includes(fact.slice(0, 20)))
+          if (dup) continue
+          memory.put({
+            namespace: 'person', kind: 'note', text: fact, now,
+            data: {
+              subject: { kind: 'qq', value: speakerValue },
+              evidence: [dayEvidence(index, Number(entry.id))],
+              at: Number(line?.at ?? now),
+            },
+          })
+        }
+      } catch { /* speaker 证据失败不拖垮人物 job */ }
     }
     // 人物档案跨天：只要还没被消化，不管哪天的笔记都带上。
     const notes = consolidated(memory.query({ namespace: 'person', kind: 'note', limit: 500, order: 'desc' }))
@@ -1334,6 +1455,21 @@ export function apply(ctx) {
   /** 规范化正文：去空白/标点/大小写，便于判断两条块是不是同一段经历。 */
   function normalizeBodyText(value) {
     return String(value ?? '').toLowerCase().replace(/\s+/g, '').replace(/[。！？!?，,；;：:、"'“”‘’（）()【】\[\]…—\-]/g, '')
+  }
+  /**
+   * typed 记录（事实/偏好/承诺）跨天去重：同一条事实反复被抽出时合并证据，
+   * 而不是每天新增一条（Phase 2 实测：5 天抽出 53 条 fact，其中 32.8% 是近重复）。
+   */
+  function findSimilarTyped(namespace, statement) {
+    const normalized = normalizeBodyText(statement)
+    if (normalized.length < 6) return null
+    for (const row of memory.query({ namespace, kind: 'block', limit: 200, order: 'desc' })) {
+      if (row.data?.superseded === true) continue
+      const other = normalizeBodyText(row.text)
+      if (other.length < 6) continue
+      if (other.includes(normalized) || normalized.includes(other) || bigramJaccard(normalized, other) >= 0.78) return row
+    }
+    return null
   }
   function bigramJaccard(a, b) {
     const grams = (text) => { const out = new Set(); for (let i = 0; i < text.length - 1; i += 1) out.add(text.slice(i, i + 2)); return out }

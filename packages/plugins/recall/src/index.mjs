@@ -35,6 +35,11 @@ const CATEGORIES = Object.freeze({
   event: { label: '事件', halfLifeDays: 30 },
   person: { label: '人物', halfLifeDays: 180 },
   slang: { label: '梗', halfLifeDays: 90 },
+  // typed memory v2（Phase 2 起，additive）：稳定事实/偏好/承诺各一层，
+  // 由 dream 的 events 同一次模型调用顺带抽出；先作为普通可召回命名空间存在，v2 再升级存储。
+  fact: { label: '事实', halfLifeDays: 365 },
+  preference: { label: '偏好', halfLifeDays: 180 },
+  commitment: { label: '承诺', halfLifeDays: 60 },
   // 语料（lexicon）：memory 里注册为 recallable:true，但旧 recall 的 CATEGORIES 没列它，
   // 于是"她永远搜不到自己学过的词"（审计 F8）。这里纳入检索；是否值得注入由相关性门槛决定。
   lexicon: { label: '语料', halfLifeDays: 180 },

@@ -1468,3 +1468,52 @@ test('桥：消息 source.summary 按码点截断，不产生孤立 surrogate（
     assert.deepEqual(bad, [], 'summary 不能有孤立 surrogate')
   } finally { bridge.dispose() }
 })
+
+test('桥：QQ 通知进原文层时带 sourceKind/channel/speaker（形成阶段不再当普通用户话）', async () => {
+  const root = tempRoot('raw-notice-source')
+  const host = await hostWithMemory(root)
+  const bridge = createDshBridge({ ctx: fakeCtx(), host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({
+      source: { plugin: 'qq', meta: { qq: { envelope: { channel: 'qq', scope: 'private', senderId: '9001', senderName: '小白', peerId: '9001', activity: 'qq:private:9001', at: Date.now() } } } },
+      content: { text: '[QQ私聊·主人] 小白：在吗' },
+    })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    const message = agent.steers[0]
+    bridge.onEvent(session, { type: 'user/message', seq: 10, time: Date.now(), data: { message, source: message.source } })
+    const rows = await host.services.raw.list({ limit: 10 })
+    const row = rows[rows.length - 1]
+    assert.equal(row.sourceKind, 'qq_envelope')
+    assert.equal(row.channel, 'qq:private:9001')
+    assert.equal(row.speaker?.value, '9001')
+    assert.equal(row.speaker?.name, '小白')
+  } finally { bridge.dispose() }
+})
+
+test('桥：环境通知进原文层标 env（形成阶段会被剔除）', async () => {
+  const root = tempRoot('raw-env-source')
+  const host = await hostWithMemory(root)
+  const bridge = createDshBridge({ ctx: fakeCtx(), host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  try {
+    host.services.delivery.push({ source: { plugin: 'time' }, content: { text: '该睡了' } })
+    assert.deepEqual(await bridge.tick(), { sent: 1 })
+    bridge.onEvent(session, { type: 'user/message', seq: 11, time: Date.now(), data: { message: agent.steers[0], source: agent.steers[0].source } })
+    const rows = await host.services.raw.list({ limit: 10 })
+    assert.equal(rows[rows.length - 1].sourceKind, 'env')
+  } finally { bridge.dispose() }
+})
+

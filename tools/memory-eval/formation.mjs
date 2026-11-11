@@ -25,6 +25,9 @@ function extractItems({ indexes, exported, provenance, entityMatcher, selfEntity
     if (item.namespace === 'event' && item.kind === 'block') kindKey = 'event'
     else if (item.namespace === 'person' && item.kind === 'block') kindKey = 'person'
     else if (item.namespace === 'lexicon' && item.kind === 'term') kindKey = 'lexicon'
+    // typed memory v2 的 add 层（Phase 2）：事实/偏好/承诺是独立记录，单独计入 formation。
+    else if (['fact', 'preference', 'commitment'].includes(item.namespace) && item.kind === 'block') kindKey = item.namespace
+    else if (item.namespace === 'slang' && item.kind === 'block') kindKey = 'concept'
     if (!kindKey) continue
     // 长正文拆块（event parts）是同一块的延续，不重复计入 extracted；单独报数。
     if (Number(item.data?.parts?.part) > 1) { aux.continuationParts += 1; continue }
