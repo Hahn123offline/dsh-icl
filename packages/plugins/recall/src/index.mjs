@@ -423,13 +423,23 @@ export function apply(ctx) {
         // 内容词门槛：只拦"弱相似 + 内容词完全没出现"的情况（强语义命中 sim≥0.55 不受限）。
         // 没有这道门槛时，「主人今天穿的什么颜色衣服」会因为"主人"高频词面把不相关记忆当答案。
         // 例外：top1 明显领先 top2（≥1.3×）说明确实有一条更像的，即使措辞换过（颜色 vs 蓝色）也放行。
+        // 放宽二轮（relaxedPass）时只看最靠前的 3 条：低置信候选里混进一条含内容词的泛记忆，
+        // 不能反过来替整组"凑数"（live 的"午饭吃了什么"实测过）。
         const topSim = Number(candidates[0]?.sim ?? 0)
         const secondSim = Number(candidates[1]?.sim ?? 0)
-        const clearLeader = topSim >= 0.3 && (secondSim === 0 || topSim >= secondSim * 1.3)
+        // 单条"领先者"的放行规则：无嵌入时字面相似度天然偏低，单条命中即可信（颜色→蓝色的换措辞）；
+        // 有嵌入时只有"放宽二轮"的单条才放行，严格轮的单条仍要过内容词门槛
+        // （否则正文泛词会把"午饭吃了什么"这类没答案的问题凑上）。
+        let embeddedIndex = false
+        try { embeddedIndex = Boolean(memory.stats?.()?.embedded) } catch { embeddedIndex = false }
+        const clearLeader = topSim >= 0.3 && secondSim === 0 && (!embeddedIndex || relaxedPass)
+        const gateSample = relaxedPass ? 3 : 20
         const contentOk = !question || topSim >= 0.55 || clearLeader
           || hasContentSignal(question, [
-            ...candidates.slice(0, 20).flatMap((entry) => [entry.item.text, entry.item.data?.body ?? '']),
-            ...pendingNotes.slice(0, 20).map((entry) => entry.item.text),
+            // 门槛只看摘要（text）：正文更啰嗦，几乎总能蹭到一两个内容词（live"午饭吃了什么"
+            // 实测被正文里的"吃了"放进来）；正文只参与排序，不参与"算不算相关"。
+            ...candidates.slice(0, gateSample).map((entry) => entry.item.text),
+            ...pendingNotes.slice(0, gateSample).map((entry) => entry.item.text),
           ])
         const usableCandidates = contentOk ? candidates : []
         const usableNotes = contentOk ? pendingNotes : []

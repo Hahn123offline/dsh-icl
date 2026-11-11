@@ -167,6 +167,12 @@ live 4 条无问题——评测信噪比瓶颈在"probe 覆盖/gold 完整性"�
 validity 每日上限（≤4 条、同类型）fresh 复测：合成偏好 fixture R 78.6%、失效链结论不变
 （旧偏好仅历史块、旧承诺同类型 stale 1 例为部分匹配误判），未出现"该失效没失效"。
 
+**Phase 2 第 9 段（第 10 轮，本轮）**：按 gold-review 清单补 probe（focus 19 个、QQ 14 个）；
+memory.search 字面通道改看"摘要+正文"（事件块 body 才有用户问法）→ focus r1 31.3→37.5%、r3 75→81.3%，
+QQ r1 62.5→70.8%；内容词门槛精修（只看摘要、放宽轮只看前 3 条、单条领先者规则区分有无嵌入），
+live 负例"午饭吃了什么"恢复"没找到"。补 probe 后暴露下一轮目标：同一天同主题重排、关系类召回、
+person 多块 parse、answer-adequacy。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

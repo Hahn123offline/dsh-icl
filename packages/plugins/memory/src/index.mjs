@@ -324,18 +324,21 @@ export function apply(ctx) {
       const scored = []
       for (const row of rows) {
         const item = rowToItem(row)
+        // 字面通道看"摘要 + 正文"：事件块的正文比一行 summary 更接近用户问法
+        // （"她看到了哪些奇怪账号"→正文里才有大肥鱼家族/游戏角色这些词）。
+        const lexicalText = `${item.text ?? ''}\n${String(item.data?.body ?? item.data?.profile ?? item.data?.narrative ?? '')}`.slice(0, 1500)
         let sim = 0
         if (qvec) {
           const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
           const cos = hit ? cosine(qvec, new Float32Array(new Uint8Array(hit.vec).buffer)) : 0
           // 混合：向量语义 + 字面命中。只靠向量时，"他怕什么"会输给
           // 其他看起来也很相似的块；字面命中能把真正写着那件事的块拉上来。
-          const lex = needle ? bigramOverlap(item.text, needle) : 0
+          const lex = needle ? bigramOverlap(lexicalText, needle) : 0
           sim = 0.7 * cos + 0.3 * lex
         } else if (needle) {
           // 没有嵌入时的退化：字面命中之外，用二元组重叠度估一个相似度，
           // 否则「他怕什么」永远找不到「怕水」。
-          const a = bigrams(item.text)
+          const a = bigrams(lexicalText)
           const b = bigrams(needle)
           let inter = 0
           for (const g of b) if (a.has(g)) inter++
@@ -345,7 +348,7 @@ export function apply(ctx) {
         }
         // 精确串命中：路径/文件名/数字，加一个强权重（不靠语义猜）。有/无嵌入都生效。
         if (literal.length) {
-          const exact = literalHits(item.text, literal)
+          const exact = literalHits(lexicalText, literal)
           if (exact) sim = Math.min(1, sim + 0.5 * (exact / literal.length))
         }
         if (sim <= 0) continue
