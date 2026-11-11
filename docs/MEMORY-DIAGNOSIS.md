@@ -130,6 +130,11 @@ formation matched 18→27/32、recall 56.3%→**84.4%**、dup 1.0%、provenance 
 检索两段验证：seed=gold（只测检索）r1 79%/r3 83%/MRR 0.882/falseInjection 0；
 seed=formation（端到端）r3 50%——下一轮修"形成→检索"的排序/多样性/person 路径。
 
+**Phase 2 第 3 段（第 4 轮，本轮）**：形成→检索桥——`memory.search` 加时间旅行保护（不返回未来记忆）、
+评测 replay 时间对齐（当天 00:00 建库，同日探针可见）、person 画像最多占 1 条召回配额、低置信命中标 `[记得不太清]`、
+recall minSim 按两套数据重标定为 0.45（seed=gold r5 83.3%/falseInjection 0；端到端 r3/r5 50%→66.7%、miss 50%→33.3%）。
+剩余失败可定位：多跳长问句需查询改写、1 条 gold/probe 时间错位、person 多块 parse、负例内容词门槛 → 下一轮。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
