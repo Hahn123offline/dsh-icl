@@ -1,5 +1,9 @@
 # 记忆与做梦
 
+> ⚠️ **2026-11-11 起本文部分内容已过时**（代码审计发现 14 处失准，见 `docs/MEMORY-CODE-AUDIT.md §0.2`）。
+> 当前以 `docs/MEMORY-DIAGNOSIS.md`（根因/路线）与 `docs/MEMORY-CODE-AUDIT.md`（代码事实）为准；
+> 本文保留作算法背景阅读，Phase 1 结束后按代码重写。
+
 > 读者：要改记忆逻辑、或排查"她记不住 / 记错"的开发者。/ 范围：`memory`、`recall`、`note`、`lexicon`、`whois`、`eager-recall`、`dream` 七个插件，加上它们共用的 `state/memory.db` 与原文层 `dsh-raw`。/ 最后核对：2026-11-03（对照 HEAD `d9b5f84`）。
 
 命名空间、打分公式、阈值、做梦七步、词汇层语义只在这份文件里写一遍。`tools` / `prompt` / `slots` / `raw` 的服务契约见 [ARCHITECTURE.md#3-服务契约](ARCHITECTURE.md#3-服务契约)，此处不重复。

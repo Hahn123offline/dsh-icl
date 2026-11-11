@@ -84,7 +84,10 @@ const tokens = {
   byDay: rows("SELECT json_extract(data,'$.day') AS day, COUNT(*) AS c FROM mem_items WHERE namespace='event' AND kind='block' GROUP BY day ORDER BY day"),
 }
 
-const eventBlocks = rows("SELECT * FROM mem_items WHERE namespace='event' AND kind='block' ORDER BY created_at ASC").map((row) => ({ ...row, data: parseData(row.data) }))
+const eventBlocksAll = rows("SELECT * FROM mem_items WHERE namespace='event' AND kind='block' ORDER BY created_at ASC").map((row) => ({ ...row, data: parseData(row.data) }))
+// superseded 是软删（清理轮合并掉的旧块）：算进"块数/近重复"会系统性高估重复问题。
+const supersededEventBlocks = eventBlocksAll.filter((row) => row.data?.superseded === true)
+const eventBlocks = eventBlocksAll.filter((row) => row.data?.superseded !== true)
 const eventDupes = []
 for (let i = 0; i < eventBlocks.length; i += 1) {
   for (let j = i + 1; j < eventBlocks.length; j += 1) {
@@ -170,7 +173,44 @@ const dreamDuplicateRuns = [...dreamGroups.entries()]
 const dreamSkipPairs = [...dreamGroups.entries()]
   .filter(([, list]) => list.some((item) => String(item.key ?? '').startsWith('run:')) && list.some((item) => String(item.key ?? '').startsWith('skip:')))
   .map(([key, list]) => ({ key, entries: list.map((item) => ({ id: item.id, key: item.key, createdAt: fmt(item.createdAt) })) }))
+// 执行级审计（审计 F1/F12）：旧口径只看 run: 行数，upsert 会把两次执行压成一行。
+// 新账本 data.attempts[] 记录每次执行；status 区分 success/failed/skipped/running。
+const dreamRunRows = dreamRows.filter((item) => String(item.key ?? '').startsWith('run:'))
+const attemptsOf = (item) => (Array.isArray(item.data?.attempts) ? item.data.attempts : [])
+const dreamExecution = {
+  runs: dreamRunRows.length,
+  byStatus: Object.fromEntries(['success', 'failed', 'skipped', 'running'].map((status) => [status, dreamRunRows.filter((item) => String(item.data?.status ?? 'success') === status).length])),
+  attemptTotal: dreamRunRows.reduce((sum, item) => sum + Math.max(1, attemptsOf(item).length), 0),
+  multiAttempt: dreamRunRows.filter((item) => attemptsOf(item).length > 1).map((item) => ({ key: item.key, attempts: attemptsOf(item).map((attempt) => ({ status: attempt?.status ?? null, at: attempt?.startedAt ? fmt(attempt.startedAt) : null, error: attempt?.error ?? null })) })),
+  failedAttempts: dreamRunRows.reduce((sum, item) => sum + attemptsOf(item).filter((attempt) => attempt?.status === 'failed').length, 0),
+  inFlightLeaks: dreamRunRows.filter((item) => String(item.data?.status) === 'running').map((item) => ({ key: item.key, startedAt: item.data?.startedAt ? fmt(item.data.startedAt) : null })),
+}
 const dayRows = allItems.filter((item) => item.namespace === 'day')
+// 形成来源审计（审计 F6）：把 event 块的 day 证据映射回 day log 的 sources 数组，
+// 看块到底是"真人说的话"还是"她自己的工具活动/环境通知"。
+const daySourceIndex = new Map()
+for (const item of dayRows) {
+  const match = /^day:(\d{4}-\d{2}-\d{2})/.exec(String(item.key ?? ''))
+  if (!match) continue
+  if (!daySourceIndex.has(match[1]) && Array.isArray(item.data?.sources)) daySourceIndex.set(match[1], item.data.sources)
+}
+const provenance = { dayEvidence: 0, resolved: 0, unresolved: 0, selfSourceBlocks: 0, humanBackedBlocks: 0, unresolvedBlocks: 0 }
+for (const block of eventBlocks) {
+  const evidence = Array.isArray(block.data?.evidence) ? block.data.evidence : []
+  const dayEntries = evidence.filter((entry) => entry?.type === 'day')
+  if (!dayEntries.length) { provenance.unresolvedBlocks += 1; continue }
+  const sources = daySourceIndex.get(String(block.data?.day ?? '')) ?? null
+  const resolvedSources = []
+  for (const entry of dayEntries) {
+    provenance.dayEvidence += 1
+    const source = sources ? sources[Number(entry.id) - 1] : null
+    if (source) { provenance.resolved += 1; resolvedSources.push(String(source)) } else provenance.unresolved += 1
+  }
+  if (resolvedSources.length) {
+    if (resolvedSources.every((source) => ['agent_visible', 'agent_internal', 'tool', 'env'].includes(source))) provenance.selfSourceBlocks += 1
+    if (resolvedSources.some((source) => source === 'human' || source === 'qq_envelope')) provenance.humanBackedBlocks += 1
+  }
+}
 const dayCoverage = {
   logs: dayRows.map((item) => ({ key: item.key, chars: String(item.text ?? '').length, createdAt: fmt(item.createdAt) })),
   dates: [...new Set(dayRows.map((item) => String(item.key ?? '').replace(/^day:/, '')))].sort(),
@@ -208,12 +248,12 @@ const report = {
   source: { db: dbPath, eager: eagerFile, sessionEvents: sessionEventsFile },
   namespaces: namespaces.map((row) => ({ id: row.id, label: row.label, recallable: Boolean(row.recallable), halfLifeDays: Number(row.half_life_days), owner: row.owner })),
   tokens,
-  event: { blocks: eventBlocks.length, duplicatePairs: eventDupes, byDay: tokens.byDay },
+  event: { blocks: eventBlocks.length, supersededBlocks: supersededEventBlocks.length, duplicatePairs: eventDupes, byDay: tokens.byDay, provenance },
   person: { blocks: personBlocks, aliasCandidates: personAliases },
   recall,
   note: noteStats,
   lexicon: lexiconStats,
-  dream: { runs: dreamRows.length, duplicateGroups: dreamDuplicateRuns, skipPairs: dreamSkipPairs, dayCoverage },
+  dream: { runs: dreamRows.length, execution: dreamExecution, duplicateGroups: dreamDuplicateRuns, skipPairs: dreamSkipPairs, dayCoverage },
   eager: eagerStats,
   rawComposition,
   memoryToolCalls,
@@ -234,12 +274,14 @@ for (const row of tokens.byNamespace) lines.push(`| ${row.namespace} / ${row.kin
 lines.push('')
 lines.push('## 关键信号')
 lines.push('')
-lines.push(`- event block：**${eventBlocks.length}**；近重复对：**${eventDupes.length}**`)
+lines.push(`- event block：**${eventBlocks.length}**（superseded **${supersededEventBlocks.length}**）；近重复对：**${eventDupes.length}**`)
+lines.push(`- 形成来源：真人/QQ 背书块 **${provenance.humanBackedBlocks}**；纯自我活动块 **${provenance.selfSourceBlocks}**；证据解析 **${provenance.resolved}/${provenance.dayEvidence}**`)
 lines.push(`- person block：**${personBlocks.length}**；可疑 alias：**${personAliases.length}**`)
 lines.push(`- lexicon：**${lexiconStats.total}**；工具/框架味：**${lexiconStats.toolish.length}**；候选：**${lexiconStats.candidates}**`)
 lines.push(`- note：**${noteRows.length}**；自动查词 note：**${noteStats.autoQuestionNotes.length}**`)
 lines.push(`- 有 recall 记录的记忆：**${recall.itemsWithRecall.length}**；最高 recall_count：**${recall.maxRecallCount}**`)
 lines.push(`- eager：**${eagerStats.events}** 次，注入 **${eagerStats.injected}** 条，命中 **${eagerStats.hits}** 条`)
+lines.push(`- dream 执行：**${dreamExecution.runs}** 个 job 账本，attempt 共 **${dreamExecution.attemptTotal}** 次，多 attempt **${dreamExecution.multiAttempt.length}**，失败 attempt **${dreamExecution.failedAttempts}**，滞留 running **${dreamExecution.inFlightLeaks.length}**`)
 lines.push(`- dream 重复 run 组：**${dreamDuplicateRuns.length}**；run+skip 的旧账：**${dreamSkipPairs.length}**`)
 lines.push('')
 if (rawComposition.length) {

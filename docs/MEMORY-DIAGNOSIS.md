@@ -86,7 +86,36 @@ live 只做影子记录（不打扰用户）；每周重放"英雄场景"（称�
 - 不直接改 live memory.db；不重启 DSH Desktop；不在当前 live 库上做算法基线。
 - 视觉/媒体记忆 v2 之前不专门扩展，先以文本为主。
 
-## 6. 文档索引
+## 6. Phase 1 进展（2026-11-11 晚，本会话）
+
+已完成并进 `master`（commit `43e72ef` / `f4c2e03` 之后）：
+
+| 项 | 结果 |
+|---|---|
+| dream 单飞 + 租约/attempt 账本 | 信号双触发第二个返回 `skipped:in-flight`；job 有 running/success/failed/skipped 终态与 attempts 记录；崩溃遗留 running 可过期重领。回归：`packages/core/test/memory-p0.test.mjs` F1/F3 |
+| 显式 remember 不被吞（F2） | 有 day log 时 note 也作为独立材料片（证据 `n<id>`）；只标被引用/被正文覆盖的 note，其余保持待消化可重试 |
+| 垃圾/空输出不当成功（F3） | `parseJsonStrict` 区分 empty/no-json/bad-json 与合法 `[]`；events/cleanup/lexicon/people 解析失败 = job 失败可重试 |
+| 跨人合并（F4） | 确定性去重只允许 event/slang 且要求同 day + 证据重叠；person 一律不参与算法合并（身份合并只走显式 alias） |
+| 身份链（F5） | 人物 subject 按 selfQQ/ownerQQ/ownerNames 归一；selfQQ 不允许挂到别人 ids；`aliases` 参与 findPerson；cleanup 先做**已知身份确定性归并**（主人/Hahn123 → person:3429502459）；event.people 显示名归一成 QQ |
+| 形成材料来源门控（F6） | wash 给每行打 `source`（human/qq_envelope/agent_visible/agent_internal/tool/env）+ `rowIds`；events/people/lexicon 只吃 human+qq_envelope+agent_visible，工具/环境/内部计划不进入形成材料 |
+| day 归属（F7） | 凌晨（默认 <4 点）触发自动整理"刚结束的那天"（`dream.dayCutHour`），修 11-07 整日丢失机制 |
+| 读取链（F8/F9/F10） | recall 可召回 lexicon；精确串加成在无嵌入时也生效；provisional 块在 recall/eager/whois 里显式标"存疑"；whois 用全部 ids/aliases 找最近事件；eager 不再注入已消化 note |
+| 语料闸门（R6） | 工具名/标识符（mcb_* / kebab-case / 带数字 ASCII 等）确定性拒绝，`skippedJargon` 入账 |
+| 审计口径（F12） | `tools/memory-audit.mjs` 排除 superseded 算块数/近重复，新增形成来源（human-backed/self-source/provenance）与 dream 执行级（attempt/失败/滞留 running）统计 |
+
+**live 复测（新增审计口径）**：29 个 event 块中 10 个已 superseded，存活 19 个，近重复对 **0**——
+旧结论"5 对未清理"是审计工具把软删块算进去导致的；真正的重复执行证据是账本 attempt/updated_at。
+provenance 0/101 是因为历史 day log 没有 `sources` 表（新数据开始有），不是块本身没证据。
+
+**测试**：全仓 895 tests / 894 pass / 1 skip（skip 为 ffmpeg 依赖样例）。
+
+**下一步（Phase 1 收尾 → Phase 2）**：
+1. 等 eval-harness / corpus-builder 交付后，跑三源 fixture 的 formation/retrieval 基线，写第一份改前/改后对照；
+2. 用基线标定 eager/recall 阈值与 lexicon/note 生命周期；
+3. bridge 侧补 raw 的 sourceKind/channel/speaker 元数据（现在靠 dream 侧文本/角色推断），让"谁在说、说给谁"成为一等公民；
+4. 开始 typed schema v2 设计（`docs/MEMORY-V2-DESIGN.md`），先在 lab shadow。
+
+## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
 - `docs/MEMORY-AUDIT.md`：live 数据审计（注意其"5 对重复未清理/12 组 run+skip"结论已被审计员修正，见 CODE-AUDIT §0.2）
