@@ -331,6 +331,7 @@ export function buildEvalMarkdown(evalJson) {
   lines.push('- raw-all 是真正的无门控基线（产品 formationProfile=raw-all），不再是评测侧模拟。')
   lines.push(`- retrieval：${evalJson.retrieval?.embedding ?? '未运行'}。`)
   lines.push('- echo 模型是确定性离线桩，只验证链路可执行与可复现，不代表模型质量；真实基线请用 `--model cloud`（走 prompt-hash 缓存）。')
+  lines.push('- cache.json 按 prompt hash 缓存；`--embed` / `--profile` 会改变形成过程中的记忆条目 id 序列，进而改变 prompt，因此不同 flag 组合的缓存不能互相复用（不是 bug，重跑同参数即可全命中）。')
   lines.push('')
   return lines.join('\n')
 }

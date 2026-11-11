@@ -90,10 +90,19 @@ export async function createEvalHost(options) {
   })
 
   // 嵌入插槽（--embed 时才有）：memory.search 走向量+字面混合；不绑定时插件自动退化为二元组。
+  // 注意返回形状：memory.embed 期望 `out[0]` 是向量数组（数组套数组），不是裸向量。
+  let pendingEmbeds = 0
   if (options.embedAdapter) {
     host.services.slots.bind('embed-text', {
       provider: String(options.embedAdapter.describe?.().provider ?? 'eval-embed'),
-      call: async (request = {}) => options.embedAdapter.embed(String(request.input ?? '')),
+      call: async (request = {}) => {
+        pendingEmbeds += 1
+        try {
+          return [await options.embedAdapter.embed(String(request.input ?? ''))]
+        } finally {
+          pendingEmbeds -= 1
+        }
+      },
     })
   }
 
@@ -156,7 +165,12 @@ export async function createEvalHost(options) {
     hostLog,
     mainRowCount: listedRows.length,
     contextRowCount: Math.max(0, searchRows.length - listedRows.length),
+    /** 等所有异步 void memory.index 完成的嵌入调用落地，避免关库时 pending promise 崩进程。 */
+    async drain() {
+      while (pendingEmbeds > 0) await new Promise((resolve) => setTimeout(resolve, 10))
+    },
     async dispose() {
+      await this.drain?.()
       for (const id of [...FORMED_PLUGIN_ORDER].reverse()) {
         try { host.disable(id) } catch { /* 注销失败不阻塞清理 */ }
       }

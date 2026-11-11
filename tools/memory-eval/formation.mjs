@@ -272,6 +272,8 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
         })),
         ...(result?.error ? { error: result.error } : {}),
       })
+      // --embed 时 dream 里有很多 `void memory.index(...)` 异步调用：每天收尾等一下，避免堆积/关库竞态。
+      if (embedAdapter) await hostBox.drain()
     }
     const exported = hostBox.shared.memory.exportAll?.()?.items ?? []
     const provenance = createProvenance(fixture, indexes, exported)
