@@ -236,6 +236,30 @@ export function apply(ctx) {
     return String(out ?? '').trim()
   }
 
+  /**
+   * 带一次重试的"必须拿到合法 JSON"调用。
+   * 审计后的实测：模型偶尔输出坏 JSON（synthetic 基线里 people/cleanup 各中过一次），
+   * 直接判失败会让当天人物/整理整块缺失；重试一次成本极低，且失败仍会如实落账。
+   */
+  async function askJson({ instruction, payload, maxTokens = 1200, where = 'dream', attempts = 2 } = {}) {
+    let last = { ok: false, error: 'empty' }
+    const tries = Math.max(1, Number(attempts) || 2)
+    for (let attempt = 0; attempt < tries; attempt += 1) {
+      const nudge = attempt === 0
+        ? ''
+        : '\n\n上一次输出无法解析为 JSON。只输出合法 JSON，不要解释，不要 Markdown 围栏。'
+      const raw = await ask({ instruction: `${instruction}${nudge}`, payload, maxTokens, where: `${where}#try${attempt + 1}` })
+      last = parseJsonStrict(raw)
+      if (last.ok) return last
+      if (last.error === 'empty') {
+        ctx.log({ level: 'warn', msg: 'dream.parse-retry', where, attempt: attempt + 1, error: 'empty' })
+      } else {
+        ctx.log({ level: 'warn', msg: 'dream.parse-retry', where, attempt: attempt + 1, error: last.error })
+      }
+    }
+    return last
+  }
+
   function consolidated(notes) {
     return notes.filter((n) => n.data?.consolidated !== true)
   }
@@ -381,6 +405,16 @@ export function apply(ctx) {
     if (kind === 'name') {
       const known = knownIdentityByName(value)
       if (known) return known
+      // 已有档案的 ids/aliases 也是身份证据：同一个称呼再来时归到已有账号主体，不靠模型猜。
+      try {
+        const found = memory.findPerson({ name: value })
+        const person = found.people?.[0]
+        const subject = person?.data?.subject
+        if (found.exact && subject?.kind === 'qq' && subject.value && String(subject.value) !== value) {
+          if (selfQQ && String(subject.value) === selfQQ) return { kind, value, role: 'other' }
+          return canonicalSubject({ kind: 'qq', value: String(subject.value) })
+        }
+      } catch { /* 读取失败按未知名处理 */ }
     }
     return { kind, value, role: 'other' }
   }
@@ -824,7 +858,7 @@ export function apply(ctx) {
     for (let i = 0; i < shards.length; i += 1) {
       const payload = `${shards[i].join('\n')}${hint}`
       try {
-        const out = parseJsonStrict(await ask({ instruction, payload, where: `events#${i + 1}` }))
+        const out = await askJson({ instruction, payload, where: `events#${i + 1}` })
         // 空输出/垃圾 JSON 是失败，不是"今天没事"；否则当天会被记成功、note 被标已消化、永不重试。
         if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
         const parsed = out.value
@@ -1076,9 +1110,9 @@ export function apply(ctx) {
       ].filter(Boolean).join('\n\n'), 'people-materials')
       if (context.length >= maxPayloadChars - 32) degradedPeople = true
 
-      let out = null
+      let parsedOut = null
       try {
-        out = await ask({
+        parsedOut = await askJson({
           instruction: [
             '你在写一份人物档案（整块重写）。读者是你自己，下次看到它要能认出这是谁。',
             '',
@@ -1110,13 +1144,13 @@ export function apply(ctx) {
             '· claims：把 profile 里的每一句具体陈述拆开，各自带自己的 evidence；无法归因的就不要写进去。',
           ].join('\n'),
           payload: context,
+          where: 'people',
         })
       } catch (error) {
         return { job: 'people', ok: false, qq: identityLabel, error: String(error?.message ?? error) }
       }
       // 空输出/垃圾 JSON 不再当成"模型没写"：按失败计，让人物档案下次重试；
       // 只有合法 `{}`（value 为空对象）才走薄档案兜底。
-      const parsedOut = parseJsonStrict(out)
       if (!parsedOut.ok) throw new Error(`模型输出不可解析：${parsedOut.error}`)
       const parsed = parsedOut.value[0]
       let profile = String(parsed?.profile ?? '').trim()
@@ -1524,7 +1558,8 @@ export function apply(ctx) {
 
     let plan = null
     try {
-      const out = parseJsonStrict(await ask({
+      const out = await askJson({
+        where: 'cleanup',
         instruction: [
           '你在整理已有的记忆块。不新增事实，只合并/去重/改写。',
           '输出一个 JSON 对象：',
@@ -1545,7 +1580,7 @@ export function apply(ctx) {
         ].join('\n'),
         payload,
         maxTokens: 1500,
-      }))
+      })
       // 空输出/垃圾 JSON = 失败（当天可重试），不能记成"整理成功但 0 操作"。
       if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
       plan = out.value
@@ -1773,17 +1808,23 @@ export function apply(ctx) {
         'source_id 必须是你判断所依据的那条 <message> 的 source_id（整数），不能编。',
         'meaning 绝不能猜。没有就输出 []。只输出 JSON。',
             ].join('\n')
-      const raw = await ctx.slots.call(slot, {
-        messages: [
-          { role: 'system', content: rules },
-          { role: 'user', content: chatLines.slice(0, 8000) },
-        ],
-        maxTokens: 900,
-      })
-      const out = parseJsonStrict(raw)
+      let lastError = 'empty'
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const nudge = attempt === 0 ? '' : '\n\n上一次输出无法解析为 JSON。只输出合法 JSON，不要解释。'
+        const raw = await ctx.slots.call(slot, {
+          messages: [
+            { role: 'system', content: `${rules}${nudge}` },
+            { role: 'user', content: chatLines.slice(0, 8000) },
+          ],
+          maxTokens: 900,
+        })
+        const out = parseJsonStrict(raw)
+        if (out.ok) { items = out.value; lastError = null; break }
+        lastError = out.error
+        ctx.log({ level: 'warn', msg: 'dream.parse-retry', where: 'lexicon', attempt: attempt + 1, error: out.error })
+      }
       // 空输出/垃圾 JSON 是失败：当天不记"成功但没学到词"，留待下一次触发重试。
-      if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
-      items = out.value
+      if (lastError) throw new Error(`模型输出不可解析：${lastError}`)
     } catch (error) {
       return { job: 'lexicon', ok: false, error: String(error?.message ?? error) }
     }
@@ -2067,5 +2108,6 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 

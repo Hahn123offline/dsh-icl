@@ -319,7 +319,7 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
   })
   const out = await host.shared.get('dream').run({ now, jobs: ['wash', 'lexicon'] })
   const lex = out.results.find((row) => row.job === 'lexicon')
-  assert.equal(lex.ok, true)
+  assert.equal(lex.ok, true, JSON.stringify(lex))
   assert.equal(lex.learned, 1, JSON.stringify(lex))
   assert.ok(lex.skippedJargon >= 3, JSON.stringify(lex))
   const terms = host.shared.get('memory').query({ namespace: 'lexicon', kind: 'term', limit: 10 }).map((r) => r.data?.term)
@@ -327,4 +327,44 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
 })
 
 
+
+
+test('F5 别名解析：已有档案的 alias 再来时归到已有账号主体（不拆 person:name:白哥）', async () => {
+  // 用 setup 的 dream 跑 people：模型返回合法档案
+  const { dream: d2, memory: m2 } = await setup({
+    dreamConfig: IDENTITY,
+    call: async () => JSON.stringify({ profile: '白哥：阿澈在群里这么叫 TA，常被替打卡。', aliases: ['白哥'], ids: [], evidence: [] }),
+  })
+  m2.put({
+    namespace: 'person', kind: 'block', key: 'person:9000000001',
+    text: '阿澈：群里叫主人「白哥」的人。',
+    data: { subject: { kind: 'qq', value: '9000000001' }, qq: '9000000001', ids: [{ kind: 'qq', value: '9000000001' }], aliases: ['白哥', '阿澈'], profile: '阿澈：群里叫主人「白哥」的人。' },
+    now: NOON,
+  })
+  m2.put({ namespace: 'person', kind: 'note', text: '白哥今天没出来，阿澈替他打卡。', data: { subject: { kind: 'name', value: '白哥' } }, now: NOON + 1000 })
+  const out = await d2.run({ now: NOON, jobs: ['people'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  const blocks = m2.query({ namespace: 'person', kind: 'block', limit: 10 })
+  assert.ok(blocks.every((b) => b.key !== 'person:name:白哥'), `不应再拆名字块：${JSON.stringify(blocks.map((b) => b.key))}`)
+  assert.ok(blocks.some((b) => b.key === 'person:9000000001'))
+})
+
+test('模型坏 JSON 会自动重试一次（不把整天记为失败）', async () => {
+  const { host, memory, dream } = await setup()
+  bindRaw(host, rawRows(2))
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  let calls = 0
+  host.services.slots.bind('dream-chat', {
+    provider: 'flaky-json',
+    call: async () => {
+      calls += 1
+      return calls === 1 ? '我看看……（不是 JSON）' : JSON.stringify([{ summary: '重试后成块', body: '坏 JSON 重试一次。', evidence: [1] }])
+    },
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.ok, true, JSON.stringify(out.results[0]))
+  assert.equal(out.results[0].blocks, 1)
+  assert.ok(calls >= 2, '应发生一次解析重试')
+  assert.equal(memory.query({ namespace: 'event', kind: 'block', limit: 5 }).length, 1)
+})
 
