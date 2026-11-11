@@ -217,6 +217,13 @@ eval.json/eval.md（raw falseInjection 与 adequacy-adjusted 并列；QQ 实测 
 live 12/10）；live 复测 formation R 8/8=100%，端到端 r1 60/r3 80/r5 90%、miss 10%、adequacy 0。
 下一轮：QQ 剩 3 miss、三源 fresh 方差复跑、validity 抽审扩大、门控接 CI、typed entity 层。
 
+**Phase 2 第 18 段（第 19 轮，本轮）**：修内容词门槛取样 bug（原来看重排后 top N，意图加分把
+含内容词的 fact 挤出采样区 → "有 30–80 条候选却返回空"；改为看加分前 top100 全量）；新增
+`recall.empty-after-filter` 可观测日志。三源复测：focus r5 100%/miss 0、QQ r5 72.7%/miss 18.2%、
+live r1 70%/r5 90%/miss 10%；raw falseInjection 在 QQ/live 升到 100%（返回相关记忆），但 adequacy
+judge 三源全部判"提到但没答"→ adequacy-adjusted false injection = 0，QQ/live 门控改用 adequacy 口径。
+下一轮：QQ 剩 2 miss、三源 fresh 方差复跑、validity 抽审扩大、门控接 CI、typed entity 层。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

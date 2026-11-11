@@ -483,6 +483,14 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         const m = retrieval.metrics
         write(`retrieval（seed=${options.seed}）：recall@1=${pct(m.recallAt1)} recall@3=${pct(m.recallAt3)} recall@5=${pct(m.recallAt5)} MRR=${m.mrr == null ? '—' : m.mrr.toFixed(3)} miss=${pct(m.missRate)} falseInjection=${pct(m.falseInjectionRate)}`)
       }
+      if (options.debug) {
+        const recallLogs = logs.filter((row) => String(row.msg ?? '').startsWith('recall.'))
+        for (const entry of recallLogs.slice(-30)) {
+          const brief = { ...entry }
+          delete brief.plugin
+          write(`[recall.${entry.level ?? 'info'}] ${entry.msg} ${JSON.stringify(brief).slice(0, 320)}`)
+        }
+      }
     }
     let answerAdequacy = null
     if (options.adequacy && retrieval) {

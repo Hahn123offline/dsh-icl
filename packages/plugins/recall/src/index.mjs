@@ -475,6 +475,9 @@ export function apply(ctx) {
         }
         const candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
+        // 把写着内容词的 fact 挤出采样区，导致明明有相关词却被判"没找到"（QQ p-05 实测）。
+        const gateCandidateTexts = candidates.slice(0, 100).map((entry) => entry.item.text)
         // 日期加分：问句带了"昨天/10月25日"这类日期时，同一天落库的记忆优先（只加分不硬过滤）。
         const queryDay = question ? parseQueryDay(question, now) : null
         if (queryDay && candidates.length) {
@@ -556,12 +559,12 @@ export function apply(ctx) {
         let embeddedIndex = false
         try { embeddedIndex = Boolean(memory.stats?.()?.embedded) } catch { embeddedIndex = false }
         const clearLeader = topSim >= 0.3 && secondSim === 0 && (!embeddedIndex || relaxedPass)
-        const gateSample = relaxedPass ? 8 : 20
+        const gateSample = gateCandidateTexts.length
         const contentOk = !question || topSim >= 0.55 || clearLeader
           || hasContentSignal(question, [
             // 门槛只看摘要（text）：正文更啰嗦，几乎总能蹭到一两个内容词（live"午饭吃了什么"
             // 实测被正文里的"吃了"放进来）；正文只参与排序，不参与"算不算相关"。
-            ...candidates.slice(0, gateSample).map((entry) => entry.item.text),
+            ...gateCandidateTexts,
             ...pendingNotes.slice(0, gateSample).map((entry) => entry.item.text),
           ])
         const usableCandidates = contentOk ? candidates : []
@@ -613,6 +616,15 @@ export function apply(ctx) {
         // 召回成功 → 回到新鲜
         if (picked.length) memory.boost(picked.map((p) => p.entry.item.id), { now })
         const pieces = picked.map((p) => p.text)
+        // 可观测性：有候选却一条都没返回时，把过滤链路计数写进日志（排查"为什么空"用）。
+        if (!pieces.length && (candidates.length || pendingNotes.length)) {
+          ctx.log({
+            level: 'info', msg: 'recall.empty-after-filter', query: question.slice(0, 60),
+            kind: kind ?? 'all', candidates: candidates.length,
+            usableCandidates: usableCandidates.length, pendingNotes: pendingNotes.length,
+            usableNotes: usableNotes.length, contentOk, topSim, floor, relaxedPass, deeper,
+          })
+        }
         // 第二条路：每次都用原话扫一遍（几百页纯匹配很快），只用来补细节。
         let rawHits = []
         try {
@@ -746,6 +758,8 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
+
 
 
 
