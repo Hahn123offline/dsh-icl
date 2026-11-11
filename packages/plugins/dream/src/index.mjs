@@ -14,6 +14,7 @@
 // 它是**独立调用**的"她"，不是主会话的她。
 import fs from 'node:fs'
 import path from 'node:path'
+import { inferRawSource, isFormationSource } from '../../../core/src/raw-profile.mjs'
 
 export const name = 'dream'
 
@@ -317,8 +318,7 @@ export function apply(ctx) {
     const sources = Array.isArray(dayLog?.data?.sources) ? dayLog.data.sources : []
     const out = []
     for (let index = 0; index < lines.length; index += 1) {
-      const source = String(sources[index] ?? 'unknown')
-      if (source === 'tool' || source === 'env' || source === 'agent_internal' || source === 'memory') continue
+      if (!isFormationSource(sources[index])) continue
       out.push(lines[index])
     }
     return out
@@ -659,34 +659,10 @@ export function apply(ctx) {
     const timeOfRow = (r) => Number(r.time ?? r.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
     /**
-     * raw 行来源分类（评测 profile 与形成门控共用同一口径）：
-     *   human          真人说的话（直聊或 QQ 信封里解出来的）
-     *   agent_visible  她真正发出去的话（旧数据无法区分时也归这里，保守）
-     *   tool / env     工具结果、心跳、状态通知等，不是"经历"
-     * 注意：raw 服务注册时会把 `source` 覆盖成来源 id（如 dsh-session），所以分类字段用 `sourceKind`；
-     * bridge 行没有 sourceKind 时按 role + 文本信封特征兜底；评测 fake raw 直接带 sourceKind。
+     * raw 行来源分类：与评测工具共用 `core/src/raw-profile.mjs` 的实现（只有一份口径）。
+     * 注意 raw 注册服务会把来源 id 放进 sourceId，不再覆盖行自带的 source/sourceKind。
      */
-    const inferSource = (r) => {
-      const given = String(r.sourceKind ?? '').trim()
-      if (given) return given
-      const role = String(r.role ?? '')
-      const t = String(r.text ?? '').trim()
-      if (role === 'tool') return 'tool'
-      if (role === 'assistant') {
-        // 旧 raw 里混着未发送的英文计划；看不到中文字符且像 plan 的长文本按"内部思考"处理，
-        // 不进入形成主材料（bridge 的 reasoning 修复只管未来数据，历史基线仍需要这道闸）。
-        const cjk = (t.match(/[\u4e00-\u9fff]/g) ?? []).length
-        if (cjk === 0 && t.length > 40 && /\b(?:I|we|let me|maybe|should|need|actually|okay)\b/i.test(t)) return 'agent_internal'
-        return 'agent_visible'
-      }
-      // QQ 未读摘要/私聊信封里包着真人的话：单独一类，形成时保留但要提醒模型"这是转述"。
-      if (t.startsWith('QQ 还有没看过的消息') || /^\[QQ[^\]]*\]/.test(t)) return 'qq_envelope'
-      if (role === 'user') {
-        if (t.startsWith('【心跳】') || t.startsWith('[QQ戳一戳]') || /^Alarm fired/.test(t)) return 'env'
-        return 'human'
-      }
-      return 'unknown'
-    }
+    const inferSource = inferRawSource
     const cleaned = []
     for (const r of rows) {
       const at = timeOfRow(r)

@@ -7,6 +7,7 @@ export { createSignalService, validateSignal, SIGNAL_KINDS, SIGNAL_ROUTES, SIGNA
 export { attachDshAdapter } from './adapter-dsh.mjs'
 export { createHost } from './host.mjs'
 export { createSessionAdapter } from './session.mjs'
+export { RAW_SOURCES, FORMATION_SOURCES, isFormationSource, inferRawSource } from './raw-profile.mjs'
 export {
   TEXT_OUTPUT_SCHEMA,
   IMAGE_OUTPUT_SCHEMA,

@@ -49,7 +49,7 @@ const rawRows = (count = 3, now = NOON) => Array.from({ length: count }, (_, i) 
   time: now - 3_600_000 + i * 60_000,
   text: `第 ${i + 1} 句原话：今天发生了一件小事。`,
   role: 'user',
-  sourceKind: 'human',
+  source: 'human',
 }))
 
 function bindRaw(host, rows) {
@@ -175,7 +175,7 @@ test('F7 凌晨 02:09 触发的 dream 整理"刚结束的那天"，不是新的�
   const { host, memory, dream } = await setup()
   const early = Date.parse('2026-11-10T02:09:00+08:00')
   bindRaw(host, [
-    { id: 'r1', time: Date.parse('2026-11-09T22:00:00+08:00'), text: '昨晚聊了看海', role: 'user', sourceKind: 'human' },
+    { id: 'r1', time: Date.parse('2026-11-09T22:00:00+08:00'), text: '昨晚聊了看海', role: 'user', source: 'human' },
   ])
   const out = await dream.run({ now: early, jobs: ['wash'] })
   assert.equal(out.day, '2026-11-09', `凌晨应整理前一天，实际 ${out.day}`)
@@ -323,3 +323,4 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
   const terms = host.shared.get('memory').query({ namespace: 'lexicon', kind: 'term', limit: 10 }).map((r) => r.data?.term)
   assert.deepEqual(terms, ['白米饭'])
 })
+

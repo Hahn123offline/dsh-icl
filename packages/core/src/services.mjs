@@ -64,7 +64,8 @@ export function createRawSourceRegistry({ onError = null } = {}) {
         if (!source.list) continue
         try {
           const rows = await source.list({ since, until, limit })
-          for (const row of rows ?? []) out.push({ ...row, source: source.id })
+          // 不覆盖行自带的 source（评测 fixture / 其他来源可能已经分类过）；来源 id 单独放 sourceId。
+          for (const row of rows ?? []) out.push({ ...row, source: row?.source ?? source.id, sourceId: source.id })
         } catch (error) { report(`raw.list:${source.id}`, error) }
       }
       return out.slice(0, limit)
@@ -76,7 +77,7 @@ export function createRawSourceRegistry({ onError = null } = {}) {
       for (const source of sources.values()) {
         try {
           const rows = await source.search({ query, limit })
-          for (const row of rows ?? []) hits.push({ ...row, source: source.id })
+          for (const row of rows ?? []) hits.push({ ...row, source: row?.source ?? source.id, sourceId: source.id })
         } catch (error) { report(`raw.search:${source.id}`, error) }
       }
       return hits.slice(0, Math.max(1, Number(limit) || 2))
