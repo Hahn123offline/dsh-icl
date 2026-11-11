@@ -127,6 +127,27 @@ export function apply(ctx) {
     return [...new Set([text, ...pieces])].slice(0, 3)
   }
 
+  /**
+   * 查询里的日期词 → 目标日历日（本地时区）。
+   * 用户问"10月25日下午…"时，同一天的记忆应优先于别的日子；只做加分不硬过滤，
+   * 因为块可能跨天合并、data.day 只记了开始日（硬过滤会误删）。
+   */
+  function parseQueryDay(question, now) {
+    const text = String(question ?? '')
+    const shiftDay = (days) => dayKey(dayStart(now) - days * 86_400_000)
+    if (/前天/.test(text)) return shiftDay(2)
+    if (/昨天|昨日/.test(text)) return shiftDay(1)
+    if (/今天|今日/.test(text)) return shiftDay(0)
+    const relative = /(\d{1,3})\s*天前/.exec(text)
+    if (relative) return shiftDay(Number(relative[1]))
+    const monthDay = /(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/.exec(text)
+    if (monthDay) {
+      const year = new Date(now).getFullYear()
+      return `${year}-${String(Number(monthDay[1])).padStart(2, '0')}-${String(Number(monthDay[2])).padStart(2, '0')}`
+    }
+    return null
+  }
+
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
     memory.registerNamespace({ id, label: meta.label, recallable: meta.recallable !== false, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
@@ -367,6 +388,18 @@ export function apply(ctx) {
         }
         const candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        // 日期加分：问句带了"昨天/10月25日"这类日期时，同一天落库的记忆优先（只加分不硬过滤）。
+        const queryDay = question ? parseQueryDay(question, now) : null
+        if (queryDay && candidates.length) {
+          let boostedByDay = false
+          for (const entry of candidates) {
+            if (String(entry.item.data?.day ?? '') === queryDay) {
+              entry.score = Number(entry.score) * 1.35
+              boostedByDay = true
+            }
+          }
+          if (boostedByDay) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        }
 
         // 今天的 note 永远优先展示（带 [今天] 标签）
         // 已经被梦境消化的 note 不再以"今天"的身份出现：

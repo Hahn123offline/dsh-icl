@@ -1158,17 +1158,29 @@ export function apply(ctx) {
             level: 'info', msg: 'dream.validity-check', where: 'validity',
             oldCount: oldCandidates.length, newCount: newTypedStatements.length, pairs: verdictBody.invalidates.length,
           })
+          // 置信/上限：每天最多软失效 4 条；且只允许同类型（偏好不由承诺来失效），避免模型过度取代。
+          const MAX_DAILY_INVALIDATIONS = 4
+          let appliedInvalidations = 0
           for (const pair of verdictBody.invalidates.slice(0, 12)) {
             const oldRow = oldCandidates[Number(pair?.old)]
             const newRow = newTypedStatements[Number(pair?.new)]
             if (!oldRow || !newRow || oldRow.key === newRow.key) continue
+            if (oldRow.namespace !== newRow.ns) continue
             if (oldRow.data?.superseded === true) continue
+            if (appliedInvalidations >= MAX_DAILY_INVALIDATIONS) break
             memory.put({
               namespace: oldRow.namespace, kind: 'block', key: oldRow.key, text: oldRow.text,
               data: { ...(oldRow.data ?? {}), superseded: true, supersededBy: newRow.key, invalidatedAt: now }, now,
             })
             typedInvalidated += 1
+            appliedInvalidations += 1
             ctx.log({ level: 'info', msg: 'dream.validity-invalidated', oldKey: oldRow.key, newKey: newRow.key })
+          }
+          if (verdictBody.invalidates.length > appliedInvalidations) {
+            ctx.log({
+              level: 'info', msg: 'dream.validity-capped', proposed: verdictBody.invalidates.length,
+              applied: appliedInvalidations, cap: MAX_DAILY_INVALIDATIONS,
+            })
           }
         }
       } catch (error) {
@@ -2383,6 +2395,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

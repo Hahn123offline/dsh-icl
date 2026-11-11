@@ -155,6 +155,12 @@ memory-audit 新增 typed 失效链审计（live 47 / superseded 62、悬空链 
 eval 新增 `--fresh` 测运行间方差：两次独立 fresh run 的 e2e r5 90%/80%、formation recall 均 78.1%，
 门控将用 3 次均值。剩余 falseInjection 为"提到但没答"负例，下一轮加答案类型/实体一致性检查。
 
+**Phase 2 第 7 段（第 8 轮，本轮）**：检索日期归一（问句"昨天/10月25日"→同日记忆加分）：
+QQ r1 50→64.3%（MRR 0.714）、live r1 66.7→83.3%，focus 保持 83.3% r5；
+同 fixture 三次 fresh run 定稿方差：formation recall 三次均 78.1%，e2e r5 均值 85.6%（极差 6.7pt）、
+miss 均值 6.7%、falseInjection 恒 0；validity 加置信上限（每天≤4 条、仅同类型、可审计）。
+负例「提到≠回答」调研结论：纯词面 marker 无法区分，需下一轮做返回条目的语义校验。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

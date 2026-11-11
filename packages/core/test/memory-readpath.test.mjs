@@ -113,3 +113,20 @@ test('复合问句拆查询：一句话问两件事，子句命中也能被召�
   const out = await tools.recall.execute({ query: '小白最近在复习哪些科目？他为什么觉得复习吃力？' })
   assert.match(out.text, /线性代数|概率论/, `子句命中应返回复习记忆：${out.text}`)
 })
+
+test('查询日期词：同一天的记忆排序优先（只加分不硬过滤）', async () => {
+  const { memory, tools } = await setup()
+  const dayKeyOf = (offsetDays) => {
+    const d = new Date(Date.now() - offsetDays * 86_400_000)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const today = dayKeyOf(0)
+  const yesterday = dayKeyOf(1)
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:today-hike', text: '今天讨论周末爬山计划，说走平路那段', data: { body: '今天讨论周末爬山计划，说走平路那段', day: today } })
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:yesterday-hike', text: '昨天的爬山计划定为走平路，六点集合', data: { body: '昨天的爬山计划定为走平路，六点集合', day: yesterday } })
+  const out = await tools.recall.execute({ query: '昨天的爬山计划几点集合' })
+  const lines = String(out.text).split('\n')
+  const at = (needle) => lines.findIndex((line) => line.includes(needle))
+  assert.ok(at('六点集合') >= 0, `应召回昨天的计划：${out.text}`)
+  assert.ok(at('六点集合') <= at('今天讨论') || at('今天讨论') < 0, `昨天记忆应排前：${out.text}`)
+})
