@@ -115,6 +115,14 @@ provenance 0/101 是因为历史 day log 没有 `sources` 表（新数据开始�
 3. bridge 侧补 raw 的 sourceKind/channel/speaker 元数据（现在靠 dream 侧文本/角色推断），让"谁在说、说给谁"成为一等公民；
 4. 开始 typed schema v2 设计（`docs/MEMORY-V2-DESIGN.md`），先在 lab shadow。
 
+**Phase 2 第 1 段（2026-11-11 第 2 轮，commits `70bb201`/`c6586cf`，详见 `docs/MEMORY-PHASE2-REPORT.md`）**：
+- bridge raw 层补 `sourceKind/channel/speaker`（QQ 信封→qq_envelope、环境通知→env；day log 行首带 `名字(QQ)`），
+  people 用确定性说话人证据落 person note；
+- typed v2 add 层：`fact`/`preference`/`commitment` 作为独立可召回记录，由 events 同一次调用顺带抽取、跨天去重；
+- 评测口径修两处：dupRate 不再把"共享证据的 typed 事实"算重复；matcher 支持长 gold↔短事实的二元组召回/分句覆盖。
+- 真实 5 天 focus-core fixture：matched 15→18，recall 46.9%→56.3%，fact recall 0%→50%，event 60%→70%，provenance 100%；
+  retrieval 仍差（no-embed r5 25% / embed r3 33%，miss 67%）→ 下一轮主攻检索层。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
