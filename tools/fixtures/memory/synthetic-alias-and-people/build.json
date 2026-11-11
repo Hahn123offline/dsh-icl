@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "fixtureId": "synthetic-alias-and-people",
+  "kind": "synthetic",
+  "generatedAt": "2026-11-11T10:09:29.821Z",
+  "generator": "tools/memory-corpus.mjs synthetic",
+  "spec": "spec.json",
+  "seed": 20261111,
+  "model": "reasoner",
+  "days": [
+    {
+      "day": "2026-03-02",
+      "messages": 20,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 3,
+      "anchorsVerified": 3
+    },
+    {
+      "day": "2026-03-03",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-04",
+      "messages": 16,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-05",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-06",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-07",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-08",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-09",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-10",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-03-11",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 3,
+      "anchorsVerified": 3
+    }
+  ],
+  "verification": {
+    "anchors": 22,
+    "anchorsVerbatim": 22,
+    "probes": 13,
+    "goldMemories": 14,
+    "noiseRows": 30
+  },
+  "counts": {
+    "id": "synthetic-alias-and-people",
+    "kind": "synthetic",
+    "days": 10,
+    "dayList": [
+      "2026-03-02",
+      "2026-03-03",
+      "2026-03-04",
+      "2026-03-05",
+      "2026-03-06",
+      "2026-03-07",
+      "2026-03-08",
+      "2026-03-09",
+      "2026-03-10",
+      "2026-03-11"
+    ],
+    "rows": 213,
+    "sources": {
+      "human": 122,
+      "agent_visible": 66,
+      "tool": 10,
+      "env": 10,
+      "agent_internal": 5
+    },
+    "roles": {
+      "user": 132,
+      "assistant": 71,
+      "tool": 10
+    },
+    "entities": 5,
+    "goldMemories": 14,
+    "goldTypes": {
+      "relationship": 2,
+      "fact": 5,
+      "event": 2,
+      "commitment": 1,
+      "person": 4
+    },
+    "goldEmpty": false,
+    "noiseEntries": 4,
+    "noiseRows": 30,
+    "probes": 13,
+    "probeKinds": {
+      "person": 3,
+      "recall": 8,
+      "eager": 1,
+      "overview": 1
+    },
+    "privacyLeaked": []
+  }
+}

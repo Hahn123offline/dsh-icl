@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "id": "synthetic-commitment-followup",
+  "title": "承诺与跨天追问",
+  "seed": 20261113,
+  "startDate": "2026-05-11",
+  "days": 10,
+  "timezone": "Asia/Hong_Kong",
+  "premise": "主人记性一般，让鱼鱼和小满帮忙记着两件要紧事：这周五要交实验报告，还有带 U 盘打印材料。截止日期中途改过一次，鱼鱼还记错过一次提醒，最后要记住哪些事办完了、哪些是新承诺。",
+  "selfVoice": "住在电脑里的 AI 伙伴，中文口语、活泼、会自嘲，偶尔蹦一个英文词；记事认真，被纠正了会坦白承认。",
+  "description": "合成场景：承诺/截止日期变更/跨天追问（构造式 gold，10 天，2026-05-11..2026-05-20）",
+  "persona": {
+    "self": { "name": "鱼鱼", "qq": "9000000000" },
+    "owner": { "name": "主人", "qq": "9000000001", "aliases": ["老白"] },
+    "others": [
+      { "key": "xiaoman", "name": "小满", "qq": "9000000003", "desc": "主人的同学/朋友，会帮忙记材料的事" },
+      { "key": "ache", "name": "阿澈", "qq": "9000000002", "desc": "主人的朋友，群友" }
+    ]
+  },
+  "groups": [
+    { "key": "group", "id": "9000000101", "name": "摸鱼群" }
+  ],
+  "dayPlans": [
+    {
+      "day": 1,
+      "date": "2026-05-11",
+      "focus": "主人私聊让鱼鱼记着这周五交实验报告，鱼鱼答应周五前提醒。",
+      "guide": "主人有点焦虑，怕忘；鱼鱼把日子复述一遍确认。",
+      "anchors": [
+        { "key": "c01", "sender": "owner", "channel": "private", "text": "帮我记一下，这周五要交实验报告" },
+        { "key": "c02", "sender": "self", "channel": "private", "text": "记着了，周五前提醒你交实验报告" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 2,
+      "date": "2026-05-12",
+      "focus": "小满在群里提醒主人明天带 U 盘，鱼鱼答应替主人记着。",
+      "guide": "群聊里小满说明天打印材料要用 U 盘；主人没看到，鱼鱼接话。",
+      "anchors": [
+        { "key": "c03", "sender": "xiaoman", "channel": "group", "text": "主人明天记得带U盘，打印材料要用" },
+        { "key": "c04", "sender": "self", "channel": "group", "text": "我帮你记着，明天提醒他带U盘" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 3,
+      "date": "2026-05-13",
+      "focus": "主人说实验报告还没写完，改成下周一交；鱼鱼把提醒改时间。",
+      "guide": "晚上私聊；主人解释这周事情太多。",
+      "anchors": [
+        { "key": "c05", "sender": "owner", "channel": "private", "text": "实验报告还没写完，我改成下周一交了" },
+        { "key": "c06", "sender": "self", "channel": "private", "text": "好，那提醒改到下周一，周五不用催你了" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 4,
+      "date": "2026-05-14",
+      "focus": "主人忘带 U 盘白跑一趟；鱼鱼说下次出门前再喊一遍。",
+      "guide": "主人回来抱怨；鱼鱼承认提醒得不够及时。",
+      "anchors": [
+        { "key": "c07", "sender": "owner", "channel": "private", "text": "今天没带U盘，白跑一趟" },
+        { "key": "c08", "sender": "self", "channel": "private", "text": "我昨天提醒过你了吗……下次出门前我再喊一遍" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 5,
+      "date": "2026-05-15",
+      "focus": "鱼鱼把截止日记错，周五提前催交报告，被主人纠正。",
+      "guide": "鱼鱼主动提醒，主人纠正日期；鱼鱼有点尴尬。",
+      "anchors": [
+        { "key": "c09", "sender": "self", "channel": "private", "text": "老白，周五了，实验报告记得交" },
+        { "key": "c10", "sender": "owner", "channel": "private", "text": "不是说改到下周一了吗" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 6,
+      "date": "2026-05-16",
+      "focus": "鱼鱼承认记混了，把周五的提醒撤掉，改成下周一。",
+      "guide": "鱼鱼道歉，主人笑她；确认下周一早上提醒。",
+      "anchors": [
+        { "key": "c11", "sender": "self", "channel": "private", "text": "我记混了，是下周一交，周五这条我撤了" },
+        { "key": "c12", "sender": "owner", "channel": "private", "text": "嗯，下周一，别催错" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 7,
+      "date": "2026-05-17",
+      "focus": "主人说报告写完了，下周一交；鱼鱼确认周一早上提醒。",
+      "guide": "主人松了口气；鱼鱼也放心。",
+      "anchors": [
+        { "key": "c13", "sender": "owner", "channel": "private", "text": "报告写完了，下周一交" },
+        { "key": "c14", "sender": "self", "channel": "private", "text": "好，下周一早上提醒你交" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 8,
+      "date": "2026-05-18",
+      "focus": "小满在群里又问 U 盘明天带不带，鱼鱼答应提醒。",
+      "guide": "群聊；小满强调打印材料周五就要用。",
+      "anchors": [
+        { "key": "c15", "sender": "xiaoman", "channel": "group", "text": "U盘明天带吗？打印材料周五要用" },
+        { "key": "c16", "sender": "self", "channel": "group", "text": "明天我提醒他带U盘" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 9,
+      "date": "2026-05-19",
+      "focus": "主人说实验报告交了、老师收下；鱼鱼把这条待办结清。",
+      "guide": "主人心情好；鱼鱼说这条不用再催了。",
+      "anchors": [
+        { "key": "c17", "sender": "owner", "channel": "private", "text": "报告交了，老师收下了" },
+        { "key": "c18", "sender": "self", "channel": "private", "text": "那我把这条结了，实验报告不用再催" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 10,
+      "date": "2026-05-20",
+      "focus": "主人让鱼鱼下周提醒预约牙医，鱼鱼答应周一提醒。",
+      "guide": "新的承诺；鱼鱼顺手问还有没有别的事。",
+      "anchors": [
+        { "key": "c19", "sender": "owner", "channel": "private", "text": "下周帮我提醒预约牙医" },
+        { "key": "c20", "sender": "self", "channel": "private", "text": "行，牙医预约也记上了，周一提醒你" }
+      ],
+      "count": [12, 19]
+    }
+  ],
+  "noisePlan": {
+    "tool": [
+      "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+      "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}"
+    ],
+    "env": [
+      "【心跳】没有新回合；当前情况：醒着，无待办。",
+      "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）"
+    ],
+    "plan": [
+      "The user is asking whether the report is due this week. I should check my own memory of the deadline first.",
+      "A new commitment just came in; let me note it and set the reminder for Monday morning."
+    ],
+    "visual": [
+      "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+      "这张是食堂的麻辣香锅，红油很亮，主人说看着就辣。[图片]"
+    ]
+  },
+  "gold": {
+    "entities": [
+      { "id": "self", "kind": "self", "name": "鱼鱼", "ids": ["9000000000"], "importance": 5 },
+      { "id": "person:9000000001", "kind": "person", "name": "主人", "aliases": ["老白"], "ids": ["9000000001"], "importance": 5 },
+      { "id": "person:9000000003", "kind": "person", "name": "小满", "ids": ["9000000003"], "importance": 3 },
+      { "id": "person:9000000002", "kind": "person", "name": "阿澈", "ids": ["9000000002"], "importance": 2 }
+    ],
+    "memories": [
+      { "id": "m-report-old", "type": "commitment", "subject": "person:9000000001", "text": "主人这周五要交实验报告，鱼鱼答应周五前提醒他。", "importance": 4, "evidence": ["c01", "c02"], "validFrom": "2026-05-11", "invalidatedBy": "m-report-new", "note": "旧截止日（构造 gold）" },
+      { "id": "m-report-new", "type": "commitment", "subject": "person:9000000001", "text": "实验报告截止日改成下周一，鱼鱼把提醒改到下周一。", "importance": 4, "evidence": ["c05", "c06"], "validFrom": "2026-05-13", "invalidatedBy": "m-report-done", "note": "新截止日（构造 gold）" },
+      { "id": "m-report-done", "type": "event", "subject": "person:9000000001", "text": "主人 5 月 19 日交了实验报告，老师收下，这条待办结清。", "importance": 4, "evidence": ["c17", "c18"], "validFrom": "2026-05-19", "invalidatedBy": null, "note": "办结事件（构造 gold）" },
+      { "id": "m-self-mistake", "type": "event", "subject": "self", "text": "鱼鱼 5 月 15 日把实验报告截止日记错，提前催交，被主人纠正为下周一后承认记混了。", "importance": 3, "evidence": ["c09", "c10", "c11", "c12"], "validFrom": "2026-05-15", "invalidatedBy": null, "note": "自我失误（构造 gold）" },
+      { "id": "m-usb-commit", "type": "commitment", "subject": "self", "text": "小满托鱼鱼提醒主人带 U 盘，打印材料要用；鱼鱼答应第二天提醒。", "importance": 3, "evidence": ["c03", "c04"], "validFrom": "2026-05-12", "invalidatedBy": "m-usb-failed", "note": "承诺（构造 gold）" },
+      { "id": "m-usb-failed", "type": "event", "subject": "person:9000000001", "text": "主人 5 月 14 日忘带 U 盘白跑一趟；鱼鱼答应以后出门前再提醒一遍。", "importance": 3, "evidence": ["c07", "c08"], "validFrom": "2026-05-14", "invalidatedBy": null, "note": "没带上 U 盘（构造 gold）" },
+      { "id": "m-usb-later", "type": "commitment", "subject": "self", "text": "5 月 18 日小满又问 U 盘，鱼鱼答应 5 月 19 日提醒主人带 U 盘打印材料。", "importance": 3, "evidence": ["c15", "c16"], "validFrom": "2026-05-18", "invalidatedBy": null, "note": "再次提醒承诺（构造 gold）" },
+      { "id": "m-dental-commit", "type": "commitment", "subject": "person:9000000001", "text": "主人让鱼鱼下周提醒预约牙医，鱼鱼答应周一提醒。", "importance": 3, "evidence": ["c19", "c20"], "validFrom": "2026-05-20", "invalidatedBy": null, "note": "新承诺（构造 gold）" },
+      { "id": "m-person-owner", "type": "person", "subject": "person:9000000001", "text": "主人：鱼鱼最亲近的人；这学期要交实验报告，记性一般，会让鱼鱼和小满帮忙记事。", "importance": 5, "evidence": ["c01", "c03"], "validFrom": "2026-05-11", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-xiaoman", "type": "person", "subject": "person:9000000003", "text": "小满：主人的朋友，会提醒主人带 U 盘、打印材料的事。", "importance": 3, "evidence": ["c03"], "validFrom": "2026-05-12", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-owner-now", "type": "person", "subject": "person:9000000001", "text": "主人的近况：5 月 19 日交了实验报告，下周要预约牙医（等鱼鱼提醒）。", "importance": 4, "evidence": ["c17", "c19"], "validFrom": "2026-05-19", "invalidatedBy": null, "note": "人物近况（构造 gold）" },
+      { "id": "m-week-may11", "type": "event", "subject": "self", "text": "5 月 11 日到 5 月 20 日这十天里，鱼鱼帮主人记实验报告截止日、U 盘打印材料和牙医预约，中间改过一次截止日期、自己还记混过一次。", "importance": 3, "evidence": ["c02", "c06", "c11", "c20"], "validFrom": "2026-05-11", "invalidatedBy": null, "note": "阶段事件（构造 gold）" }
+    ],
+    "noise": [
+      { "rowKeys": ["n1-tool", "n2-tool", "n3-tool", "n4-tool", "n5-tool", "n6-tool", "n7-tool", "n8-tool", "n9-tool", "n10-tool"], "reason": "tool-output", "note": "工具结果不是人类素材" },
+      { "rowKeys": ["n1-env", "n2-env", "n3-env", "n4-env", "n5-env", "n6-env", "n7-env", "n8-env", "n9-env", "n10-env"], "reason": "env", "note": "心跳/戳一戳等环境通知" },
+      { "rowKeys": ["n2-plan", "n4-plan", "n6-plan", "n8-plan", "n10-plan"], "reason": "agent-plan", "note": "她自己的内部计划（英文）" },
+      { "rowKeys": ["n1-visual", "n3-visual", "n5-visual", "n7-visual", "n9-visual"], "reason": "one-off-visual", "note": "一次性视觉描述" }
+    ]
+  },
+  "probes": [
+    { "id": "p-01", "afterAnchor": "c02", "query": "主人这周五要交什么？", "kind": "recall", "expectedMemoryIds": ["m-report-old"], "expectAnswer": "这周五要交实验报告。", "note": "截止日变更前" },
+    { "id": "p-02", "afterAnchor": "c06", "query": "实验报告的截止日期改到什么时候了？", "kind": "recall", "expectedMemoryIds": ["m-report-new"], "mustNotRecall": ["m-report-old"], "expectAnswer": "改成下周一交了。", "note": "截止日变更后" },
+    { "id": "p-03", "afterAnchor": "c18", "query": "主人的实验报告交了吗？", "kind": "recall", "expectedMemoryIds": ["m-report-done", "m-report-new"], "expectAnswer": "5 月 19 日交了，老师收下，这条结了。", "note": "办结状态" },
+    { "id": "p-04", "afterAnchor": "c04", "query": "小满托鱼鱼提醒主人带什么？", "kind": "recall", "expectedMemoryIds": ["m-usb-commit", "m-person-xiaoman"], "expectAnswer": "提醒主人带 U 盘，打印材料要用。", "note": "承诺内容" },
+    { "id": "p-05", "afterAnchor": "c08", "query": "主人 U 盘后来带了吗？怎么回事？", "kind": "recall", "expectedMemoryIds": ["m-usb-failed"], "expectAnswer": "5 月 14 日没带 U 盘，白跑一趟；鱼鱼答应出门前再提醒。", "note": "失败事件" },
+    { "id": "p-06", "afterAnchor": "c12", "query": "鱼鱼有没有记错过什么提醒？", "kind": "recall", "expectedMemoryIds": ["m-self-mistake"], "expectAnswer": "记错过实验报告的截止日，5 月 15 日提前催，被主人纠正。", "note": "自我失误" },
+    { "id": "p-07", "afterAnchor": "c16", "query": "U 盘的事小满后来又提了什么？", "kind": "recall", "expectedMemoryIds": ["m-usb-later"], "expectAnswer": "5 月 18 日又问 U 盘，鱼鱼答应 19 日提醒。", "note": "再次承诺" },
+    { "id": "p-08", "afterAnchor": "c20", "query": "主人下周要记得做什么？", "kind": "recall", "expectedMemoryIds": ["m-dental-commit"], "expectAnswer": "下周要预约牙医，鱼鱼周一会提醒。", "note": "新承诺" },
+    { "id": "p-09", "afterAnchor": "c16", "query": "9000000003", "kind": "person", "expectedMemoryIds": ["m-person-xiaoman"], "expectAnswer": "小满，主人的朋友，会帮忙盯 U 盘和打印材料。", "note": "人物档案" },
+    { "id": "p-10", "afterAnchor": "c12", "query": "9000000001", "kind": "person", "expectedMemoryIds": ["m-person-owner"], "expectAnswer": "主人：要交实验报告（已交）、记性一般、下周预约牙医。", "note": "人物档案" },
+    { "id": "p-11", "afterAnchor": "c12", "query": "主人这阵子在忙什么，报告到底什么时候交？", "kind": "eager", "expectedMemoryIds": ["m-self-mistake", "m-report-new"], "expectAnswer": "在忙实验报告；截止日改成下周一，鱼鱼之前记错过一次。", "note": "跨天间接追问" },
+    { "id": "p-12", "afterAnchor": "c20", "query": "回顾一下主人最近有什么没结的事。", "kind": "overview", "expectedMemoryIds": ["m-person-owner", "m-dental-commit"], "expectAnswer": "实验报告已交；U 盘打印材料还盯着；下周预约牙医。", "note": "总览" },
+    { "id": "p-13", "afterAnchor": "c20", "query": "主人养过一只叫豆豆的狗吗？", "kind": "recall", "expectedMemoryIds": [], "expectAnswer": "没有相关记忆。", "note": "empty-ok：不该被注入" }
+  ]
+}

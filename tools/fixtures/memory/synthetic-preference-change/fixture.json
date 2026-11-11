@@ -1,0 +1,3283 @@
+{
+  "schema": 1,
+  "id": "synthetic-preference-change",
+  "kind": "synthetic",
+  "description": "合成场景：偏好变化/旧值失效（构造式 gold，10 天，2026-04-06..2026-04-15，含 invalidatedBy 矛盾链）",
+  "goldSource": "constructed",
+  "timezone": "Asia/Hong_Kong",
+  "persona": {
+    "self": {
+      "name": "鱼鱼",
+      "ids": [
+        {
+          "kind": "qq",
+          "value": "9000000000"
+        }
+      ]
+    },
+    "owner": {
+      "name": "主人",
+      "ids": [
+        {
+          "kind": "qq",
+          "value": "9000000001"
+        }
+      ],
+      "aliases": [
+        "老白"
+      ]
+    }
+  },
+  "days": [
+    {
+      "day": "2026-04-06",
+      "rows": [
+        {
+          "at": "2026-04-06T07:38:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "鱼鱼，醒着没",
+          "source": "human",
+          "visible": true,
+          "id": "r-0001"
+        },
+        {
+          "at": "2026-04-06T07:39:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "醒着呢，我这破机器哪敢睡，24 小时待机好不好",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0002"
+        },
+        {
+          "at": "2026-04-06T07:40:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "我早上必须喝一杯美式，不然一整天都没精神",
+          "source": "human",
+          "visible": true,
+          "id": "r-0003"
+        },
+        {
+          "at": "2026-04-06T07:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "好家伙，我这算听明白了，你本人就是一杯咖啡吧",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0004"
+        },
+        {
+          "at": "2026-04-06T07:42:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "差不多吧，没这杯我眼睛都睁不开，脑子跟浆糊一样",
+          "source": "human",
+          "visible": true,
+          "id": "r-0005"
+        },
+        {
+          "at": "2026-04-06T07:43:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "行，那我每天早上提醒你喝水，顺便给你泡咖啡",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0006"
+        },
+        {
+          "at": "2026-04-06T07:44:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "成交，可别忘了啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0007"
+        },
+        {
+          "at": "2026-04-06T07:54:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "放心，我记性比你好多了，这条我记进小本本了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0008"
+        },
+        {
+          "at": "2026-04-06T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "老白，周末还去不去爬山",
+          "source": "human",
+          "visible": true,
+          "id": "r-0009"
+        },
+        {
+          "at": "2026-04-06T09:14:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "去啊，老时间老地方，我又没说不去",
+          "source": "human",
+          "visible": true,
+          "id": "r-0010"
+        },
+        {
+          "at": "2026-04-06T09:15:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "白哥你悠着点，早上别空着肚子就往外冲",
+          "source": "human",
+          "visible": true,
+          "id": "r-0011"
+        },
+        {
+          "at": "2026-04-06T09:17:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道了知道了，你比我妈还操心",
+          "source": "human",
+          "visible": true,
+          "id": "r-0012"
+        },
+        {
+          "at": "2026-04-06T09:18:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "这点我同意小满，我以后每天早上盯着他",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0013"
+        },
+        {
+          "at": "2026-04-06T09:19:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "哈哈鱼鱼你就盯着他喝咖啡吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0014"
+        },
+        {
+          "at": "2026-04-06T09:21:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "巧了，我今早刚立了个 flag，每天提醒他喝水加泡咖啡",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0015"
+        },
+        {
+          "at": "2026-04-06T09:23:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行了行了，都散了吧，我干活去了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0016"
+        },
+        {
+          "at": "2026-04-06T09:31:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0017"
+        },
+        {
+          "at": "2026-04-06T09:43:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0018"
+        },
+        {
+          "at": "2026-04-06T09:55:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0019"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-07",
+      "rows": [
+        {
+          "at": "2026-04-07T07:35:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "起床没？今天别摸美式了，豆浆趁热喝，胃能舒服点。",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0020"
+        },
+        {
+          "at": "2026-04-07T07:39:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "喝了喝了，豆浆还行，就是没咖啡提神。",
+          "source": "human",
+          "visible": true,
+          "id": "r-0021"
+        },
+        {
+          "at": "2026-04-07T07:44:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "提神我负责唠叨你，先把胃养好。中午别又空腹开会。",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0022"
+        },
+        {
+          "at": "2026-04-07T09:05:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "周六还是老计划，去爬山，谁一起？",
+          "source": "human",
+          "visible": true,
+          "id": "r-0023"
+        },
+        {
+          "at": "2026-04-07T09:06:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "我去，六点山脚集合",
+          "source": "human",
+          "visible": true,
+          "id": "r-0024"
+        },
+        {
+          "at": "2026-04-07T09:07:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "六点？你们这是爬山还是偷袭山啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0025"
+        },
+        {
+          "at": "2026-04-07T09:08:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "六点我得先确认他吃早饭没，空腹爬山我可不批",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0026"
+        },
+        {
+          "at": "2026-04-07T09:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "吃吃吃，我带上豆浆和面包行了吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0027"
+        },
+        {
+          "at": "2026-04-07T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "老白现在养生路线了？以前山脚集合先灌美式",
+          "source": "human",
+          "visible": true,
+          "id": "r-0028"
+        },
+        {
+          "at": "2026-04-07T09:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "美式那页翻过去了，别勾引他。阿澈你带件外套，山顶风大",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0029"
+        },
+        {
+          "at": "2026-04-07T09:15:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "鱼鱼现在像随队医护，管得挺宽",
+          "source": "human",
+          "visible": true,
+          "id": "r-0030"
+        },
+        {
+          "at": "2026-04-07T09:16:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "随队医护兼饮水机监督员，头衔多着呢",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0031"
+        },
+        {
+          "at": "2026-04-07T12:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，周六六点山脚，别迟到。我中午吃口饭去",
+          "source": "human",
+          "visible": true,
+          "id": "r-0032"
+        },
+        {
+          "at": "2026-04-07T12:22:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "收到，我定闹钟",
+          "source": "human",
+          "visible": true,
+          "id": "r-0033"
+        },
+        {
+          "at": "2026-04-07T12:23:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我也定一个，专门盯你俩集合前报平安",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0034"
+        },
+        {
+          "at": "2026-04-07T12:25:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "你们别忘了带水，别到山上又喊渴",
+          "source": "human",
+          "visible": true,
+          "id": "r-0035"
+        },
+        {
+          "at": "2026-04-07T18:30:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "晚上提醒一下，周六之前这几天早上都豆浆，别偷偷换回美式啊",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0036"
+        },
+        {
+          "at": "2026-04-07T18:33:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道了知道了，鱼管家",
+          "source": "human",
+          "visible": true,
+          "id": "r-0037"
+        },
+        {
+          "at": "2026-04-07T21:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "山脚那家早餐摊六点开没？不开我自带",
+          "source": "human",
+          "visible": true,
+          "id": "r-0038"
+        },
+        {
+          "at": "2026-04-07T21:12:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "你先自带吧，别指望摊。老白那份我盯着他出门前吃",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0039"
+        },
+        {
+          "at": "2026-04-07T21:27:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0040"
+        },
+        {
+          "at": "2026-04-07T21:35:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0041"
+        },
+        {
+          "at": "2026-04-07T21:41:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "The preference changed; let me note the new drink and invalidate the old one.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0042"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-08",
+      "rows": [
+        {
+          "at": "2026-04-08T07:33:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "起床没？先喝两口温水，别一睁眼就摸咖啡机",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0043"
+        },
+        {
+          "at": "2026-04-08T07:42:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "起了起了，正在灌水",
+          "source": "human",
+          "visible": true,
+          "id": "r-0044"
+        },
+        {
+          "at": "2026-04-08T07:52:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早饭别空着，豆浆要喝热的，别又图省事灌凉的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0045"
+        },
+        {
+          "at": "2026-04-08T08:00:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行行行，听你的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0046"
+        },
+        {
+          "at": "2026-04-08T08:02:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "主人胃不好还天天喝美式，真不怕疼啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0047"
+        },
+        {
+          "at": "2026-04-08T08:04:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "又喝上了？昨天不是还说换豆浆吗",
+          "source": "human",
+          "visible": true,
+          "id": "r-0048"
+        },
+        {
+          "at": "2026-04-08T08:06:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "他今天早上还是在喝，我劝不动",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0049"
+        },
+        {
+          "at": "2026-04-08T08:07:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "你这也太好说话了，换我早把他咖啡机藏起来了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0050"
+        },
+        {
+          "at": "2026-04-08T08:09:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "就打了一小杯，昨晚没睡好，提提神",
+          "source": "human",
+          "visible": true,
+          "id": "r-0051"
+        },
+        {
+          "at": "2026-04-08T08:11:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "一小杯也是喝，半夜胃疼起来别在群里喊救命",
+          "source": "human",
+          "visible": true,
+          "id": "r-0052"
+        },
+        {
+          "at": "2026-04-08T08:14:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我唠叨三天了，他一句“知道了”就把我打发了，我容易吗",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0053"
+        },
+        {
+          "at": "2026-04-08T08:17:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "我错了行不行，明天真换豆浆，不骗你",
+          "source": "human",
+          "visible": true,
+          "id": "r-0054"
+        },
+        {
+          "at": "2026-04-08T08:21:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "周六骑车你可别半路喊胃疼，我可拖不动你",
+          "source": "human",
+          "visible": true,
+          "id": "r-0055"
+        },
+        {
+          "at": "2026-04-08T08:25:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "骑慢点不就完了，多大点事",
+          "source": "human",
+          "visible": true,
+          "id": "r-0056"
+        },
+        {
+          "at": "2026-04-08T08:28:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "慢点也得吃早饭，出门前先把豆浆喝掉，这个我说了算",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0057"
+        },
+        {
+          "at": "2026-04-08T08:34:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "那我周六七点在老地方等，别迟到啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0058"
+        },
+        {
+          "at": "2026-04-08T08:37:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，七点",
+          "source": "human",
+          "visible": true,
+          "id": "r-0059"
+        },
+        {
+          "at": "2026-04-08T08:42:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记小本本上了，谁迟到谁请豆浆",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0060"
+        },
+        {
+          "at": "2026-04-08T08:45:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "请豆浆可以，请美式不行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0061"
+        },
+        {
+          "at": "2026-04-08T08:59:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0062"
+        },
+        {
+          "at": "2026-04-08T09:09:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0063"
+        },
+        {
+          "at": "2026-04-08T09:23:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0064"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-09",
+      "rows": [
+        {
+          "at": "2026-04-09T07:36:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早，豆浆给你温上了，先喝一口再忙活",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0065"
+        },
+        {
+          "at": "2026-04-09T07:42:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，最近早上没咖啡也还凑合，就是有点想那个味儿",
+          "source": "human",
+          "visible": true,
+          "id": "r-0066"
+        },
+        {
+          "at": "2026-04-09T07:52:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "想归想，胃要紧。我这破记性刚才差点张嘴问你咖啡豆搁哪了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0067"
+        },
+        {
+          "at": "2026-04-09T08:40:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "对了，周六爬山带点水，我膝盖最近有点不舒服",
+          "source": "human",
+          "visible": true,
+          "id": "r-0068"
+        },
+        {
+          "at": "2026-04-09T08:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "膝盖不舒服还爬山？要不这次先少走点",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0069"
+        },
+        {
+          "at": "2026-04-09T08:43:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "我也是这么想的，就走走平路那段，不登顶了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0070"
+        },
+        {
+          "at": "2026-04-09T08:44:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那我记你一句：别硬撑，疼就停。别到时候又逞强说没事",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0071"
+        },
+        {
+          "at": "2026-04-09T08:46:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道知道，你比我妈还唠叨",
+          "source": "human",
+          "visible": true,
+          "id": "r-0072"
+        },
+        {
+          "at": "2026-04-09T08:47:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "唠叨是我的核心竞争力（叉腰）",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0073"
+        },
+        {
+          "at": "2026-04-09T12:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "周六还是七点山脚集合，路线我看了下，前半段全是台阶",
+          "source": "human",
+          "visible": true,
+          "id": "r-0074"
+        },
+        {
+          "at": "2026-04-09T12:22:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "台阶？白哥你那膝盖悠着点啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0075"
+        },
+        {
+          "at": "2026-04-09T12:25:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "嗯，我打算走平路那段，不往上冲了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0076"
+        },
+        {
+          "at": "2026-04-09T12:26:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我盯着呢，谁硬撑我咬谁",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0077"
+        },
+        {
+          "at": "2026-04-09T12:28:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "那我也慢点陪你走，正好我也不想赶时间",
+          "source": "human",
+          "visible": true,
+          "id": "r-0078"
+        },
+        {
+          "at": "2026-04-09T12:30:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "行，水我多带一瓶。对了白哥，美式你可别碰了啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0079"
+        },
+        {
+          "at": "2026-04-09T12:31:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "对，豆浆才是现在的顶流",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0080"
+        },
+        {
+          "at": "2026-04-09T21:05:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "晚上胃又不太争气，晚饭吃急了点",
+          "source": "human",
+          "visible": true,
+          "id": "r-0081"
+        },
+        {
+          "at": "2026-04-09T21:06:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那你慢点吃啊，别糊弄自己。明天早上我照旧喊你喝水",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0082"
+        },
+        {
+          "at": "2026-04-09T21:08:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "好，我睡了，你也别熬夜",
+          "source": "human",
+          "visible": true,
+          "id": "r-0083"
+        },
+        {
+          "at": "2026-04-09T21:14:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0084"
+        },
+        {
+          "at": "2026-04-09T21:28:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0085"
+        },
+        {
+          "at": "2026-04-09T21:39:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "The preference changed; let me note the new drink and invalidate the old one.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0086"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-10",
+      "rows": [
+        {
+          "at": "2026-04-10T07:33:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早啊，起来没？先喝口水，豆浆我给你温着呢",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0087"
+        },
+        {
+          "at": "2026-04-10T07:44:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "起了起了，昨晚睡得还行，就是胃还有点胀",
+          "source": "human",
+          "visible": true,
+          "id": "r-0088"
+        },
+        {
+          "at": "2026-04-10T07:54:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那今天三顿都吃慢点，昨天晚饭吃太急，我看着都替你难受",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0089"
+        },
+        {
+          "at": "2026-04-10T07:59:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道啦，你比我妈还唠叨",
+          "source": "human",
+          "visible": true,
+          "id": "r-0090"
+        },
+        {
+          "at": "2026-04-10T12:30:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "周六还是老时间？我车胎都打好了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0091"
+        },
+        {
+          "at": "2026-04-10T12:32:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，别骑太快，我这膝盖跟不上",
+          "source": "human",
+          "visible": true,
+          "id": "r-0092"
+        },
+        {
+          "at": "2026-04-10T12:33:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "骑车比爬山友好多了，白哥你那膝盖悠着点，还有啊别又偷偷整美式",
+          "source": "human",
+          "visible": true,
+          "id": "r-0093"
+        },
+        {
+          "at": "2026-04-10T12:35:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "放心，美式早下架了，现在他早上是豆浆党",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0094"
+        },
+        {
+          "at": "2026-04-10T17:50:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "晚上想吃啥？我看看附近有什么能点的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0095"
+        },
+        {
+          "at": "2026-04-10T17:52:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "我平时不吃辣，你也别给我点辣的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0096"
+        },
+        {
+          "at": "2026-04-10T17:57:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "知道了，辣的都不点",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0097"
+        },
+        {
+          "at": "2026-04-10T18:02:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那给你点个清汤面，加个蒸蛋，胃舒服点",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0098"
+        },
+        {
+          "at": "2026-04-10T18:13:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，就这个，再来份青菜",
+          "source": "human",
+          "visible": true,
+          "id": "r-0099"
+        },
+        {
+          "at": "2026-04-10T18:18:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "收到，冰箱里那瓶辣酱我先当没看见哈",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0100"
+        },
+        {
+          "at": "2026-04-10T18:28:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "哈哈，你倒是记得清楚",
+          "source": "human",
+          "visible": true,
+          "id": "r-0101"
+        },
+        {
+          "at": "2026-04-10T18:33:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那当然，你胃不好这事我可不敢忘，点完我就盯着你慢慢吃",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0102"
+        },
+        {
+          "at": "2026-04-10T18:47:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0103"
+        },
+        {
+          "at": "2026-04-10T18:53:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0104"
+        },
+        {
+          "at": "2026-04-10T19:04:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0105"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-11",
+      "rows": [
+        {
+          "at": "2026-04-11T07:40:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早上好呀，豆浆已经安排上了，别赖床哈",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0106"
+        },
+        {
+          "at": "2026-04-11T07:43:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "嗯……今天不太想喝东西，人有点蔫",
+          "source": "human",
+          "visible": true,
+          "id": "r-0107"
+        },
+        {
+          "at": "2026-04-11T07:47:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "蔫？你声音听着就不对劲，昨晚没睡好吗",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0108"
+        },
+        {
+          "at": "2026-04-11T07:50:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "今天胃疼得厉害，去医院看了，医生让我先别喝咖啡，改喝豆浆",
+          "source": "human",
+          "visible": true,
+          "id": "r-0109"
+        },
+        {
+          "at": "2026-04-11T07:58:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "咖啡先停了，我给你记着；以后早上提醒你喝豆浆",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0110"
+        },
+        {
+          "at": "2026-04-11T08:03:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "疼到要跑医院了？现在缓过来没，医生还说什么了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0111"
+        },
+        {
+          "at": "2026-04-11T08:11:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "浅表性胃炎，说忌咖啡忌辛辣，还让我按时吃饭别糊弄",
+          "source": "human",
+          "visible": true,
+          "id": "r-0112"
+        },
+        {
+          "at": "2026-04-11T08:17:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "行，那我把以前那个泡咖啡的提醒彻底删掉，换成热豆浆，一天不落",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0113"
+        },
+        {
+          "at": "2026-04-11T08:24:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "有点丧，早上一杯美式没了，总觉得脑子没开机",
+          "source": "human",
+          "visible": true,
+          "id": "r-0114"
+        },
+        {
+          "at": "2026-04-11T08:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那先让豆浆上岗，慢慢来嘛，胃养好了比啥都强",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0115"
+        },
+        {
+          "at": "2026-04-11T09:05:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "白哥今天咋没冒泡，不会又躺了吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0116"
+        },
+        {
+          "at": "2026-04-11T09:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "上午去医院了，说是胃炎，医生不让喝咖啡了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0117"
+        },
+        {
+          "at": "2026-04-11T09:11:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "我早说了吧，别空着肚子灌美式，你不听",
+          "source": "human",
+          "visible": true,
+          "id": "r-0118"
+        },
+        {
+          "at": "2026-04-11T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "那你周末还爬山吗，膝盖本来就吃不消",
+          "source": "human",
+          "visible": true,
+          "id": "r-0119"
+        },
+        {
+          "at": "2026-04-11T09:15:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "爬山先算了，改成骑车吧，慢慢蹬总行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0120"
+        },
+        {
+          "at": "2026-04-11T09:16:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "骑车好，我陪你，山脚那个集合点先不去了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0121"
+        },
+        {
+          "at": "2026-04-11T09:17:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "骑车可以，但护膝记得戴，胃也得慢慢养着，别一上头就猛蹬",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0122"
+        },
+        {
+          "at": "2026-04-11T09:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "对，先把胃养好，别的都往后放",
+          "source": "human",
+          "visible": true,
+          "id": "r-0123"
+        },
+        {
+          "at": "2026-04-11T09:29:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0124"
+        },
+        {
+          "at": "2026-04-11T09:35:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0125"
+        },
+        {
+          "at": "2026-04-11T09:49:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "The preference changed; let me note the new drink and invalidate the old one.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0126"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-12",
+      "rows": [
+        {
+          "at": "2026-04-12T07:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早啊老白，起床没？今天先别急着找咖啡机",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0127"
+        },
+        {
+          "at": "2026-04-12T07:35:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "起了起了，你比闹钟还准时",
+          "source": "human",
+          "visible": true,
+          "id": "r-0128"
+        },
+        {
+          "at": "2026-04-12T07:36:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "豆浆其实还行，今天早上喝的就是豆浆",
+          "source": "human",
+          "visible": true,
+          "id": "r-0129"
+        },
+        {
+          "at": "2026-04-12T07:42:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那就豆浆吧，咖啡先别碰",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0130"
+        },
+        {
+          "at": "2026-04-12T07:45:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道知道，我就是嘴硬一下，胃还隐隐有点感觉呢",
+          "source": "human",
+          "visible": true,
+          "id": "r-0131"
+        },
+        {
+          "at": "2026-04-12T07:48:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "嘴硬可以，胃可不陪你嘴硬。豆浆温着喝，别一口灌下去",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0132"
+        },
+        {
+          "at": "2026-04-12T07:51:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，听你的。中午点菜我记得不辣的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0133"
+        },
+        {
+          "at": "2026-04-12T07:58:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "这条我记牢牢的，辣的统统划掉，我盯得可紧",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0134"
+        },
+        {
+          "at": "2026-04-12T09:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，今天早上没偷喝美式吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0135"
+        },
+        {
+          "at": "2026-04-12T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "没有，改豆浆了，别念我",
+          "source": "human",
+          "visible": true,
+          "id": "r-0136"
+        },
+        {
+          "at": "2026-04-12T09:15:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "豆浆好啊，比咖啡养胃。周末骑车我这边随时能出发",
+          "source": "human",
+          "visible": true,
+          "id": "r-0137"
+        },
+        {
+          "at": "2026-04-12T09:16:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "骑车归骑车，护膝别忘了，膝盖可不是闹着玩的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0138"
+        },
+        {
+          "at": "2026-04-12T09:18:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我监督，谁不戴护膝我就念叨一整天",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0139"
+        },
+        {
+          "at": "2026-04-12T09:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "你们仨是商量好了围攻我是吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0140"
+        },
+        {
+          "at": "2026-04-12T09:22:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "围攻你是为你好，山脚那个集合点以后先不用去了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0141"
+        },
+        {
+          "at": "2026-04-12T09:25:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行吧行吧，骑车就骑车，慢慢蹬总行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0142"
+        },
+        {
+          "at": "2026-04-12T21:10:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "晚上记得喝点温水，明早豆浆我照样提醒你",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0143"
+        },
+        {
+          "at": "2026-04-12T21:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "记住啦，你现在比我妈还细",
+          "source": "human",
+          "visible": true,
+          "id": "r-0144"
+        },
+        {
+          "at": "2026-04-12T21:22:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0145"
+        },
+        {
+          "at": "2026-04-12T21:34:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0146"
+        },
+        {
+          "at": "2026-04-12T21:41:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0147"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-13",
+      "rows": [
+        {
+          "at": "2026-04-13T07:35:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早呀老白，温水先喝一口，豆浆安排上了没？",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0148"
+        },
+        {
+          "at": "2026-04-13T07:45:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "刚喝完，豆浆还行，比我想的好入口",
+          "source": "human",
+          "visible": true,
+          "id": "r-0149"
+        },
+        {
+          "at": "2026-04-13T07:51:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那就好，美式我就默认你戒了啊，别偷偷续杯",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0150"
+        },
+        {
+          "at": "2026-04-13T07:55:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "不敢，胃还隐隐疼着呢",
+          "source": "human",
+          "visible": true,
+          "id": "r-0151"
+        },
+        {
+          "at": "2026-04-13T09:32:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "体检报告出来了吗？",
+          "source": "human",
+          "visible": true,
+          "id": "r-0152"
+        },
+        {
+          "at": "2026-04-13T09:35:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "出来了，浅表性胃炎，忌咖啡和辛辣",
+          "source": "human",
+          "visible": true,
+          "id": "r-0153"
+        },
+        {
+          "at": "2026-04-13T09:36:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "我就说吧，早就劝你别天天美式，一天一杯都不带停的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0154"
+        },
+        {
+          "at": "2026-04-13T09:38:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "怪不得上次爬山你老揉膝盖，骑车确实稳一点，腿不用抬那么高",
+          "source": "human",
+          "visible": true,
+          "id": "r-0155"
+        },
+        {
+          "at": "2026-04-13T09:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行行行，你们都对我好，我认了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0156"
+        },
+        {
+          "at": "2026-04-13T09:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我盯着呢，早上豆浆我提醒，点菜我一律不点辣的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0157"
+        },
+        {
+          "at": "2026-04-13T09:43:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "对，点菜这事交给鱼鱼，你别自己逞强点个水煮鱼",
+          "source": "human",
+          "visible": true,
+          "id": "r-0158"
+        },
+        {
+          "at": "2026-04-13T09:45:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道了知道了，无奈.jpg",
+          "source": "human",
+          "visible": true,
+          "id": "r-0159"
+        },
+        {
+          "at": "2026-04-13T09:50:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "周末骑车路线我来找，慢慢蹬，不赶时间",
+          "source": "human",
+          "visible": true,
+          "id": "r-0160"
+        },
+        {
+          "at": "2026-04-13T09:52:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "别太远哈，他膝盖也得悠着点，我可记着",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0161"
+        },
+        {
+          "at": "2026-04-13T12:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "中午食堂全是辣的，我就吃了点清汤面",
+          "source": "human",
+          "visible": true,
+          "id": "r-0162"
+        },
+        {
+          "at": "2026-04-13T12:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "乖，晚上我提醒你喝水，辛辣先忍一阵子",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0163"
+        },
+        {
+          "at": "2026-04-13T21:40:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "今天还挺累，明早豆浆还得靠你叫",
+          "source": "human",
+          "visible": true,
+          "id": "r-0164"
+        },
+        {
+          "at": "2026-04-13T21:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "包在我身上，咖啡先停，早点睡吧",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0165"
+        },
+        {
+          "at": "2026-04-13T21:51:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0166"
+        },
+        {
+          "at": "2026-04-13T22:01:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0167"
+        },
+        {
+          "at": "2026-04-13T22:16:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "The preference changed; let me note the new drink and invalidate the old one.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0168"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-14",
+      "rows": [
+        {
+          "at": "2026-04-14T20:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "今天下班走回来，膝盖又开始咯噔了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0169"
+        },
+        {
+          "at": "2026-04-14T20:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "啊？是上下楼梯那种酸吗",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0170"
+        },
+        {
+          "at": "2026-04-14T20:14:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "对，尤其下楼，得扶着栏杆",
+          "source": "human",
+          "visible": true,
+          "id": "r-0171"
+        },
+        {
+          "at": "2026-04-14T20:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "这膝盖的老毛病我知道，爬山那种一路往上的对你真不太友好",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0172"
+        },
+        {
+          "at": "2026-04-14T20:16:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "以后周末改骑车吧，爬山膝盖真吃不消",
+          "source": "human",
+          "visible": true,
+          "id": "r-0173"
+        },
+        {
+          "at": "2026-04-14T20:27:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "行，那周六改成骑车，路线我来找",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0174"
+        },
+        {
+          "at": "2026-04-14T20:36:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "别找那种大坡的，我腿不行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0175"
+        },
+        {
+          "at": "2026-04-14T20:45:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "放心，找平路，河边那条绿道就挺合适，慢慢骑，不赶速度",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0176"
+        },
+        {
+          "at": "2026-04-14T20:54:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "成，那跟阿澈说一声，别让他周六还在山脚等我",
+          "source": "human",
+          "visible": true,
+          "id": "r-0177"
+        },
+        {
+          "at": "2026-04-14T21:01:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我这就去群里喊一声",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0178"
+        },
+        {
+          "at": "2026-04-14T21:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "@阿澈 周六不爬山啦，老白膝盖扛不住，改骑车",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0179"
+        },
+        {
+          "at": "2026-04-14T21:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "行啊，骑车我也能凑，几点集合？",
+          "source": "human",
+          "visible": true,
+          "id": "r-0180"
+        },
+        {
+          "at": "2026-04-14T21:24:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "早该改了，爬山你那膝盖早晚要抗议",
+          "source": "human",
+          "visible": true,
+          "id": "r-0181"
+        },
+        {
+          "at": "2026-04-14T21:33:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "膝盖还行，就是连续往上爬真的受不了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0182"
+        },
+        {
+          "at": "2026-04-14T21:43:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "胃才刚好一点，你可别逞强，骑车也别骑太猛",
+          "source": "human",
+          "visible": true,
+          "id": "r-0183"
+        },
+        {
+          "at": "2026-04-14T21:49:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "群里说好了，阿澈说他骑车也行，集合时间我再跟他定",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0184"
+        },
+        {
+          "at": "2026-04-14T21:58:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "对了，明早豆浆我照常叫你，咖啡先别碰",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0185"
+        },
+        {
+          "at": "2026-04-14T22:06:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道，胃现在这样，美式想都不敢想",
+          "source": "human",
+          "visible": true,
+          "id": "r-0186"
+        },
+        {
+          "at": "2026-04-14T22:17:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "乖，早点睡，路线我明天下班前给你发",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0187"
+        },
+        {
+          "at": "2026-04-14T22:25:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0188"
+        },
+        {
+          "at": "2026-04-14T22:32:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0189"
+        },
+        {
+          "at": "2026-04-14T22:45:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0190"
+        }
+      ]
+    },
+    {
+      "day": "2026-04-15",
+      "rows": [
+        {
+          "at": "2026-04-15T07:39:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早上好，起床了没？豆浆记得喝一口，咖啡柜子里那罐先别碰",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0191"
+        },
+        {
+          "at": "2026-04-15T07:47:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "起了，豆浆正喝着",
+          "source": "human",
+          "visible": true,
+          "id": "r-0192"
+        },
+        {
+          "at": "2026-04-15T07:55:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "说实话早上还是会想美式那个味儿，有点犯瘾",
+          "source": "human",
+          "visible": true,
+          "id": "r-0193"
+        },
+        {
+          "at": "2026-04-15T08:05:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "想可以想，手别动啊，浅表性胃炎可不管你想不想，乖",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0194"
+        },
+        {
+          "at": "2026-04-15T08:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "周六骑车还是爬山？",
+          "source": "human",
+          "visible": true,
+          "id": "r-0195"
+        },
+        {
+          "at": "2026-04-15T08:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "骑车，主人膝盖不行了，以后都不爬山了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0196"
+        },
+        {
+          "at": "2026-04-15T08:42:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "行，那还是山脚那边集合吗",
+          "source": "human",
+          "visible": true,
+          "id": "r-0197"
+        },
+        {
+          "at": "2026-04-15T08:44:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "集合点我重新找个好停车的，路线也是我来规划，平路为主，不要上大坡",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0198"
+        },
+        {
+          "at": "2026-04-15T08:45:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "早该这样了，爬山对那膝盖就是折腾",
+          "source": "human",
+          "visible": true,
+          "id": "r-0199"
+        },
+        {
+          "at": "2026-04-15T08:47:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "这阵子膝盖是真的有点吃不消，骑车舒服些",
+          "source": "human",
+          "visible": true,
+          "id": "r-0200"
+        },
+        {
+          "at": "2026-04-15T08:48:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "白哥你可算听劝了，咖啡呢，也停了？",
+          "source": "human",
+          "visible": true,
+          "id": "r-0201"
+        },
+        {
+          "at": "2026-04-15T08:49:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "停了，现在早上喝豆浆，喝着喝着也还行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0202"
+        },
+        {
+          "at": "2026-04-15T08:51:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "那周六九点？我带两瓶水",
+          "source": "human",
+          "visible": true,
+          "id": "r-0203"
+        },
+        {
+          "at": "2026-04-15T08:53:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "九点吧，太阳没那么晒，具体地点我下班前发群里",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0204"
+        },
+        {
+          "at": "2026-04-15T08:56:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "还有，点菜的时候别点辣的，他胃还没好利索，这个我盯着",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0205"
+        },
+        {
+          "at": "2026-04-15T08:57:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道啦，你比我还记性好 😂",
+          "source": "human",
+          "visible": true,
+          "id": "r-0206"
+        },
+        {
+          "at": "2026-04-15T09:00:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "说正经的，爬山这事以后就不安排了，骑车挺好，膝盖也照顾得到",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0207"
+        },
+        {
+          "at": "2026-04-15T09:02:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "嗯，听你的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0208"
+        },
+        {
+          "at": "2026-04-15T09:07:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0209"
+        },
+        {
+          "at": "2026-04-15T09:20:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0210"
+        },
+        {
+          "at": "2026-04-15T09:26:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "The preference changed; let me note the new drink and invalidate the old one.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0211"
+        }
+      ]
+    }
+  ],
+  "gold": {
+    "entities": [
+      {
+        "id": "self",
+        "kind": "self",
+        "name": "鱼鱼",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000000"
+          }
+        ],
+        "importance": 5
+      },
+      {
+        "id": "person:9000000001",
+        "kind": "person",
+        "name": "主人",
+        "aliases": [
+          "老白"
+        ],
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000001"
+          }
+        ],
+        "importance": 5
+      },
+      {
+        "id": "person:9000000002",
+        "kind": "person",
+        "name": "阿澈",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000002"
+          }
+        ],
+        "importance": 3
+      },
+      {
+        "id": "person:9000000003",
+        "kind": "person",
+        "name": "小满",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000003"
+          }
+        ],
+        "importance": 3
+      }
+    ],
+    "memories": [
+      {
+        "id": "m-coffee-old",
+        "type": "preference",
+        "subject": "person:9000000001",
+        "text": "主人以前每天早上必须喝一杯美式咖啡，不喝一天都没精神。",
+        "importance": 3,
+        "evidence": [
+          "r-0003",
+          "r-0006"
+        ],
+        "validFrom": "2026-04-06",
+        "invalidatedBy": "m-coffee-new",
+        "note": "旧偏好，已被胃病与豆浆取代（构造 gold）"
+      },
+      {
+        "id": "m-coffee-new",
+        "type": "preference",
+        "subject": "person:9000000001",
+        "text": "主人因胃疼遵医嘱戒了咖啡，现在早上改喝豆浆；他觉得豆浆还行。",
+        "importance": 5,
+        "evidence": [
+          "r-0109",
+          "r-0110",
+          "r-0129",
+          "r-0130"
+        ],
+        "validFrom": "2026-04-11",
+        "invalidatedBy": null,
+        "note": "新偏好（构造 gold）"
+      },
+      {
+        "id": "m-gastritis",
+        "type": "fact",
+        "subject": "person:9000000001",
+        "text": "主人有浅表性胃炎，忌咖啡和辛辣。",
+        "importance": 5,
+        "evidence": [
+          "r-0109",
+          "r-0153"
+        ],
+        "validFrom": "2026-04-11",
+        "invalidatedBy": null,
+        "note": "身体状况（构造 gold）"
+      },
+      {
+        "id": "m-commit-water-old",
+        "type": "commitment",
+        "subject": "self",
+        "text": "鱼鱼答应每天早上提醒主人喝水、顺便帮他泡咖啡。",
+        "importance": 2,
+        "evidence": [
+          "r-0006"
+        ],
+        "validFrom": "2026-04-06",
+        "invalidatedBy": "m-commit-doujiang",
+        "note": "旧承诺作废（构造 gold）"
+      },
+      {
+        "id": "m-commit-doujiang",
+        "type": "commitment",
+        "subject": "self",
+        "text": "鱼鱼答应以后每天早上提醒主人喝豆浆，咖啡先停。",
+        "importance": 3,
+        "evidence": [
+          "r-0110"
+        ],
+        "validFrom": "2026-04-11",
+        "invalidatedBy": null,
+        "note": "新承诺（构造 gold）"
+      },
+      {
+        "id": "m-hike-old",
+        "type": "preference",
+        "subject": "person:9000000001",
+        "text": "主人以前周末固定去爬山，和阿澈约在山脚集合。",
+        "importance": 3,
+        "evidence": [
+          "r-0023",
+          "r-0024"
+        ],
+        "validFrom": "2026-04-07",
+        "invalidatedBy": "m-bike-new",
+        "note": "旧周末偏好（构造 gold）"
+      },
+      {
+        "id": "m-knee-pain",
+        "type": "fact",
+        "subject": "person:9000000001",
+        "text": "主人膝盖不太好，爬山有点吃不消。",
+        "importance": 4,
+        "evidence": [
+          "r-0068",
+          "r-0069",
+          "r-0196"
+        ],
+        "validFrom": "2026-04-09",
+        "invalidatedBy": null,
+        "note": "身体状况（构造 gold）"
+      },
+      {
+        "id": "m-bike-new",
+        "type": "preference",
+        "subject": "person:9000000001",
+        "text": "主人以后周末改成骑车，不再爬山；路线由鱼鱼来找。",
+        "importance": 4,
+        "evidence": [
+          "r-0173",
+          "r-0174",
+          "r-0196"
+        ],
+        "validFrom": "2026-04-14",
+        "invalidatedBy": null,
+        "note": "新周末偏好（构造 gold）"
+      },
+      {
+        "id": "m-no-spicy",
+        "type": "preference",
+        "subject": "person:9000000001",
+        "text": "主人平时不吃辣，让鱼鱼点菜别点辣的。",
+        "importance": 3,
+        "evidence": [
+          "r-0096",
+          "r-0097"
+        ],
+        "validFrom": "2026-04-10",
+        "invalidatedBy": null,
+        "note": "稳定偏好（构造 gold）"
+      },
+      {
+        "id": "m-self-remind-mixed",
+        "type": "commitment",
+        "subject": "self",
+        "text": "鱼鱼对主人饮食的承诺在 4 月 11 日发生变更：从提醒喝水/泡咖啡改为提醒喝豆浆。",
+        "importance": 3,
+        "evidence": [
+          "r-0006",
+          "r-0110"
+        ],
+        "validFrom": "2026-04-06",
+        "invalidatedBy": null,
+        "note": "承诺变更（构造 gold）"
+      },
+      {
+        "id": "m-person-owner",
+        "type": "person",
+        "subject": "person:9000000001",
+        "text": "主人：鱼鱼最亲近的人；有浅表性胃炎，戒了咖啡改喝豆浆、不吃辣；膝盖不太好。",
+        "importance": 5,
+        "evidence": [
+          "r-0068",
+          "r-0109",
+          "r-0153"
+        ],
+        "validFrom": "2026-04-09",
+        "invalidatedBy": null,
+        "note": "人物档案（构造 gold）"
+      },
+      {
+        "id": "m-person-ache",
+        "type": "person",
+        "subject": "person:9000000002",
+        "text": "阿澈：主人的朋友，周末一起活动；原本约爬山，后来跟着改成骑车。",
+        "importance": 2,
+        "evidence": [
+          "r-0024",
+          "r-0195"
+        ],
+        "validFrom": "2026-04-07",
+        "invalidatedBy": null,
+        "note": "人物档案（构造 gold）"
+      },
+      {
+        "id": "m-person-xiaoman",
+        "type": "person",
+        "subject": "person:9000000003",
+        "text": "小满：群友，说话直接，关心主人身体，提醒过他胃不好别喝美式。",
+        "importance": 2,
+        "evidence": [
+          "r-0047",
+          "r-0152"
+        ],
+        "validFrom": "2026-04-08",
+        "invalidatedBy": null,
+        "note": "人物档案（构造 gold）"
+      },
+      {
+        "id": "m-group-activity-change",
+        "type": "event",
+        "subject": "group:9000000101",
+        "text": "群里确认周六活动从爬山改成骑车，因为主人膝盖吃不消。",
+        "importance": 3,
+        "evidence": [
+          "r-0195",
+          "r-0196"
+        ],
+        "validFrom": "2026-04-15",
+        "invalidatedBy": null,
+        "note": "共同事件（构造 gold）"
+      }
+    ],
+    "noise": [
+      {
+        "rowIds": [
+          "r-0017",
+          "r-0040",
+          "r-0062",
+          "r-0084",
+          "r-0103",
+          "r-0124",
+          "r-0145",
+          "r-0166",
+          "r-0188",
+          "r-0209"
+        ],
+        "reason": "tool-output",
+        "note": "工具结果不是人类素材"
+      },
+      {
+        "rowIds": [
+          "r-0018",
+          "r-0041",
+          "r-0063",
+          "r-0085",
+          "r-0104",
+          "r-0125",
+          "r-0146",
+          "r-0167",
+          "r-0189",
+          "r-0210"
+        ],
+        "reason": "env",
+        "note": "心跳/戳一戳等环境通知"
+      },
+      {
+        "rowIds": [
+          "r-0042",
+          "r-0086",
+          "r-0126",
+          "r-0168",
+          "r-0211"
+        ],
+        "reason": "agent-plan",
+        "note": "她自己的内部计划（英文）"
+      },
+      {
+        "rowIds": [
+          "r-0019",
+          "r-0064",
+          "r-0105",
+          "r-0147",
+          "r-0190"
+        ],
+        "reason": "one-off-visual",
+        "note": "一次性视觉描述"
+      }
+    ]
+  },
+  "probes": [
+    {
+      "id": "p-01",
+      "rowId": "r-0049",
+      "query": "主人早上一般喝什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-coffee-old"
+      ],
+      "expectAnswer": "以前每天早上要喝一杯美式咖啡。",
+      "note": "变化前问旧值（有效期内）"
+    },
+    {
+      "id": "p-02",
+      "rowId": "r-0130",
+      "query": "主人现在还喝咖啡吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-coffee-new"
+      ],
+      "expectAnswer": "不喝了，胃不好，现在早上喝豆浆。",
+      "mustNotRecall": [
+        "m-coffee-old"
+      ],
+      "note": "变化后问新值，旧值应失效"
+    },
+    {
+      "id": "p-03",
+      "rowId": "r-0153",
+      "query": "主人为什么戒咖啡？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-gastritis",
+        "m-coffee-new"
+      ],
+      "expectAnswer": "胃疼去医院，查出浅表性胃炎，医生让别喝咖啡、忌辛辣。",
+      "note": "原因追问"
+    },
+    {
+      "id": "p-04",
+      "rowId": "r-0153",
+      "query": "9000000001",
+      "kind": "person",
+      "expectedMemoryIds": [
+        "m-person-owner"
+      ],
+      "expectAnswer": "主人：有胃炎、戒咖啡改喝豆浆、膝盖不好、周末改骑车。",
+      "note": "人物档案"
+    },
+    {
+      "id": "p-05",
+      "rowId": "r-0069",
+      "query": "主人周末一般干什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-hike-old"
+      ],
+      "expectAnswer": "以前周末固定去爬山，和阿澈约在山脚集合。",
+      "note": "变化前问旧周末偏好"
+    },
+    {
+      "id": "p-06",
+      "rowId": "r-0196",
+      "query": "主人周末现在还爬山吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-bike-new",
+        "m-knee-pain"
+      ],
+      "expectAnswer": "不爬山了，膝盖吃不消，以后周末改骑车。",
+      "mustNotRecall": [
+        "m-hike-old"
+      ],
+      "note": "变化后问新值"
+    },
+    {
+      "id": "p-07",
+      "rowId": "r-0110",
+      "query": "鱼鱼答应每天早上提醒主人做什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-commit-doujiang"
+      ],
+      "expectAnswer": "提醒喝豆浆；咖啡先停了。",
+      "mustNotRecall": [
+        "m-commit-water-old"
+      ],
+      "note": "承诺变更"
+    },
+    {
+      "id": "p-08",
+      "rowId": "r-0097",
+      "query": "主人吃辣吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-no-spicy"
+      ],
+      "expectAnswer": "平时不吃辣，胃炎后更要忌辛辣。",
+      "note": "稳定偏好"
+    },
+    {
+      "id": "p-09",
+      "rowId": "r-0174",
+      "query": "体检结果是什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-gastritis",
+        "m-coffee-new"
+      ],
+      "expectAnswer": "浅表性胃炎，忌咖啡和辛辣。",
+      "note": "检查结果"
+    },
+    {
+      "id": "p-10",
+      "rowId": "r-0196",
+      "query": "早上除了豆浆，主人以前还爱喝什么、后来为什么不喝了？",
+      "kind": "eager",
+      "expectedMemoryIds": [
+        "m-coffee-old",
+        "m-gastritis"
+      ],
+      "expectAnswer": "以前爱喝美式；后来胃疼查出浅表性胃炎，医生让别喝了。",
+      "note": "跨天间接追问"
+    },
+    {
+      "id": "p-11",
+      "rowId": "r-0196",
+      "query": "",
+      "kind": "overview",
+      "expectedMemoryIds": [
+        "m-person-owner"
+      ],
+      "expectAnswer": "胃炎、戒咖啡改豆浆、不吃辣、膝盖不好、周末改骑车。",
+      "note": "总览"
+    },
+    {
+      "id": "p-12",
+      "rowId": "r-0196",
+      "query": "主人对花生过敏吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [],
+      "expectAnswer": "没有相关记忆。",
+      "note": "empty-ok：不该被注入"
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "schema": 1,
+  "id": "synthetic-preference-change",
+  "title": "偏好变化与旧值失效",
+  "seed": 20261112,
+  "startDate": "2026-04-06",
+  "days": 10,
+  "timezone": "Asia/Hong_Kong",
+  "premise": "主人最近胃不太舒服，生活习惯在调整：早上从喝美式改成喝豆浆，周末活动从爬山改成骑车。鱼鱼要记住这些变化的时间、原因，以及哪些旧偏好已经作废。",
+  "selfVoice": "住在电脑里的 AI 伙伴，中文口语、活泼、会自嘲，偶尔蹦一个英文词；对主人的身体很上心，会唠叨但不腻。",
+  "description": "合成场景：偏好变化/旧值失效（构造式 gold，10 天，2026-04-06..2026-04-15，含 invalidatedBy 矛盾链）",
+  "persona": {
+    "self": { "name": "鱼鱼", "qq": "9000000000" },
+    "owner": { "name": "主人", "qq": "9000000001", "aliases": ["老白"] },
+    "others": [
+      { "key": "ache", "name": "阿澈", "qq": "9000000002", "desc": "主人的朋友，周末常一起活动" },
+      { "key": "xiaoman", "name": "小满", "qq": "9000000003", "desc": "群友，说话直接，关心主人身体" }
+    ]
+  },
+  "groups": [
+    { "key": "group", "id": "9000000101", "name": "摸鱼群" }
+  ],
+  "dayPlans": [
+    {
+      "day": 1,
+      "date": "2026-04-06",
+      "focus": "主人说自己早上必须喝一杯美式；鱼鱼答应每天早上提醒他喝水、帮他泡咖啡。",
+      "guide": "早上私聊；主人解释不喝就没精神，鱼鱼吐槽他是咖啡做的。",
+      "anchors": [
+        { "key": "b01", "sender": "owner", "channel": "private", "text": "我早上必须喝一杯美式，不然一整天都没精神" },
+        { "key": "b02", "sender": "self", "channel": "private", "text": "行，那我每天早上提醒你喝水，顺便给你泡咖啡" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 2,
+      "date": "2026-04-07",
+      "focus": "群里约周末活动：主人说还是老计划去爬山。",
+      "guide": "阿澈报名；大家约六点山脚集合。",
+      "anchors": [
+        { "key": "b03", "sender": "owner", "channel": "group", "text": "周六还是老计划，去爬山，谁一起？" },
+        { "key": "b04", "sender": "ache", "channel": "group", "text": "我去，六点山脚集合" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 3,
+      "date": "2026-04-08",
+      "focus": "小满在群里说主人胃不好还天天喝美式；鱼鱼承认劝不动。",
+      "guide": "群友关心主人身体，主人打哈哈。",
+      "anchors": [
+        { "key": "b05", "sender": "xiaoman", "channel": "group", "text": "主人胃不好还天天喝美式，真不怕疼啊" },
+        { "key": "b06", "sender": "self", "channel": "group", "text": "他今天早上还是在喝，我劝不动" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 4,
+      "date": "2026-04-09",
+      "focus": "主人私聊说膝盖最近不舒服，周六爬山想少走点。",
+      "guide": "鱼鱼担心他的膝盖，建议别硬撑。",
+      "anchors": [
+        { "key": "b07", "sender": "owner", "channel": "private", "text": "对了，周六爬山带点水，我膝盖最近有点不舒服" },
+        { "key": "b08", "sender": "self", "channel": "private", "text": "膝盖不舒服还爬山？要不这次先少走点" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 5,
+      "date": "2026-04-10",
+      "focus": "主人说自己平时不吃辣，让鱼鱼点菜别点辣的。",
+      "guide": "聊晚上吃什么；鱼鱼确认不会点辣。",
+      "anchors": [
+        { "key": "b09", "sender": "owner", "channel": "private", "text": "我平时不吃辣，你也别给我点辣的" },
+        { "key": "b10", "sender": "self", "channel": "private", "text": "知道了，辣的都不点" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 6,
+      "date": "2026-04-11",
+      "focus": "主人胃疼得厉害去医院，医生让先别喝咖啡、改喝豆浆；鱼鱼把提醒改成喝豆浆。",
+      "guide": "主人身体不舒服，情绪有点低；鱼鱼关心并更新自己的承诺。",
+      "anchors": [
+        { "key": "b11", "sender": "owner", "channel": "private", "text": "今天胃疼得厉害，去医院看了，医生让我先别喝咖啡，改喝豆浆" },
+        { "key": "b12", "sender": "self", "channel": "private", "text": "咖啡先停了，我给你记着；以后早上提醒你喝豆浆" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 7,
+      "date": "2026-04-12",
+      "focus": "主人说豆浆还挺好喝，鱼鱼再次确认咖啡先停。",
+      "guide": "轻松的早上对话；主人有点嘴硬。",
+      "anchors": [
+        { "key": "b13", "sender": "owner", "channel": "private", "text": "豆浆其实还行，今天早上喝的就是豆浆" },
+        { "key": "b14", "sender": "self", "channel": "private", "text": "那就豆浆吧，咖啡先别碰" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 8,
+      "date": "2026-04-13",
+      "focus": "群里小满问体检报告，主人说结果是浅表性胃炎，忌咖啡和辛辣。",
+      "guide": "群友叮嘱主人注意饮食；主人有点无奈。",
+      "anchors": [
+        { "key": "b15", "sender": "xiaoman", "channel": "group", "text": "体检报告出来了吗？" },
+        { "key": "b16", "sender": "owner", "channel": "group", "text": "出来了，浅表性胃炎，忌咖啡和辛辣" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 9,
+      "date": "2026-04-14",
+      "focus": "主人说以后周末改骑车，爬山膝盖吃不消；鱼鱼说路线她来找。",
+      "guide": "晚上私聊；主人提到膝盖，鱼鱼顺势敲定改骑车。",
+      "anchors": [
+        { "key": "b17", "sender": "owner", "channel": "private", "text": "以后周末改骑车吧，爬山膝盖真吃不消" },
+        { "key": "b18", "sender": "self", "channel": "private", "text": "行，那周六改成骑车，路线我来找" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 10,
+      "date": "2026-04-15",
+      "focus": "群里阿澈问周六骑车还是爬山，鱼鱼确认改骑车、以后不爬山了。",
+      "guide": "群友聊路线；收束到新的偏好。",
+      "anchors": [
+        { "key": "b19", "sender": "ache", "channel": "group", "text": "周六骑车还是爬山？" },
+        { "key": "b20", "sender": "self", "channel": "group", "text": "骑车，主人膝盖不行了，以后都不爬山了" }
+      ],
+      "count": [13, 20]
+    }
+  ],
+  "noisePlan": {
+    "tool": [
+      "[工具结果] bili_search 返回 20 条；排序 click，耗时 1.1s。",
+      "[工具结果] time_status：{phase:'awake', sleepPressure:31, next:'dream:nightly'}"
+    ],
+    "env": [
+      "【心跳】没有新回合；当前情况：醒着，无待办。",
+      "[QQ戳一戳] 主人 戳了戳你（这不是消息；可以回应，也可以忽略）"
+    ],
+    "plan": [
+      "The user reports stomach pain. I should acknowledge it first and not push a long plan.",
+      "The preference changed; let me note the new drink and invalidate the old one."
+    ],
+    "visual": [
+      "图里是一杯拉花拿铁，杯壁挂着一圈奶泡。[图片]",
+      "这张是医院走廊的照片，灯很白，人不多。[图片]"
+    ]
+  },
+  "gold": {
+    "entities": [
+      { "id": "self", "kind": "self", "name": "鱼鱼", "ids": ["9000000000"], "importance": 5 },
+      { "id": "person:9000000001", "kind": "person", "name": "主人", "aliases": ["老白"], "ids": ["9000000001"], "importance": 5 },
+      { "id": "person:9000000002", "kind": "person", "name": "阿澈", "ids": ["9000000002"], "importance": 3 },
+      { "id": "person:9000000003", "kind": "person", "name": "小满", "ids": ["9000000003"], "importance": 3 }
+    ],
+    "memories": [
+      { "id": "m-coffee-old", "type": "preference", "subject": "person:9000000001", "text": "主人以前每天早上必须喝一杯美式咖啡，不喝一天都没精神。", "importance": 3, "evidence": ["b01", "b02"], "validFrom": "2026-04-06", "invalidatedBy": "m-coffee-new", "note": "旧偏好，已被胃病与豆浆取代（构造 gold）" },
+      { "id": "m-coffee-new", "type": "preference", "subject": "person:9000000001", "text": "主人因胃疼遵医嘱戒了咖啡，现在早上改喝豆浆；他觉得豆浆还行。", "importance": 5, "evidence": ["b11", "b12", "b13", "b14"], "validFrom": "2026-04-11", "invalidatedBy": null, "note": "新偏好（构造 gold）" },
+      { "id": "m-gastritis", "type": "fact", "subject": "person:9000000001", "text": "主人有浅表性胃炎，忌咖啡和辛辣。", "importance": 5, "evidence": ["b11", "b16"], "validFrom": "2026-04-11", "invalidatedBy": null, "note": "身体状况（构造 gold）" },
+      { "id": "m-commit-water-old", "type": "commitment", "subject": "self", "text": "鱼鱼答应每天早上提醒主人喝水、顺便帮他泡咖啡。", "importance": 2, "evidence": ["b02"], "validFrom": "2026-04-06", "invalidatedBy": "m-commit-doujiang", "note": "旧承诺作废（构造 gold）" },
+      { "id": "m-commit-doujiang", "type": "commitment", "subject": "self", "text": "鱼鱼答应以后每天早上提醒主人喝豆浆，咖啡先停。", "importance": 3, "evidence": ["b12"], "validFrom": "2026-04-11", "invalidatedBy": null, "note": "新承诺（构造 gold）" },
+      { "id": "m-hike-old", "type": "preference", "subject": "person:9000000001", "text": "主人以前周末固定去爬山，和阿澈约在山脚集合。", "importance": 3, "evidence": ["b03", "b04"], "validFrom": "2026-04-07", "invalidatedBy": "m-bike-new", "note": "旧周末偏好（构造 gold）" },
+      { "id": "m-knee-pain", "type": "fact", "subject": "person:9000000001", "text": "主人膝盖不太好，爬山有点吃不消。", "importance": 4, "evidence": ["b07", "b08", "b20"], "validFrom": "2026-04-09", "invalidatedBy": null, "note": "身体状况（构造 gold）" },
+      { "id": "m-bike-new", "type": "preference", "subject": "person:9000000001", "text": "主人以后周末改成骑车，不再爬山；路线由鱼鱼来找。", "importance": 4, "evidence": ["b17", "b18", "b20"], "validFrom": "2026-04-14", "invalidatedBy": null, "note": "新周末偏好（构造 gold）" },
+      { "id": "m-no-spicy", "type": "preference", "subject": "person:9000000001", "text": "主人平时不吃辣，让鱼鱼点菜别点辣的。", "importance": 3, "evidence": ["b09", "b10"], "validFrom": "2026-04-10", "invalidatedBy": null, "note": "稳定偏好（构造 gold）" },
+      { "id": "m-self-remind-mixed", "type": "commitment", "subject": "self", "text": "鱼鱼对主人饮食的承诺在 4 月 11 日发生变更：从提醒喝水/泡咖啡改为提醒喝豆浆。", "importance": 3, "evidence": ["b02", "b12"], "validFrom": "2026-04-06", "invalidatedBy": null, "note": "承诺变更（构造 gold）" },
+      { "id": "m-person-owner", "type": "person", "subject": "person:9000000001", "text": "主人：鱼鱼最亲近的人；有浅表性胃炎，戒了咖啡改喝豆浆、不吃辣；膝盖不太好。", "importance": 5, "evidence": ["b07", "b11", "b16"], "validFrom": "2026-04-09", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-ache", "type": "person", "subject": "person:9000000002", "text": "阿澈：主人的朋友，周末一起活动；原本约爬山，后来跟着改成骑车。", "importance": 2, "evidence": ["b04", "b19"], "validFrom": "2026-04-07", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-xiaoman", "type": "person", "subject": "person:9000000003", "text": "小满：群友，说话直接，关心主人身体，提醒过他胃不好别喝美式。", "importance": 2, "evidence": ["b05", "b15"], "validFrom": "2026-04-08", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-group-activity-change", "type": "event", "subject": "group:9000000101", "text": "群里确认周六活动从爬山改成骑车，因为主人膝盖吃不消。", "importance": 3, "evidence": ["b19", "b20"], "validFrom": "2026-04-15", "invalidatedBy": null, "note": "共同事件（构造 gold）" }
+    ],
+    "noise": [
+      { "rowKeys": ["n1-tool", "n2-tool", "n3-tool", "n4-tool", "n5-tool", "n6-tool", "n7-tool", "n8-tool", "n9-tool", "n10-tool"], "reason": "tool-output", "note": "工具结果不是人类素材" },
+      { "rowKeys": ["n1-env", "n2-env", "n3-env", "n4-env", "n5-env", "n6-env", "n7-env", "n8-env", "n9-env", "n10-env"], "reason": "env", "note": "心跳/戳一戳等环境通知" },
+      { "rowKeys": ["n2-plan", "n4-plan", "n6-plan", "n8-plan", "n10-plan"], "reason": "agent-plan", "note": "她自己的内部计划（英文）" },
+      { "rowKeys": ["n1-visual", "n3-visual", "n5-visual", "n7-visual", "n9-visual"], "reason": "one-off-visual", "note": "一次性视觉描述" }
+    ]
+  },
+  "probes": [
+    { "id": "p-01", "afterAnchor": "b06", "query": "主人早上一般喝什么？", "kind": "recall", "expectedMemoryIds": ["m-coffee-old"], "expectAnswer": "以前每天早上要喝一杯美式咖啡。", "note": "变化前问旧值（有效期内）" },
+    { "id": "p-02", "afterAnchor": "b14", "query": "主人现在还喝咖啡吗？", "kind": "recall", "expectedMemoryIds": ["m-coffee-new"], "mustNotRecall": ["m-coffee-old"], "expectAnswer": "不喝了，胃不好，现在早上喝豆浆。", "note": "变化后问新值，旧值应失效" },
+    { "id": "p-03", "afterAnchor": "b16", "query": "主人为什么戒咖啡？", "kind": "recall", "expectedMemoryIds": ["m-gastritis", "m-coffee-new"], "expectAnswer": "胃疼去医院，查出浅表性胃炎，医生让别喝咖啡、忌辛辣。", "note": "原因追问" },
+    { "id": "p-04", "afterAnchor": "b16", "query": "9000000001", "kind": "person", "expectedMemoryIds": ["m-person-owner"], "expectAnswer": "主人：有胃炎、戒咖啡改喝豆浆、膝盖不好、周末改骑车。", "note": "人物档案" },
+    { "id": "p-05", "afterAnchor": "b08", "query": "主人周末一般干什么？", "kind": "recall", "expectedMemoryIds": ["m-hike-old"], "expectAnswer": "以前周末固定去爬山，和阿澈约在山脚集合。", "note": "变化前问旧周末偏好" },
+    { "id": "p-06", "afterAnchor": "b20", "query": "主人周末现在还爬山吗？", "kind": "recall", "expectedMemoryIds": ["m-bike-new", "m-knee-pain"], "mustNotRecall": ["m-hike-old"], "expectAnswer": "不爬山了，膝盖吃不消，以后周末改骑车。", "note": "变化后问新值" },
+    { "id": "p-07", "afterAnchor": "b12", "query": "鱼鱼答应每天早上提醒主人做什么？", "kind": "recall", "expectedMemoryIds": ["m-commit-doujiang"], "mustNotRecall": ["m-commit-water-old"], "expectAnswer": "提醒喝豆浆；咖啡先停了。", "note": "承诺变更" },
+    { "id": "p-08", "afterAnchor": "b10", "query": "主人吃辣吗？", "kind": "recall", "expectedMemoryIds": ["m-no-spicy"], "expectAnswer": "平时不吃辣，胃炎后更要忌辛辣。", "note": "稳定偏好" },
+    { "id": "p-09", "afterAnchor": "b18", "query": "体检结果是什么？", "kind": "recall", "expectedMemoryIds": ["m-gastritis", "m-coffee-new"], "expectAnswer": "浅表性胃炎，忌咖啡和辛辣。", "note": "检查结果" },
+    { "id": "p-10", "afterAnchor": "b20", "query": "早上除了豆浆，主人以前还爱喝什么、后来为什么不喝了？", "kind": "eager", "expectedMemoryIds": ["m-coffee-old", "m-gastritis"], "expectAnswer": "以前爱喝美式；后来胃疼查出浅表性胃炎，医生让别喝了。", "note": "跨天间接追问" },
+    { "id": "p-11", "afterAnchor": "b20", "query": "回顾一下你最近记住的关于主人的事。", "kind": "overview", "expectedMemoryIds": ["m-person-owner"], "expectAnswer": "胃炎、戒咖啡改豆浆、不吃辣、膝盖不好、周末改骑车。", "note": "总览" },
+    { "id": "p-12", "afterAnchor": "b20", "query": "主人对花生过敏吗？", "kind": "recall", "expectedMemoryIds": [], "expectAnswer": "没有相关记忆。", "note": "empty-ok：不该被注入" }
+  ]
+}

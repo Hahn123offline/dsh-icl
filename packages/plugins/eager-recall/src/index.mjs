@@ -67,7 +67,19 @@ export function apply(ctx) {
       })
       .slice(0, maxItems)
     const suppressed = eligible.length - picked.length
-    const base = { queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, suppressed, threshold, embedded }
+    // 影子召回审计（docs/MEMORY-EVAL-SPEC.md §3.3）：只记 id/分数，供离线判断
+    // "注入的是不是该注入的、gold 是否被漏掉"。不改变注入行为，不写 live 之外的库。
+    const summarize = (list) => list.slice(0, 8).map((h) => ({
+      id: h.item.id,
+      ns: h.item.namespace,
+      kind: h.item.kind,
+      score: Math.round(Number(h.score) * 1000) / 1000,
+      ...(h.clarity?.tier ? { tier: h.clarity.tier } : {}),
+    }))
+    const base = {
+      queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, suppressed, threshold, embedded,
+      candidateIds: summarize(hits),
+    }
     if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
@@ -84,7 +96,7 @@ export function apply(ctx) {
         if (oldest) recentInjected.delete(oldest[0])
       }
     }
-    recordCount({ ...base, chars: text.length })
+    recordCount({ ...base, injectedIds: summarize(picked), chars: text.length })
     return text
   })
 

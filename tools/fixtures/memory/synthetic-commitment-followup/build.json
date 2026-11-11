@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "fixtureId": "synthetic-commitment-followup",
+  "kind": "synthetic",
+  "generatedAt": "2026-11-11T10:09:45.431Z",
+  "generator": "tools/memory-corpus.mjs synthetic",
+  "spec": "spec.json",
+  "seed": 20261113,
+  "model": "reasoner",
+  "days": [
+    {
+      "day": "2026-05-11",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-12",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-13",
+      "messages": 20,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-14",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-15",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-16",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-17",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-18",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-19",
+      "messages": 15,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-05-20",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    }
+  ],
+  "verification": {
+    "anchors": 20,
+    "anchorsVerbatim": 20,
+    "probes": 13,
+    "goldMemories": 12,
+    "noiseRows": 30
+  },
+  "counts": {
+    "id": "synthetic-commitment-followup",
+    "kind": "synthetic",
+    "days": 10,
+    "dayList": [
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20"
+    ],
+    "rows": 210,
+    "sources": {
+      "human": 97,
+      "agent_visible": 88,
+      "tool": 10,
+      "env": 10,
+      "agent_internal": 5
+    },
+    "roles": {
+      "user": 107,
+      "assistant": 93,
+      "tool": 10
+    },
+    "entities": 4,
+    "goldMemories": 12,
+    "goldTypes": {
+      "commitment": 5,
+      "event": 4,
+      "person": 3
+    },
+    "goldEmpty": false,
+    "noiseEntries": 4,
+    "noiseRows": 30,
+    "probes": 13,
+    "probeKinds": {
+      "recall": 9,
+      "person": 2,
+      "eager": 1,
+      "overview": 1
+    },
+    "privacyLeaked": []
+  }
+}

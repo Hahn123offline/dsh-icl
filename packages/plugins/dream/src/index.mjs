@@ -160,6 +160,9 @@ export function apply(ctx) {
   const ownerNameSet = new Set(ownerNames)
   const selfNames = (Array.isArray(ctx.config.selfNames) ? ctx.config.selfNames : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean)
+  // 已知群号：模型常把"群号"误当人物 QQ 写进 ids（live 审计：曾嘉睿的 ids 里挂着群号 1057812765）。
+  const groupIds = new Set((Array.isArray(ctx.config.groupIds) ? ctx.config.groupIds : [])
+    .map((x) => String(x ?? '').trim()).filter(Boolean))
   // 形成材料 profile（评测 A/B 用；默认产品口径）：
   //   raw-main（默认）只吃真人/QQ 转述/她可见的回复；raw-human 再砍掉她自己的回复；
   //   raw-all 是"旧无门控基线"，连工具结果/环境通知都喂进去，只用于对照，不用于产品。
@@ -399,6 +402,8 @@ export function apply(ctx) {
       if (!kind || !value) continue
       if (kind === 'qq') {
         if (!/^\d{5,12}$/.test(value)) continue
+        // 群号不是人的 QQ：不能挂到人物档案 ids 上（审计 §6.2 的曾嘉睿案例）。
+        if (groupIds.has(value)) continue
         const isSelfSubject = subject?.kind === 'qq' && subject.value === selfQQ
         if (selfQQ && value === selfQQ && !isSelfSubject) continue
       }

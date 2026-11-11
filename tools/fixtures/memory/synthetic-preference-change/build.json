@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "fixtureId": "synthetic-preference-change",
+  "kind": "synthetic",
+  "generatedAt": "2026-11-11T10:09:41.746Z",
+  "generator": "tools/memory-corpus.mjs synthetic",
+  "spec": "spec.json",
+  "seed": 20261112,
+  "model": "reasoner",
+  "days": [
+    {
+      "day": "2026-04-06",
+      "messages": 16,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-07",
+      "messages": 20,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-08",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-09",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-10",
+      "messages": 16,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-11",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-12",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-13",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-14",
+      "messages": 19,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    },
+    {
+      "day": "2026-04-15",
+      "messages": 18,
+      "attempts": 1,
+      "cached": false,
+      "anchors": 2,
+      "anchorsVerified": 2
+    }
+  ],
+  "verification": {
+    "anchors": 20,
+    "anchorsVerbatim": 20,
+    "probes": 12,
+    "goldMemories": 14,
+    "noiseRows": 30
+  },
+  "counts": {
+    "id": "synthetic-preference-change",
+    "kind": "synthetic",
+    "days": 10,
+    "dayList": [
+      "2026-04-06",
+      "2026-04-07",
+      "2026-04-08",
+      "2026-04-09",
+      "2026-04-10",
+      "2026-04-11",
+      "2026-04-12",
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15"
+    ],
+    "rows": 211,
+    "sources": {
+      "human": 110,
+      "agent_visible": 76,
+      "tool": 10,
+      "env": 10,
+      "agent_internal": 5
+    },
+    "roles": {
+      "user": 120,
+      "assistant": 81,
+      "tool": 10
+    },
+    "entities": 4,
+    "goldMemories": 14,
+    "goldTypes": {
+      "preference": 5,
+      "fact": 2,
+      "commitment": 3,
+      "person": 3,
+      "event": 1
+    },
+    "goldEmpty": false,
+    "noiseEntries": 4,
+    "noiseRows": 30,
+    "probes": 12,
+    "probeKinds": {
+      "recall": 9,
+      "person": 1,
+      "eager": 1,
+      "overview": 1
+    },
+    "privacyLeaked": []
+  }
+}

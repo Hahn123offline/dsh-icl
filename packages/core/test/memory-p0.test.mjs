@@ -42,6 +42,7 @@ const IDENTITY = {
   ownerQQ: '3429502459',
   ownerNames: ['主人', 'Hahn123', 'Hahn123（离线版）', '周子涵'],
   selfNames: ['鱼鱼', '小千'],
+  groupIds: ['1057812765'],
 }
 
 const rawRows = (count = 3, now = NOON) => Array.from({ length: count }, (_, i) => ({
@@ -200,7 +201,7 @@ test('F5 身份链：主人/别名归到 ownerQQ 一份档案，selfQQ 不挂到
       const system = String(messages?.[0]?.content ?? '')
       if (!system.includes('人物档案')) return '[]'
       // 模型把 selfQQ 也写进了主人档案（旧 live 里真实发生过）
-      return JSON.stringify({ profile: '主人（Hahn123）负责维护 dsh-icl，会熬夜调插件。', ids: [{ kind: 'qq', value: '2593621742' }], aliases: ['Hahn123'], evidence: [] })
+      return JSON.stringify({ profile: '主人（Hahn123）负责维护 dsh-icl，会熬夜调插件。', ids: [{ kind: 'qq', value: '2593621742' }, { kind: 'qq', value: '1057812765' }], aliases: ['Hahn123'], evidence: [] })
     },
   })
   memory.put({ namespace: 'person', kind: 'note', text: '主人说他在调 dsh-icl', data: { subject: { kind: 'name', value: '主人' } }, now: NOON })
@@ -215,6 +216,7 @@ test('F5 身份链：主人/别名归到 ownerQQ 一份档案，selfQQ 不挂到
   const ids = (block.data?.ids ?? []).map((x) => `${x.kind}:${x.value}`)
   assert.ok(ids.includes('qq:3429502459'), `ids 应含 ownerQQ：${JSON.stringify(ids)}`)
   assert.ok(!ids.includes('qq:2593621742'), `selfQQ 不能挂到主人档案：${JSON.stringify(ids)}`)
+  assert.ok(!ids.includes('qq:1057812765'), `群号不能当人物账号：${JSON.stringify(ids)}`)
   assert.ok((block.data?.aliases ?? []).includes('主人'))
 })
 
@@ -323,5 +325,6 @@ test('R6 语料采集确定性闸门：工具名/标识符不进语料，中文�
   const terms = host.shared.get('memory').query({ namespace: 'lexicon', kind: 'term', limit: 10 }).map((r) => r.data?.term)
   assert.deepEqual(terms, ['白米饭'])
 })
+
 
 

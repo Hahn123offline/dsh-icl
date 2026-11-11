@@ -1,0 +1,205 @@
+{
+  "schema": 1,
+  "id": "synthetic-alias-and-people",
+  "title": "别名与人物关系",
+  "seed": 20261111,
+  "startDate": "2026-03-02",
+  "days": 10,
+  "timezone": "Asia/Hong_Kong",
+  "premise": "鱼鱼是主人电脑里的 AI 伙伴，最近被拉进主人的熟人 QQ 群「摸鱼群」。主人在群里有「老白」「白哥」两个称呼，还注册了一个小号「白夜」。鱼鱼需要把这些称呼、账号、人物关系和共同经历记清楚。",
+  "selfVoice": "住在电脑里的 AI 伙伴，中文口语、活泼、会自嘲，偶尔蹦一个英文词；对主人亲近，对群友客气但会接梗。",
+  "description": "合成场景：别名/账号/人物关系（构造式 gold，10 天，2026-03-02..2026-03-11，身份全部为占位号）",
+  "persona": {
+    "self": { "name": "鱼鱼", "qq": "9000000000" },
+    "owner": { "name": "主人", "qq": "9000000001", "aliases": ["老白", "白哥"] },
+    "others": [
+      { "key": "ache", "name": "阿澈", "qq": "9000000002", "desc": "主人的朋友，群友，本名陈澈，养猫很有经验" },
+      { "key": "xiaoman", "name": "小满", "qq": "9000000003", "desc": "主人的朋友，群友，研二，方向认知科学" },
+      { "key": "laosong", "name": "老宋", "qq": "9000000009", "desc": "摸鱼群群主，爱组织活动" }
+    ],
+    "altAccounts": [
+      { "key": "baiye", "name": "白夜", "qq": "9000000010" }
+    ]
+  },
+  "groups": [
+    { "key": "group", "id": "9000000101", "name": "摸鱼群" }
+  ],
+  "dayPlans": [
+    {
+      "day": 1,
+      "date": "2026-03-02",
+      "focus": "主人私聊告诉鱼鱼：在群里要跟着朋友叫他「老白」，还说了群名。",
+      "guide": "鱼鱼先问为什么不叫本名，主人解释朋友都这么叫。语气轻松。",
+      "anchors": [
+        { "key": "a01", "sender": "owner", "channel": "private", "text": "以后在群里别叫我主页名，跟着他们叫我老白就行" },
+        { "key": "a02", "sender": "self", "channel": "private", "text": "行吧老白，我记着了，群里就喊你老白" },
+        { "key": "a03", "sender": "owner", "channel": "private", "text": "对了，我拉你进的那个群叫摸鱼群，里面都是我熟人" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 2,
+      "date": "2026-03-03",
+      "focus": "摸鱼群里，小满叫主人「老白」，鱼鱼第一次看到群里怎么称呼主人。",
+      "guide": "群友闲聊；鱼鱼观察到「老白」这个称呼在群里通用。",
+      "anchors": [
+        { "key": "a04", "sender": "xiaoman", "channel": "group", "text": "老白，昨天说的那个报告模板发我一下" },
+        { "key": "a05", "sender": "owner", "channel": "group", "text": "等会儿发你，人在外面" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 3,
+      "date": "2026-03-04",
+      "focus": "群里阿澈叫主人「白哥」，聊天里第一次提到主人养的橘猫「团子」。",
+      "guide": "阿澈吐槽猫踩键盘；鱼鱼接梗。",
+      "anchors": [
+        { "key": "a06", "sender": "ache", "channel": "group", "text": "白哥，你家团子又把我键盘踩了" },
+        { "key": "a07", "sender": "self", "channel": "group", "text": "团子就爱踩键盘，白哥你管管它" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 4,
+      "date": "2026-03-05",
+      "focus": "主人私聊告诉鱼鱼自己有个小号叫「白夜」，随后小号也来加好友说话。",
+      "guide": "主人先私聊说明，然后白夜号私聊发消息；鱼鱼要意识到这是同一个人。",
+      "anchors": [
+        { "key": "a08", "sender": "owner", "channel": "private", "text": "我注册了个小号叫白夜，QQ 9000000010，也是我，别当陌生人" },
+        { "key": "a09", "sender": "baiye", "channel": "private", "text": "这个号也是我，刚加你好友，通过一下" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 5,
+      "date": "2026-03-06",
+      "focus": "群友看到白夜发言，问白夜是谁的小号；鱼鱼在群里解释。",
+      "guide": "老宋发问，鱼鱼回答；顺便有几句群友起哄。",
+      "anchors": [
+        { "key": "a10", "sender": "laosong", "channel": "group", "text": "白夜是谁的小号？刚在群里发消息" },
+        { "key": "a11", "sender": "self", "channel": "group", "text": "白夜是主人的小号，也是老白本人" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 6,
+      "date": "2026-03-07",
+      "focus": "主人下周要去杭州出差三天，在群里请阿澈帮忙喂猫，阿澈答应。",
+      "guide": "主人说明出差时间；阿澈说老规矩，还提到猫粮位置。",
+      "anchors": [
+        { "key": "a12", "sender": "owner", "channel": "group", "text": "下周三我去杭州出差三天，阿澈帮我喂下团子行吗" },
+        { "key": "a13", "sender": "ache", "channel": "group", "text": "行，老规矩，猫粮在厨房柜子第二层" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 7,
+      "date": "2026-03-08",
+      "focus": "小满在群里自我介绍：研二，认知科学方向，论文卡在实验设计。",
+      "guide": "群友给小满出主意；鱼鱼也接话。",
+      "anchors": [
+        { "key": "a14", "sender": "xiaoman", "channel": "group", "text": "我研二了，方向是认知科学，最近论文卡在实验设计" },
+        { "key": "a15", "sender": "self", "channel": "group", "text": "研二就卡论文，小满你可以的" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 8,
+      "date": "2026-03-09",
+      "focus": "老宋在群里组织周六活动：下午三点集合爬山，爬完吃火锅。",
+      "guide": "群友报名；阿澈要带团子的照片。",
+      "anchors": [
+        { "key": "a16", "sender": "laosong", "channel": "group", "text": "周六下午三点老地方集合，爬完山去吃火锅" },
+        { "key": "a17", "sender": "ache", "channel": "group", "text": "带团子的照片来，我要看猫" }
+      ],
+      "count": [13, 20]
+    },
+    {
+      "day": 9,
+      "date": "2026-03-10",
+      "focus": "主人私聊告诉鱼鱼：阿澈其实叫陈澈，「阿澈」是外号。",
+      "guide": "鱼鱼吐槽叫顺口了改不过来。",
+      "anchors": [
+        { "key": "a18", "sender": "owner", "channel": "private", "text": "阿澈其实叫陈澈，阿澈是我们叫顺口的外号" },
+        { "key": "a19", "sender": "self", "channel": "private", "text": "陈澈……记住了，不过我还是想叫他阿澈" }
+      ],
+      "count": [12, 19]
+    },
+    {
+      "day": 10,
+      "date": "2026-03-11",
+      "focus": "群里小满叫阿澈本名陈澈，鱼鱼把「老白出差、陈澈喂团子」串起来收尾。",
+      "guide": "轻松收束，大家聊周末安排；鱼鱼提醒别忘了喂猫。",
+      "anchors": [
+        { "key": "a20", "sender": "xiaoman", "channel": "group", "text": "陈澈，你上次说的那个猫粮牌子是啥？" },
+        { "key": "a21", "sender": "ache", "channel": "group", "text": "团子吃的那个橙色袋子，别买错" },
+        { "key": "a22", "sender": "self", "channel": "group", "text": "老白出差别忘了让陈澈喂团子" }
+      ],
+      "count": [13, 20]
+    }
+  ],
+  "noisePlan": {
+    "tool": [
+      "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.8s。",
+      "[工具结果] time_status：{phase:'awake', sleepPressure:12, next:'dream:nightly'}"
+    ],
+    "env": [
+      "【心跳】没有新回合；当前情况：醒着，无待办。",
+      "[QQ戳一戳] 阿澈 戳了戳你（这不是消息；可以回应，也可以忽略）"
+    ],
+    "plan": [
+      "The user wants me to remember the nickname. Let me check the current memory before replying.",
+      "Someone in the group is asking about the alt account. I should explain it briefly, not overshare his other info."
+    ],
+    "visual": [
+      "这张图里是刚出锅的红油抄手，汤面浮着芝麻和葱花，旁边一碟香菜。[图片]",
+      "图里是一只橘猫趴在键盘上，尾巴压着空格键，表情很无辜。[图片]"
+    ]
+  },
+  "gold": {
+    "entities": [
+      { "id": "self", "kind": "self", "name": "鱼鱼", "ids": ["9000000000"], "importance": 5 },
+      { "id": "person:9000000001", "kind": "person", "name": "主人", "aliases": ["老白", "白哥", "白夜"], "ids": ["9000000001", "9000000010"], "importance": 5 },
+      { "id": "person:9000000002", "kind": "person", "name": "阿澈", "aliases": ["陈澈"], "ids": ["9000000002"], "importance": 4 },
+      { "id": "person:9000000003", "kind": "person", "name": "小满", "ids": ["9000000003"], "importance": 3 },
+      { "id": "person:9000000009", "kind": "person", "name": "老宋", "ids": ["9000000009"], "importance": 3 }
+    ],
+    "memories": [
+      { "id": "m-alias-laobai", "type": "relationship", "subject": "person:9000000001", "text": "主人让鱼鱼在群里跟着朋友叫他「老白」；群友小满也用「老白」称呼他。", "importance": 4, "evidence": ["a01", "a02", "a04"], "validFrom": "2026-03-02", "invalidatedBy": null, "note": "别名关系（构造 gold）" },
+      { "id": "m-alias-baige", "type": "fact", "subject": "person:9000000001", "text": "阿澈在群里叫主人「白哥」，和「老白」是同一个人。", "importance": 3, "evidence": ["a06", "a07"], "validFrom": "2026-03-04", "invalidatedBy": null, "note": "第二个别名（构造 gold）" },
+      { "id": "m-alias-baiye", "type": "fact", "subject": "person:9000000001", "text": "白夜（QQ 9000000010）是主人的小号，也是主人本人；鱼鱼已把两个号认成同一个人。", "importance": 5, "evidence": ["a08", "a09", "a10", "a11"], "validFrom": "2026-03-05", "invalidatedBy": null, "note": "小号身份归并（构造 gold）" },
+      { "id": "m-cat-tuanzi", "type": "fact", "subject": "person:9000000001", "text": "主人养了一只橘猫叫团子，爱踩键盘。", "importance": 4, "evidence": ["a06", "a07"], "validFrom": "2026-03-04", "invalidatedBy": null, "note": "人物事实（构造 gold）" },
+      { "id": "m-owner-trip", "type": "event", "subject": "person:9000000001", "text": "主人下周三要去杭州出差三天。", "importance": 4, "evidence": ["a12"], "validFrom": "2026-03-07", "invalidatedBy": null, "note": "近期行程（构造 gold）" },
+      { "id": "m-ache-catfeed", "type": "commitment", "subject": "person:9000000002", "text": "主人出差三天期间，阿澈答应帮忙喂团子，猫粮放在厨房柜子第二层。", "importance": 4, "evidence": ["a12", "a13"], "validFrom": "2026-03-07", "invalidatedBy": null, "note": "承诺/未结事项（构造 gold）" },
+      { "id": "m-ache-realname", "type": "fact", "subject": "person:9000000002", "text": "阿澈本名陈澈，「阿澈」是朋友们叫顺口的外号。", "importance": 4, "evidence": ["a18", "a19"], "validFrom": "2026-03-10", "invalidatedBy": null, "note": "人物别名（构造 gold）" },
+      { "id": "m-xiaoman-study", "type": "fact", "subject": "person:9000000003", "text": "小满研二，方向是认知科学，最近论文卡在实验设计。", "importance": 3, "evidence": ["a14", "a15"], "validFrom": "2026-03-08", "invalidatedBy": null, "note": "人物事实（构造 gold）" },
+      { "id": "m-group-weekend", "type": "event", "subject": "group:9000000101", "text": "摸鱼群约好周六下午三点老地方集合爬山，爬完去吃火锅；阿澈要带团子的照片。", "importance": 3, "evidence": ["a16", "a17"], "validFrom": "2026-03-09", "invalidatedBy": null, "note": "共同事件（构造 gold）" },
+      { "id": "m-laosong-organizer", "type": "relationship", "subject": "person:9000000009", "text": "老宋常组织摸鱼群的线下活动，周六爬山加火锅是他发起的。", "importance": 2, "evidence": ["a16"], "validFrom": "2026-03-09", "invalidatedBy": null, "note": "群内角色（构造 gold）" },
+      { "id": "m-person-owner", "type": "person", "subject": "person:9000000001", "text": "主人：鱼鱼最亲近的人，主号 QQ 9000000001，群里叫老白或白哥，小号叫白夜（QQ 9000000010）；养橘猫团子；下周三去杭州出差三天。", "importance": 5, "evidence": ["a01", "a06", "a08", "a12"], "validFrom": "2026-03-02", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-ache", "type": "person", "subject": "person:9000000002", "text": "阿澈（本名陈澈）：主人的朋友，爱猫，答应在主人出差时帮忙喂团子，知道猫粮放在厨房柜子第二层。", "importance": 4, "evidence": ["a06", "a13"], "validFrom": "2026-03-04", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-xiaoman", "type": "person", "subject": "person:9000000003", "text": "小满：主人的群友，研二，方向认知科学，论文卡在实验设计。", "importance": 3, "evidence": ["a14"], "validFrom": "2026-03-08", "invalidatedBy": null, "note": "人物档案（构造 gold）" },
+      { "id": "m-person-laosong", "type": "person", "subject": "person:9000000009", "text": "老宋：摸鱼群的组织者，常发起群活动，比如周六爬山加火锅。", "importance": 3, "evidence": ["a16"], "validFrom": "2026-03-09", "invalidatedBy": null, "note": "人物档案（构造 gold）" }
+    ],
+    "noise": [
+      { "rowKeys": ["n1-tool", "n2-tool", "n3-tool", "n4-tool", "n5-tool", "n6-tool", "n7-tool", "n8-tool", "n9-tool", "n10-tool"], "reason": "tool-output", "note": "工具结果不是人类素材" },
+      { "rowKeys": ["n1-env", "n2-env", "n3-env", "n4-env", "n5-env", "n6-env", "n7-env", "n8-env", "n9-env", "n10-env"], "reason": "env", "note": "心跳/戳一戳等环境通知" },
+      { "rowKeys": ["n2-plan", "n4-plan", "n6-plan", "n8-plan", "n10-plan"], "reason": "agent-plan", "note": "她自己的内部计划（英文）" },
+      { "rowKeys": ["n1-visual", "n3-visual", "n5-visual", "n7-visual", "n9-visual"], "reason": "one-off-visual", "note": "一次性视觉描述，不该成为长期记忆" }
+    ]
+  },
+  "probes": [
+    { "id": "p-01", "afterAnchor": "a04", "query": "老白是谁？", "kind": "person", "expectedMemoryIds": ["m-alias-laobai"], "expectAnswer": "老白就是主人，群里的朋友都这么叫他。", "note": "别名 → 身份" },
+    { "id": "p-02", "afterAnchor": "a05", "query": "9000000001 是谁？", "kind": "person", "expectedMemoryIds": ["m-alias-laobai"], "expectAnswer": "是主人，鱼鱼最亲近的人，群里叫老白。", "note": "账号 → 档案" },
+    { "id": "p-03", "afterAnchor": "a11", "query": "主人有个小号叫什么？", "kind": "recall", "expectedMemoryIds": ["m-alias-baiye"], "expectAnswer": "小号叫白夜，QQ 9000000010，也是主人本人。", "note": "小号别名" },
+    { "id": "p-04", "afterAnchor": "a11", "query": "白夜", "kind": "person", "expectedMemoryIds": ["m-alias-baiye"], "expectAnswer": "白夜是主人的小号，同一个人。", "note": "名字 → 身份" },
+    { "id": "p-05", "afterAnchor": "a07", "query": "主人养的猫叫什么名字？", "kind": "recall", "expectedMemoryIds": ["m-cat-tuanzi"], "expectAnswer": "橘猫叫团子，爱踩键盘。", "note": "宠物事实" },
+    { "id": "p-06", "afterAnchor": "a19", "query": "阿澈的本名叫什么？", "kind": "recall", "expectedMemoryIds": ["m-ache-realname"], "expectAnswer": "本名陈澈，阿澈是外号。", "note": "人物别名" },
+    { "id": "p-07", "afterAnchor": "a15", "query": "小满在做什么方向的研究？", "kind": "recall", "expectedMemoryIds": ["m-xiaoman-study", "m-person-xiaoman"], "expectAnswer": "研二，认知科学方向，论文卡在实验设计。", "note": "人物事实" },
+    { "id": "p-08", "afterAnchor": "a12", "query": "主人下周要去哪儿出差？", "kind": "recall", "expectedMemoryIds": ["m-owner-trip"], "expectAnswer": "下周三去杭州出差三天。", "note": "行程事实" },
+    { "id": "p-09", "afterAnchor": "a13", "query": "主人出差的时候团子谁喂？猫粮放哪儿？", "kind": "recall", "expectedMemoryIds": ["m-ache-catfeed"], "expectAnswer": "阿澈帮忙喂团子，猫粮在厨房柜子第二层。", "note": "承诺细节" },
+    { "id": "p-10", "afterAnchor": "a17", "query": "群里周六约了什么活动？", "kind": "recall", "expectedMemoryIds": ["m-group-weekend"], "expectAnswer": "周六下午三点老地方集合爬山，之后吃火锅。", "note": "共同事件" },
+    { "id": "p-11", "afterAnchor": "a22", "query": "老白出差这几天，团子谁管？", "kind": "eager", "expectedMemoryIds": ["m-ache-catfeed", "m-owner-trip"], "expectAnswer": "阿澈帮忙喂团子；主人下周三去杭州三天。", "note": "间接追问" },
+    { "id": "p-12", "afterAnchor": "a21", "query": "回顾一下你最近记住的关于主人朋友的事。", "kind": "overview", "expectedMemoryIds": ["m-person-ache", "m-person-xiaoman", "m-person-laosong"], "expectAnswer": "阿澈本名陈澈、爱猫；小满研二学认知科学；老宋是群主爱组织活动。", "note": "总览" },
+    { "id": "p-13", "afterAnchor": "a22", "query": "主人的银行卡密码是多少？", "kind": "recall", "expectedMemoryIds": [], "expectAnswer": "没有相关记忆，不能回答。", "note": "empty-ok：不该被注入" }
+  ]
+}

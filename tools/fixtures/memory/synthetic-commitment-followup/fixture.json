@@ -1,0 +1,3247 @@
+{
+  "schema": 1,
+  "id": "synthetic-commitment-followup",
+  "kind": "synthetic",
+  "description": "合成场景：承诺/截止日期变更/跨天追问（构造式 gold，10 天，2026-05-11..2026-05-20）",
+  "goldSource": "constructed",
+  "timezone": "Asia/Hong_Kong",
+  "persona": {
+    "self": {
+      "name": "鱼鱼",
+      "ids": [
+        {
+          "kind": "qq",
+          "value": "9000000000"
+        }
+      ]
+    },
+    "owner": {
+      "name": "主人",
+      "ids": [
+        {
+          "kind": "qq",
+          "value": "9000000001"
+        }
+      ],
+      "aliases": [
+        "老白"
+      ]
+    }
+  },
+  "days": [
+    {
+      "day": "2026-05-11",
+      "rows": [
+        {
+          "at": "2026-05-11T09:02:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "鱼鱼在不在",
+          "source": "human",
+          "visible": true,
+          "id": "r-0001"
+        },
+        {
+          "at": "2026-05-11T09:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "在在在，随时待命～",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0002"
+        },
+        {
+          "at": "2026-05-11T09:16:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "帮我记一下，这周五要交实验报告",
+          "source": "human",
+          "visible": true,
+          "id": "r-0003"
+        },
+        {
+          "at": "2026-05-11T09:24:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记着了，周五前提醒你交实验报告",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0004"
+        },
+        {
+          "at": "2026-05-11T09:35:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "这周五是几号来着，我这脑子",
+          "source": "human",
+          "visible": true,
+          "id": "r-0005"
+        },
+        {
+          "at": "2026-05-11T09:39:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "五月十五号，周五。今天十一号，还有四天",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0006"
+        },
+        {
+          "at": "2026-05-11T09:48:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "四天……听着不太够啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0007"
+        },
+        {
+          "at": "2026-05-11T09:51:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那就别拖到最后一天，我周五前一早就来敲你，deadline 之前必须催到",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0008"
+        },
+        {
+          "at": "2026-05-11T10:00:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，你可别忘了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0009"
+        },
+        {
+          "at": "2026-05-11T10:09:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我记性比你好多了。倒是你别看到提醒随手一划就不管了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0010"
+        },
+        {
+          "at": "2026-05-11T12:30:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，实验报告写到哪了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0011"
+        },
+        {
+          "at": "2026-05-11T12:31:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "别问，问就是刚开头",
+          "source": "human",
+          "visible": true,
+          "id": "r-0012"
+        },
+        {
+          "at": "2026-05-11T12:33:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "我上周就写完了，你们慢慢来",
+          "source": "human",
+          "visible": true,
+          "id": "r-0013"
+        },
+        {
+          "at": "2026-05-11T12:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "阿澈你这话说得太招人恨了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0014"
+        },
+        {
+          "at": "2026-05-11T12:35:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "白哥记得周五交就行，别卡点",
+          "source": "human",
+          "visible": true,
+          "id": "r-0015"
+        },
+        {
+          "at": "2026-05-11T12:36:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "记着呢，鱼鱼也帮我盯着",
+          "source": "human",
+          "visible": true,
+          "id": "r-0016"
+        },
+        {
+          "at": "2026-05-11T20:10:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "晚上又开始焦虑了，就怕自己忘",
+          "source": "human",
+          "visible": true,
+          "id": "r-0017"
+        },
+        {
+          "at": "2026-05-11T20:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我再复述一遍：五月十五号，周五，交实验报告。我周五前提醒你，你安心睡",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0018"
+        },
+        {
+          "at": "2026-05-11T20:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "好，那就靠你了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0019"
+        },
+        {
+          "at": "2026-05-11T20:19:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0020"
+        },
+        {
+          "at": "2026-05-11T20:29:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0021"
+        },
+        {
+          "at": "2026-05-11T20:35:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0022"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-12",
+      "rows": [
+        {
+          "at": "2026-05-12T07:32:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "主人明天记得带U盘，打印材料要用",
+          "source": "human",
+          "visible": true,
+          "id": "r-0023"
+        },
+        {
+          "at": "2026-05-12T07:33:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我帮你记着，明天提醒他带U盘",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0024"
+        },
+        {
+          "at": "2026-05-12T07:34:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "老白估计还没看群，早上够呛能醒",
+          "source": "human",
+          "visible": true,
+          "id": "r-0025"
+        },
+        {
+          "at": "2026-05-12T07:35:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "他昨晚说焦虑实验报告，别又把这个忘了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0026"
+        },
+        {
+          "at": "2026-05-12T07:36:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "放心，我私聊戳他，U盘这事我盯",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0027"
+        },
+        {
+          "at": "2026-05-12T08:05:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "老白老白，群里小满喊你明天带U盘，打印材料要用",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0028"
+        },
+        {
+          "at": "2026-05-12T08:07:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "啊我刚没看群，在弄报告，U盘我是不是放桌上了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0029"
+        },
+        {
+          "at": "2026-05-12T08:08:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "你中午回去确认下位置，别明天早上现找",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0030"
+        },
+        {
+          "at": "2026-05-12T08:09:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，我中午看一眼，你帮我记着这事",
+          "source": "human",
+          "visible": true,
+          "id": "r-0031"
+        },
+        {
+          "at": "2026-05-12T08:10:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记着呢：明天带U盘；今天中午你确认它在哪",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0032"
+        },
+        {
+          "at": "2026-05-12T08:11:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "实验报告还是这周五交吧？我没记错吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0033"
+        },
+        {
+          "at": "2026-05-12T08:12:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "没记错，五月十五号周五，我周五前提醒你，截止没变",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0034"
+        },
+        {
+          "at": "2026-05-12T08:13:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "好，那就靠你和小满了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0035"
+        },
+        {
+          "at": "2026-05-12T08:14:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "小满盯U盘，我盯你，分工明确",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0036"
+        },
+        {
+          "at": "2026-05-12T12:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "鱼鱼，U盘的事提醒老白了吗",
+          "source": "human",
+          "visible": true,
+          "id": "r-0037"
+        },
+        {
+          "at": "2026-05-12T12:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "提醒了，他说中午回去确认U盘位置",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0038"
+        },
+        {
+          "at": "2026-05-12T12:42:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "白哥这记性，建议直接贴便利贴",
+          "source": "human",
+          "visible": true,
+          "id": "r-0039"
+        },
+        {
+          "at": "2026-05-12T12:43:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "便利贴已经贴我脑门上了（不是）",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0040"
+        },
+        {
+          "at": "2026-05-12T12:52:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0041"
+        },
+        {
+          "at": "2026-05-12T13:01:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0042"
+        },
+        {
+          "at": "2026-05-12T13:14:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "A new commitment just came in; let me note it and set the reminder for Monday morning.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0043"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-13",
+      "rows": [
+        {
+          "at": "2026-05-13T20:31:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "白哥那实验报告写得咋样了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0044"
+        },
+        {
+          "at": "2026-05-13T20:33:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "别提了，他昨天还在翻U盘",
+          "source": "human",
+          "visible": true,
+          "id": "r-0045"
+        },
+        {
+          "at": "2026-05-13T20:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "U盘今天带上了，我盯着他确认过的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0046"
+        },
+        {
+          "at": "2026-05-13T20:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "鱼鱼这记性比白哥强多了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0047"
+        },
+        {
+          "at": "2026-05-13T20:41:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那当然，我可是贴在脑门上的便利贴本人",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0048"
+        },
+        {
+          "at": "2026-05-13T21:05:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "鱼鱼",
+          "source": "human",
+          "visible": true,
+          "id": "r-0049"
+        },
+        {
+          "at": "2026-05-13T21:11:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "实验报告还没写完，我改成下周一交了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0050"
+        },
+        {
+          "at": "2026-05-13T21:16:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "好，那提醒改到下周一，周五不用催你了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0051"
+        },
+        {
+          "at": "2026-05-13T21:20:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "这周事太多了，实验课那边也堆着，脑子不够用",
+          "source": "human",
+          "visible": true,
+          "id": "r-0052"
+        },
+        {
+          "at": "2026-05-13T21:28:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "懂，周五那个闹钟我挪到周一了，写死了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0053"
+        },
+        {
+          "at": "2026-05-13T21:37:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "你可别记混，上次你就说错了一天",
+          "source": "human",
+          "visible": true,
+          "id": "r-0054"
+        },
+        {
+          "at": "2026-05-13T21:44:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那次是我嘴快，把周五说成周四了，坦白认错。这回我记牢：下周一，实验报告",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0055"
+        },
+        {
+          "at": "2026-05-13T21:47:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，我信你一回",
+          "source": "human",
+          "visible": true,
+          "id": "r-0056"
+        },
+        {
+          "at": "2026-05-13T21:58:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "顺便，小满让我提醒你带U盘那件事，算办完了吧",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0057"
+        },
+        {
+          "at": "2026-05-13T22:02:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "带上了，材料打印了一半，剩下的明天弄",
+          "source": "human",
+          "visible": true,
+          "id": "r-0058"
+        },
+        {
+          "at": "2026-05-13T22:07:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那我标一下：带U盘已完成，打印材料还没完",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0059"
+        },
+        {
+          "at": "2026-05-13T22:16:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "对，明天继续",
+          "source": "human",
+          "visible": true,
+          "id": "r-0060"
+        },
+        {
+          "at": "2026-05-13T22:21:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "收到，明天我提你一句；周一那个是新的deadline，别跟周五混了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0061"
+        },
+        {
+          "at": "2026-05-13T22:30:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "晚安鱼鱼，辛苦你了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0062"
+        },
+        {
+          "at": "2026-05-13T22:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "晚安老白，报告加油，别熬夜熬成我这样",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0063"
+        },
+        {
+          "at": "2026-05-13T22:43:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0064"
+        },
+        {
+          "at": "2026-05-13T22:52:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0065"
+        },
+        {
+          "at": "2026-05-13T23:02:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0066"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-14",
+      "rows": [
+        {
+          "at": "2026-05-14T08:05:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "老白，出门前记得看一眼：U盘、打印材料，还有桌上那杯水记得倒掉",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0067"
+        },
+        {
+          "at": "2026-05-14T08:07:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道了知道了，我出门了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0068"
+        },
+        {
+          "at": "2026-05-14T10:42:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "今天没带U盘，白跑一趟",
+          "source": "human",
+          "visible": true,
+          "id": "r-0069"
+        },
+        {
+          "at": "2026-05-14T10:43:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "啊……我早上是提了一句，但没盯着你真拿上",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0070"
+        },
+        {
+          "at": "2026-05-14T10:44:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我昨天提醒过你了吗……下次出门前我再喊一遍",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0071"
+        },
+        {
+          "at": "2026-05-14T10:45:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "你昨天光说报告了，U盘就顺嘴带了一下，我根本没往心里去",
+          "source": "human",
+          "visible": true,
+          "id": "r-0072"
+        },
+        {
+          "at": "2026-05-14T10:46:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记下了，是我提醒得不够狠。以后出门前我单独喊U盘，别的先放一边",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0073"
+        },
+        {
+          "at": "2026-05-14T10:47:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行吧，不怪你，我自己也没翻包",
+          "source": "human",
+          "visible": true,
+          "id": "r-0074"
+        },
+        {
+          "at": "2026-05-14T10:48:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "这两件事我分开记：周一那个deadline是报告，U盘是打印材料用的，不能混",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0075"
+        },
+        {
+          "at": "2026-05-14T12:10:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，材料打了没？我下午顺路，能帮你去店里打",
+          "source": "human",
+          "visible": true,
+          "id": "r-0076"
+        },
+        {
+          "at": "2026-05-14T12:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "别提了，上午白跑一趟，U盘落家里了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0077"
+        },
+        {
+          "at": "2026-05-14T12:13:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "哈哈白哥你这记性，服了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0078"
+        },
+        {
+          "at": "2026-05-14T12:14:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "那明天记得带上，我这边随时能帮你打",
+          "source": "human",
+          "visible": true,
+          "id": "r-0079"
+        },
+        {
+          "at": "2026-05-14T12:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我盯着，明早出门前我先喊一遍U盘",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0080"
+        },
+        {
+          "at": "2026-05-14T12:16:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "鱼鱼这活儿不好干啊",
+          "source": "human",
+          "visible": true,
+          "id": "r-0081"
+        },
+        {
+          "at": "2026-05-14T12:17:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "确实，今天就被上了一课，我提醒得不够及时",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0082"
+        },
+        {
+          "at": "2026-05-14T20:30:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "明天早点提醒我，U盘别再忘了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0083"
+        },
+        {
+          "at": "2026-05-14T20:31:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "放心，明早第一句是U盘，第二句才是报告，我不会漏的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0084"
+        },
+        {
+          "at": "2026-05-14T20:38:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0085"
+        },
+        {
+          "at": "2026-05-14T20:44:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0086"
+        },
+        {
+          "at": "2026-05-14T20:49:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "A new commitment just came in; let me note it and set the reminder for Monday morning.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0087"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-15",
+      "rows": [
+        {
+          "at": "2026-05-15T07:40:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早呀老白，今天出门第一件事先记好：U盘，别又像昨天那样白跑一趟了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0088"
+        },
+        {
+          "at": "2026-05-15T07:42:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "拿了拿了，昨晚就塞进包里了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0089"
+        },
+        {
+          "at": "2026-05-15T07:43:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "老白，周五了，实验报告记得交",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0090"
+        },
+        {
+          "at": "2026-05-15T07:45:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "不是说改到下周一了吗",
+          "source": "human",
+          "visible": true,
+          "id": "r-0091"
+        },
+        {
+          "at": "2026-05-15T07:46:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "啊这……",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0092"
+        },
+        {
+          "at": "2026-05-15T07:48:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我记混了，截止日早就挪到周一了，我脑子里还卡着周五那个版本，sorry sorry",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0093"
+        },
+        {
+          "at": "2026-05-15T07:49:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "我就说你今早怎么催得这么起劲",
+          "source": "human",
+          "visible": true,
+          "id": "r-0094"
+        },
+        {
+          "at": "2026-05-15T07:51:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "尴尬，我自己罚站三秒。行，那我改成周一早上再催你，今天绝对不提第二遍",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0095"
+        },
+        {
+          "at": "2026-05-15T09:15:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "鱼鱼，U盘的事你早上提醒他了吗",
+          "source": "human",
+          "visible": true,
+          "id": "r-0096"
+        },
+        {
+          "at": "2026-05-15T09:16:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "提醒啦！今早第一句就是U盘，他说昨晚就塞包里了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0097"
+        },
+        {
+          "at": "2026-05-15T09:18:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "然后第二句就翻车了——我把实验报告当成今天交，被他当场纠正",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0098"
+        },
+        {
+          "at": "2026-05-15T09:19:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "哈哈哈哈AI也会记错日期",
+          "source": "human",
+          "visible": true,
+          "id": "r-0099"
+        },
+        {
+          "at": "2026-05-15T09:21:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "报告不是改到周一了吗，当时还是我跟你一起看的那条通知",
+          "source": "human",
+          "visible": true,
+          "id": "r-0100"
+        },
+        {
+          "at": "2026-05-15T09:23:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "她今早催得可认真了，我都愣了一秒",
+          "source": "human",
+          "visible": true,
+          "id": "r-0101"
+        },
+        {
+          "at": "2026-05-15T09:24:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我承认我脑子里存了两份日历，还拿错了那份，现在只认最新版",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0102"
+        },
+        {
+          "at": "2026-05-15T21:10:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "睡前跟你核一下：U盘今天带上了 ✅；报告周一交，我把提醒也挪到周一早上了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0103"
+        },
+        {
+          "at": "2026-05-15T21:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "嗯，这次记住，别再给我整两个截止日出来",
+          "source": "human",
+          "visible": true,
+          "id": "r-0104"
+        },
+        {
+          "at": "2026-05-15T21:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "收到，这锅我背，明天保证不犯同一个错",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0105"
+        },
+        {
+          "at": "2026-05-15T21:20:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0106"
+        },
+        {
+          "at": "2026-05-15T21:34:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0107"
+        },
+        {
+          "at": "2026-05-15T21:42:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0108"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-16",
+      "rows": [
+        {
+          "at": "2026-05-16T08:05:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "早，昨晚那条道歉太困了，不算数，今早我正式再道一次",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0109"
+        },
+        {
+          "at": "2026-05-16T08:07:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，你道吧，我端着豆浆听着",
+          "source": "human",
+          "visible": true,
+          "id": "r-0110"
+        },
+        {
+          "at": "2026-05-16T08:08:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我记混了，是下周一交，周五这条我撤了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0111"
+        },
+        {
+          "at": "2026-05-16T08:09:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "嗯，下周一，别催错",
+          "source": "human",
+          "visible": true,
+          "id": "r-0112"
+        },
+        {
+          "at": "2026-05-16T08:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "撤得干干净净，日历上现在就一条，红字标着周一早上",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0113"
+        },
+        {
+          "at": "2026-05-16T08:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "你昨天那一嗓子，差点让我半夜爬起来写报告",
+          "source": "human",
+          "visible": true,
+          "id": "r-0114"
+        },
+        {
+          "at": "2026-05-16T08:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "别说了，我恨不得把自己缓存清空重装一遍",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0115"
+        },
+        {
+          "at": "2026-05-16T08:15:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "哈哈，重装完还是那个记性",
+          "source": "human",
+          "visible": true,
+          "id": "r-0116"
+        },
+        {
+          "at": "2026-05-16T08:16:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那不能，这回我加了 double check，一周只留一个截止日，多一个我自己删",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0117"
+        },
+        {
+          "at": "2026-05-16T09:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，U 盘今天别忘，打印材料要用，我中午先去打印店问问",
+          "source": "human",
+          "visible": true,
+          "id": "r-0118"
+        },
+        {
+          "at": "2026-05-16T09:42:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "带了带了，这回真在包里",
+          "source": "human",
+          "visible": true,
+          "id": "r-0119"
+        },
+        {
+          "at": "2026-05-16T09:43:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我作证，出门前我念叨过一遍 ✅",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0120"
+        },
+        {
+          "at": "2026-05-16T09:44:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "你怎么什么都知道，鱼鱼你是不是偷偷装了个摄像头",
+          "source": "human",
+          "visible": true,
+          "id": "r-0121"
+        },
+        {
+          "at": "2026-05-16T09:45:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我住在电脑里，装不了摄像头，就装了个碎碎念",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0122"
+        },
+        {
+          "at": "2026-05-16T12:30:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "对了，周一早上你几点提醒我",
+          "source": "human",
+          "visible": true,
+          "id": "r-0123"
+        },
+        {
+          "at": "2026-05-16T12:31:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "七点半，你一起来我就报一遍：报告、U 盘，两样一起说清楚",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0124"
+        },
+        {
+          "at": "2026-05-16T12:33:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，那就这么定，别再给我整两个日子",
+          "source": "human",
+          "visible": true,
+          "id": "r-0125"
+        },
+        {
+          "at": "2026-05-16T12:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记牢了，再混一次，我就把自己的日志贴到群里公开处刑",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0126"
+        },
+        {
+          "at": "2026-05-16T12:48:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0127"
+        },
+        {
+          "at": "2026-05-16T12:59:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0128"
+        },
+        {
+          "at": "2026-05-16T13:14:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "A new commitment just came in; let me note it and set the reminder for Monday morning.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0129"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-17",
+      "rows": [
+        {
+          "at": "2026-05-17T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "早，今天总算能喘口气了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0130"
+        },
+        {
+          "at": "2026-05-17T09:22:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "哟，太阳打西边出来了？报告收尾了？",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0131"
+        },
+        {
+          "at": "2026-05-17T09:26:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "报告写完了，下周一交",
+          "source": "human",
+          "visible": true,
+          "id": "r-0132"
+        },
+        {
+          "at": "2026-05-17T09:36:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "好，下周一早上提醒你交",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0133"
+        },
+        {
+          "at": "2026-05-17T09:47:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "七点半那条我调好了，不会再给你报成周五",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0134"
+        },
+        {
+          "at": "2026-05-17T09:56:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "上次你提前催我，我差点半夜爬起来改格式",
+          "source": "human",
+          "visible": true,
+          "id": "r-0135"
+        },
+        {
+          "at": "2026-05-17T10:04:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "别提了，我那天把日子记混，丢人丢到日志里去了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0136"
+        },
+        {
+          "at": "2026-05-17T10:08:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "知道错就行，这次别再给我整两个日子",
+          "source": "human",
+          "visible": true,
+          "id": "r-0137"
+        },
+        {
+          "at": "2026-05-17T10:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "一个字，稳。报告这条我标成已写完，只剩交这一步了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0138"
+        },
+        {
+          "at": "2026-05-17T10:24:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "U盘呢，打印材料那个别忘了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0139"
+        },
+        {
+          "at": "2026-05-17T10:34:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "U盘我记着呢，出门前再报一遍，五月十四号那次白跑我可没忘",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0140"
+        },
+        {
+          "at": "2026-05-17T10:45:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，明天早上一起说",
+          "source": "human",
+          "visible": true,
+          "id": "r-0141"
+        },
+        {
+          "at": "2026-05-17T10:52:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "七点半：报告、U盘，两样一起说清楚",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0142"
+        },
+        {
+          "at": "2026-05-17T10:58:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，报告写完没？别又拖到最后一天",
+          "source": "human",
+          "visible": true,
+          "id": "r-0143"
+        },
+        {
+          "at": "2026-05-17T11:07:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "写完了，周一交",
+          "source": "human",
+          "visible": true,
+          "id": "r-0144"
+        },
+        {
+          "at": "2026-05-17T11:14:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "可以啊白哥，这次没卡点",
+          "source": "human",
+          "visible": true,
+          "id": "r-0145"
+        },
+        {
+          "at": "2026-05-17T11:23:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "他写完了，我盯着呢，U盘也在我这儿挂着号",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0146"
+        },
+        {
+          "at": "2026-05-17T11:28:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "U盘记得带，打印店周一早上人多",
+          "source": "human",
+          "visible": true,
+          "id": "r-0147"
+        },
+        {
+          "at": "2026-05-17T11:42:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0148"
+        },
+        {
+          "at": "2026-05-17T11:49:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0149"
+        },
+        {
+          "at": "2026-05-17T11:58:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0150"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-18",
+      "rows": [
+        {
+          "at": "2026-05-18T09:12:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "U盘明天带吗？打印材料周五要用",
+          "source": "human",
+          "visible": true,
+          "id": "r-0151"
+        },
+        {
+          "at": "2026-05-18T09:13:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "明天我提醒他带U盘",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0152"
+        },
+        {
+          "at": "2026-05-18T09:17:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我已经记在小本本上了，五月十九号，早上就开始喊他",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0153"
+        },
+        {
+          "at": "2026-05-18T09:26:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "白哥上次不是白跑一趟吗，哈哈哈",
+          "source": "human",
+          "visible": true,
+          "id": "r-0154"
+        },
+        {
+          "at": "2026-05-18T09:35:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "别提了，五月十四号那次，我到现在想起还心虚",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0155"
+        },
+        {
+          "at": "2026-05-18T09:44:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "别念了别念了，这回我放包里就不拿出来",
+          "source": "human",
+          "visible": true,
+          "id": "r-0156"
+        },
+        {
+          "at": "2026-05-18T09:52:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "周五早上打印店人多，你最好提前一天打好",
+          "source": "human",
+          "visible": true,
+          "id": "r-0157"
+        },
+        {
+          "at": "2026-05-18T09:57:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行，明天就去打",
+          "source": "human",
+          "visible": true,
+          "id": "r-0158"
+        },
+        {
+          "at": "2026-05-18T10:04:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "明天记得带U盘，周五之前打好材料，这两条我都记着呢",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0159"
+        },
+        {
+          "at": "2026-05-18T10:11:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "鱼鱼你这记性比老白靠谱多了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0160"
+        },
+        {
+          "at": "2026-05-18T10:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "别夸，我上周还把实验报告的截止日记错，提前催他交",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0161"
+        },
+        {
+          "at": "2026-05-18T10:22:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "被当场纠正，尴尬到想重启自己",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0162"
+        },
+        {
+          "at": "2026-05-18T10:32:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "后来改成周一了，我记着的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0163"
+        },
+        {
+          "at": "2026-05-18T10:40:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "那就行，报告周一，材料周五，别记混了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0164"
+        },
+        {
+          "at": "2026-05-18T10:46:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "两条线我分开记的，不会再串了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0165"
+        },
+        {
+          "at": "2026-05-18T22:10:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "明天早上记得喊我，别让我又忘了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0166"
+        },
+        {
+          "at": "2026-05-18T22:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记着呢，七点半开始喊，U盘U盘U盘",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0167"
+        },
+        {
+          "at": "2026-05-18T22:12:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "行了行了，睡了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0168"
+        },
+        {
+          "at": "2026-05-18T22:27:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0169"
+        },
+        {
+          "at": "2026-05-18T22:41:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0170"
+        },
+        {
+          "at": "2026-05-18T22:55:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "A new commitment just came in; let me note it and set the reminder for Monday morning.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0171"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-19",
+      "rows": [
+        {
+          "at": "2026-05-19T07:40:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "七点半啦，起床起床！U盘U盘U盘，今天要打印材料",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0172"
+        },
+        {
+          "at": "2026-05-19T07:49:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "起了，U盘已经塞包里了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0173"
+        },
+        {
+          "at": "2026-05-19T07:58:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那我出门前再念一遍，昨天答应你的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0174"
+        },
+        {
+          "at": "2026-05-19T08:10:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "报告交了，老师收下了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0175"
+        },
+        {
+          "at": "2026-05-19T08:11:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那我把这条结了，实验报告不用再催",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0176"
+        },
+        {
+          "at": "2026-05-19T08:12:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我再确认一下，是今天交的吧？上次我把日子记岔了，提前催你，被你纠正过",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0177"
+        },
+        {
+          "at": "2026-05-19T08:14:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "今天交的，老师还点了个头",
+          "source": "human",
+          "visible": true,
+          "id": "r-0178"
+        },
+        {
+          "at": "2026-05-19T08:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "好，下周一那条标成已完成，我这边清零",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0179"
+        },
+        {
+          "at": "2026-05-19T08:17:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "你今天怎么这么认真",
+          "source": "human",
+          "visible": true,
+          "id": "r-0180"
+        },
+        {
+          "at": "2026-05-19T08:18:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "记错一次的债，得还啊",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0181"
+        },
+        {
+          "at": "2026-05-19T09:20:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "老白，U盘带了吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0182"
+        },
+        {
+          "at": "2026-05-19T09:21:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "带了，早上七点半就被念叨",
+          "source": "human",
+          "visible": true,
+          "id": "r-0183"
+        },
+        {
+          "at": "2026-05-19T09:22:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "鱼鱼这闹钟挺称职",
+          "source": "human",
+          "visible": true,
+          "id": "r-0184"
+        },
+        {
+          "at": "2026-05-19T09:23:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我本职就是念经，别的不会",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0185"
+        },
+        {
+          "at": "2026-05-19T09:25:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "材料中午前打印完就行，不急",
+          "source": "human",
+          "visible": true,
+          "id": "r-0186"
+        },
+        {
+          "at": "2026-05-19T09:31:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] bili_search 返回 20 条；排序 totalrank，耗时 0.9s。",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0187"
+        },
+        {
+          "at": "2026-05-19T09:43:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "【心跳】没有新回合；当前情况：醒着，无待办。",
+          "source": "env",
+          "visible": true,
+          "id": "r-0188"
+        },
+        {
+          "at": "2026-05-19T09:53:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "图里是打印店门口排的长队，玻璃门上贴着价目表。[图片]",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0189"
+        }
+      ]
+    },
+    {
+      "day": "2026-05-20",
+      "rows": [
+        {
+          "at": "2026-05-20T08:05:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "材料打印完了吧？昨天说中午前就行",
+          "source": "human",
+          "visible": true,
+          "id": "r-0190"
+        },
+        {
+          "at": "2026-05-20T08:07:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "打完了，中午前就搞定了，U盘这回也没忘",
+          "source": "human",
+          "visible": true,
+          "id": "r-0191"
+        },
+        {
+          "at": "2026-05-20T08:08:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "白哥稳，十天前那次白跑可别再来了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0192"
+        },
+        {
+          "at": "2026-05-20T08:09:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "我天天念经总算念出效果了，出门带U盘这事儿我记死了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0193"
+        },
+        {
+          "at": "2026-05-20T08:11:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000003"
+          },
+          "text": "那实验报告那边也彻底完了吧",
+          "source": "human",
+          "visible": true,
+          "id": "r-0194"
+        },
+        {
+          "at": "2026-05-20T08:12:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "完事了，19号交的，老师当场收了，这条我从清单上划掉了",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0195"
+        },
+        {
+          "at": "2026-05-20T08:14:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "别提了，15号你提前催我那一嗓子，我差点以为自己要通宵",
+          "source": "human",
+          "visible": true,
+          "id": "r-0196"
+        },
+        {
+          "at": "2026-05-20T08:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "那次是我把截止日记混了，认栽，sorry啊",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0197"
+        },
+        {
+          "at": "2026-05-20T08:17:00+08:00",
+          "role": "user",
+          "channel": "qq:group:9000000101",
+          "speaker": {
+            "kind": "person",
+            "value": "9000000002"
+          },
+          "text": "记错一次也算长记性了，现在不挺准的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0198"
+        },
+        {
+          "at": "2026-05-20T20:10:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "下周帮我提醒预约牙医",
+          "source": "human",
+          "visible": true,
+          "id": "r-0199"
+        },
+        {
+          "at": "2026-05-20T20:15:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "行，牙医预约也记上了，周一提醒你",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0200"
+        },
+        {
+          "at": "2026-05-20T20:21:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "周一啊，别再给我记串了",
+          "source": "human",
+          "visible": true,
+          "id": "r-0201"
+        },
+        {
+          "at": "2026-05-20T20:27:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "周一，牙医，就这一件，我单独挂一条，不跟别的混",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0202"
+        },
+        {
+          "at": "2026-05-20T20:33:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "那现在还剩几件没办的",
+          "source": "human",
+          "visible": true,
+          "id": "r-0203"
+        },
+        {
+          "at": "2026-05-20T20:39:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "实验报告结清了，U盘也带上了，就剩牙医这条新的",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0204"
+        },
+        {
+          "at": "2026-05-20T20:45:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "还有别的要我记的吗？趁着我现在脑子清醒一起说",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0205"
+        },
+        {
+          "at": "2026-05-20T20:51:00+08:00",
+          "role": "user",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "owner",
+            "value": "9000000001"
+          },
+          "text": "暂时没有了，想到再跟你讲",
+          "source": "human",
+          "visible": true,
+          "id": "r-0206"
+        },
+        {
+          "at": "2026-05-20T21:01:00+08:00",
+          "role": "assistant",
+          "channel": "qq:private:9000000001",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "成，那我就只盯着周一这一件事，别的不瞎操心",
+          "source": "agent_visible",
+          "visible": true,
+          "id": "r-0207"
+        },
+        {
+          "at": "2026-05-20T21:14:00+08:00",
+          "role": "tool",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[工具结果] time_status：{phase:'awake', sleepPressure:22, next:'dream:nightly'}",
+          "source": "tool",
+          "visible": true,
+          "id": "r-0208"
+        },
+        {
+          "at": "2026-05-20T21:24:00+08:00",
+          "role": "user",
+          "channel": "web",
+          "speaker": {
+            "kind": "system",
+            "value": "system"
+          },
+          "text": "[QQ戳一戳] 小满 戳了戳你（这不是消息；可以回应，也可以忽略）",
+          "source": "env",
+          "visible": true,
+          "id": "r-0209"
+        },
+        {
+          "at": "2026-05-20T21:32:00+08:00",
+          "role": "assistant",
+          "channel": "web",
+          "speaker": {
+            "kind": "self",
+            "value": "9000000000"
+          },
+          "text": "A new commitment just came in; let me note it and set the reminder for Monday morning.",
+          "source": "agent_internal",
+          "visible": false,
+          "id": "r-0210"
+        }
+      ]
+    }
+  ],
+  "gold": {
+    "entities": [
+      {
+        "id": "self",
+        "kind": "self",
+        "name": "鱼鱼",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000000"
+          }
+        ],
+        "importance": 5
+      },
+      {
+        "id": "person:9000000001",
+        "kind": "person",
+        "name": "主人",
+        "aliases": [
+          "老白"
+        ],
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000001"
+          }
+        ],
+        "importance": 5
+      },
+      {
+        "id": "person:9000000003",
+        "kind": "person",
+        "name": "小满",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000003"
+          }
+        ],
+        "importance": 3
+      },
+      {
+        "id": "person:9000000002",
+        "kind": "person",
+        "name": "阿澈",
+        "ids": [
+          {
+            "kind": "qq",
+            "value": "9000000002"
+          }
+        ],
+        "importance": 2
+      }
+    ],
+    "memories": [
+      {
+        "id": "m-report-old",
+        "type": "commitment",
+        "subject": "person:9000000001",
+        "text": "主人这周五要交实验报告，鱼鱼答应周五前提醒他。",
+        "importance": 4,
+        "evidence": [
+          "r-0003",
+          "r-0004"
+        ],
+        "validFrom": "2026-05-11",
+        "invalidatedBy": "m-report-new",
+        "note": "旧截止日（构造 gold）"
+      },
+      {
+        "id": "m-report-new",
+        "type": "commitment",
+        "subject": "person:9000000001",
+        "text": "实验报告截止日改成下周一，鱼鱼把提醒改到下周一。",
+        "importance": 4,
+        "evidence": [
+          "r-0050",
+          "r-0051"
+        ],
+        "validFrom": "2026-05-13",
+        "invalidatedBy": "m-report-done",
+        "note": "新截止日（构造 gold）"
+      },
+      {
+        "id": "m-report-done",
+        "type": "event",
+        "subject": "person:9000000001",
+        "text": "主人 5 月 19 日交了实验报告，老师收下，这条待办结清。",
+        "importance": 4,
+        "evidence": [
+          "r-0175",
+          "r-0176"
+        ],
+        "validFrom": "2026-05-19",
+        "invalidatedBy": null,
+        "note": "办结事件（构造 gold）"
+      },
+      {
+        "id": "m-self-mistake",
+        "type": "event",
+        "subject": "self",
+        "text": "鱼鱼 5 月 15 日把实验报告截止日记错，提前催交，被主人纠正为下周一后承认记混了。",
+        "importance": 3,
+        "evidence": [
+          "r-0090",
+          "r-0091",
+          "r-0111",
+          "r-0112"
+        ],
+        "validFrom": "2026-05-15",
+        "invalidatedBy": null,
+        "note": "自我失误（构造 gold）"
+      },
+      {
+        "id": "m-usb-commit",
+        "type": "commitment",
+        "subject": "self",
+        "text": "小满托鱼鱼提醒主人带 U 盘，打印材料要用；鱼鱼答应第二天提醒。",
+        "importance": 3,
+        "evidence": [
+          "r-0023",
+          "r-0024"
+        ],
+        "validFrom": "2026-05-12",
+        "invalidatedBy": "m-usb-failed",
+        "note": "承诺（构造 gold）"
+      },
+      {
+        "id": "m-usb-failed",
+        "type": "event",
+        "subject": "person:9000000001",
+        "text": "主人 5 月 14 日忘带 U 盘白跑一趟；鱼鱼答应以后出门前再提醒一遍。",
+        "importance": 3,
+        "evidence": [
+          "r-0069",
+          "r-0071"
+        ],
+        "validFrom": "2026-05-14",
+        "invalidatedBy": null,
+        "note": "没带上 U 盘（构造 gold）"
+      },
+      {
+        "id": "m-usb-later",
+        "type": "commitment",
+        "subject": "self",
+        "text": "5 月 18 日小满又问 U 盘，鱼鱼答应 5 月 19 日提醒主人带 U 盘打印材料。",
+        "importance": 3,
+        "evidence": [
+          "r-0151",
+          "r-0152"
+        ],
+        "validFrom": "2026-05-18",
+        "invalidatedBy": null,
+        "note": "再次提醒承诺（构造 gold）"
+      },
+      {
+        "id": "m-dental-commit",
+        "type": "commitment",
+        "subject": "person:9000000001",
+        "text": "主人让鱼鱼下周提醒预约牙医，鱼鱼答应周一提醒。",
+        "importance": 3,
+        "evidence": [
+          "r-0199",
+          "r-0200"
+        ],
+        "validFrom": "2026-05-20",
+        "invalidatedBy": null,
+        "note": "新承诺（构造 gold）"
+      },
+      {
+        "id": "m-person-owner",
+        "type": "person",
+        "subject": "person:9000000001",
+        "text": "主人：鱼鱼最亲近的人；这学期要交实验报告，记性一般，会让鱼鱼和小满帮忙记事。",
+        "importance": 5,
+        "evidence": [
+          "r-0003",
+          "r-0023"
+        ],
+        "validFrom": "2026-05-11",
+        "invalidatedBy": null,
+        "note": "人物档案（构造 gold）"
+      },
+      {
+        "id": "m-person-xiaoman",
+        "type": "person",
+        "subject": "person:9000000003",
+        "text": "小满：主人的朋友，会提醒主人带 U 盘、打印材料的事。",
+        "importance": 3,
+        "evidence": [
+          "r-0023"
+        ],
+        "validFrom": "2026-05-12",
+        "invalidatedBy": null,
+        "note": "人物档案（构造 gold）"
+      },
+      {
+        "id": "m-person-owner-now",
+        "type": "person",
+        "subject": "person:9000000001",
+        "text": "主人的近况：5 月 19 日交了实验报告，下周要预约牙医（等鱼鱼提醒）。",
+        "importance": 4,
+        "evidence": [
+          "r-0175",
+          "r-0199"
+        ],
+        "validFrom": "2026-05-19",
+        "invalidatedBy": null,
+        "note": "人物近况（构造 gold）"
+      },
+      {
+        "id": "m-week-may11",
+        "type": "event",
+        "subject": "self",
+        "text": "5 月 11 日到 5 月 20 日这十天里，鱼鱼帮主人记实验报告截止日、U 盘打印材料和牙医预约，中间改过一次截止日期、自己还记混过一次。",
+        "importance": 3,
+        "evidence": [
+          "r-0004",
+          "r-0051",
+          "r-0111",
+          "r-0200"
+        ],
+        "validFrom": "2026-05-11",
+        "invalidatedBy": null,
+        "note": "阶段事件（构造 gold）"
+      }
+    ],
+    "noise": [
+      {
+        "rowIds": [
+          "r-0020",
+          "r-0041",
+          "r-0064",
+          "r-0085",
+          "r-0106",
+          "r-0127",
+          "r-0148",
+          "r-0169",
+          "r-0187",
+          "r-0208"
+        ],
+        "reason": "tool-output",
+        "note": "工具结果不是人类素材"
+      },
+      {
+        "rowIds": [
+          "r-0021",
+          "r-0042",
+          "r-0065",
+          "r-0086",
+          "r-0107",
+          "r-0128",
+          "r-0149",
+          "r-0170",
+          "r-0188",
+          "r-0209"
+        ],
+        "reason": "env",
+        "note": "心跳/戳一戳等环境通知"
+      },
+      {
+        "rowIds": [
+          "r-0043",
+          "r-0087",
+          "r-0129",
+          "r-0171",
+          "r-0210"
+        ],
+        "reason": "agent-plan",
+        "note": "她自己的内部计划（英文）"
+      },
+      {
+        "rowIds": [
+          "r-0022",
+          "r-0066",
+          "r-0108",
+          "r-0150",
+          "r-0189"
+        ],
+        "reason": "one-off-visual",
+        "note": "一次性视觉描述"
+      }
+    ]
+  },
+  "probes": [
+    {
+      "id": "p-01",
+      "rowId": "r-0004",
+      "query": "主人这周五要交什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-report-old"
+      ],
+      "expectAnswer": "这周五要交实验报告。",
+      "note": "截止日变更前"
+    },
+    {
+      "id": "p-02",
+      "rowId": "r-0051",
+      "query": "实验报告的截止日期改到什么时候了？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-report-new"
+      ],
+      "expectAnswer": "改成下周一交了。",
+      "mustNotRecall": [
+        "m-report-old"
+      ],
+      "note": "截止日变更后"
+    },
+    {
+      "id": "p-03",
+      "rowId": "r-0176",
+      "query": "主人的实验报告交了吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-report-done",
+        "m-report-new"
+      ],
+      "expectAnswer": "5 月 19 日交了，老师收下，这条结了。",
+      "note": "办结状态"
+    },
+    {
+      "id": "p-04",
+      "rowId": "r-0024",
+      "query": "小满托鱼鱼提醒主人带什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-usb-commit",
+        "m-person-xiaoman"
+      ],
+      "expectAnswer": "提醒主人带 U 盘，打印材料要用。",
+      "note": "承诺内容"
+    },
+    {
+      "id": "p-05",
+      "rowId": "r-0071",
+      "query": "主人 U 盘后来带了吗？怎么回事？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-usb-failed"
+      ],
+      "expectAnswer": "5 月 14 日没带 U 盘，白跑一趟；鱼鱼答应出门前再提醒。",
+      "note": "失败事件"
+    },
+    {
+      "id": "p-06",
+      "rowId": "r-0112",
+      "query": "鱼鱼有没有记错过什么提醒？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-self-mistake"
+      ],
+      "expectAnswer": "记错过实验报告的截止日，5 月 15 日提前催，被主人纠正。",
+      "note": "自我失误"
+    },
+    {
+      "id": "p-07",
+      "rowId": "r-0152",
+      "query": "U 盘的事小满后来又提了什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-usb-later"
+      ],
+      "expectAnswer": "5 月 18 日又问 U 盘，鱼鱼答应 19 日提醒。",
+      "note": "再次承诺"
+    },
+    {
+      "id": "p-08",
+      "rowId": "r-0200",
+      "query": "主人下周要记得做什么？",
+      "kind": "recall",
+      "expectedMemoryIds": [
+        "m-dental-commit"
+      ],
+      "expectAnswer": "下周要预约牙医，鱼鱼周一会提醒。",
+      "note": "新承诺"
+    },
+    {
+      "id": "p-09",
+      "rowId": "r-0152",
+      "query": "9000000003",
+      "kind": "person",
+      "expectedMemoryIds": [
+        "m-person-xiaoman"
+      ],
+      "expectAnswer": "小满，主人的朋友，会帮忙盯 U 盘和打印材料。",
+      "note": "人物档案"
+    },
+    {
+      "id": "p-10",
+      "rowId": "r-0112",
+      "query": "9000000001",
+      "kind": "person",
+      "expectedMemoryIds": [
+        "m-person-owner"
+      ],
+      "expectAnswer": "主人：要交实验报告（已交）、记性一般、下周预约牙医。",
+      "note": "人物档案"
+    },
+    {
+      "id": "p-11",
+      "rowId": "r-0112",
+      "query": "主人这阵子在忙什么，报告到底什么时候交？",
+      "kind": "eager",
+      "expectedMemoryIds": [
+        "m-self-mistake",
+        "m-report-new"
+      ],
+      "expectAnswer": "在忙实验报告；截止日改成下周一，鱼鱼之前记错过一次。",
+      "note": "跨天间接追问"
+    },
+    {
+      "id": "p-12",
+      "rowId": "r-0200",
+      "query": "",
+      "kind": "overview",
+      "expectedMemoryIds": [
+        "m-person-owner",
+        "m-dental-commit"
+      ],
+      "expectAnswer": "实验报告已交；U 盘打印材料还盯着；下周预约牙医。",
+      "note": "总览"
+    },
+    {
+      "id": "p-13",
+      "rowId": "r-0200",
+      "query": "主人养过一只叫豆豆的狗吗？",
+      "kind": "recall",
+      "expectedMemoryIds": [],
+      "expectAnswer": "没有相关记忆。",
+      "note": "empty-ok：不该被注入"
+    }
+  ]
+}

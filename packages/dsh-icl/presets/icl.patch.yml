@@ -80,6 +80,10 @@
                   selfNames:
                     - '鱼鱼'
                     - '小千'
+                  # 群号不是人的账号：模型偶尔把群号写进 person.ids（曾嘉睿案例）。
+                  groupIds:
+                    - '601357169'
+                    - '1057812765'
                 qq:
                   enabled: true
                   ownerQQ: '3429502459'
