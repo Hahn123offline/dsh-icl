@@ -455,18 +455,45 @@ r3/r5/miss 全部改善，按"人能否拿到答案"口径是净收益。
 
 \* QQ 仅剩 p-07（gold↔extracted 映射粒度问题）；\** 负例仍是"提到≠回答"两条。
 
+## 2m. 第 14 轮：基线/方差定稿 + answer-adequacy 审计 + 确定性旧值失效（本轮）
+
+### A. 基线文档 + 3 次 fresh 方差（`docs/MEMORY-BASELINES.md`，新增）
+
+- 当前代码 3 次独立 `--fresh`（focus-core）：formation R 78.1/81.3/81.3%（均值 80.2%），
+  端到端 r5 93.3/76.7/75.0%（**均值 81.7%，极差 17.5pt**）、miss 6.7/20/25%（均值 17.2%）、
+  falseInjection 恒 0。
+- 建议门控（写进 baseline 文档）：formation.recall≥0.75、r3≥0.65、r5≥0.75、miss≤0.25、
+  falseInjection=0；QQ 单列 r5≥0.70、live r5≥0.80。
+- 结论：**单次数字必须带方差读**，cache-only 的 96.9% 是"复用了一次好 formation"，不能当常态。
+
+### B. answer-adequacy 审计（新工具 `tools/memory-answer-adequacy.mjs`）
+
+- 对"期望为空且无 unresolved"的**真负例**，让模型判断"返回的记忆里有没有真正回答问题的内容"。
+- 三源结果：focus 1 条负例、QQ 1 条、live 2 条；**judge 全部判"提到但没答"（answers=false）**，
+  没有任何一条返回记忆被误当成答案 → **原始 falseInjection 高估了问题**（它只统计"有没有返回"）。
+- 口径建议：对外报告用 `raw falseInjection` + `answer-adequacy falseInjection` 两个数；
+  后者三源均为 **0**。工具走 eval 的 prompt 缓存，可无密钥复跑；产物在 `.state/lab/lead/answer-adequacy/`。
+
+### C. 确定性旧值失效兜底（validity 第二个安全网）
+
+- 模型 validity 会漏"旧偏好被否定"（咖啡→豆浆实测漏失效），新增保守兜底：
+  同类型 + 旧记录在更早的日子 + 新陈述含否定词（不/没/不再/戒/停/别）+ 与新陈述共享至少一个
+  **非通用内容 bigram** → 软失效旧记录（每天≤2 条，日志 `dream.validity-invalidated-deterministic`，单测覆盖）。
+- 合成偏好变化 fixture fresh 复测：formation **R 78.6→85.7%**；旧值仍以"同类型 typed 记录存活"
+  计数的 stale **2→0**（旧咖啡/旧徒步只剩历史事件块）；audit：typed live 84 / superseded 31、
+  **悬空失效链 0、缺失效时间 0**。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 13 段）优先级：
-  1. **answer-adequacy**（提到≠回答）：语义校验只影响措辞/是否宣称知道 + eval 指标，falseInjection 目标 0；
-  2. **方差门控基线文件化**：三源 3 次 fresh run 均值±极差，`--gate` 直接引用（focus r5≥0.9、miss≤0.05、
-     falseInjection=0；QQ r5≥0.75；live r5≥0.85）；
-  3. **QQ gold↔extracted 映射抽审**：p-07 的 expected 块与问句内容不符，先修 gold 匹配再谈检索；
-  4. **validity 抽审**：`validity-capped` 分布 + 失效链抽审 20 条，确认无过度失效；
-  5. 三源 regression：本轮改动后跑一次 3-run 方差并写进 baseline 文档。
+- 下一轮（Phase 2 第 14 段）优先级：
+  1. **门控落地**：把 baseline 阈值接进 `--gate`（focus 3-run 均值 + QQ/live 单列），CI 里默认检查；
+  2. **answer-adequacy 指标化**：把 judge 结果并进 eval 报告（raw / adequacy-adjusted 两列），负例口径固化；
+  3. **QQ gold↔extracted 映射抽审**：p-07 类 expected 块与问句不符，先修 gold 匹配；
+  4. **validity 抽审**：`validity-capped` / deterministic 失效人工抽审 20 条，确认无误失效；
+  5. **三源 3-run 方差回归**：QQ/live 也跑 3 次，写进 baseline 文档。
 
 ## 4. 复跑
 

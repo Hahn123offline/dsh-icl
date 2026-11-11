@@ -483,3 +483,27 @@ test('typed 旧值失效（独立 validity 调用）：events 只写字符串时
   assert.equal(old.data?.superseded, true)
 })
 
+
+test('typed 旧值失效兜底：新偏好含否定词且与旧记录共享内容词 → 即使模型没给 invalidates 也软失效', async () => {
+  const { host, memory, dream } = await setup()
+  bindRaw(host, rawRows(2))
+  memory.put({
+    namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:coffee',
+    text: '主人早上离不开美式咖啡', data: { body: '主人早上离不开美式咖啡', evidence: [{ type: 'day', id: 1, line: '主人早上离不开美式咖啡' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'typed-deterministic',
+    call: async ({ messages }) => {
+      const system = (messages ?? []).map((message) => String(message?.content ?? '')).join('\n')
+      if (system.includes('取代或推翻')) return JSON.stringify({ invalidates: [] })
+      return JSON.stringify([{ summary: '改喝豆浆', body: '主人说现在不能喝咖啡了，改喝豆浆。', evidence: [1], preferences: ['主人现在不能喝咖啡，改喝豆浆'] }])
+    },
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:coffee', limit: 1 })[0]
+  assert.equal(old.data?.superseded, true, '确定性兜底应软失效旧偏好')
+  assert.ok(out.results[0].typedInvalidated >= 1)
+})

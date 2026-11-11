@@ -189,6 +189,13 @@ QQ 79.2%、live 91.7%；miss 6.3%/16.7%/0%。focus p-19 已进入候选（raw �
 三源：focus r5 96.9/miss 0、QQ r5 79.2/miss 16.7、live r5 91.7/miss 0。下一轮：answer-adequacy、
 3-run 方差门控基线、QQ gold 映射抽审、validity 抽审。
 
+**Phase 2 第 13 段（第 14 轮，本轮）**：新增 `docs/MEMORY-BASELINES.md`——3 次 fresh 方差定稿
+（focus formation R 均值 80.2%、端到端 r5 均值 81.7%/极差 17.5pt、falseInjection 恒 0）与建议门控；
+新增 `tools/memory-answer-adequacy.mjs`：三源真负例 judge 全判"提到但没答"→ adequacy-adjusted
+falseInjection **0**（原始 falseInjection 高估）；validity 加确定性否定词兜底：合成偏好 fixture
+stale 2→0、R 78.6→85.7%，audit 失效链 dangling 0/缺失时间 0。下一轮：门控落地、adequacy 指标化、
+QQ gold 映射抽审、validity 人工抽审。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

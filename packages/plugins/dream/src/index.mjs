@@ -1187,6 +1187,43 @@ export function apply(ctx) {
         ctx.log({ level: 'warn', msg: 'dream.validity-fail', error: String(error?.message ?? error).slice(0, 160) })
       }
     }
+    // 确定性旧值失效兜底（2026-11-12）：模型会漏掉"旧偏好被新偏好否定"的情况（实测咖啡→豆浆漏失效）。
+    // 规则保守：同类型、旧记录在更早的日子、新陈述含否定词（不/没/不再/戒/停/别）、且与新陈述共享
+    // 至少一个非通用内容 bigram → 软失效旧记录（每天最多 2 条，日志可审计）。
+    if (newTypedStatements.length && knownTyped.length) {
+      const GENERIC_BIGRAMS = new Set(['主人', '今天', '明天', '昨天', '早上', '晚上', '中午', '周末', '现在', '以前', '时候', '自己', '一个', '不能', '可以', '没有', '什么', '怎么', '还是'])
+      const bigramSet = (text) => {
+        const normalized = normalizeBodyText(text)
+        const set = new Set()
+        for (let i = 0; i + 1 < normalized.length; i += 1) {
+          const gram = normalized.slice(i, i + 2)
+          if (/^[\u4e00-\u9fff]{2}$/.test(gram) && !GENERIC_BIGRAMS.has(gram)) set.add(gram)
+        }
+        return set
+      }
+      let deterministicApplied = 0
+      for (const fresh of newTypedStatements) {
+        if (deterministicApplied >= 2) break
+        if (!/(不|没|不再|戒|停|别)/.test(fresh.text)) continue
+        const freshGrams = bigramSet(fresh.text)
+        if (!freshGrams.size) continue
+        const oldRow = knownTyped
+          .filter((row) => row.namespace === fresh.ns && row.data?.superseded !== true)
+          .filter((row) => String(row.data?.day ?? '') < day)
+          .find((row) => {
+            const oldGrams = bigramSet(row.text)
+            return [...freshGrams].some((gram) => oldGrams.has(gram))
+          })
+        if (!oldRow) continue
+        memory.put({
+          namespace: oldRow.namespace, kind: 'block', key: oldRow.key, text: oldRow.text,
+          data: { ...(oldRow.data ?? {}), superseded: true, supersededBy: fresh.key, invalidatedAt: now }, now,
+        })
+        typedInvalidated += 1
+        deterministicApplied += 1
+        ctx.log({ level: 'info', msg: 'dream.validity-invalidated-deterministic', oldKey: oldRow.key, newKey: fresh.key })
+      }
+    }
     // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
     // 注意 day 行号与 note id 是两套编号空间，必须分开收集，否则 #12 行会和 #12 note 撞号。
     const citedNotes = new Set()
