@@ -403,11 +403,39 @@ export function apply(ctx) {
         // 没有这一步，"10月25日下午…升级…效果如何"这类转述问句会因为 sim 0.42-0.44 < 0.45 直接空手；
         // 有这一步，内容词门槛仍会挡住"完全没问到的属性"（如"穿什么颜色衣服"）。
         let relaxedPass = false
+        const relaxedFloor = Math.max(0.3, floor - 0.12)
         if (question && bestById.size < 2) {
-          const relaxedFloor = Math.max(0.3, floor - 0.12)
           relaxedPass = true
           for (const subQuery of (searchQueries.length ? searchQueries : [''])) {
             await collectHits(subQuery, relaxedFloor, true)
+          }
+        }
+        // 关系问题（A 和 B 是什么关系）：先认出问句里的实体，再用"实体对 + 关系"补搜一遍。
+        // 关系澄清经常写在不带双方名字的事件块里（"主人澄清曾嘉睿是舍友，周子涵和离线版都是他自己"），
+        // 单靠整句相似度会被"同一个人/网关"这类高相似事实挤掉。
+        const relationshipEntities = []
+        const intent = question ? queryIntent(question) : 'mixed'
+        if (question && intent === 'person') {
+          const lowerQuestion = question.toLowerCase()
+          const personRows = memory.query({ namespace: 'person', kind: 'block', limit: 200 })
+          const seenEntities = new Set()
+          for (const row of personRows) {
+            const data = row.data ?? {}
+            const forms = [...new Set([
+              String(data.qq ?? '').trim(),
+              ...(Array.isArray(data.aliases) ? data.aliases.map((alias) => String(alias ?? '').trim()) : []),
+              ...(Array.isArray(data.ids) ? data.ids.map((id) => String(id?.value ?? '').trim()) : []),
+            ].filter((form) => form.length >= 2))]
+            if (!forms.some((form) => lowerQuestion.includes(form.toLowerCase()))) continue
+            const canonical = String(data.qq ?? forms[0] ?? row.id)
+            if (seenEntities.has(canonical)) continue
+            seenEntities.add(canonical)
+            relationshipEntities.push({ canonical, forms })
+          }
+          if (relationshipEntities.length >= 2) {
+            const nameOf = (entity) => entity.forms.find((form) => /[\u4e00-\u9fff]/.test(form)) ?? entity.forms[0]
+            const entityQuery = `${relationshipEntities.map(nameOf).join(' ')} 关系`
+            await collectHits(entityQuery, relaxedFloor, true)
           }
         }
         const candidates = [...bestById.values()]
@@ -425,7 +453,6 @@ export function apply(ctx) {
           if (boostedByDay) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         }
         // 意图加分：问经历→事件块、问答应→commitment、问偏好→preference、问人→person。
-        const intent = question ? queryIntent(question) : 'mixed'
         const intentWeights = INTENT_BOOST[intent] ?? {}
         if (Object.keys(intentWeights).length && candidates.length) {
           let boostedByIntent = false
@@ -436,6 +463,18 @@ export function apply(ctx) {
             boostedByIntent = true
           }
           if (boostedByIntent) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        }
+        // 实体对加分：问句里出现≥2 个已知实体时，同时提到双方（含别名）的块优先——
+        // 关系澄清常常写在"曾嘉睿是舍友，周子涵和离线版都是他"这种块里，正文里同时有两边。
+        if (relationshipEntities.length >= 2 && candidates.length) {
+          let boostedByEntity = false
+          for (const entry of candidates) {
+            const haystack = `${entry.item.text ?? ''}\n${String(entry.item.data?.body ?? entry.item.data?.profile ?? '')}`.toLowerCase()
+            const mentioned = relationshipEntities.filter((entity) => entity.forms.some((form) => haystack.includes(form.toLowerCase()))).length
+            if (mentioned >= 2) { entry.score = Number(entry.score) * 2.2; boostedByEntity = true }
+            else if (mentioned === 1) { entry.score = Number(entry.score) * 1.1; boostedByEntity = true }
+          }
+          if (boostedByEntity) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         }
 
         // 今天的 note 永远优先展示（带 [今天] 标签）
@@ -660,5 +699,6 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
 
 
