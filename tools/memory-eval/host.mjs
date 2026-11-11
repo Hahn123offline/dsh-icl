@@ -61,7 +61,7 @@ export async function createEvalHost(options) {
     : 'raw-main'
   const registrations = [
     [memoryManifest, memory, { config: { root } }],
-    [recallManifest, recall, { config: { sessionId } }],
+    [recallManifest, recall, { config: { sessionId, ...(options.recallConfig ?? {}) } }],
     [noteManifest, note, {}],
     [lexiconManifest, lexicon, {}],
     [dreamManifest, dream, {
@@ -75,9 +75,10 @@ export async function createEvalHost(options) {
         ownerQQ: String(identity.ownerQQ ?? ''),
         ownerNames: Array.isArray(identity.ownerNames) ? identity.ownerNames : [],
         selfNames: Array.isArray(identity.selfNames) ? identity.selfNames : [],
+        ...(options.dreamConfig ?? {}),
       },
     }],
-    [eagerRecallManifest, eagerRecall, { config: {} }],
+    [eagerRecallManifest, eagerRecall, { config: { ...(options.eagerConfig ?? {}) } }],
     [whoisManifest, whois, {}],
   ]
   for (const [manifest, module, config] of registrations) host.registerPlugin(manifest, module, config)

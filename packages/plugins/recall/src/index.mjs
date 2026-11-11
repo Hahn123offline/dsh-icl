@@ -52,10 +52,13 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const session = String(ctx.config.sessionId ?? 'default')
   const budgetTokens = Math.max(500, Number(ctx.config.budgetTokens) || DEFAULT_BUDGET_TOKENS)
-  // 相关性下限（红队 D1）：memory.search 只过滤 sim<=0；这里再按"与 query 的相关度"挡掉
+  // 相关性下限：memory.search 只过滤 sim<=0；这里再按"与 query 的相关度"挡掉
   // "字面碰巧共享一两个二字组"的凑数结果。有嵌入时用混合相似度，没嵌入时用二元组覆盖率。
   // cursor/继续翻 时放宽到 0.05（她要"再想想"，不能因为淡了就再也翻不出来）。
-  const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.35))
+  // 2026-11-11 用 seed=gold 的 4 份 fixture（real-focuscore + 3 synthetic）标定：
+  //   有嵌入 minSim 0.35→0.5：falseInjection 100%→0%、recall@5 不降（real r1/r3 79/83%）；
+  //   无嵌入保持 0.2：0.3 起 recall@3 明显下滑（alias 41.7%→25%），且无嵌入本来 falseInjection=0。
+  const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.5))
   const minSimNoEmbed = Math.max(0.01, Number(ctx.config.minSimNoEmbed ?? 0.2))
   const relevanceFloor = ({ deeper }) => {
     let embedded = false

@@ -284,7 +284,7 @@ test('大 raw：wash 按预算截断、events 分片后单请求 ≤200k、块�
   assert.equal(events.failedShards, 0)
 })
 
-test('某一片失败不拖垮整夜：其它片的块照常落库，job 标 degraded 且留 shard-fail 日志', async () => {
+test('某一片模型调用失败：自动重试一次后恢复，不拖垮整夜', async () => {
   const logs = []
   const { host, memory, dream } = await setup({ logs })
   const now = Date.parse('2026-11-06T12:00:00+08:00')
@@ -307,10 +307,9 @@ test('某一片失败不拖垮整夜：其它片的块照常落库，job 标 deg
   host.services.raw.register({ id: 'fake-flaky-raw', list: () => rows, search: () => [] })
   const out = await dream.run({ now, jobs: ['wash', 'events'] })
   const events = out.results.find((row) => row.job === 'events')
-  assert.equal(events.ok, true, '部分片失败时整体仍应算完成')
-  assert.ok(events.failedShards >= 1)
-  assert.equal(events.degraded, true)
+  assert.equal(events.ok, true, '瞬时失败重试后整体应完成')
+  assert.equal(events.failedShards, 0, '瞬时的 502 应被 askJson 重试吃掉')
   const blocks = memory.query({ namespace: 'event', kind: 'block', limit: 50 })
-  assert.ok(blocks.length >= 1, '失败片之外的块必须保留')
-  assert.ok(logs.some((entry) => entry.msg === 'dream.shard-fail'), '必须有 shard-fail 日志')
+  assert.ok(blocks.length >= 1, '块必须落库')
+  assert.ok(logs.some((entry) => entry.msg === 'dream.call-retry'), '必须有 call-retry 日志')
 })

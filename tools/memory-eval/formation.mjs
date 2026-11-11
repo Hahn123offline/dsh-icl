@@ -236,7 +236,7 @@ function failureSamples({ fixture, indexes, extracted, match, entityMatcher }) {
  * 跑一次 formation（独立临时库）。
  * @returns {Promise<{tempRoot:string, host:object, exported:Array, extracted:Array, match:object, metrics:object, samples:object, dayResults:Array, aux:object}>}
  */
-export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, jobs = FORMATION_JOBS, logs = [] }) {
+export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, jobs = FORMATION_JOBS, recallConfig = null, eagerConfig = null, logs = [] }) {
   const profileRows = selectProfileRows(fixture, indexes, profile)
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
   const hostBox = await createEvalHost({
@@ -248,6 +248,8 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
     formationProfile: profileRows.profile,
     mainRows: profileRows.main,
     contextRows: profileRows.context,
+    ...(recallConfig ? { recallConfig } : {}),
+    ...(eagerConfig ? { eagerConfig } : {}),
     logs,
   })
   const dayResults = []
@@ -330,3 +332,4 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+

@@ -271,9 +271,15 @@ function isCjkText(text) {
 /** 英文计划式内部文本：无 CJK 且含计划动词/第一人称意图（SPEC §4.1 启发式）。 */
 function looksLikeAgentPlan(text) {
   const trimmed = String(text ?? '').trim()
-  if (!trimmed || isCjkText(trimmed)) return false
-  if (trimmed.length <= 16) return false
-  return PLAN_WORDS_RE.test(trimmed)
+  if (!trimmed || trimmed.length <= 16) return false
+  const cjk = (trimmed.match(/[\u4e00-\u9fff]/g) ?? []).length
+  const english = (trimmed.match(/[A-Za-z]/g) ?? []).length
+  if (!cjk) return PLAN_WORDS_RE.test(trimmed)
+  // 中英混排的内部草稿（例如 "User wants me to go browse B站…" / "Reply only「已执行」"）：
+  // 英文为主 + 计划/指令句首时同样是 reasoning，不能当"她说出口的话"。
+  if (english < 20 || english < cjk * 1.2) return false
+  const startsPlan = /^(?:The |This |User |Let me|I |Now |So |Hmm|Wait|Okay|Good|Reply|Report|Check|Logged|Subtitle|Next)/i.test(trimmed)
+  return startsPlan && PLAN_WORDS_RE.test(trimmed)
 }
 
 /** 判定一条 user 角色消息是否是环境/系统注入（不是真人说话）。 */

@@ -41,7 +41,12 @@ export function inferRawSource(row) {
   if (role === 'assistant') {
     // 旧 raw 里混着未发送的英文计划；无中文且像 plan 的长文本按"内部思考"处理。
     const cjk = (text.match(/[\u4e00-\u9fff]/g) ?? []).length
-    if (cjk === 0 && text.length > 40 && /\b(?:I|we|let me|maybe|should|need|actually|okay)\b/i.test(text)) return 'agent_internal'
+    const english = (text.match(/[A-Za-z]/g) ?? []).length
+    if (!cjk && text.length > 40 && /\b(?:I|we|let me|maybe|should|need|actually|okay)\b/i.test(text)) return 'agent_internal'
+    // 中英混排的 reasoning（"User wants me to…" / "Reply only…"）同样不是她说出口的话。
+    if (cjk && english >= 20 && english >= cjk * 1.2
+      && /^(?:The |This |User |Let me|I |Now |So |Hmm|Wait|Okay|Good|Reply|Report|Check|Logged|Subtitle|Next)/i.test(text)
+      && /\b(?:think|thinking|let me|let's|I should|I'll|I will|I need|I want|the user|user wants|respond|reply|check|look at|actually)\b/i.test(text)) return 'agent_internal'
     return 'agent_visible'
   }
   // QQ 未读摘要/私聊信封里包着真人的话：单独一类，形成时保留但要提醒模型"这是转述"。

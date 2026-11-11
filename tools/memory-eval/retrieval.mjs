@@ -125,6 +125,21 @@ function matchLineToItem(body, items) {
 
 const SKIP_LINE_PREFIXES = ['原文（', '原文：', '依据：', '逐句依据：', '最近提到', '记得的东西', '没找到', '这个范围', '这几条', '你可能记得', '· [人物]']
 
+/**
+ * person probe 的查询常常一句里问好几个人（"QQ x 的 A 和 QQ y 的 B 是什么关系？C 又是谁？"）。
+ * 真实 agent 会分多次 whois；评测用同一条查询直接调一次会必然 miss，所以这里把查询拆成
+ * QQ 号 + 引号里的名字，逐个调用再拼接结果（报告里标 path=whois-tool.multi）。
+ */
+function personLookupCandidates(query) {
+  const text = String(query ?? '').trim()
+  if (!text) return []
+  const candidates = []
+  for (const match of text.matchAll(/\d{5,12}/g)) candidates.push(match[0])
+  for (const match of text.matchAll(/[「“"'']([^」”"'']{1,16})[」”"'']/g)) candidates.push(match[1].trim())
+  const unique = [...new Set(candidates.filter(Boolean))]
+  return unique.length ? unique : [text]
+}
+
 function stripTags(line) {
   return String(line).replace(/^(?:\[[^\]]*\]\s*)+/, '').trim()
 }
@@ -207,14 +222,19 @@ async function executeProbe({ probe, hostBox, indexes, items }) {
       text = String(await hostBox.host.services.prompt.turnText({ message: String(probe.query ?? ''), now }) ?? '')
     } else if (probe.kind === 'person') {
       const query = String(probe.query ?? '').trim()
-      const args = /^\d{2,12}$/.test(query) ? { qq: query } : { name: query }
+      const candidates = personLookupCandidates(query)
       path = 'whois-tool'
-      text = String((await tools.whois.execute(args))?.text ?? '')
-      const miss = !text || text.startsWith('还没有') || text.includes('还没有这个人的档案') || text.includes('还没有这个人的档案')
-      if (miss) {
-        const fallback = String((await tools.recall.execute({ kind: 'person', query }))?.text ?? '')
-        if (fallback && fallback !== text) { text = fallback; path = 'whois-tool+recall-kind-person' }
+      const texts = []
+      for (const candidate of candidates) {
+        const args = /^\d{2,12}$/.test(candidate) ? { qq: candidate } : { name: candidate }
+        const out = String((await tools.whois.execute(args))?.text ?? '')
+        const miss = !out || out.startsWith('还没有') || out.includes('还没有这个人的档案')
+        if (!miss) { texts.push(out); continue }
+        const fallback = String((await tools.recall.execute({ kind: 'person', query: candidate }))?.text ?? '')
+        if (fallback && !fallback.startsWith('这个范围') && !fallback.startsWith('没找到') && fallback !== out) texts.push(fallback)
       }
+      if (candidates.length > 1) path = 'whois-tool.multi'
+      text = texts.join('\n')
     } else if (probe.kind === 'overview') {
       path = 'recall-tool.overview'
       // 最近视图：days=30 是插件的上限；fixture 通常只有几天，足够覆盖播种时刻。

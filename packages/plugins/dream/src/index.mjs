@@ -253,14 +253,18 @@ export function apply(ctx) {
       const nudge = attempt === 0
         ? ''
         : '\n\n上一次输出无法解析为 JSON。只输出合法 JSON，不要解释，不要 Markdown 围栏。'
-      const raw = await ask({ instruction: `${instruction}${nudge}`, payload, maxTokens, where: `${where}#try${attempt + 1}` })
+      let raw = ''
+      try {
+        raw = await ask({ instruction: `${instruction}${nudge}`, payload, maxTokens, where: `${where}#try${attempt + 1}` })
+      } catch (error) {
+        // 模型调用本身失败（502/超时）也值得重试一次：旧行为直接让整片/整天失败。
+        last = { ok: false, error: String(error?.message ?? error) }
+        ctx.log({ level: 'warn', msg: 'dream.call-retry', where, attempt: attempt + 1, error: last.error.slice(0, 160) })
+        continue
+      }
       last = parseJsonStrict(raw)
       if (last.ok) return last
-      if (last.error === 'empty') {
-        ctx.log({ level: 'warn', msg: 'dream.parse-retry', where, attempt: attempt + 1, error: 'empty' })
-      } else {
-        ctx.log({ level: 'warn', msg: 'dream.parse-retry', where, attempt: attempt + 1, error: last.error })
-      }
+      ctx.log({ level: 'warn', msg: 'dream.parse-retry', where, attempt: attempt + 1, error: last.error })
     }
     return last
   }
@@ -788,12 +792,13 @@ export function apply(ctx) {
     // 有 speaker 元数据时把"名字(QQ)"写进行首，形成阶段才能把人话挂到身份上。
     const speakerLabelOf = (x) => {
       const speaker = x.speaker
-      if (speaker && (speaker.name || speaker.value)) {
-        const name = String(speaker.name ?? '').trim()
-        const value = String(speaker.value ?? '').trim()
-        return `${name || 'QQ'}${value && value !== name ? `(${value})` : ''}`
-      }
-      return x.sender
+      const value = String(speaker?.value ?? '').trim()
+      const name = String(speaker?.name ?? '').trim()
+      // 她自己：别把她的话标成 QQ 号，模型会把它当成第三个人。
+      if (value && selfQQ && value === selfQQ) return '我'
+      if (value && ownerQQ && value === ownerQQ) return `主人(${value})`
+      if (name || value) return `${name || 'QQ'}${value && value !== name ? `(${value})` : ''}`
+      return x.sender === 'assistant' ? '我' : x.sender
     }
     const renderLine = (x, i) => `[${i + 1}] ${hhmm(x.at || now)}${speakerLabelOf(x) ? ` ${speakerLabelOf(x)}` : ''}：${clipText(x.text)}`
     let lines = cleaned.map(renderLine)
@@ -905,19 +910,38 @@ export function apply(ctx) {
     ].join('\n')
     const blocks = []
     const shardResults = []
+    /**
+     * 跑一片；坏 JSON 时把该片对半拆开再各试一次（繁忙日单片输出可能超 token 被截断，
+     * 拆半是失败路径的兜底，不增加正常日的成本）。
+     */
+    async function runEventShard(lines, label, depth = 0) {
+      const payload = `${lines.join('\n')}${hint}`
+      const out = await askJson({ instruction, payload, where: `events#${label}`, maxTokens: 3500 })
+      if (!out.ok) {
+        if (depth < 1 && lines.length >= 8) {
+          const middle = Math.floor(lines.length / 2)
+          const partial = []
+          for (const [partLabel, part] of [[`${label}a`, lines.slice(0, middle)], [`${label}b`, lines.slice(middle)]]) {
+            try { partial.push(await runEventShard(part, partLabel, depth + 1)) } catch { /* 半边失败也保留另一半 */ }
+          }
+          if (partial.length) {
+            ctx.log({ level: 'warn', msg: 'dream.shard-split', job: 'events', shard: label, half: partial.length })
+            return { ok: true, blocks: partial.flatMap((entry) => entry.blocks), chars: payload.length, split: true, partial: partial.length < 2 }
+          }
+        }
+        throw new Error(`模型输出不可解析：${out.error}`)
+      }
+      return { ok: true, blocks: out.value, chars: payload.length }
+    }
     for (let i = 0; i < shards.length; i += 1) {
-      const payload = `${shards[i].join('\n')}${hint}`
       try {
-        const out = await askJson({ instruction, payload, where: `events#${i + 1}` })
-        // 空输出/垃圾 JSON 是失败，不是"今天没事"；否则当天会被记成功、note 被标已消化、永不重试。
-        if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
-        const parsed = out.value
-        blocks.push(...parsed)
-        shardResults.push({ index: i + 1, ok: true, blocks: parsed.length, chars: payload.length })
+        const result = await runEventShard(shards[i], String(i + 1))
+        blocks.push(...result.blocks)
+        shardResults.push({ index: i + 1, ok: true, blocks: result.blocks.length, chars: result.chars, ...(result.split ? { split: true } : {}) })
       } catch (error) {
         // 某片失败不拖垮整夜：记录、继续下一片，已成功片的块照常落库。
         const reason = String(error?.message ?? error)
-        shardResults.push({ index: i + 1, ok: false, error: reason, chars: payload.length })
+        shardResults.push({ index: i + 1, ok: false, error: reason })
         ctx.log({ level: 'warn', msg: 'dream.shard-fail', job: 'events', shard: i + 1, shards: shards.length, error: reason })
       }
     }
@@ -1266,6 +1290,7 @@ export function apply(ctx) {
           ].join('\n'),
           payload: context,
           where: 'people',
+          maxTokens: 1800,
         })
       } catch (error) {
         return { job: 'people', ok: false, qq: identityLabel, error: String(error?.message ?? error) }
@@ -1715,7 +1740,7 @@ export function apply(ctx) {
           '没什么可整理就输出 {} 。只输出 JSON。',
         ].join('\n'),
         payload,
-        maxTokens: 1500,
+        maxTokens: 2400,
       })
       // 空输出/垃圾 JSON = 失败（当天可重试），不能记成"整理成功但 0 操作"。
       if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
@@ -2244,6 +2269,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

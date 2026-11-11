@@ -49,6 +49,13 @@ function hasFlag(argv, name) {
   return argv.includes(`--${name}`)
 }
 
+/** 可选数值参数：缺省/非数字返回 null（不写进插件 config，保持产品默认）。 */
+function optionalNumber(value) {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
 function tsSlug(date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0')
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
@@ -74,7 +81,12 @@ export function parseArgs(argv, cwd = process.cwd()) {
     embed: hasFlag(argv, 'embed'),
     embedProvider: argValue(argv, 'embed-provider'),
     keepTemp: hasFlag(argv, 'keep-temp'),
+    recallMinSim: optionalNumber(argValue(argv, 'recall-min-sim')),
+    recallMinSimNoEmbed: optionalNumber(argValue(argv, 'recall-min-sim-noembed')),
+    eagerMinScore: optionalNumber(argValue(argv, 'eager-min-score')),
+    eagerMinScoreNoEmbed: optionalNumber(argValue(argv, 'eager-min-score-noembed')),
     quiet: hasFlag(argv, 'quiet'),
+    debug: hasFlag(argv, 'debug'),
     help: hasFlag(argv, 'help') || hasFlag(argv, 'h'),
   }
   if (options.help) return options
@@ -115,8 +127,13 @@ function printUsage(write = console.log) {
   --cache-only                       只允许命中 <out>/cache.json（云端基线可无密钥离线复跑）
   --embed                            绑定 embed 插槽（默认关；离线 CI 不依赖 8088）
   --embed-provider <id>              指定 embedding provider（默认 config 里第一个）
+  --recall-min-sim <n>               覆盖 recall.config.minSim（有嵌入时的相关度下限，标定用）
+  --recall-min-sim-noembed <n>       覆盖 recall.config.minSimNoEmbed（无嵌入时下限）
+  --eager-min-score <n>              覆盖 eager-recall.config.minScore
+  --eager-min-score-noembed <n>      覆盖 eager-recall.config.minScoreNoEmbed
   --keep-temp                        保留临时 stateDir（调试用，打印路径）
   --quiet                            少打印
+  --debug                            打印 formation 的 warn/error 日志（排查 shard/job 失败）
   -h, --help
 
 gate 指标名：
@@ -266,6 +283,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         })
       : null
     if (embedAdapter && !options.quiet) write(`embed：${embedAdapter.describe().provider}/${embedAdapter.describe().model}（已绑定 embed-text 插槽）`)
+    // 检索阈值覆盖：只用于标定/migration A/B，不写产品默认；报告里会记录实际生效值。
+    const recallConfig = {
+      ...(options.recallMinSim != null ? { minSim: options.recallMinSim } : {}),
+      ...(options.recallMinSimNoEmbed != null ? { minSimNoEmbed: options.recallMinSimNoEmbed } : {}),
+    }
+    const eagerConfig = {
+      ...(options.eagerMinScore != null ? { minScore: options.eagerMinScore } : {}),
+      ...(options.eagerMinScoreNoEmbed != null ? { minScoreNoEmbed: options.eagerMinScoreNoEmbed } : {}),
+    }
 
     const formationStarted = Date.now()
     if (options.mode === 'formation' || options.mode === 'all') {
@@ -276,6 +302,8 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         model,
         embedAdapter,
         keepTemp: options.keepTemp,
+        recallConfig,
+        eagerConfig,
         logs,
       })
       const failedJobs = formationRun.dayResults.flatMap((day) => (day.results ?? []).filter((job) => job.ok === false).map((job) => ({ day: day.day, ...job })))
@@ -295,6 +323,8 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           model,
           embedAdapter,
           keepTemp: false,
+          recallConfig,
+          eagerConfig,
           logs: [],
         })
         repeats = repeats ?? [{
@@ -330,6 +360,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         write(`formation：extracted=${m.counts.extracted} matched=${m.overall.matched} P=${pct(m.overall.precision)} R=${pct(m.overall.recall)} dup=${pct(m.dedup.rate)} provenance=${pct(m.provenance.rate)} selfSource=${pct(m.selfSource.rate)}`)
       }
     }
+    if (options.debug) {
+      const noisy = logs.filter((row) => row.level === 'warn' || row.level === 'error').slice(0, 40)
+      for (const entry of noisy) {
+        const brief = { ...entry }
+        delete brief.level
+        delete brief.msg
+        write(`[dream.${entry.level}] ${entry.msg ?? ''} ${JSON.stringify(brief).slice(0, 300)}`)
+      }
+    }
     const formationMs = Date.now() - formationStarted
 
     const retrievalStarted = Date.now()
@@ -338,7 +377,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       if (options.seed === 'formation') {
         if (!formationRun) {
           // retrieval-only + seed=formation：先补跑一次 formation（语义上等价 all，报告里注明）。
-          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, logs })
+          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, recallConfig, eagerConfig, logs })
           warnings.push({ path: 'retrieval.seed', message: 'retrieval-only + --seed formation：为建库补跑了一次 formation' })
         }
         corpus = seedFormation(formationRun)
@@ -353,6 +392,8 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           formationProfile: 'raw-main',
           mainRows: [],
           contextRows: [],
+          recallConfig,
+          eagerConfig,
           logs,
         })
         corpus = await seedGold({ hostBox: retrievalHost, fixture, indexes, logs })
@@ -440,3 +481,5 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
+
