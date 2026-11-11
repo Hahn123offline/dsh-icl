@@ -78,6 +78,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     configFile: path.resolve(cwd, String(argValue(argv, 'config', path.join(REPO_ROOT, 'config', 'icl.local.json')))),
     maxCalls: Math.max(1, Number(argValue(argv, 'max-calls', 500)) || 500),
     cacheOnly: hasFlag(argv, 'cache-only'),
+    fresh: hasFlag(argv, 'fresh'),
     embed: hasFlag(argv, 'embed'),
     embedProvider: argValue(argv, 'embed-provider'),
     keepTemp: hasFlag(argv, 'keep-temp'),
@@ -125,6 +126,7 @@ function printUsage(write = console.log) {
   --config <file>                    provider 配置，默认 config/icl.local.json
   --max-calls <n>                    云端调用上限，默认 500
   --cache-only                       只允许命中 <out>/cache.json（云端基线可无密钥离线复跑）
+  --fresh                             忽略已有缓存、重新调用模型（用于测运行间方差）
   --embed                            绑定 embed 插槽（默认关；离线 CI 不依赖 8088）
   --embed-provider <id>              指定 embedding provider（默认 config 里第一个）
   --recall-min-sim <n>               覆盖 recall.config.minSim（有嵌入时的相关度下限，标定用）
@@ -272,6 +274,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       modelId: options.modelId,
       maxCalls: options.maxCalls,
       cacheOnly: options.cacheOnly,
+      fresh: options.fresh,
       echoHints: { selfNames: [String(fixture.persona?.self?.name ?? '')].filter(Boolean) },
     })
     // 嵌入是独立开关：默认关，离线 CI 不依赖本地 8088；打开后 retrieval 走真实向量+字面混合。
@@ -481,6 +484,8 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
+
 
 
 

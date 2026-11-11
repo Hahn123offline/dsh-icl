@@ -149,6 +149,12 @@ recall 增加"复合问句拆查询兜底"（整句优先、候选不足才拆�
 event 块与 typed 记录"视为等价表示（修掉 QQ 素材 0%→14.3% 的假性 miss）；
 memory-audit 新增 typed 失效链审计（live 47 / superseded 62、悬空链 0）。下一轮攻 QQ 多跳检索与负例注入。
 
+**Phase 2 第 6 段（第 7 轮，本轮）**：QQ 多跳检索补齐——严格 floor 没命中时用放宽 floor 二轮搜
+（结果标"记得不太清"），QQ 端到端 r5 35.7%→64.3%、miss 57.1%→28.6%，focus/live 不变
+（83.3% / 83.3%，focus falseInjection 0）；raw 原文补细节加内容词门槛（live 负例恢复"没找到"）；
+eval 新增 `--fresh` 测运行间方差：两次独立 fresh run 的 e2e r5 90%/80%、formation recall 均 78.1%，
+门控将用 3 次均值。剩余 falseInjection 为"提到但没答"负例，下一轮加答案类型/实体一致性检查。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

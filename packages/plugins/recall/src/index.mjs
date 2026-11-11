@@ -326,7 +326,7 @@ export function apply(ctx) {
         const bestById = new Map()
         // 复合问句拆查询只在"整句搜不够"时兜底：先按整句搜（精度最好），
         // 候选太少才拆子句补搜（召回兜底），避免拆句把精确结果挤下去（focus-core 实测 r5 80%→60%）。
-        const collectHits = async (subQuery) => {
+        const collectHits = async (subQuery, minSim = floor, relaxed = false) => {
           for (const ns of namespaces) {
             // 带 cursor 就是"继续想"：深度更大，把权重很低的也翻出来（不做硬归档）
             const hits = await memory.search({
@@ -340,11 +340,12 @@ export function apply(ctx) {
               const hitKey = `${ns}:${hit.item.id}`
               if (!rawHitKeys.has(hitKey)) { rawHitKeys.add(hitKey); rawHitCount += 1 }
               // 有 query 时按相关度挡凑数；没有 query（纯"最近"视图）不筛。
-              if (question && Number(hit.sim ?? 0) < floor) continue
+              if (question && Number(hit.sim ?? 0) < minSim) continue
               const previous = bestById.get(hitKey)
               if (previous && Number(previous.score) >= Number(hit.score)) continue
               // 主动回忆是"被问到了"：低置信命中可以给，但要显式承认不确定（渲染时加 [记得不太清]）。
-              bestById.set(hitKey, { ...hit, namespace: ns, uncertain: Number(hit.sim ?? 0) < 0.5, matchedQuery: subQuery })
+              const uncertain = relaxed || Number(hit.sim ?? 0) < 0.5
+              bestById.set(hitKey, { ...hit, namespace: ns, uncertain, matchedQuery: subQuery })
             }
           }
         }
@@ -352,6 +353,17 @@ export function apply(ctx) {
         await collectHits(searchQueries[0] ?? '')
         if (question && searchQueries.length > 1 && bestById.size < Math.max(2, Math.floor(limit / 2))) {
           for (const subQuery of searchQueries.slice(1)) await collectHits(subQuery)
+        }
+        // 模糊兜底：严格 floor 一条都没命中时，用放宽的 floor 再找一轮（标 [记得不太清]）。
+        // 没有这一步，"10月25日下午…升级…效果如何"这类转述问句会因为 sim 0.42-0.44 < 0.45 直接空手；
+        // 有这一步，内容词门槛仍会挡住"完全没问到的属性"（如"穿什么颜色衣服"）。
+        let relaxedPass = false
+        if (question && bestById.size === 0) {
+          const relaxedFloor = Math.max(0.3, floor - 0.12)
+          relaxedPass = true
+          for (const subQuery of (searchQueries.length ? searchQueries : [''])) {
+            await collectHits(subQuery, relaxedFloor, true)
+          }
         }
         const candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
@@ -455,6 +467,9 @@ export function apply(ctx) {
         }
         const extra = rawHits
           .filter((r) => r?.text && overlaps(r.text) < 0.6)
+          // 原文补细节也必须和查询有内容词交集：否则"午饭吃了什么"会把
+          // raw 里的内部计划/环境文本当"原文"端出来（live 实测）。
+          .filter((r) => !question || hasContentSignal(question, [String(r.text ?? '')]))
           .filter((r) => !pickedNorm.includes(String(r.text).toLowerCase().replace(/\s+/g, '').slice(0, 40)))
           .slice(0, 2)
           .map((r) => `原文（${shortDate(r.time ?? r.createdAt ?? ctx.now())}）：${String(r.text).slice(0, 160)}`)

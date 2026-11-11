@@ -289,7 +289,7 @@ export async function createModelAdapter(options = {}) {
             : String(message.content ?? ''),
       }))
       const key = promptHash({ provider: provider.id, model, messages: bodyMessages, maxTokens })
-      if (cache[key]?.text) {
+      if (!options.fresh && cache[key]?.text) {
         stats.cacheHits += 1
         stats.wallMs += Date.now() - started
         return cache[key].text
@@ -331,3 +331,4 @@ export async function createModelAdapter(options = {}) {
     flush: persistCache,
   }
 }
+
