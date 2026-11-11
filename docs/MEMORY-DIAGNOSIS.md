@@ -161,6 +161,12 @@ QQ r1 50→64.3%（MRR 0.714）、live r1 66.7→83.3%，focus 保持 83.3% r5�
 miss 均值 6.7%、falseInjection 恒 0；validity 加置信上限（每天≤4 条、仅同类型、可审计）。
 负例「提到≠回答」调研结论：纯词面 marker 无法区分，需下一轮做返回条目的语义校验。
 
+**Phase 2 第 8 段（第 9 轮，本轮）**：新增 `tools/memory-gold-review.mjs`（不调模型）抽审 gold：
+focus-core 32 条 gold 里 22 条无 probe 引用、3 个 probe expected 无法映射；QQ 20 条里 11 条无 probe；
+live 4 条无问题——评测信噪比瓶颈在"probe 覆盖/gold 完整性"，下一轮优先补 probe 再调参。
+validity 每日上限（≤4 条、同类型）fresh 复测：合成偏好 fixture R 78.6%、失效链结论不变
+（旧偏好仅历史块、旧承诺同类型 stale 1 例为部分匹配误判），未出现"该失效没失效"。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

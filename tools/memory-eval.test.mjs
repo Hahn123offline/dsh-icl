@@ -12,6 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { evaluateGate, main, parseGate } from './memory-eval.mjs'
 import { invalidationMetrics } from './memory-eval/formation.mjs'
+import { renderGoldReview, reviewGold } from './memory-gold-review.mjs'
 import { buildIndexes, loadFixture, normalizeFixture, sliceFixtureDays } from './memory-eval/fixture.mjs'
 import { validateSchema } from './memory-eval/schema.mjs'
 import { createEmbedAdapter, createModelAdapter, echoRespond, promptHash, resolveEmbedProvider, resolveProvider } from './memory-eval/model.mjs'
@@ -710,5 +711,34 @@ test('临时目录都建在 os.tmpdir 下，不碰仓库 state（评测写路径
   assert.equal(isInside(TMP_ROOT, LIVE_STATE_ROOT), false)
   // 默认输出目录在仓库 .state/lab/eval-harness/runs 下（assertSafeOutDir 能过），不是 live。
   assert.ok(assertSafeOutDir(path.join(REPO, '.state', 'lab', 'eval-harness', 'runs', 'tiny')))
+})
+
+
+
+/* ── gold 抽审（不调模型） ─────────────────────────────────── */
+
+test('gold-review：证据缺失/非法引用/过短/近重复/未覆盖 probe 都能报出来', () => {
+  const fixture = {
+    id: 'gold-review-test',
+    days: [{ day: '2026-01-01', rows: [{ id: 'r1', at: '2026-01-01T10:00:00+08:00', text: '一起去爬山' }] }],
+    gold: {
+      memories: [
+        { id: 'm1', type: 'event', text: '今天一起去爬山，六点在山脚集合，记得带水', evidence: ['r1'] },
+        { id: 'm2', type: 'event', text: '今天一起去爬山，六点在山脚集合，记得带水', evidence: ['r-missing'] },
+        { id: 'm3', type: 'fact', text: '短', evidence: [] },
+      ],
+    },
+    probes: [{ id: 'p1', rowId: 'r1', kind: 'recall', query: '爬山', expectedMemoryIds: ['m1'] }],
+  }
+  const review = reviewGold({ fixture })
+  assert.equal(review.gold, 3)
+  assert.equal(review.missingEvidence.length, 1, 'm3 无证据')
+  assert.equal(review.invalidEvidence.length, 1, 'm2 引用不存在的 raw 行')
+  assert.equal(review.shortText.length, 1, 'm3 正文过短')
+  assert.ok(review.duplicatePairs.some((pair) => pair.a === 'm1' && pair.b === 'm2'), 'm1/m2 近重复')
+  assert.equal(review.unprobed.length, 2, 'm2/m3 没被 probe 引用')
+  const markdown = renderGoldReview(review)
+  assert.match(markdown, /gold-review-test/)
+  assert.match(markdown, /未被任何 probe 引用的 gold：\*\*2\*\*/)
 })
 

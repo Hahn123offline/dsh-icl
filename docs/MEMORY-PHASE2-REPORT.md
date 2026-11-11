@@ -295,26 +295,51 @@ miss 均值 6.7%、falseInjection 恒 0。下一轮把"3 次均值±极差"写�
 - 结论：确定性规则无法区分"提到了但没答案"，需要**基于返回条目的语义校验**（LLM 判定"这段记忆是否回答了问题"）。
   本轮不改 eval 口径（falseInjection 照旧如实计），把该能力列进下一轮。
 
+## 2h. 第 9 轮：gold 抽审工具 + validity 上限复测（本轮）
+
+### A. `tools/memory-gold-review.mjs`（新增，不调模型）
+
+- 输出每个 fixture 的 gold 质量清单：无证据/非法证据行/正文过短/同类型近重复 gold/
+  失效链指向不存在 gold/未被任何 probe 覆盖的 gold/probe 期望解析失败。
+- 三源实测：
+  - focus-core：gold 32 条里 **22 条没有任何 probe 引用**；3 个 probe 的 expected 无法映射
+    （m-0021/m-0010 等）→ 解释了为什么端到端指标只覆盖 6 个 probe、P/R 波动大；
+  - old-qq：gold 20 条里 **11 条无 probe**；
+  - live：gold 4 条，0 个问题（但 gold 本身太少）。
+- 结论：下一轮"补 probe"比继续调检索参数更能提升评测的信噪比；判定文件在
+  `.state/lab/lead/gold-review/*.md`（JSON 同目录，供脚本消费）。
+
+### B. validity 上限后的复测（fresh run）
+
+- 合成偏好变化 fixture（带 `invalidatedAt`/每日取代上限≤4/同类型约束）：
+  formation R 78.6%（11/14）、P 10.3%；失效链口径不变——旧咖啡/旧徒步偏好只以**历史事件块**
+  存在（历史叙述，不算当前认知），旧豆浆承诺的同类型 stale 1 例经核对仍是"晚上提醒喝水"
+  被部分匹配（不是真正的旧记录）；新值 3/3 形成。
+- 与上一轮（无上限）相比：失效链结构与结论一致，未出现"上限导致该失效的没失效"。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 8 段）优先级：
-  1. **提到≠回答（answer-adequacy）**：召回后加一次小型语义校验（"返回的这几条是否真的回答了问题"），
-     只决定是否给"没找到/只记得相关"措辞，不删记忆；同步把该判定做成 eval 指标（falseInjection 只算
-     "未回答问题却声称知道"的情况）。
-  2. **方差门控**：每源 3 次 fresh run 均值±极差，`--gate` 基线文件化（focus r5≥0.8、miss≤0.2、
-     falseInjection=0；QQ r5≥0.7）。
-  3. **QQ 指代/多跳**：他/TA→已知人物、时间词+事件合并查询，目标 r5 ≥75%。
-  4. **gold 抽审/补全**（QQ/live 短 gold），precision 抽样口径。
-  5. **validity 抽审**：`dream.validity-capped` 分布 + audit 失效链人工抽审 20 条，确认无过度失效。
+- 下一轮（Phase 2 第 9 段）优先级：
+  1. **补 probe / 抽审 gold**：用 gold-review 清单给 focus-core 22 条无 probe gold 补 8–10 个 probe
+     （尤其 commitment/person 覆盖），QQ 补 5 个；gold 抽审后更新 baseline 文件。
+  2. **answer-adequacy**（提到≠回答）：召回后语义校验（LLM 判定"返回条目是否回答问题"）只影响
+     措辞/是否宣称知道 + eval 指标；不删记忆。
+  3. **方差门控文件化**：三源 baseline JSON（3 次 fresh run 均值±极差 + 阈值），`--gate` 直接引用。
+  4. **QQ 指代/多跳**：他/TA→已知人物、时间+事件合并查询，目标 r5 ≥75%。
+  5. **validity 抽审**：`dream.validity-capped` 分布 + 失效链人工抽审 20 条。
 
 ## 4. 复跑
 
 ```powershell
 # 真实 5 天 fixture：旧 fixture 先按新分类器重标 assistant 行（只改 source/visible）
 node .state/lab/lead/reclassify-fixture.mjs .state/lab/memory-corpus/real-focuscore-2026-10/fixture.json
+
+# gold 抽审（不调模型）：列出无证据/近重复/无 probe 覆盖/期望解析失败
+node tools/memory-gold-review.mjs --fixture .state/lab/memory-corpus/real-focuscore-2026-10 \
+  --eval .state/lab/lead/eval-focus-r6f/eval.json --out .state/lab/lead/gold-review
 
 # formation（缓存命中后无密钥可跑；阈值/预算改动会改变 prompt→cache 失效，属预期）
 $env:DEEPSEEK_API_KEY=[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY','User')
