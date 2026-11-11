@@ -189,6 +189,16 @@ const eagerStats = {
 
 const sessionEventsFile = path.resolve(arg('sessionEvents', path.join(stateDir, 'session-events.jsonl')))
 const sessionRows = readJsonLines(sessionEventsFile)
+const rawComposition = Object.values(sessionRows.reduce((acc, row) => {
+  const day = dayOf(row.time)
+  if (!acc[day]) acc[day] = { day, user: 0, assistant: 0, tool: 0, userChars: 0, assistantChars: 0, toolChars: 0 }
+  const bucket = acc[day]
+  const chars = String(row.text ?? '').length
+  if (row.type === 'user/message') { bucket.user += 1; bucket.userChars += chars }
+  else if (row.type === 'assistant/message') { bucket.assistant += 1; bucket.assistantChars += chars }
+  else if (row.type === 'tool/result') { bucket.tool += 1; bucket.toolChars += chars }
+  return acc
+}, {})).sort((a, b) => a.day.localeCompare(b.day))
 const toolCalls = Object.fromEntries([...new Set(sessionRows.filter((row) => row.type === 'tool/call').map((row) => row.name ?? '?'))]
   .map((name) => [name, sessionRows.filter((row) => row.type === 'tool/call' && (row.name ?? '?') === name).length]))
 const memoryToolCalls = Object.fromEntries(Object.entries(toolCalls).filter(([name]) => /^(recall|remember|forget|memo|memos|memo_|note_status|memory)/.test(name)))
@@ -205,6 +215,7 @@ const report = {
   lexicon: lexiconStats,
   dream: { runs: dreamRows.length, duplicateGroups: dreamDuplicateRuns, skipPairs: dreamSkipPairs, dayCoverage },
   eager: eagerStats,
+  rawComposition,
   memoryToolCalls,
 }
 
@@ -231,6 +242,16 @@ lines.push(`- 有 recall 记录的记忆：**${recall.itemsWithRecall.length}**�
 lines.push(`- eager：**${eagerStats.events}** 次，注入 **${eagerStats.injected}** 条，命中 **${eagerStats.hits}** 条`)
 lines.push(`- dream 重复 run 组：**${dreamDuplicateRuns.length}**；run+skip 的旧账：**${dreamSkipPairs.length}**`)
 lines.push('')
+if (rawComposition.length) {
+  lines.push('## 原文密度（不等于“聊得多”）')
+  lines.push('')
+  lines.push('| 日期 | user | assistant | tool | user 字 | assistant 字 | tool 字 |')
+  lines.push('|---|---:|---:|---:|---:|---:|---:|')
+  for (const row of rawComposition) lines.push(`| ${row.day} | ${row.user} | ${row.assistant} | ${row.tool} | ${row.userChars} | ${row.assistantChars} | ${row.toolChars} |`)
+  lines.push('')
+  lines.push('> raw 行数会被 assistant 的 reasoning/计划、工具结果和系统通知放大；判断“密集”应看 user 消息和实际事件，不要只看行数。')
+  lines.push('')
+}
 if (eventDupes.length) {
   lines.push('## 近重复 event block')
   lines.push('')

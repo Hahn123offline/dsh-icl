@@ -35,8 +35,20 @@ function textOfEvent(event) {
   if (event?.type === 'tool/result') {
     return textOfMessage(data.message ?? data)
   }
-  if (event?.type === 'user/message' || event?.type === 'assistant/message') {
+  if (event?.type === 'user/message') {
     return textOfMessage(data.message ?? data)
+  }
+  if (event?.type === 'assistant/message') {
+    // 原文层只保存她真正说出口的话。reasoning 是内部草稿，
+    // 混进 dream 会被当成“发生过的事”，也是英文计划/工具术语污染记忆的主因。
+    const content = data.message?.content ?? data.content
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content
+      .filter((part) => part && (part.type === 'text' || part.type == null))
+      .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+      .filter(Boolean)
+      .join('\n')
   }
   return ''
 }

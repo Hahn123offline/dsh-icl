@@ -925,14 +925,18 @@ test('桥：session/event 进原文层并发出 turn-end 信号', async () => {
   host.services.signals.on({ tags: ['turn-end'] }, (signal) => got.push(signal))
   bridge.onEvent(session, { type: 'user/message', seq: 1, time: Date.now(), data: { message: { content: [{ type: 'text', text: '在吗' }] } } })
   bridge.onEvent(session, { type: 'tool/result', seq: 2, time: Date.now(), data: { message: { content: [{ type: 'text', text: '视频标题' }] } } })
+  // assistant 的 reasoning 是内部草稿，不能进原文层/记忆材料
+  bridge.onEvent(session, { type: 'assistant/message', seq: 5, time: Date.now(), data: { message: { content: [{ type: 'reasoning', text: 'internal plan' }, { type: 'text', text: '她真正说的话' }] } } })
   // DSH 的 runtime-context 也是 user/message，但不是人说的话
   bridge.onEvent(session, { type: 'user/message', seq: 4, time: Date.now(), data: { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'Current runtime context.' }] } })
   bridge.onEvent(session, { type: 'turn/end', seq: 3 })
 
   const rows = await host.services.raw.list({ limit: 10 })
-  assert.equal(rows.length, 2)
+  assert.equal(rows.length, 3)
   assert.equal(rows[0].text, '在吗')
   assert.equal(rows[1].role, 'tool')
+  assert.equal(rows[2].text, '她真正说的话')
+  assert.doesNotMatch(JSON.stringify(rows), /internal plan/)
   assert.equal(got.length, 1)
   assert.equal(got[0].meta.seq, 3)
   // 同一个 turn-end 重放不会重复发（id 幂等）
