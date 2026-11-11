@@ -85,7 +85,9 @@ export function duplicateRate(extracted, {
       const effectiveTextThreshold = Math.min(textA.length, textB.length) < shortTextLength
         ? shortTextThreshold
         : textThreshold
-      if (textSim >= effectiveTextThreshold || evidenceSim >= evidenceThreshold) {
+      // shared evidence alone 不能算重复：同一段对话里抽出的多条 typed 事实（fact/preference/…）
+      // 天然共享 evidence；只有"证据重合且正文也相似"才是重复块。
+      if (textSim >= effectiveTextThreshold || (evidenceSim >= evidenceThreshold && textSim >= 0.3)) {
         pairs.push({ a: a.id, b: b.id, textSim, evidenceSim })
         involved.add(a.id)
         involved.add(b.id)
