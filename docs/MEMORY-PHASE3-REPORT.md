@@ -94,9 +94,43 @@
   （focus 素材里显式关系句少，关系边数量低是预期；QQ/live 关系句更多，下一轮验证）。
 - 全仓 **914 tests / 913 pass / 1 skip**；评测自测 28/28。
 
-### D. 下一步
+## 7. 第 4 步（收口）：QQ/live 关系验证 + Phase 3 总结（本轮）
 
-1. QQ/live 上验证关系边数量与 whois 关系问答（必要时给 relation 加"关系对"检索）；
-2. 三源 fresh 方差在 entity/关系稳定后串行重跑，更新 baseline；
-3. 关系标签体系与 validity 冲突（同一对实体先后出现不同 label）抽审。
+### A. QQ fresh（serial，含关系边）
+
+- formation：R **95%**（19/20，历史最好）；端到端 r1 53.8 / r3/r5 **76.9%**、MRR 0.731、miss **15.4%**。
+- entity：entities 3、personCoverage **100%**、typedCoverage **76%**、eventCoverage **100%**、
+  relations **2**、relationDangling **0**、stub 0、alias 冲突 **0**。
+- audit：typed live 42 / superseded 3、可疑取代 0、悬空链 0、缺失效时间 0、带 subject 35/42。
+
+### B. live fresh（serial）
+
+- formation R 62.5%（5/8，单次运行方差；历史 87.5–100%）、端到端 r3/r5 **85.7%**、miss 14.3%。
+- entity：entities 5（stub 2、均为"只有显示名的 people"→孤立 stub 2，符合预期）、personCoverage 100%、
+  typedCoverage 68%、relations 1、relationDangling 0、alias 冲突 0。
+
+### C. 三源当前快照（entity/关系层落地后）
+
+| 素材 | formation R | r1 | r3 | r5 | miss | entity | relations |
+|---|---:|---:|---:|---:|---:|---|---:|
+| focus-core（fresh 本轮前） | 81.3% | 28.9% | 77.8% | **91.1%** | 6.7% | 4 行 / 覆盖 100·76·81% | 1 |
+| old-qq（fresh） | **95.0%** | 53.8% | 76.9% | **76.9%** | 15.4% | 3 行 / 100·76·100% | **2** |
+| real-live（fresh） | 62.5% | 57.1% | 85.7% | **85.7%** | 14.3% | 5 行（2 stub）/ 100·68·68% | 1 |
+
+### D. Phase 3 结论（第 1–4 步）
+
+- entity 图已 additive 落地：实体行 + person/typed/event 引用 + entity-to-entity 关系边，
+  全部确定性、幂等、可回滚（删 `entity`/`relation` 命名空间即回滚）。
+- 读路径：whois 多档合并/别名/实体事实/关系；recall entity 别名扩展。
+- 评测：formation（entity 覆盖/悬空/stub/关系边）+ audit（alias 冲突/孤立 stub/关系悬空）双口径；
+  三源 fresh 均无回归，QQ 关系句多的素材 relations 2 且 formation R 95%。
+- 全仓 **914 tests / 913 pass / 1 skip**；评测自测 28/28。
+
+### E. 剩余与下一阶段候选
+
+1. 关系边检索接入（关系对查询直接召回 relation 行，而不只经 whois）；
+2. 关系 label 冲突/时效（同一对实体先后不同 label）与 validity 联动；
+3. live gold/formation 方差仍大（62.5–100%），需要扩 gold 或重复采样；
+4. typed v2 的 entity 置信（多 id 归并的人工抽审）与 migration 回归检查。
+
 

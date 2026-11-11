@@ -251,6 +251,13 @@ focus fresh：R 81.3%、r5 86–91%、miss 6.7–11.8%、falseInjection 0；enti
 typedCoverage ~76%、eventCoverage ~81%、relations 1（focus 显式关系句少）、relationDangling 0。
 下一轮：QQ/live 关系问答验证、三源 fresh 方差、关系 label 冲突抽审。
 
+**Phase 3 收口（第 24 轮）**：QQ/live 关系边与 entity 验证——QQ fresh formation R **95%**、
+端到端 r5 **76.9%**、relations 2、alias 冲突 0、可疑失效 0；live fresh R 62.5%（单次方差）、r5 85.7%、
+entity 5 行（2 个孤立 stub 为"只有显示名"的人，符合预期）、relations 1、悬空 0。
+Phase 3 第 1–4 步完成：entity 行 + person/typed/event 引用 + entity-to-entity 关系边，
+确定性/幂等/可回滚；formation/audit 双口径；三源 fresh 无回归。剩余：关系对检索接入、
+关系 label 时效冲突、live gold 方差、entity 归并抽审。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
