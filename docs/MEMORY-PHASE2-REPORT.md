@@ -545,17 +545,49 @@ r3/r5/miss 全部改善，按"人能否拿到答案"口径是净收益。
   余下为 p-07 映射粒度与 p-08 的第二条 unresolved）。
 - 同-run QQ：r1/r3/r5 = **68.2%**、MRR 0.727、miss 27.3%；剩 3 个 miss 已逐条定位。
 
+## 2q. 第 18 轮：live gold 扩充（4→8）+ 探针覆盖闭环（本轮）
+
+### A. live gold 扩充
+
+- 从 live formation 的明确事件里人工补 4 条 gold（含证据行）+ 4 个 probe：
+  11-03 深夜闹钟「我在」、11-05 第一次 MC 连接测试失败（端口 54838→25565）、
+  11-05 第二次测试通（time_status + mcb_leave）、11-03 同 key 两版「梧桐树下的猫」审计测试。
+- live fixture：gold **4→8**、probes 8→12（withExpected 10），gold-review「未被任何 probe 引用的 gold」= **0**。
+
+### B. live 复测（seed=formation，cache 复用）
+
+| 指标 | 扩充前（gold 4） | **扩充后（gold 8）** |
+|---|---:|---:|
+| formation matched / R | 4/4 100% | **8/8 100%** |
+| r1 | 83.3% | **60.0%** |
+| r3 | 91.7% | **80.0%** |
+| r5 | 91.7% | **90.0%** |
+| MRR | 0.889 | **0.737** |
+| miss | 0% | **10.0%** |
+| falseInjection（raw / adequacy） | 50% / 0 | 50% / **0** |
+
+- 新 probe 里 p-09/p-11 直接 r1 命中；p-10（"第一次 MC 测试为什么失败"）r5 命中但 r1 被同主题
+  第二次测试挤到第 5；p-12 同 key 两版的检索引擎结果在 top2。gold 覆盖面扩大后指标略降是正常
+  （更难的题目进场），formation R 仍 100%。
+
+### C. 小结
+
+- 三源现在都有"gold 有证据、probe 全引用"的基线（focus 19 probes/16 expected、QQ 14/11、live 12/10）。
+- 下一步优先级：QQ 剩 3 个 miss（p-06 只回了待整理 person note；p-07/p-08 是 gold↔extracted 映射/
+  多 expected 探针）、三源 3 fresh 方差复跑、validity 抽审扩大、门控接 CI。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 17 段）优先级：
-  1. **QQ 剩余 3 个 miss**：p-06（深夜测试结果 floor/gate）、p-07（gold↔extracted 映射粒度）、p-08（多 expected 人物探针）；
-  2. **live gold 扩充**（仅 4 条，miss 方差 0–33%），扩充后重跑三源基线；
-  3. **门控接 CI**：三源 `--gate-preset` + `--adequacy` 默认跑（结果写 baseline）；
-  4. **validity 抽审扩大**：再跑 2 次合成 fixture，抽查 capped/deterministic 失效各 10 条；
-  5. **三源 fresh 方差复跑**：QQ 修整+adequacy 后重跑 3 次，更新 baseline 数字。
+- 下一轮（Phase 2 第 18 段）优先级：
+  1. **QQ 剩 3 miss**：p-06（recall 只返回待整理 person note，候选/预算路径要查）、
+     p-07/p-08（gold↔extracted 映射与多 expected 探针口径）；
+  2. **三源 fresh 方差复跑**（live gold 扩充后 + QQ 修整后）更新 baseline 数字；
+  3. **validity 抽审扩大**：再跑 2 次合成 fixture，抽查 capped/deterministic 失效各 10 条；
+  4. **门控接 CI**：三源 `--gate-preset` + `--adequacy` 默认跑，结果写 baseline；
+  5. **typed v2 下一步**：entity 层（现在只有 identity canonicalization）与 validity 的对外可见标签。
 
 ## 4. 复跑
 

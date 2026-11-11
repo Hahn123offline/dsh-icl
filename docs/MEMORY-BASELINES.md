@@ -10,9 +10,12 @@
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | real-focuscore-2026-10 | 19 (16) | 34.4% | 84.4% | **96.9%** | 0.619 | **0%** | 0% | 0% |
 | real-qq-2026-10 | 14 (8) | 62.5% | 79.2% | 79.2% | 0.750 | 16.7% | 100% | **0%**（judge 判"提到但没答"） |
-| real-live-2026-11 | 8 (8) | 83.3% | 91.7% | 91.7% | 0.889 | 0% | 50% | **0%**（judge 判"提到但没答"） |
+| real-live-2026-11 | 12 (10) | 60.0% | 80.0% | **90.0%** | 0.737 | **10.0%** | 50% | **0%**（judge 判"提到但没答"） |
 
-- formation（同一批缓存）：focus extracted 198 / matched 26 (R 81.3%)；QQ 79 / 18 (R 90%)；live 172 / 4 (R 100%，gold 只有 4 条)。
+- formation（同一批缓存）：focus extracted 198 / matched 26 (R 81.3%)；QQ 74 / 17 (R 85%)；
+  live 140 / 8 (R 100%，gold 已从 4 条扩到 8 条)。
+- live gold 扩充（第 18 轮）：新增 4 条明确事件（深夜闹钟、两次 MC 连接测试、同 key 两版梧桐猫）
+  + 4 个 probe；live 现在 12 probes/10 withExpected，未覆盖 gold = 0。
 - `raw falseInjection` 是 `tools/memory-answer-adequacy.mjs` 的结论：三源所有"负例返回"被 judge 判为
   「只提到相关话题、没有回答」→ 记忆系统没有把相关记忆当成答案宣称，原始 falseInjection 高估了问题。
 

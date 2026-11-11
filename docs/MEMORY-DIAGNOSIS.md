@@ -212,6 +212,11 @@ eval.json/eval.md（raw falseInjection 与 adequacy-adjusted 并列；QQ 实测 
 真误答 0）；QQ 修整后 gold-review probe 问题 3→2，同-run QQ r1/r3/r5=68.2%、MRR 0.727、miss 27.3%。
 下一轮：QQ 剩 3 miss、live gold 扩充、门控接 CI、validity 抽审扩大、三源 fresh 方差复跑。
 
+**Phase 2 第 17 段（第 18 轮，本轮）**：live gold 4→8（新增深夜闹钟、两次 MC 连接测试、同 key
+两版梧桐猫 4 条 + 4 probe），三源首次都做到"gold 有证据、probe 全引用"（focus 19/16、QQ 14/11、
+live 12/10）；live 复测 formation R 8/8=100%，端到端 r1 60/r3 80/r5 90%、miss 10%、adequacy 0。
+下一轮：QQ 剩 3 miss、三源 fresh 方差复跑、validity 抽审扩大、门控接 CI、typed entity 层。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）
