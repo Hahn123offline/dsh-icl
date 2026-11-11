@@ -78,6 +78,9 @@ node tools/memory-eval.mjs --fixture <fixture> --mode all --seed formation --mod
 
 - `--gate-preset focus|qq|live` 对应上面的三源阈值，不通过 exit 3 并逐条打印未过指标。
 - 已实测：fresh run（r5 84.4%、miss 12.5%、falseInjection 0、formation recall≥0.75）通过，exit 0。
+- 负例口径：同时看 `raw falseInjection` 与 `answerAdequacy`（`--adequacy`）。
+  `--adequacy` 让模型判断"返回记忆里有没有真正回答问题"；`--cache-only` 时跳过 judge。
+  三源真负例 judge 均为「提到但没答」→ adequacy-adjusted false injection = 0。
 - QQ 预设：`formation.recall>=0.75,retrieval.recallAt5>=0.70,retrieval.missRate<=0.35`；
   live 预设：`formation.recall>=0.75,retrieval.recallAt5>=0.80,retrieval.missRate<=0.25`。
 

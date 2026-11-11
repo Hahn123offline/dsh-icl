@@ -21,7 +21,7 @@ function clip(value, max = 90) {
 }
 
 /** 组装 eval.json 的结构（report 的机器可读面）。 */
-export function buildEvalJson({ fixture, fixturePath, options, modelStats, formation, repeats, idempotency, retrieval, gate, cost, warnings, errors = [] }) {
+export function buildEvalJson({ fixture, fixturePath, options, modelStats, formation, repeats, idempotency, retrieval, answerAdequacy = null, gate, cost, warnings, errors = [] }) {
   const gold = fixture.gold ?? {}
   const rowCount = (fixture.days ?? []).reduce((sum, day) => sum + (day.rows ?? []).length, 0)
   return {
@@ -119,6 +119,7 @@ export function buildEvalJson({ fixture, fixturePath, options, modelStats, forma
             metrics: entry.metrics,
             unresolvedExpected: entry.unresolvedExpected,
           })),
+          ...(answerAdequacy ? { answerAdequacy } : {}),
         }
       : null,
     cost,
@@ -248,6 +249,14 @@ function retrievalMd(retrieval) {
   lines.push('', '### 按 kind', '', '| kind | probes | recall@3 | MRR | injectionPrecision | missRate |\n|---|---|---|---|---|---|')
   for (const [kind, row] of Object.entries(m.byKind ?? {})) {
     lines.push(`| ${kind} | ${row.probes} | ${fmtPct(row.recallAt3)} | ${fmtNum(row.mrr)} | ${fmtPct(row.injectionPrecision)} | ${fmtPct(row.missRate)} |`)
+  }
+  const adequacy = retrieval.answerAdequacy
+  if (adequacy) {
+    lines.push('', '### answer-adequacy（真负例 judge）', '')
+    lines.push(`- 真负例：**${adequacy.negatives}**；judge 判"有答案"：**${adequacy.answersTrue}**；"提到但没答"：**${adequacy.mentionOnly}**`)
+    for (const entry of adequacy.cases ?? []) {
+      lines.push(`  - ${entry.probe}「${clip(entry.query, 40)}」→ ${entry.answers ? '⚠️ 有答案' : '否'}（${clip(entry.reason, 60)}）`)
+    }
   }
   const failed = (retrieval.probes ?? []).filter((entry) => entry.error || entry.metrics.miss === true || (entry.metrics.mustNotRecallViolations ?? []).length)
   if (failed.length) {

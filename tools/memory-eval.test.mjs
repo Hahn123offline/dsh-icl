@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { evaluateGate, main, parseArgs, parseGate } from './memory-eval.mjs'
+import { evaluateGate, judgeAnswerAdequacy, main, parseArgs, parseGate } from './memory-eval.mjs'
 import { invalidationMetrics } from './memory-eval/formation.mjs'
 import { renderGoldReview, reviewGold } from './memory-gold-review.mjs'
 import { buildIndexes, loadFixture, normalizeFixture, sliceFixtureDays } from './memory-eval/fixture.mjs'
@@ -757,4 +757,19 @@ test('gate-preset：三源基线阈值（focus/qq/live）与非法预设', () =>
   const qq = parseArgs(['--fixture', fixture, '--gate-preset', 'qq'])
   assert.equal(qq.gatePreset, 'qq')
   assert.throws(() => parseArgs(['--fixture', fixture, '--gate-preset', 'nope']), /gate-preset/)
+})
+
+test('answer-adequacy：只对真负例做 judge，区分"提到但没答"', async () => {
+  const retrieval = {
+    probes: [
+      { probe: { id: 'p1', query: '午饭吃了什么' }, metrics: { expectedIds: [], returnedIds: ['1'] }, returnedText: '记忆只提到午饭相关话题', unresolvedExpected: [] },
+      { probe: { id: 'p2', query: '有答案的问题' }, metrics: { expectedIds: ['5'], returnedIds: ['5'] }, returnedText: '答案', unresolvedExpected: [] },
+    ],
+  }
+  const model = { call: async () => JSON.stringify({ answers: false, reason: '只提到相关话题' }), stats: () => ({}) }
+  const out = await judgeAnswerAdequacy({ retrieval, model })
+  assert.equal(out.negatives, 1)
+  assert.equal(out.answersTrue, 0)
+  assert.equal(out.mentionOnly, 1)
+  assert.equal(out.cases[0].probe, 'p1')
 })

@@ -207,6 +207,11 @@ QQ 同-run r1/r5 63.6→68.2%、withExpected 10→11，p-03 转 hit；memory-aud
 （零内容词交集/后继缺失）：31 条 superseded 中可疑 1 条且人工核对为合理取代，悬空链 0、缺失效时间 0。
 下一轮：QQ 剩 3 个 miss、adequacy 指标化、live gold 扩充、门控接 CI、validity 抽审扩大。
 
+**Phase 2 第 16 段（第 17 轮，本轮）**：`--adequacy` 进 eval——真负例 answer-adequacy judge 结果写入
+eval.json/eval.md（raw falseInjection 与 adequacy-adjusted 并列；QQ 实测 1 条负例 judge 判"提到但没答"、
+真误答 0）；QQ 修整后 gold-review probe 问题 3→2，同-run QQ r1/r3/r5=68.2%、MRR 0.727、miss 27.3%。
+下一轮：QQ 剩 3 miss、live gold 扩充、门控接 CI、validity 抽审扩大、三源 fresh 方差复跑。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

@@ -528,17 +528,34 @@ r3/r5/miss 全部改善，按"人能否拿到答案"口径是净收益。
   **悬空链 0、缺失效时间 0** → 未发现误失效。
 - `audit.md` 的「typed 旧值失效链」现在显示每条链的共享内容词数，便于复核。
 
+## 2p. 第 17 轮：answer-adequacy 指标化 + QQ 探针问题收敛（本轮）
+
+### A. `--adequacy` 进 eval 报告（不再只是独立工具）
+
+- eval 新增 `--adequacy`：retrieval 结束后对**真负例**（expected 为空且无 unresolved）跑 judge，
+  结果写进 `eval.json.retrieval.answerAdequacy` 与 `eval.md` 的「answer-adequacy（真负例 judge）」段；
+  CLI 同步打印一条摘要。`--cache-only` 时跳过 judge（可离线复跑，adequacy 用独立工具补）。
+- QQ 实测：`answer-adequacy：负例 1 条，judge 判"有答案" 0 条，提到但没答 1 条`；
+  报告里 raw falseInjection=100% 与 adequacy-adjusted（0 条真误答）并列，口径不再含糊。
+- 单测覆盖：只对真负例调用、区分"提到但没答"。
+
+### B. QQ 修整后复核
+
+- gold-review 的 probe 期望解析/内容匹配问题：**3 → 2**（p-03 已解析、p-08 内容交集已恢复；
+  余下为 p-07 映射粒度与 p-08 的第二条 unresolved）。
+- 同-run QQ：r1/r3/r5 = **68.2%**、MRR 0.727、miss 27.3%；剩 3 个 miss 已逐条定位。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 16 段）优先级：
-  1. **QQ 剩余 3 个 miss**：p-06（深夜测试结果，floor/gate）、p-07（gold↔extracted 映射）、p-08（多 expected 人物探针）；
-  2. **answer-adequacy 指标化进 eval 报告**（raw / adequacy-adjusted 双列），负例口径固化；
-  3. **live gold 扩充**（仅 4 条，miss 方差 0–33%），基线重算；
-  4. **门控接 CI**：三源 `--gate-preset` 默认跑，结果写 baseline；
-  5. **validity 抽审扩大**：多跑 2 次合成 fixture，抽查 capped 日志与 deterministic 失效各 10 条。
+- 下一轮（Phase 2 第 17 段）优先级：
+  1. **QQ 剩余 3 个 miss**：p-06（深夜测试结果 floor/gate）、p-07（gold↔extracted 映射粒度）、p-08（多 expected 人物探针）；
+  2. **live gold 扩充**（仅 4 条，miss 方差 0–33%），扩充后重跑三源基线；
+  3. **门控接 CI**：三源 `--gate-preset` + `--adequacy` 默认跑（结果写 baseline）；
+  4. **validity 抽审扩大**：再跑 2 次合成 fixture，抽查 capped/deterministic 失效各 10 条；
+  5. **三源 fresh 方差复跑**：QQ 修整+adequacy 后重跑 3 次，更新 baseline 数字。
 
 ## 4. 复跑
 

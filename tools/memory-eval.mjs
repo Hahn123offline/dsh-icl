@@ -86,6 +86,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     maxCalls: Math.max(1, Number(argValue(argv, 'max-calls', 500)) || 500),
     cacheOnly: hasFlag(argv, 'cache-only'),
     fresh: hasFlag(argv, 'fresh'),
+    adequacy: hasFlag(argv, 'adequacy'),
     embed: hasFlag(argv, 'embed'),
     embedProvider: argValue(argv, 'embed-provider'),
     keepTemp: hasFlag(argv, 'keep-temp'),
@@ -138,6 +139,7 @@ function printUsage(write = console.log) {
   --max-calls <n>                    云端调用上限，默认 500
   --cache-only                       只允许命中 <out>/cache.json（云端基线可无密钥离线复跑）
   --fresh                             忽略已有缓存、重新调用模型（用于测运行间方差）
+  --adequacy                         对真负例跑 answer-adequacy judge（额外模型调用；cache-only 时跳过）
   --embed                            绑定 embed 插槽（默认关；离线 CI 不依赖 8088）
   --embed-provider <id>              指定 embedding provider（默认 config 里第一个）
   --recall-min-sim <n>               覆盖 recall.config.minSim（有嵌入时的相关度下限，标定用）
@@ -209,8 +211,64 @@ export function parseGate(spec) {
   return { enabled: true, spec: String(spec), checks }
 }
 
-export function evaluateGate(gate, evalJson) {
-  if (!gate) return null
+/**
+ * answer-adequacy（--adequacy）：对"真负例"（expected 为空且无 unresolved）让模型判断
+ * recall 返回的记忆里有没有**真正回答问题**的内容。原始 falseInjection 只统计"有没有返回"，
+ * 这里区分「提到但没答」与「真把相关内容当答案」。只读 retrieval 结果，不写任何记忆。
+ */
+export async function judgeAnswerAdequacy({ retrieval, model, cacheOnly = false }) {
+  if (!retrieval?.probes) return null
+  const negatives = retrieval.probes.filter((entry) => {
+    const metrics = entry.metrics ?? {}
+    return (metrics.expectedIds ?? []).length === 0 && !(entry.unresolvedExpected ?? []).length
+  })
+  const system = [
+    '你是记忆检索的验收员。用户问了一个问题，记忆系统返回了若干条记忆文本。',
+    '判断：这些记忆里有没有能够直接回答该问题的内容（不是"提到相关话题"，而是真的含有答案）。',
+    '只输出 JSON：{"answers": true|false, "reason": "一句话"}。不要解释、不要 Markdown 围栏。',
+  ].join('\n')
+  const cases = []
+  for (const probe of negatives) {
+    const returnedText = String(probe.returnedText ?? '').trim()
+    let answers = false
+    let reason = '未返回任何记忆'
+    if (returnedText && !cacheOnly) {
+      try {
+        const raw = await model.call({
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: `问题：${probe.query ?? probe.probe?.query ?? ''}\n\n返回的记忆：\n${returnedText.slice(0, 1500)}` },
+          ],
+          maxTokens: 200,
+          where: 'answer-adequacy',
+        })
+        const match = /\{[\s\S]*\}/.exec(String(raw))
+        const parsed = JSON.parse(match ? match[0] : '{}')
+        answers = parsed.answers === true
+        reason = String(parsed.reason ?? '').slice(0, 160)
+      } catch (error) {
+        reason = `judge-error：${String(error?.message ?? error).slice(0, 120)}`
+      }
+    } else if (returnedText && cacheOnly) {
+      reason = 'cache-only：跳过 judge（用独立 answer-adequacy 工具跑）'
+    }
+    cases.push({
+      probe: probe.probe?.id ?? probe.id,
+      query: probe.query ?? probe.probe?.query ?? '',
+      returned: probe.metrics?.returnedIds ?? probe.returned ?? [],
+      answers,
+      reason,
+    })
+  }
+  return {
+    negatives: cases.length,
+    answersTrue: cases.filter((entry) => entry.answers).length,
+    mentionOnly: cases.filter((entry) => !entry.answers).length,
+    cases,
+  }
+}
+
+export function evaluateGate(gate, evalJson) {  if (!gate) return null
   const results = gate.checks.map((check) => {
     const value = pathValue(evalJson, GATE_PATHS[check.key])
     const numeric = value == null ? null : Number(value)
@@ -426,6 +484,13 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         write(`retrieval（seed=${options.seed}）：recall@1=${pct(m.recallAt1)} recall@3=${pct(m.recallAt3)} recall@5=${pct(m.recallAt5)} MRR=${m.mrr == null ? '—' : m.mrr.toFixed(3)} miss=${pct(m.missRate)} falseInjection=${pct(m.falseInjectionRate)}`)
       }
     }
+    let answerAdequacy = null
+    if (options.adequacy && retrieval) {
+      answerAdequacy = await judgeAnswerAdequacy({ retrieval, model, cacheOnly: options.cacheOnly })
+      if (!options.quiet && answerAdequacy) {
+        write(`answer-adequacy：负例 ${answerAdequacy.negatives} 条，judge 判"有答案" ${answerAdequacy.answersTrue} 条，提到但没答 ${answerAdequacy.mentionOnly} 条`)
+      }
+    }
     const retrievalMs = Date.now() - retrievalStarted
 
     // --gate 显式优先；否则用 --gate-preset 的三源基线阈值（docs/MEMORY-BASELINES.md）。
@@ -448,6 +513,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       repeats,
       idempotency: idem,
       retrieval,
+      answerAdequacy,
       gate: null,
       cost: {
         wallMs: Date.now() - started,
@@ -500,6 +566,7 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 
 
