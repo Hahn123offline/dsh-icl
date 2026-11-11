@@ -13,6 +13,54 @@ export function apply(ctx) {
    * 最近提到这个人的事件：用档案里的**全部身份入口**（qq/id/别名/显示名）去比
    * event.data.people。旧实现只拿 person.data.qq，名字型档案 qq=null → 永远空（审计 F5）。
    */
+  /**
+   * Phase 3：entity 层归并。同一个现实对象可能有多个 person 块（显示名/别名各建过一份）；
+   * 先按 qq/id/名字找 entity 行，再取它引用的全部 personKeys 合并成一份档案。
+   */
+  function resolveEntity({ qq = null, idKind = null, value = null, name = null, subjectKind = null } = {}) {
+    const wanted = []
+    if (qq) wanted.push({ kind: 'qq', value: String(qq) })
+    if (idKind && value) wanted.push({ kind: String(idKind), value: String(value) })
+    if (subjectKind && value) wanted.push({ kind: String(subjectKind), value: String(value) })
+    const nameText = String(name ?? '').trim()
+    const entities = memory.query({ namespace: 'entity', kind: 'entity', limit: 1000, order: 'desc' })
+      .filter((row) => row.data?.stub !== true)
+    if (wanted.length) {
+      const hit = entities.find((row) => (row.data?.ids ?? []).some((id) => wanted.some((w) => String(id.kind) === w.kind && String(id.value) === w.value)))
+      if (hit) return hit
+    }
+    if (nameText) {
+      return entities.find((row) => {
+        const aliases = (row.data?.aliases ?? []).map(String)
+        const ids = (row.data?.ids ?? []).map((id) => String(id.value))
+        return aliases.includes(nameText) || ids.includes(nameText) || String(row.text ?? '') === nameText
+      }) ?? null
+    }
+    return null
+  }
+
+  function personBlocksOfEntity(entity) {
+    const keys = Array.isArray(entity?.data?.personKeys) ? entity.data.personKeys : []
+    const blocks = []
+    for (const key of keys) {
+      const block = memory.query({ namespace: 'person', kind: 'block', key, limit: 1 })[0]
+      if (block && block.data?.superseded !== true) blocks.push(block)
+    }
+    return blocks
+  }
+
+  function entityFactsOf(entity, limit = 4) {
+    if (!entity?.key) return []
+    const out = []
+    for (const namespace of ['preference', 'commitment', 'fact']) {
+      const rows = memory.query({ namespace, kind: 'block', limit: 500, order: 'desc' })
+        .filter((row) => row.data?.superseded !== true && String(row.data?.subjectEntity ?? '') === entity.key)
+      for (const row of rows) if (!out.some((x) => x.text === row.text)) out.push(row)
+      if (out.length >= limit) break
+    }
+    return out.slice(0, limit)
+  }
+
   function recentEventsFor(person, fallbackQq = null, limit = 3) {
     const wanted = new Set([
       String(fallbackQq ?? ''),
@@ -51,16 +99,39 @@ export function apply(ctx) {
     },
     async execute({ qq = null, idKind = null, value = null, name = null, subjectKind = null } = {}) {
       const found = memory.findPerson({ qq, idKind, value, name, subject: subjectKind && value ? { kind: subjectKind, value } : null })
-      const people = found.people ?? []
+      const entity = resolveEntity({ qq, idKind, value, name, subjectKind })
+      const entityPersons = personBlocksOfEntity(entity)
+      let people = found.people ?? []
+      if (entityPersons.length) {
+        const seen = new Set(entityPersons.map((block) => block.key))
+        people = [...entityPersons, ...people.filter((person) => !seen.has(person.key))]
+      }
       if (!people.length) {
         return { text: qq ? `还没有 ${qq} 的档案（认识之后、做梦整理过才会有）。` : '还没有这个人的档案。' }
       }
-      if (!found.exact && people.length > 1) {
+      if (!entityPersons.length && !found.exact && people.length > 1) {
         return { text: [`按名字找到 ${people.length} 个可能的人：`, ...people.map(line)].join('\n') }
       }
       const person = people[0]
       const events = recentEventsFor(person, qq ?? null, 3)
+      const entityEvents = entity ? memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
+        .filter((block) => block.data?.superseded !== true && Array.isArray(block.data?.entities) && block.data.entities.includes(entity.key))
+        .slice(0, 2) : []
       const parts = [line(person)]
+      // entity 归并：同一实体多份档案/别名一起给出（把"显示名各建一份"的旧问题在读取侧兜住）。
+      if (entity) {
+        const aliases = [...new Set([...(entity.data?.aliases ?? []).map(String), ...people.flatMap((p) => (p.data?.aliases ?? []).map(String))])]
+          .filter((alias) => alias && alias !== person.text)
+        const ids = [...new Set((entity.data?.ids ?? []).map((id) => `${id.kind}:${id.value}`))]
+        if (aliases.length) parts.push(`别名／其他称呼：${aliases.slice(0, 12).join('、')}`)
+        if (ids.length > 1) parts.push(`同一实体的身份：${ids.slice(0, 10).join('、')}`)
+        if (people.length > 1) parts.push(`（合并了 ${people.length} 份人物档案）`)
+        const facts = entityFactsOf(entity, 4)
+        if (facts.length) {
+          parts.push('实体事实／承诺：')
+          for (const row of facts) parts.push(`· ${String(row.text).slice(0, 120)}`)
+        }
+      }
 
       // 逐句引用：档案里的每一句都能追到当时的笔记
       const claims = Array.isArray(person.data?.claims) ? person.data.claims : []
@@ -100,9 +171,10 @@ export function apply(ctx) {
           }
         }
       } catch { /* 原文层可选 */ }
-      if (events.length) {
+      const mergedEvents = [...events, ...entityEvents.filter((block) => !events.some((event) => event.id === block.id))].slice(0, 4)
+      if (mergedEvents.length) {
         parts.push('最近提到 TA 的事：')
-        parts.push(...events.map((e) => `· ${e.text}`))
+        parts.push(...mergedEvents.map((e) => `· ${e.text}`))
       }
       return { text: parts.join('\n') }
     },

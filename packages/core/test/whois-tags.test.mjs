@@ -97,3 +97,29 @@ test('标签有上限：最多 5 个、小写、去重', async () => {
   assert.deepEqual(normalizeTags(['这个标签实在是太长了一点']), [])
   assert.equal(memory.tags({ namespace: 'event' }).length >= 0, true)
 })
+
+test('whois：entity 层归并同一实体的多份 person 档案与别名', async () => {
+  const { tools, memory } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: 'Hahn123 是主人，会陪我聊很久。',
+    data: { qq: '3429502459', ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['Hahn123'], familiarity: 'close' },
+  })
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:zhuzihan', text: '周子涵 是离线版号上的主人，喜欢赶作业。',
+    data: { qq: null, ids: [{ kind: 'person', value: '周子涵' }], aliases: ['周子涵'], familiarity: 'close' },
+  })
+  memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'test' })
+  memory.put({
+    namespace: 'entity', kind: 'entity', key: 'entity:qq:3429502459', text: 'Hahn123',
+    data: {
+      canonicalId: { kind: 'qq', value: '3429502459' },
+      ids: [{ kind: 'qq', value: '3429502459' }, { kind: 'person', value: '周子涵' }],
+      aliases: ['Hahn123', '周子涵'], personKeys: ['person:3429502459', 'person:zhuzihan'], familiarity: 'close',
+    },
+  })
+  const out = await tools.whois.execute({ name: '周子涵' })
+  assert.match(out.text, /Hahn123 是主人/, '按别名应命中实体并给出主档案')
+  assert.match(out.text, /别名／其他称呼：.*Hahn123/, '应显示实体别名集合')
+  assert.match(out.text, /合并了 2 份人物档案/, '应提示合并了多份档案')
+})
+

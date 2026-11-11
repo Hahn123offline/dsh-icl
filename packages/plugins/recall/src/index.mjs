@@ -434,6 +434,29 @@ export function apply(ctx) {
         if (question && pronounVariants.length && bestById.size < 3) {
           for (const variant of pronounVariants) await collectHits(variant, floor, false)
         }
+        // entity 别名扩展：问句用了某实体的别名时，用同实体的另一个称呼/规范名再搜一遍
+        // （"周子涵" 与 "Hahn123" 是同一个人，旧档案/事件可能只写了其中一个）。
+        const entityVariants = (() => {
+          if (!question) return []
+          const entities = memory.query({ namespace: 'entity', kind: 'entity', limit: 500, order: 'desc' })
+          for (const entity of entities) {
+            if (entity.data?.stub === true) continue
+            const forms = [...new Set([
+              String(entity.text ?? '').trim(),
+              ...(entity.data?.aliases ?? []).map((alias) => String(alias ?? '').trim()),
+              ...(entity.data?.ids ?? []).map((id) => String(id?.value ?? '').trim()),
+            ].filter((form) => form.length >= 2))]
+            const matched = forms.find((form) => question.includes(form))
+            if (!matched) continue
+            const preferred = forms.find((form) => form !== matched && /[\u4e00-\u9fff]/.test(form)) ?? forms.find((form) => form !== matched)
+            if (!preferred || preferred === matched || question.replace(matched, preferred) === question) continue
+            return [question.replace(matched, preferred)]
+          }
+          return []
+        })()
+        if (question && entityVariants.length && bestById.size < 3) {
+          for (const variant of entityVariants) await collectHits(variant, floor, false)
+        }
         // 模糊兜底：严格 floor 一条都没命中时，用放宽的 floor 再找一轮（标 [记得不太清]）。
         // 没有这一步，"10月25日下午…升级…效果如何"这类转述问句会因为 sim 0.42-0.44 < 0.45 直接空手；
         // 有这一步，内容词门槛仍会挡住"完全没问到的属性"（如"穿什么颜色衣服"）。
