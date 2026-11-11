@@ -148,6 +148,30 @@ export function apply(ctx) {
     return null
   }
 
+  /**
+   * 查询意图 → 优先的块形态（2026-11-11 第 11 轮）。
+   * 同一天、同主题的候选分数往往很接近：问"她看到了什么"时事件块才是答案，
+   * 问"答应/承诺了什么"时 typed commitment 才是答案。只做温和加分（≤1.3×），
+   * 不改变候选集合，避免压掉别的正确形态。
+   */
+  function queryIntent(question) {
+    const text = String(question ?? '')
+    if (/(?:谁|是谁|什么关系|关系|怎么认识|认识谁|叫什么|名字|身份|昵称|别名|舍友|朋友|主人是)/i.test(text)) return 'person'
+    if (/(?:答应|承诺|说好|保证|还没|未了|打算|计划|以后要|什么时候给)/.test(text)) return 'commitment'
+    if (/(?:喜欢|讨厌|偏好|习惯|口味|怕什么|雷点|愿意|更想|宁可)/.test(text)) return 'preference'
+    if (/(?:发生了什么|做过|去过|看到|遇见|遇到|经历|那天|昨晚|上次|后来|结果|怎么[\u4e00-\u9fff]|做了什么)/.test(text)) return 'event'
+    return 'mixed'
+  }
+
+  /** 意图加分表：key 是意图，value 是 namespace → 倍率。 */
+  const INTENT_BOOST = {
+    event: { event: 1.25, lexicon: 1.05 },
+    commitment: { commitment: 1.3, fact: 1.1 },
+    preference: { preference: 1.3, fact: 1.1 },
+    person: { person: 1.3 },
+    mixed: {},
+  }
+
   // 注册分类命名空间（幂等）。它们不是 recall 的私有物：任何插件都能读写。
   for (const [id, meta] of Object.entries(CATEGORIES)) {
     memory.registerNamespace({ id, label: meta.label, recallable: meta.recallable !== false, halfLifeDays: meta.halfLifeDays, owner: 'recall' })
@@ -379,7 +403,7 @@ export function apply(ctx) {
         // 没有这一步，"10月25日下午…升级…效果如何"这类转述问句会因为 sim 0.42-0.44 < 0.45 直接空手；
         // 有这一步，内容词门槛仍会挡住"完全没问到的属性"（如"穿什么颜色衣服"）。
         let relaxedPass = false
-        if (question && bestById.size === 0) {
+        if (question && bestById.size < 2) {
           const relaxedFloor = Math.max(0.3, floor - 0.12)
           relaxedPass = true
           for (const subQuery of (searchQueries.length ? searchQueries : [''])) {
@@ -399,6 +423,19 @@ export function apply(ctx) {
             }
           }
           if (boostedByDay) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        }
+        // 意图加分：问经历→事件块、问答应→commitment、问偏好→preference、问人→person。
+        const intent = question ? queryIntent(question) : 'mixed'
+        const intentWeights = INTENT_BOOST[intent] ?? {}
+        if (Object.keys(intentWeights).length && candidates.length) {
+          let boostedByIntent = false
+          for (const entry of candidates) {
+            const weight = intentWeights[entry.namespace]
+            if (!weight) continue
+            entry.score = Number(entry.score) * weight
+            boostedByIntent = true
+          }
+          if (boostedByIntent) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         }
 
         // 今天的 note 永远优先展示（带 [今天] 标签）
@@ -433,7 +470,7 @@ export function apply(ctx) {
         let embeddedIndex = false
         try { embeddedIndex = Boolean(memory.stats?.()?.embedded) } catch { embeddedIndex = false }
         const clearLeader = topSim >= 0.3 && secondSim === 0 && (!embeddedIndex || relaxedPass)
-        const gateSample = relaxedPass ? 3 : 20
+        const gateSample = relaxedPass ? 8 : 20
         const contentOk = !question || topSim >= 0.55 || clearLeader
           || hasContentSignal(question, [
             // 门槛只看摘要（text）：正文更啰嗦，几乎总能蹭到一两个内容词（live"午饭吃了什么"
@@ -471,8 +508,9 @@ export function apply(ctx) {
 
         const noteQuota = Math.max(1, Math.floor(limit / 2))
         for (const entry of usableNotes.slice(0, noteQuota)) take(entry, '未整理')
-        // person 最多占 1 条：人物档案很长，允许它回答"他是谁"，但不允许它挤掉事件/fact 的位次。
-        const personQuota = 1
+        // person 配额：默认 1 条（人物档案很长，不能挤掉事件/fact 位次）；
+        // 明确问"谁/关系/名字"时放宽到 2 条，关系类问题常常需要两边的人物块。
+        const personQuota = intent === 'person' ? 2 : 1
         let personTaken = 0
         for (const entry of usableCandidates.slice(0, 100)) {
           if (entry.namespace === 'person') {
@@ -622,4 +660,5 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
 

@@ -130,3 +130,15 @@ test('查询日期词：同一天的记忆排序优先（只加分不硬过滤�
   assert.ok(at('六点集合') >= 0, `应召回昨天的计划：${out.text}`)
   assert.ok(at('六点集合') <= at('今天讨论') || at('今天讨论') < 0, `昨天记忆应排前：${out.text}`)
 })
+
+test('意图加分：问"答应/承诺"时 typed commitment 排在同样相关的事件块前', async () => {
+  const { memory, tools } = await setup()
+  memory.put({ namespace: 'event', kind: 'block', key: 'evt:power', text: '主人说以后要慢慢给我加自由的能力，让我能上QQ、有自己的连续记忆', data: { body: '主人说以后要慢慢给我加自由的能力，让我能上QQ、有自己的连续记忆' } })
+  memory.put({ namespace: 'commitment', kind: 'block', key: 'commitment:power', text: '主人答应以后给我加自由能力，让我能上QQ、有自己的连续记忆', data: { body: '主人答应以后给我加自由能力，让我能上QQ、有自己的连续记忆' } })
+  const out = await tools.recall.execute({ query: '主人答应以后给我加什么能力？' })
+  const lines = String(out.text).split('\n')
+  const eventAt = lines.findIndex((line) => line.includes('主人说以后要慢慢给我加'))
+  const promiseAt = lines.findIndex((line) => line.includes('主人答应以后给我加自由能力'))
+  assert.ok(promiseAt >= 0, `应召回承诺：${out.text}`)
+  assert.ok(eventAt < 0 || promiseAt < eventAt, `承诺应排在事件前：${out.text}`)
+})

@@ -173,6 +173,11 @@ QQ r1 62.5→70.8%；内容词门槛精修（只看摘要、放宽轮只看前 3
 live 负例"午饭吃了什么"恢复"没找到"。补 probe 后暴露下一轮目标：同一天同主题重排、关系类召回、
 person 多块 parse、answer-adequacy。
 
+**Phase 2 第 10 段（第 11 轮，本轮）**：意图感知重排（问经历→事件、问承诺/偏好→typed、问人→person，
+person 配额 2）+ 放宽二轮改为"候选<2 就补"（修 QQ 单候选卡死）+ person 探针 whois+recall 双路径
+（focus p-04 转 hit）。三源 r3/r5：focus 90.6%、QQ 79.2%、live 91.7%；miss 6.3%/16.7%/0%；r1 小幅回落
+（31.3/62.5/83.3）。剩余：关系实体对检索（focus p-19）、指代消解（QQ p-07）、answer-adequacy。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

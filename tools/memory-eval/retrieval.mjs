@@ -175,14 +175,17 @@ export function parseRankedIds(text, items, probeKind = 'recall') {
       if (!line.startsWith('·')) continue
       candidate = stripTags(line.slice(1).trim())
     } else if (probeKind === 'person') {
-      if (!line.startsWith('·')) continue
-      candidate = line.slice(1).trim()
-      // whois 的第二段/依据行不是档案本身；只有能对上 person block 的才算。
-      const personItems = items.filter((item) => item.kindKey === 'person' || item.namespace === 'person')
-      const matched = matchLineToItem(candidate, personItems)
-      if (!matched) continue
-      if (!seen.has(matched.id)) { ranked.push(matched.id); seen.add(matched.id) }
-      continue
+      if (line.startsWith('·')) {
+        candidate = line.slice(1).trim()
+        // whois 的第二段/依据行不是档案本身；只有能对上 person block 的才算。
+        const personItems = items.filter((item) => item.kindKey === 'person' || item.namespace === 'person')
+        const matched = matchLineToItem(candidate, personItems)
+        if (!matched) continue
+        if (!seen.has(matched.id)) { ranked.push(matched.id); seen.add(matched.id) }
+        continue
+      }
+      // person 探针也会走 recall（关系类问题需要事件记忆）：接受 recall 的 `[类型 · 相对时间]` 行。
+      candidate = stripLabel(stripTags(line))
     } else {
       candidate = stripLabel(stripTags(line))
     }
@@ -244,7 +247,12 @@ async function executeProbe({ probe, hostBox, indexes, items }) {
         const fallback = String((await tools.recall.execute({ kind: 'person', query: candidate }))?.text ?? '')
         if (fallback && !fallback.startsWith('这个范围') && !fallback.startsWith('没找到') && fallback !== out) texts.push(fallback)
       }
-      if (candidates.length > 1) path = 'whois-tool.multi'
+      // 关系类问题不只靠人物档案：真实 agent 也会再用 recall 查一遍事件记忆（"谁和谁是什么关系"）。
+      try {
+        const recallOut = String((await tools.recall.execute({ query }))?.text ?? '')
+        if (recallOut && !recallOut.startsWith('没找到') && !recallOut.startsWith('这个范围') && !recallOut.startsWith('这几条')) texts.push(recallOut)
+      } catch { /* recall 失败不影响 person 结果 */ }
+      if (candidates.length > 1) path = 'whois-tool.multi+recall'
       text = texts.join('\n')
     } else if (probe.kind === 'overview') {
       path = 'recall-tool.overview'
