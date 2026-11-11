@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icl.local/schemas/memory-fixture.schema.json",
+  "title": "ICL 记忆评测 fixture（schema=1）",
+  "description": "docs/MEMORY-EVAL-SPEC.md §3 的机器可读契约。tools/memory-eval.mjs 用自带的最小校验器实现本文件（不引第三方依赖）；tools/memory-corpus.mjs 产出后应通过同一校验。",
+  "type": "object",
+  "required": ["schema", "id", "kind", "timezone", "persona", "days", "gold", "probes"],
+  "properties": {
+    "schema": { "const": 1 },
+    "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "kind": { "enum": ["real", "synthetic"] },
+    "description": { "type": "string" },
+    "goldSource": { "type": "string" },
+    "timezone": { "type": "string", "minLength": 1 },
+    "persona": { "$ref": "#/$defs/persona" },
+    "days": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/day" }
+    },
+    "gold": { "$ref": "#/$defs/gold" },
+    "probes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/probe" }
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "description": "probes 为空会让检索指标失去意义；真实回归 fixture 也至少要一个探针。",
+      "properties": { "probes": { "minItems": 1 } }
+    }
+  ],
+  "$defs": {
+    "persona": {
+      "type": "object",
+      "required": ["self", "owner"],
+      "properties": {
+        "self": { "$ref": "#/$defs/actor" },
+        "owner": { "$ref": "#/$defs/actor" }
+      },
+      "additionalProperties": true
+    },
+    "actor": {
+      "type": "object",
+      "required": ["name", "ids"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "ids": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
+        "aliases": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "identity": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "day": {
+      "type": "object",
+      "required": ["day", "rows"],
+      "properties": {
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } }
+      },
+      "additionalProperties": true
+    },
+    "row": {
+      "type": "object",
+      "required": ["id", "at", "role", "channel", "speaker", "text", "source", "visible"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "at": { "type": "string", "minLength": 10 },
+        "role": { "enum": ["user", "assistant", "tool", "env", "memory"] },
+        "channel": { "type": "string", "minLength": 1 },
+        "speaker": {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "enum": ["owner", "self", "person", "system", "unknown"] },
+            "value": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "text": { "type": "string" },
+        "source": {
+          "enum": ["human", "qq_envelope", "agent_visible", "agent_internal", "tool", "env", "memory", "unknown"],
+          "description": "与 packages/core/src/raw-profile.mjs 的 RAW_SOURCES 对齐；qq_envelope 是 QQ 未读摘要里转述的真人话，unknown 是无法判断（保守保留）。"
+        },
+        "visible": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "gold": {
+      "type": "object",
+      "required": ["entities", "memories", "noise"],
+      "properties": {
+        "entities": { "type": "array", "items": { "$ref": "#/$defs/entity" } },
+        "memories": { "type": "array", "items": { "$ref": "#/$defs/memory" } },
+        "noise": { "type": "array", "items": { "$ref": "#/$defs/noise" } }
+      },
+      "additionalProperties": true
+    },
+    "entity": {
+      "type": "object",
+      "required": ["id", "kind", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "ids": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
+        "importance": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "memory": {
+      "type": "object",
+      "required": ["id", "type", "subject", "text", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": ["fact", "preference", "event", "commitment", "relationship", "concept", "person"],
+          "description": "SPEC §3 列了其余六种；§7.1 的 formation 分组还包含 person，这里把 person 作为受支持的扩展（人物档案 gold）。"
+        },
+        "subject": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "importance": { "type": "number" },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "validFrom": { "type": "string" },
+        "invalidatedBy": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "noise": {
+      "type": "object",
+      "required": ["rowIds", "reason"],
+      "properties": {
+        "rowIds": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "reason": { "type": "string", "minLength": 1 },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "probe": {
+      "type": "object",
+      "required": ["id", "rowId", "query", "kind", "expectedMemoryIds"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "rowId": { "type": "string", "minLength": 1 },
+        "query": { "type": "string" },
+        "kind": { "enum": ["recall", "eager", "person", "overview"] },
+        "expectedMemoryIds": { "type": "array", "items": { "type": "string" } },
+        "expectedAny": { "type": "array", "items": { "type": "string" } },
+        "expectAnswer": { "type": "string" },
+        "mustNotRecall": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
