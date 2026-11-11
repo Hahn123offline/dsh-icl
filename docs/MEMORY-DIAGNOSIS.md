@@ -196,6 +196,12 @@ falseInjection **0**（原始 falseInjection 高估）；validity 加确定性�
 stale 2→0、R 78.6→85.7%，audit 失效链 dangling 0/缺失时间 0。下一轮：门控落地、adequacy 指标化、
 QQ gold 映射抽审、validity 人工抽审。
 
+**Phase 2 第 14 段（第 15 轮，本轮）**：门控落地 `--gate-preset focus|qq|live`（fresh run 实测
+exit 0/3 行为正确）；gold-review 新增"探针与 expected gold 零内容词交集"检测（QQ 抓出 p-08 等 3 条
+gold↔probe 错配）；补齐 QQ/live 三次 fresh 方差：focus r5 均值 81.7%、QQ 65.1%、live 83.4%
+（极差 17.5/4.6/25pt），三源 formation R 均值 80.2/85/100%。下一轮：QQ gold/probe 修整、
+answer-adequacy 指标化、validity 人工抽审、live gold 扩充、门控接 CI。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

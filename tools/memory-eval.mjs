@@ -27,6 +27,12 @@ const MODES = ['all', 'formation', 'retrieval']
 const PROFILES = ['raw-all', 'raw-main', 'raw-human']
 const MODEL_KINDS = ['echo', 'cloud', 'local']
 const SEEDS = ['gold', 'formation']
+// 三源基线门控预设（docs/MEMORY-BASELINES.md §3）。CI 用 --gate-preset <focus|qq|live>。
+const GATE_PRESETS = Object.freeze({
+  focus: 'formation.recall>=0.75,retrieval.recallAt3>=0.65,retrieval.recallAt5>=0.75,retrieval.missRate<=0.25,retrieval.falseInjectionRate<=0',
+  qq: 'formation.recall>=0.75,retrieval.recallAt5>=0.70,retrieval.missRate<=0.35',
+  live: 'formation.recall>=0.75,retrieval.recallAt5>=0.80,retrieval.missRate<=0.25',
+})
 
 class CliError extends Error {
   constructor(message, exitCode = 2) {
@@ -75,6 +81,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     repeat: Math.max(1, Math.min(5, Number(argValue(argv, 'repeat', 1)) || 1)),
     label: argValue(argv, 'label'),
     gate: argValue(argv, 'gate'),
+    gatePreset: argValue(argv, 'gate-preset'),
     configFile: path.resolve(cwd, String(argValue(argv, 'config', path.join(REPO_ROOT, 'config', 'icl.local.json')))),
     maxCalls: Math.max(1, Number(argValue(argv, 'max-calls', 500)) || 500),
     cacheOnly: hasFlag(argv, 'cache-only'),
@@ -98,6 +105,9 @@ export function parseArgs(argv, cwd = process.cwd()) {
   if (!PROFILES.includes(options.profile)) throw new CliError(`--profile 只能是 ${PROFILES.join('|')}：${options.profile}`)
   if (!MODEL_KINDS.includes(options.model)) throw new CliError(`--model 只能是 ${MODEL_KINDS.join('|')}：${options.model}`)
   if (!SEEDS.includes(options.seed)) throw new CliError(`--seed 只能是 ${SEEDS.join('|')}：${options.seed}`)
+  if (options.gatePreset != null && !GATE_PRESETS[String(options.gatePreset)]) {
+    throw new CliError(`--gate-preset 只能是 ${Object.keys(GATE_PRESETS).join('|')}：${options.gatePreset}`)
+  }
   if (options.mode === 'retrieval' && options.seed === 'formation') {
     // 只跑 retrieval 时 seed=formation 仍需要先跑 formation，语义上等价于 all；明确支持。
   }
@@ -122,6 +132,7 @@ function printUsage(write = console.log) {
   --repeat <n>                       formation 重跑 n 次算幂等（1–5），默认 1
   --label <text>                     写进报告，用于改动前/后对照
   --gate <k=v[,k>=v][,k<=v]>         指标门槛，不过则 exit 3
+  --gate-preset <focus|qq|live>      使用 docs/MEMORY-BASELINES.md 里的三源基线阈值（--gate 优先）
   --out <dir>                        默认 .state/lab/eval-harness/runs/<fixture>-<时间>
   --config <file>                    provider 配置，默认 config/icl.local.json
   --max-calls <n>                    云端调用上限，默认 500
@@ -417,7 +428,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     }
     const retrievalMs = Date.now() - retrievalStarted
 
-    const gate = parseGate(options.gate)
+    // --gate 显式优先；否则用 --gate-preset 的三源基线阈值（docs/MEMORY-BASELINES.md）。
+    const effectiveGate = options.gate ?? (options.gatePreset ? GATE_PRESETS[String(options.gatePreset)] : null)
+    if (options.gatePreset && !options.quiet) {
+      write(`gate：使用基线预设 ${options.gatePreset}${options.gate ? '（--gate 覆盖预设）' : ''}`)
+    }
+    const gate = parseGate(effectiveGate)
     const evalJson = buildEvalJson({
       fixture,
       fixturePath: loaded.path,
@@ -484,6 +500,7 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 
 

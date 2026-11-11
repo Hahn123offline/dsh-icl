@@ -16,20 +16,47 @@
 - `raw falseInjection` 是 `tools/memory-answer-adequacy.mjs` 的结论：三源所有"负例返回"被 judge 判为
   「只提到相关话题、没有回答」→ 记忆系统没有把相关记忆当成答案宣称，原始 falseInjection 高估了问题。
 
-## 2. 运行间方差（focus-core，当前代码 3 次 `--fresh` 独立运行）
+## 2. 运行间方差（当前代码 3 次 `--fresh` 独立运行）
+
+### focus-core
 
 | run | formation R | e2e r1 | r3 | r5 | miss | falseInjection |
 |---|---:|---:|---:|---:|---:|---:|
 | A | 78.1% | 56.7% | 83.3% | 93.3% | 6.7% | 0% |
 | B | 81.3% | 50.0% | 63.3% | 76.7% | 20.0% | 0% |
 | C | 81.3% | 37.5% | 68.8% | 75.0% | 25.0% | 0% |
-| **均值** | **80.2%** | **48.1%** | **71.8%** | **81.7%** | **17.2%** | **0%** |
+| D（gate 验证 run） | ≥75% | 28.1% | 84.4% | 84.4% | 12.5% | 0% |
+| **均值（A–C）** | **80.2%** | **48.1%** | **71.8%** | **81.7%** | **17.2%** | **0%** |
 | 极差 | 3.2pt | 19.2pt | 20.0pt | 17.5pt | 18.3pt | 0 |
 
 > 结论：formation 稳定（78–81%）；端到端 r5 均值 81.7%、极差 17.5pt。**单次数字必须带方差读**，
 > 门控用 3 次均值，不拿一次 cache-only 的 96.9% 当常态。
 
-## 3. 建议门控阈值（`--gate`）
+### old-qq
+
+| run | formation R | r1 | r3 | r5 | MRR | miss |
+|---|---:|---:|---:|---:|---:|---:|
+| A | 85.0% | 63.6% | 63.6% | 63.6% | 0.727 | 27.3% |
+| B | 85.0% | 31.8% | 63.6% | 63.6% | 0.558 | 27.3% |
+| C | 85.0% | 50.0% | 68.2% | 68.2% | 0.636 | 27.3% |
+| **均值** | **85.0%** | **48.5%** | **65.1%** | **65.1%** | 0.640 | **27.3%** |
+| 极差 | 0pt | 31.8pt | 4.6pt | 4.6pt | — | 0pt |
+
+### real-live
+
+| run | formation R | r1 | r3 | r5 | MRR | miss |
+|---|---:|---:|---:|---:|---:|---:|
+| A | 100% | 50.0% | 66.7% | 66.7% | 0.604 | 33.3% |
+| B | 100% | 50.0% | 83.3% | 91.7% | 0.672 | 0% |
+| C | 100% | 66.7% | 83.3% | 91.7% | 0.792 | 0% |
+| **均值** | **100%** | **55.6%** | **77.8%** | **83.4%** | 0.689 | **11.1%** |
+| 极差 | 0pt | 16.7pt | 16.6pt | 25pt | — | 33.3pt |
+
+- QQ 的 r3=r5（正确块进 top3 一般也在 top5）、r1 方差最大；live 的 miss 方差大（0–33%），
+  与 gold 只有 4 条、单条 miss 权重高有关。
+
+
+## 3. 门控（已落地为 `--gate-preset`）
 
 ```
 formation.recall>=0.75
@@ -39,7 +66,17 @@ retrieval.missRate<=0.25
 retrieval.falseInjectionRate<=0
 ```
 
-QQ 素材单列：`retrieval.recallAt5>=0.70`（多跳技术对话更难）；live 单列：`recallAt5>=0.80`。
+用法：
+
+```powershell
+node tools/memory-eval.mjs --fixture <fixture> --mode all --seed formation --model cloud --profile raw-main --embed `
+  --fresh --gate-preset focus        # focus / qq / live 三套预设；--gate 显式值优先
+```
+
+- `--gate-preset focus|qq|live` 对应上面的三源阈值，不通过 exit 3 并逐条打印未过指标。
+- 已实测：fresh run（r5 84.4%、miss 12.5%、falseInjection 0、formation recall≥0.75）通过，exit 0。
+- QQ 预设：`formation.recall>=0.75,retrieval.recallAt5>=0.70,retrieval.missRate<=0.35`；
+  live 预设：`formation.recall>=0.75,retrieval.recallAt5>=0.80,retrieval.missRate<=0.25`。
 
 ## 4. 有效性与失效链（合成偏好变化 fixture，fresh run）
 

@@ -483,17 +483,42 @@ r3/r5/miss 全部改善，按"人能否拿到答案"口径是净收益。
   计数的 stale **2→0**（旧咖啡/旧徒步只剩历史事件块）；audit：typed live 84 / superseded 31、
   **悬空失效链 0、缺失效时间 0**。
 
+## 2n. 第 15 轮：门控落地 + gold-review 探针错配检测 + QQ/live 方差（本轮）
+
+### A. 门控落地（`--gate-preset focus|qq|live`）
+
+- eval CLI 新增三源预设（数值见 `docs/MEMORY-BASELINES.md` §3），`--gate` 显式值优先；
+  不通过 exit 3 并逐条打印未过指标。
+- 已用 fresh run 实测通过（r5 84.4%、miss 12.5%、falseInjection 0、formation recall≥0.75，exit 0）。
+
+### B. gold-review 新增「探针与 expected gold 零内容词交集」检测
+
+- 问句与 expected gold 正文一个内容 bigram 都不共享 → 标为 probe 错配（gold↔extracted 映射/问法问题）。
+- QQ 实测抓出 p-08（"3429502459 是谁"与 expected gold 正文无内容词交集）等 3 条问题；
+  这类先修 gold/probe，再谈检索。
+
+### C. QQ / live 三次 fresh 方差（补齐三源 baseline）
+
+| 素材 | formation R 均值 | r1 均值 | r3 均值 | r5 均值 | miss 均值 | 极差（r5） |
+|---|---:|---:|---:|---:|---:|---:|
+| focus-core | 80.2% | 48.1% | 71.8% | **81.7%** | 17.2% | 17.5pt |
+| old-qq | 85.0% | 48.5% | 65.1% | **65.1%** | 27.3% | 4.6pt |
+| real-live | 100% | 55.6% | 77.8% | **83.4%** | 11.1% | 25pt |
+
+- QQ 的 r3=r5（正确块进 top3 一般也在 top5）、r1 方差最大；live 的 miss 方差 0–33%（gold 只有 4 条，单条 miss 权重高）。
+- 三源均值都明显高于各自最低单次值 → 再次说明门控要用均值/多次，不用单次。
+
 ## 3. 结论与下一轮
 
 - 写入侧根因已系统性收口：**raw 有来源/说话人**、**输出预算/重试/拆片**、**reasoning 不再混入**、
   **事实/偏好/承诺独立成层**、**检索阈值有标定**、**时间旅行保护 + person 配额**；
   真实 5 天 fixture formation recall 46.9%→84.4%，端到端 retrieval r3/r5 50%→66.7%、miss 50%→33.3%。
-- 下一轮（Phase 2 第 14 段）优先级：
-  1. **门控落地**：把 baseline 阈值接进 `--gate`（focus 3-run 均值 + QQ/live 单列），CI 里默认检查；
-  2. **answer-adequacy 指标化**：把 judge 结果并进 eval 报告（raw / adequacy-adjusted 两列），负例口径固化；
-  3. **QQ gold↔extracted 映射抽审**：p-07 类 expected 块与问句不符，先修 gold 匹配；
-  4. **validity 抽审**：`validity-capped` / deterministic 失效人工抽审 20 条，确认无误失效；
-  5. **三源 3-run 方差回归**：QQ/live 也跑 3 次，写进 baseline 文档。
+- 下一轮（Phase 2 第 15 段）优先级：
+  1. **QQ gold/probe 修整**：按 gold-review 的"零内容词交集"清单修 probe 期望与问法，QQ 目标 r5 ≥0.70；
+  2. **answer-adequacy 指标化进 eval 报告**（raw / adequacy-adjusted 双列）；
+  3. **validity 人工抽审** 20 条（capped/deterministic 各 10），确认无误失效；
+  4. **live gold 扩充**（仅 4 条，miss 方差大）；
+  5. **门控接 CI**：默认对三源跑 `--gate-preset`，结果写进 baseline 文档。
 
 ## 4. 复跑
 

@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { evaluateGate, main, parseGate } from './memory-eval.mjs'
+import { evaluateGate, main, parseArgs, parseGate } from './memory-eval.mjs'
 import { invalidationMetrics } from './memory-eval/formation.mjs'
 import { renderGoldReview, reviewGold } from './memory-gold-review.mjs'
 import { buildIndexes, loadFixture, normalizeFixture, sliceFixtureDays } from './memory-eval/fixture.mjs'
@@ -728,7 +728,10 @@ test('gold-review：证据缺失/非法引用/过短/近重复/未覆盖 probe �
         { id: 'm3', type: 'fact', text: '短', evidence: [] },
       ],
     },
-    probes: [{ id: 'p1', rowId: 'r1', kind: 'recall', query: '爬山', expectedMemoryIds: ['m1'] }],
+    probes: [
+      { id: 'p1', rowId: 'r1', kind: 'recall', query: '爬山', expectedMemoryIds: ['m1'] },
+      { id: 'p2', rowId: 'r1', kind: 'recall', query: '完全无关的天气问题', expectedMemoryIds: ['m1'] },
+    ],
   }
   const review = reviewGold({ fixture })
   assert.equal(review.gold, 3)
@@ -737,8 +740,21 @@ test('gold-review：证据缺失/非法引用/过短/近重复/未覆盖 probe �
   assert.equal(review.shortText.length, 1, 'm3 正文过短')
   assert.ok(review.duplicatePairs.some((pair) => pair.a === 'm1' && pair.b === 'm2'), 'm1/m2 近重复')
   assert.equal(review.unprobed.length, 2, 'm2/m3 没被 probe 引用')
+  assert.ok(review.probeIssues.some((item) => item.reason), 'p2 与 expected gold 零内容词交集应被标出')
   const markdown = renderGoldReview(review)
   assert.match(markdown, /gold-review-test/)
   assert.match(markdown, /未被任何 probe 引用的 gold：\*\*2\*\*/)
 })
 
+
+
+test('gate-preset：三源基线阈值（focus/qq/live）与非法预设', () => {
+  const fixture = 'tools/fixtures/memory/synthetic-alias-and-people'
+  const plain = parseArgs(['--fixture', fixture])
+  assert.equal(plain.gatePreset, null)
+  const focus = parseArgs(['--fixture', fixture, '--gate-preset', 'focus'])
+  assert.equal(focus.gatePreset, 'focus')
+  const qq = parseArgs(['--fixture', fixture, '--gate-preset', 'qq'])
+  assert.equal(qq.gatePreset, 'qq')
+  assert.throws(() => parseArgs(['--fixture', fixture, '--gate-preset', 'nope']), /gate-preset/)
+})

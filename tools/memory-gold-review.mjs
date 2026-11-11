@@ -79,6 +79,36 @@ export function reviewGold({ fixture, indexes = null, evalJson = null, rowIds = 
       if (sim >= 0.75) review.duplicatePairs.push({ a: a.id, b: b.id, type: a.type, sim: Number(sim.toFixed(2)) })
     }
   }
+  // probe 与 expected gold 的内容匹配：问句和 expected gold 正文一个内容 bigram 都不共享，
+  // 说明这条 probe 的 gold↔extracted 映射或问法有问题（"expected 块和问句对不上"）。
+  const contentGrams = (value) => {
+    const text = String(value ?? '').toLowerCase().replace(/\s+/g, '')
+    const STOP = new Set(['主人', '鱼鱼', '今天', '明天', '昨天', '什么', '怎么', '为什么', '一个', '时候', '还是', '这个', '那个', '自己', '可以', '已经'])
+    const grams = new Set()
+    for (let i = 0; i + 1 < text.length; i += 1) {
+      const gram = text.slice(i, i + 2)
+      if (!/[\u4e00-\u9fff]{2}/.test(gram) && !/[a-z0-9]{2}/.test(gram)) continue
+      if (STOP.has(gram)) continue
+      grams.add(gram)
+    }
+    return grams
+  }
+  const goldById = new Map(list.map((item) => [String(item.id), item]))
+  for (const probe of probeList) {
+    const expectedIds = [...(probe.expectedMemoryIds ?? []), ...(probe.expectedAny ?? [])].map(String)
+    if (!expectedIds.length) continue
+    const queryGrams = contentGrams(probe.query)
+    let bestOverlap = 0
+    for (const goldId of expectedIds) {
+      const gold = goldById.get(goldId)
+      if (!gold) continue
+      const goldGrams = contentGrams(gold.text)
+      let shared = 0
+      for (const gram of queryGrams) if (goldGrams.has(gram)) shared += 1
+      if (shared > bestOverlap) bestOverlap = shared
+    }
+    if (bestOverlap === 0) review.probeIssues.push({ probe: probe.id, kind: probe.kind, query: String(probe.query ?? '').slice(0, 70), expected: expectedIds, reason: 'query 与 expected gold 零内容词交集' })
+  }
   // 未被任何 probe 引用的 gold：可以补 probe，或确认不必评测。
   const referenced = new Set()
   for (const probe of probeList) {
@@ -126,8 +156,11 @@ export function renderGoldReview(review) {
   lines.push('')
   lines.push(`- 未被任何 probe 引用的 gold：**${review.unprobed.length}**`)
   for (const item of review.unprobed.slice(0, 40)) lines.push(`  - ${item.id}（${item.type}）：${item.text}`)
-  lines.push(`- probe 期望解析失败（eval.json）：**${review.probeIssues.length}**`)
-  for (const item of review.probeIssues) lines.push(`  - ${item.probe}（${item.kind}）unresolved=${item.unresolved.join('、')}｜${item.query}`)
+  lines.push(`- probe 期望解析/内容匹配问题：**${review.probeIssues.length}**`)
+  for (const item of review.probeIssues) {
+    if (item.reason) lines.push(`  - ${item.probe}（${item.kind}）${item.reason}｜${item.query}`)
+    else lines.push(`  - ${item.probe}（${item.kind}）unresolved=${(item.unresolved ?? []).join('、')}｜${item.query}`)
+  }
   lines.push('')
   return lines.join('\n')
 }
