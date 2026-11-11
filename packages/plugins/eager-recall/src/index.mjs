@@ -57,6 +57,8 @@ export function apply(ctx) {
     const eligible = hits
       .filter((h) => Number(h.score) >= threshold)
       .filter((h) => h.item.kind !== 'cursor')
+      // 已消化的 note 已经变成块了，不能再以"未整理"身份重复注入（与 recall 同口径）。
+      .filter((h) => !(h.item.kind === 'note' && h.item.data?.consolidated === true))
     const nowMs = ctx.now()
     const picked = eligible
       .filter((h) => {
@@ -69,8 +71,9 @@ export function apply(ctx) {
     if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
+      const doubt = h.item.data?.provisional === true ? '[存疑] ' : ''
       const unsure = h.clarity?.label ? `[${h.clarity.label}] ` : ''
-      return `· [${tag}] ${unsure}${clipLine(h.item.text, 80)}`
+      return `· [${tag}] ${doubt}${unsure}${clipLine(h.item.text, 80)}`
     })
     let text = `你可能记得（检索结果，仅供参考）：\n${lines.join('\n')}`
     if (text.length > maxChars) text = text.slice(0, maxChars - 1).trimEnd() + '…'

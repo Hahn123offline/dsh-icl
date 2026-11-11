@@ -9,16 +9,28 @@ export const name = 'whois'
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
 
-  function recentEventsFor(qq, limit = 3) {
+  /**
+   * 最近提到这个人的事件：用档案里的**全部身份入口**（qq/id/别名/显示名）去比
+   * event.data.people。旧实现只拿 person.data.qq，名字型档案 qq=null → 永远空（审计 F5）。
+   */
+  function recentEventsFor(person, fallbackQq = null, limit = 3) {
+    const wanted = new Set([
+      String(fallbackQq ?? ''),
+      String(person?.data?.subject?.value ?? ''),
+      ...(person?.data?.ids ?? []).map((x) => String(x?.value ?? '')),
+      ...(person?.data?.aliases ?? []).map(String),
+    ].map((x) => x.trim()).filter(Boolean))
+    if (!wanted.size) return []
     return memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
-      .filter((b) => Array.isArray(b.data?.people) && b.data.people.map(String).includes(String(qq)))
+      .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => wanted.has(String(p))))
       .slice(0, Math.max(1, Number(limit) || 3))
   }
 
   function line(person) {
     const ids = (person.data?.ids ?? []).map((x) => `${x.kind}:${x.value}`).join('、')
     const fam = person.data?.familiarity ?? 'unknown'
-    return `· ${person.text}\n  （${fam}${ids ? ` · ${ids}` : ''}）`
+    const doubt = person.data?.provisional === true ? ' [存疑：证据不足]' : ''
+    return `· ${person.text}${doubt}\n  （${fam}${ids ? ` · ${ids}` : ''}）`
   }
 
   ctx.tools.register({
@@ -47,7 +59,7 @@ export function apply(ctx) {
         return { text: [`按名字找到 ${people.length} 个可能的人：`, ...people.map(line)].join('\n') }
       }
       const person = people[0]
-      const events = recentEventsFor(person.data?.qq ?? qq ?? '', 3)
+      const events = recentEventsFor(person, qq ?? null, 3)
       const parts = [line(person)]
 
       // 逐句引用：档案里的每一句都能追到当时的笔记

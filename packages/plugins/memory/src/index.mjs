@@ -313,6 +313,9 @@ export function apply(ctx) {
       const halfLife = new Map(nsRows.map((row) => [row.id, Number(row.halfLifeDays) || 30]))
       const qvec = await embed(query)
       const needle = String(query ?? '').toLowerCase()
+      // 精确串（路径/文件名/数字/英文词）与嵌入无关：旧实现只在有向量时算它，
+      // 于是"没接嵌入服务"时这条通道等于死代码（审计 F9）。
+      const literal = LITERAL_ON && query ? literalTerms(query) : []
       const scored = []
       for (const row of rows) {
         const item = rowToItem(row)
@@ -324,10 +327,6 @@ export function apply(ctx) {
           // 其他看起来也很相似的块；字面命中能把真正写着那件事的块拉上来。
           const lex = needle ? bigramOverlap(item.text, needle) : 0
           sim = 0.7 * cos + 0.3 * lex
-          // 精确串命中：路径/文件名/数字，加一个强权重（不靠语义猜）
-          const terms = LITERAL_ON && needle ? literalTerms(query) : []
-          const exact = literalHits(item.text, terms)
-          if (exact) sim = Math.min(1, sim + 0.5 * (exact / terms.length))
         } else if (needle) {
           // 没有嵌入时的退化：字面命中之外，用二元组重叠度估一个相似度，
           // 否则「他怕什么」永远找不到「怕水」。
@@ -338,6 +337,11 @@ export function apply(ctx) {
           sim = b.size ? inter / b.size : 0
         } else {
           sim = 1 // 无查询 = 按"新鲜度/权重"排
+        }
+        // 精确串命中：路径/文件名/数字，加一个强权重（不靠语义猜）。有/无嵌入都生效。
+        if (literal.length) {
+          const exact = literalHits(item.text, literal)
+          if (exact) sim = Math.min(1, sim + 0.5 * (exact / literal.length))
         }
         if (sim <= 0) continue
         const anchor = item.lastRecalledAt ?? item.createdAt
@@ -413,7 +417,15 @@ export function apply(ctx) {
       }
       const needle = String(name ?? '').trim().toLowerCase()
       if (!needle) return { exact: false, people: [] }
-      const hits = blocks.filter((b) => `${b.text}\n${b.data?.profile ?? ''}`.toLowerCase().includes(needle))
+      // 名字/别名精确命中（alias 也是身份入口，不只是文本线索）。
+      const nameExact = blocks.filter((b) => String(b.data?.subject?.value ?? '').trim().toLowerCase() === needle
+        || (Array.isArray(b.data?.aliases) && b.data.aliases.some((a) => String(a).trim().toLowerCase() === needle)))
+      if (nameExact.length) return { exact: true, people: nameExact.slice(0, Math.max(1, Number(limit) || 5)) }
+      // 显示名/别名都是身份入口：aliases 只写不读会让"主人 = Hahn123"永远拆着（审计 F5）。
+      const hits = blocks.filter((b) => {
+        const aliasText = Array.isArray(b.data?.aliases) ? b.data.aliases.join(' ') : ''
+        return `${b.text}\n${b.data?.profile ?? ''}\n${aliasText}`.toLowerCase().includes(needle)
+      })
       return { exact: false, people: hits.slice(0, Math.max(1, Number(limit) || 5)) }
     },
 

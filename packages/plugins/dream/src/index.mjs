@@ -44,22 +44,36 @@ function dayKey(now, timezone = 'Asia/Hong_Kong') {
   return ymdOf(now, timezone)
 }
 
-/** 从模型输出里抠出 JSON（容忍 ```json 包裹与前后废话）。 */
-export function parseBlocks(raw) {
+/**
+ * 从模型输出里抠 JSON，并区分三种结果：
+ *   { ok:true, value: [...] }  → 合法输出（`[]` 也是合法的"今天没什么可记"）
+ *   { ok:false, error:'empty' } → 空输出：这是失败，不是"没内容"
+ *   { ok:false, error:'no-json' | 'bad-json' } → 解析失败：失败，当天应可重试
+ *
+ * 旧 `parseBlocks` 把失败也变成 `[]`，各 job 于是把"模型挂了/输出垃圾"记成
+ * "成功但 0 块"，并顺手把 note 全标已消化——当天再也不会重试（审计 F3/S1）。
+ */
+export function parseJsonStrict(raw) {
   const text = String(raw ?? '').trim()
-  if (!text) return []
+  if (!text) return { ok: false, error: 'empty' }
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text)
   const body = fenced ? fenced[1] : text
   const start = body.indexOf('[')
   const startObj = body.indexOf('{')
   const from = start >= 0 && (startObj < 0 || start < startObj) ? start : startObj
-  if (from < 0) return []
+  if (from < 0) return { ok: false, error: 'no-json' }
   const end = Math.max(body.lastIndexOf(']'), body.lastIndexOf('}'))
-  if (end <= from) return []
+  if (end <= from) return { ok: false, error: 'no-json' }
   try {
     const parsed = JSON.parse(body.slice(from, end + 1))
-    return Array.isArray(parsed) ? parsed : [parsed]
-  } catch { return [] }
+    return { ok: true, value: Array.isArray(parsed) ? parsed : [parsed] }
+  } catch { return { ok: false, error: 'bad-json' } }
+}
+
+/** 宽容版：解析失败返回 []（只给"宁可空也不报错"的旧调用方用）。 */
+export function parseBlocks(raw) {
+  const out = parseJsonStrict(raw)
+  return out.ok ? out.value : []
 }
 
 /**
@@ -358,20 +372,111 @@ export function apply(ctx) {
     return chunks.length ? chunks : [text.slice(0, max)]
   }
 
-  function runKey(day, job) { return `run:${day}:${job}` }
-  function alreadyRan(day, job) {
-    const rows = memory.query({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), limit: 1 })
-    return rows.length > 0
+  /* ── 执行账本：单飞 + 租约 + attempt ─────────────────────────────
+   * 旧实现只用"成功 key 是否存在"表示幂等。并发双触发时，第二次在第一次写完账本前
+   * 进来，看不到成功行，于是同一 job 真的跑两遍（live 11-09：events/cleanup 15s 内
+   * 各跑两次，产出 11 对近似重复块）。而 `recordRun` 的 upsert 又把两次执行压成一行，
+   * 审计据此得出"只跑了一次"。
+   *
+   * 现在：job 开始先 claim（写 running 租约），结束写终态 success/failed/skipped；
+   * running 超过 staleRunMs 视为上次进程崩溃、允许重新领取；attempts 保留每次执行。
+   */
+  const staleRunMs = Math.max(60_000, Number(ctx.config.staleRunMs ?? 30 * 60_000))
+  const dayCutHour = Math.max(0, Math.min(12, Number(ctx.config.dayCutHour ?? 4)))
+  let inFlight = null
+
+  /**
+   * dream 的"整理对象是哪一天"不能等于"运行时刻"（审计 F7）：
+   * 凌晨 02:09 触发时 `dayKey(now)` 已经是"新的一天"，前一晚的原话永远不沉淀
+   * （live 11-07 有 130 行 raw 却没有 day log）。规则：本地时间 < dayCutHour（默认 4 点）
+   * 视为在整理"刚结束的那天"，回拨 24 小时；23:00 的睡眠/排程仍整理当天。
+   */
+  function targetDayInstant(now) {
+    const instant = Number(now)
+    if (!Number.isFinite(instant)) return Date.now()
+    const localHour = new Date(instant + offsetMinutes(new Date(instant), tzOf()) * 60_000).getUTCHours()
+    return localHour < dayCutHour ? instant - 24 * 3600_000 : instant
   }
+
+  function runKey(day, job) { return `run:${day}:${job}` }
+  function readRun(day, job) {
+    return memory.query({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), limit: 1 })[0] ?? null
+  }
+  function runStatusOf(row) {
+    // 旧账本没有 status：一律视为成功（兼容已有库）；没有行 = 从未跑过。
+    if (!row) return 'none'
+    return String(row?.data?.status ?? 'success')
+  }
+  function alreadyRan(day, job) {
+    const row = readRun(day, job)
+    return Boolean(row) && runStatusOf(row) === 'success'
+  }
+  /** 成功 job 自己写细节时保留 claim 的 startedAt/attempts，并补 status:success。 */
   function recordRun(day, job, detail, now) {
-    memory.put({ namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: `${day} ${job}`, data: detail, now })
+    const row = readRun(day, job)
+    const prev = row?.data ?? {}
+    memory.put({
+      namespace: 'dream-run', kind: 'run', key: runKey(day, job),
+      text: row?.text ?? `${day} ${job}`,
+      data: { ...prev, ...detail, job, day, status: 'success', ...(prev.startedAt ? { startedAt: Number(prev.startedAt) } : {}), finishedAt: Number(now) },
+      now,
+    })
+  }
+  /** job 开始前领租约；返回 {skip} 或 {attempt, attemptId}。 */
+  function beginRun(day, job, now, force) {
+    const row = readRun(day, job)
+    const status = runStatusOf(row)
+    if (!force && status === 'success') return { skip: 'already-ran' }
+    if (!force && status === 'running') {
+      const startedAt = Number(row?.data?.startedAt ?? row?.updatedAt ?? 0)
+      const age = Number(now) - startedAt
+      if (Number.isFinite(age) && age >= 0 && age < staleRunMs) return { skip: 'in-flight' }
+      // 过期 running：视为崩溃遗留，允许重新领取。
+    }
+    const attemptId = `${Number(now).toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    const attempts = Array.isArray(row?.data?.attempts) ? row.data.attempts.slice(-9) : []
+    attempts.push({ id: attemptId, status: 'running', startedAt: Number(now) })
+    memory.put({
+      namespace: 'dream-run', kind: 'run', key: runKey(day, job),
+      text: `${day} ${job}${force ? ' (force)' : ''}`,
+      data: {
+        job, day, status: 'running', attemptId, attempt: attempts.length, startedAt: Number(now),
+        attempts, ...(force ? { force: true } : {}),
+      },
+      now,
+    })
+    return { attempt: attempts.length, attemptId }
+  }
+  /** job 结束后落终态；attempts 里同一条记录一并更新。 */
+  function settleRun(day, job, result, now, claim) {
+    const row = readRun(day, job)
+    if (!row) return
+    const prev = row.data ?? {}
+    const attempts = Array.isArray(prev.attempts) ? prev.attempts.slice() : []
+    const index = attempts.length - 1
+    const status = result?.ok === false ? 'failed' : result?.skipped ? 'skipped' : 'success'
+    const entry = {
+      id: claim?.attemptId ?? prev.attemptId, status, finishedAt: Number(now),
+      ...(result?.skipped ? { skipped: String(result.skipped) } : {}),
+      ...(result?.error ? { error: String(result.error).slice(0, 300) } : {}),
+    }
+    if (index >= 0) attempts[index] = { ...attempts[index], ...entry }
+    memory.put({
+      namespace: 'dream-run', kind: 'run', key: runKey(day, job), text: row.text,
+      data: {
+        ...prev, status, attempts, finishedAt: Number(now),
+        ...(result?.skipped ? { skipped: String(result.skipped) } : {}),
+        ...(result?.error ? { error: String(result.error).slice(0, 300) } : {}),
+      },
+      now,
+    })
   }
   /**
    * 可观测修复（E2 质量门）：失败/跳过也落 dream-run，让"没跑"和"跑失败"可区分。
    * 仍用 kind:'run'（mc-quality 的现状解析器按 `:(\w+)$` 取 job、按 data.error 计 failures），
    * 但 key 用 `fail:`/`skip:` 前缀，不占用 alreadyRan 的成功 key（不会阻止第二天重跑）。
    * 判定口径（写进 docs/MEMORY-BLOCK-QUALITY.md §4）：
-   *   run:<day>:<job>  → 成功（既有）
+   *   run:<day>:<job>  → 成功（既有；data.status=success）
    *   fail:<day>:<job> → 失败，data:{ok:false,error,job}
    *   skip:<day>:<job> → 跳过，data:{ok:true,skipped,job,missing?}
    */
@@ -443,13 +548,41 @@ export function apply(ctx) {
     const endMs = dayEndOf(now)
     const timeOfRow = (r) => Number(r.time ?? r.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
+    /**
+     * raw 行来源分类（评测 profile 与形成门控共用同一口径）：
+     *   human          真人说的话（直聊或 QQ 信封里解出来的）
+     *   agent_visible  她真正发出去的话（旧数据无法区分时也归这里，保守）
+     *   tool / env     工具结果、心跳、状态通知等，不是"经历"
+     * 注意：raw 服务注册时会把 `source` 覆盖成来源 id（如 dsh-session），所以分类字段用 `sourceKind`；
+     * bridge 行没有 sourceKind 时按 role + 文本信封特征兜底；评测 fake raw 直接带 sourceKind。
+     */
+    const inferSource = (r) => {
+      const given = String(r.sourceKind ?? '').trim()
+      if (given) return given
+      const origin = String(r.role ?? '')
+      if (origin === 'tool') return 'tool'
+      if (origin === 'assistant') return 'agent_visible'
+      if (origin === 'user') {
+        const t = String(r.text ?? '').trim()
+        if (t.startsWith('【心跳】') || t.startsWith('[QQ戳一戳]') || /^Alarm fired/.test(t)) return 'env'
+        return 'human'
+      }
+      return 'unknown'
+    }
     const cleaned = []
     for (const r of rows) {
       const at = timeOfRow(r)
       if (at && (at < startMs || at >= endMs)) continue
       const text = stripStructured(r.text)
       if (!text) continue
-      cleaned.push({ at, sender: String(r.sender ?? '').slice(0, 24), text })
+      cleaned.push({
+        at,
+        sender: String(r.sender ?? '').slice(0, 24),
+        source: inferSource(r),
+        // 每个 raw 行一个稳定 id：评测要拿 evidence → fixture rowId 做 provenance 校验。
+        rowId: r.id ?? r.rowId ?? (r.sessionId != null && r.seq != null ? `${r.sessionId}:${r.seq}` : null),
+        text,
+      })
     }
     if (!cleaned.length) return { job: 'wash', skipped: 'nothing-clean' }
 
@@ -500,8 +633,10 @@ export function apply(ctx) {
         data: {
           day, part: index + 1, parts: segments.length, lines: partLines.length,
           totalLines: cleaned.length, omittedLines, chars: partText.length,
-          // times 用完整数组（绝对行号 id-1 索引），每段都存一份，拼接后 evidence 映射不变。
+          // times/rowIds/sources 用完整数组（绝对行号 id-1 索引），每段都存一份，拼接后 evidence 映射不变。
           times: cleaned.map((x) => x.at),
+          rowIds: cleaned.map((x) => x.rowId ?? null),
+          sources: cleaned.map((x) => x.source),
         },
         now,
       })
@@ -537,6 +672,11 @@ export function apply(ctx) {
         .map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
     const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
     const { shards, omitted: omittedShards, segments: experienceSegments } = shardByExperience(material, { gapMin: segmentGapMin })
+    // 显式 remember 的 event note 不能因为"当天有 day log"就被排除在材料外（审计 F2）：
+    // 作为额外一片喂进去，证据写成 n<id>（与 day 行号是两套编号空间）。
+    if (dayLog && notes.length) {
+      shards.push(notes.slice(0, 40).map((note) => `n${note.id}｜${clipText(note.text, 240)}`))
+    }
     if (omittedShards) ctx.log({ level: 'warn', msg: 'dream.events-shards-capped', omittedShards, kept: shards.length })
     const instruction = [
       '把今天的笔记整理成若干"事件块"，不要写成日记或总结报告。',
@@ -546,6 +686,7 @@ export function apply(ctx) {
       '不同时间段的事不要硬并成一块；确实只是同一件事的，才跨时间合并并写成一块。',
       '每块输出一个对象：{"summary": "一行脱敏摘要（不含 QQ 号）", "body": "第一人称正文", "people": ["QQ号"], "tags": ["短标签"], "evidence": [id]}',
       'evidence 必须是上面真实存在的编号；不能编。没有出处的话不要写进块。',
+      '如果材料里出现 n<数字> 开头的行，那是她主动记下的笔记，证据要写成对应的 n<数字>（例如 n12）；它们优先归入最相关的一块。',
       '只输出 JSON 数组，不要解释。没有值得记的就输出 []。',
     ].join('\n')
     const blocks = []
@@ -553,8 +694,10 @@ export function apply(ctx) {
     for (let i = 0; i < shards.length; i += 1) {
       const payload = `${shards[i].join('\n')}${hint}`
       try {
-        const raw = await ask({ instruction, payload, where: `events#${i + 1}` })
-        const parsed = parseBlocks(raw)
+        const out = parseJsonStrict(await ask({ instruction, payload, where: `events#${i + 1}` }))
+        // 空输出/垃圾 JSON 是失败，不是"今天没事"；否则当天会被记成功、note 被标已消化、永不重试。
+        if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
+        const parsed = out.value
         blocks.push(...parsed)
         shardResults.push({ index: i + 1, ok: true, blocks: parsed.length, chars: payload.length })
       } catch (error) {
@@ -579,12 +722,20 @@ export function apply(ctx) {
       if (!summaryRaw) continue
       const summary = summaryRaw.slice(0, maxBlockSummary)
       const baseKey = `evt:${day}:${hash(summary)}`
-      const evidence = dayLog
-        ? (Array.isArray(block?.evidence) ? block.evidence : [])
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id) && dayLines.has(id))
-          .map((id) => dayEvidence(dayLines, id))
-        : validEvidence(block?.evidence, notes)
+      // 证据：原话行号是数字；她主动记下的笔记用 n<id>（与行号不同空间，避免撞号）。
+      const evidence = []
+      for (const rawId of (Array.isArray(block?.evidence) ? block.evidence : [])) {
+        const token = String(rawId ?? '').trim()
+        const noteHit = /^n(\d+)$/i.exec(token)
+        if (noteHit) {
+          const note = notes.find((n) => Number(n.id) === Number(noteHit[1]))
+          if (note) evidence.push({ type: 'note', id: Number(note.id), line: clipText(note.text, 160), at: Number(note.data?.at ?? note.createdAt ?? now) })
+          continue
+        }
+        const id = Number(token)
+        if (dayLines && dayLines.has(id)) evidence.push(dayEvidence(dayLines, id))
+        else if (!dayLines && Number.isFinite(id)) evidence.push(...validEvidence([id], notes))
+      }
       const previous = memory.query({ namespace: 'event', kind: 'block', key: baseKey, limit: 1 })[0]
       // 重跑时模型偶尔给不出出处：宁可保留旧块，也不要把已有证据覆盖成空
       if (!evidence.length && previous) continue
@@ -649,23 +800,46 @@ export function apply(ctx) {
       }
     }
     // 只标"真的被某块引用过"的 note：部分覆盖时，没被引用到的继续待消化。
-    const cited = new Set()
+    // 注意 day 行号与 note id 是两套编号空间，必须分开收集，否则 #12 行会和 #12 note 撞号。
+    const citedNotes = new Set()
+    const blockTexts = []
     for (const id of written) {
       const block = memory.query({ namespace: 'event', kind: 'block', id, limit: 1 })[0]
-      for (const e of block?.data?.evidence ?? []) cited.add(Number(e.id))
+      if (!block) continue
+      blockTexts.push(`${block.text}\n${block.data?.body ?? ''}`)
+      for (const e of block.data?.evidence ?? []) if (e.type === 'note') citedNotes.add(Number(e.id))
     }
-    const covered = notes.filter((n) => cited.has(Number(n.id)))
-    if (dayLog) {
-      // 用当天原话成块后，wash 的笔记已被原话覆盖，不再作为待整理项
-      markNotes(notes.filter((n) => n.data?.consolidated !== true), now)
-    } else if (covered.length) markNotes(covered, now)
-    recordRun(day, 'events', { blocks: written.length, notes: notes.length, deferred: notes.length - covered.length, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards, payloadChars: shardResults.reduce((n, row) => n + row.chars, 0) }, now)
+    // 覆盖判定：note 正文被新块正文覆盖，说明模型已经把同一件事并进去了（只是没引用 note 编号）。
+    const noteCoveredByBlock = (note) => {
+      const body = normalizeBodyText(note.text)
+      if (body.length < 8) return false
+      return blockTexts.some((text) => {
+        const normalized = normalizeBodyText(text)
+        return normalized.includes(body) || bigramJaccard(normalized, body) >= 0.5
+      })
+    }
+    const uncovered = []
+    for (const note of notes) {
+      if (note.data?.consolidated === true) continue
+      if (citedNotes.has(Number(note.id)) || noteCoveredByBlock(note)) { markNotes([note], now); continue }
+      uncovered.push(note)
+    }
+    // 没被引用/覆盖的 note 保持未消化：下一轮继续作为材料（可召回、可跨天重试），
+    // 绝不因为"当天有 day log"就被整批标成已消化（审计 F2）。
+    const deferred = uncovered.length
+    recordRun(day, 'events', {
+      blocks: written.length, notes: notes.length, deferred, promoted: 0, uncovered: uncovered.length,
+      shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
+      payloadChars: shardResults.reduce((n, row) => n + row.chars, 0),
+      empty: written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok && row.blocks === 0),
+    }, now)
     return {
       job: 'events', ok: true, blocks: written.length, notes: notes.length,
-      deferred: dayLog ? 0 : notes.length - covered.length,
+      deferred, promoted: 0,
       shards: shards.length,
       failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards,
+      empty: written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok && row.blocks === 0),
       payloadChars: shardResults.reduce((n, row) => n + row.chars, 0),
       degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
     }
@@ -797,7 +971,11 @@ export function apply(ctx) {
       } catch (error) {
         return { job: 'people', ok: false, qq, error: String(error?.message ?? error) }
       }
-      const parsed = parseBlocks(out)[0]
+      // 空输出/垃圾 JSON 不再当成"模型没写"：按失败计，让人物档案下次重试；
+      // 只有合法 `{}`（value 为空对象）才走薄档案兜底。
+      const parsedOut = parseJsonStrict(out)
+      if (!parsedOut.ok) throw new Error(`模型输出不可解析：${parsedOut.error}`)
+      const parsed = parsedOut.value[0]
       let profile = String(parsed?.profile ?? '').trim()
       // 模型硬是不写时，用笔记原文拼一份薄档案——
       // 宁可少，不可空；下一次有新材料再整块重写。
@@ -988,10 +1166,31 @@ export function apply(ctx) {
     return overlap / (left.size + right.size - overlap)
   }
   function sameExperience(a, b) {
+    // 身份合并只能走显式 alias（人不是"相似经历"）：审计 F4 复现过不同人的
+    // person 块因同一句薄档案模板被算法合并、一方 superseded 直接消失。
+    const nsA = String(a?.namespace ?? '')
+    const nsB = String(b?.namespace ?? '')
+    if (nsA !== nsB) return false
+    if (nsA === 'person') return false
     const dayA = a?.data?.day
     const dayB = b?.data?.day
-    if (dayA && dayB && String(dayA) !== String(dayB)) return false
-    return true
+    // 没有 day 的块不参与确定性合并：判据必须是可证的同一天，而不是"都没写"。
+    if (!dayA || !dayB) return false
+    return String(dayA) === String(dayB)
+  }
+  /** 证据 key 集合（type+id），用于要求"同一段经历"有共同的原始出处。 */
+  function evidenceKeysOf(block) {
+    return new Set((block?.data?.evidence ?? [])
+      .map((entry) => `${String(entry?.type ?? '')}:${Number(entry?.id)}`)
+      .filter((key) => !key.endsWith(':NaN')))
+  }
+  function evidenceOverlap(a, b) {
+    const left = evidenceKeysOf(a)
+    const right = evidenceKeysOf(b)
+    if (!left.size || !right.size) return 0
+    let hit = 0
+    for (const key of left) if (right.has(key)) hit += 1
+    return hit / Math.min(left.size, right.size)
   }
 
   /**
@@ -1002,7 +1201,7 @@ export function apply(ctx) {
   function mergeNearDuplicateBlocks(now) {
     let merged = 0
     const pairs = []
-    for (const ns of ['event', 'person', 'slang']) {
+    for (const ns of ['event', 'slang']) {
       const blocks = memory.query({ namespace: ns, kind: 'block', limit: 500, order: 'desc' })
         .filter((row) => row.data?.superseded !== true)
       const dropped = new Set()
@@ -1019,6 +1218,8 @@ export function apply(ctx) {
           if (otherBody.length < 20) continue
           const contained = keeperBody.includes(otherBody) || otherBody.includes(keeperBody)
           if (!contained && bigramJaccard(keeperBody, otherBody) < 0.8) continue
+          // 非包含关系的"相似"必须共享原始出处：模板句/同主题不同事件不会被误吞。
+          if (!contained && evidenceOverlap(keeper, other) < 0.5) continue
           // 正文更全的一方胜出；若对方更长，则把正文搬到 keeper 上（key 不变，避免 key 引用失效）。
           const longest = otherBody.length > keeperBody.length ? otherBody : keeperBody
           const unionEvidence = dedupeEvidence([
@@ -1109,7 +1310,7 @@ export function apply(ctx) {
 
     let plan = null
     try {
-      plan = parseBlocks(await ask({
+      const out = parseJsonStrict(await ask({
         instruction: [
           '你在整理已有的记忆块。不新增事实，只合并/去重/改写。',
           '输出一个 JSON 对象：',
@@ -1131,6 +1332,9 @@ export function apply(ctx) {
         payload,
         maxTokens: 1500,
       }))
+      // 空输出/垃圾 JSON = 失败（当天可重试），不能记成"整理成功但 0 操作"。
+      if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
+      plan = out.value
     } catch (error) {
       return { job: 'cleanup', ok: false, error: String(error?.message ?? error) }
     }
@@ -1336,7 +1540,10 @@ export function apply(ctx) {
         ],
         maxTokens: 900,
       })
-      items = parseBlocks(raw)
+      const out = parseJsonStrict(raw)
+      // 空输出/垃圾 JSON 是失败：当天不记"成功但没学到词"，留待下一次触发重试。
+      if (!out.ok) throw new Error(`模型输出不可解析：${out.error}`)
+      items = out.value
     } catch (error) {
       return { job: 'lexicon', ok: false, error: String(error?.message ?? error) }
     }
@@ -1473,23 +1680,54 @@ export function apply(ctx) {
     return { ok, text, meta }
   }
 
-  async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false } = {}) {
-    const day = dayKey(now, tzOf())
-    const results = []
-    // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
-    askedThisRun.clear()
-    for (const name of jobs) {
-      const job = JOBS[name]
-      if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
-      try { results.push(await job({ now, force })) } catch (error) { results.push({ job: name, ok: false, error: String(error?.message ?? error) }) }
+  /**
+   * 跑一轮 dream。
+   * 单飞（inFlight）修 live 11-09 的并发双执行：sleep-start 与 dream 排程可同时到达，
+   * 旧实现各自检查 alreadyRan 都看不到对方，于是 events/cleanup 各跑两遍。
+   * 信号触发撞上在飞回合直接返回 skipped:'in-flight'；手动/强制跑则等上一轮结束再走
+   * （那时成功账本已在，自然会跳过已完成的 job）。
+   */
+  async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false, trigger = 'manual' } = {}) {
+    const entryDay = dayKey(now, tzOf())
+    if (inFlight) {
+      if (trigger !== 'manual' && !force) {
+        ctx.log({ level: 'info', msg: 'dream.run-skip', reason: 'in-flight', day: entryDay, trigger })
+        return { ok: true, day: entryDay, results: [{ job: 'run', ok: true, skipped: 'in-flight' }], skipped: 'in-flight', pruned: 0, receipt: null }
+      }
+      try { await inFlight } catch { /* 上一轮失败不挡这一轮 */ }
     }
-    const ok = results.every((r) => r.ok !== false)
-    // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
-    for (const result of results) recordOutcome(day, result, now)
-    const pruned = pruneRuns(now)
-    // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
-    const receipt = emitDreamResult({ now, results })
-    return { ok, day, results, pruned, receipt }
+    const task = (async () => {
+      // 先按"凌晨算前一天"把运行时刻换成整理对象的时刻；后续所有 job 的 dayKey/dayRange 都跟它走。
+      const dreamNow = targetDayInstant(now)
+      const day = dayKey(dreamNow, tzOf())
+      const results = []
+      // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
+      askedThisRun.clear()
+      for (const name of jobs) {
+        const job = JOBS[name]
+        if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
+        const claim = beginRun(day, name, dreamNow, force)
+        if (claim.skip) { results.push({ job: name, ok: true, skipped: claim.skip }); continue }
+        try {
+          const result = await job({ now: dreamNow, force, attempt: claim.attempt })
+          settleRun(day, name, result, dreamNow, claim)
+          results.push(result)
+        } catch (error) {
+          const failed = { job: name, ok: false, error: String(error?.message ?? error) }
+          settleRun(day, name, failed, dreamNow, claim)
+          results.push(failed)
+        }
+      }
+      const ok = results.every((r) => r.ok !== false)
+      // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
+      for (const result of results) recordOutcome(day, result, dreamNow)
+      const pruned = pruneRuns(dreamNow)
+      // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
+      const receipt = emitDreamResult({ now: dreamNow, results })
+      return { ok, day, results, pruned, receipt, targetNow: dreamNow }
+    })()
+    inFlight = task
+    try { return await task } finally { if (inFlight === task) inFlight = null }
   }
 
   /**
@@ -1498,7 +1736,7 @@ export function apply(ctx) {
    * 于是"昨晚上没整理"永远查不到原因；promise 被拒时还会变成未处理拒绝。
    */
   function runFromSignal({ now = ctx.now(), reason = 'signal' } = {}) {
-    return run({ now })
+    return run({ now, trigger: 'signal' })
       .then((result) => {
         const failed = result.results.filter((row) => row.ok === false)
         ctx.log({

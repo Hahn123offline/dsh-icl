@@ -35,6 +35,9 @@ const CATEGORIES = Object.freeze({
   event: { label: '事件', halfLifeDays: 30 },
   person: { label: '人物', halfLifeDays: 180 },
   slang: { label: '梗', halfLifeDays: 90 },
+  // 语料（lexicon）：memory 里注册为 recallable:true，但旧 recall 的 CATEGORIES 没列它，
+  // 于是"她永远搜不到自己学过的词"（审计 F8）。这里纳入检索；是否值得注入由相关性门槛决定。
+  lexicon: { label: '语料', halfLifeDays: 180 },
   // 主会话对记忆的纠正（"这件事我记错了"）：它是反馈队列，
   // 不是回忆（不参与 recall 检索），由整理轮消化。
   resolve: { label: '纠正', halfLifeDays: 1, recallable: false },
@@ -415,6 +418,8 @@ export function apply(ctx) {
     const nowOf = () => ctx.now()
     const item = entry.item
     const unsure = entry.clarity?.label ? `[${entry.clarity.label}] ` : ''
+    // 无出处/证据未核实的块（data.provisional）：不能和"有出处的事实"一样口气。
+    const doubt = item.data?.provisional === true ? '[存疑] ' : ''
     if (tag === '未整理') {
       // 今天的就叫「今天」；跨天的片段才标「未整理 · 日期」。
       if (Number(item.createdAt) >= dayStart(nowOf(entry))) return `[今天] ${item.text}`
@@ -423,8 +428,8 @@ export function apply(ctx) {
       return `[未整理 · ${day}] ${item.text}`
     }
     if (tag === '今天') return `[今天] ${item.text}`
-    if (item.kind === 'block') return `[${tag}] ${unsure}${item.text}`
-    return `[${tag} · 随手记] ${unsure}${item.text}`
+    if (item.kind === 'block') return `[${tag}] ${doubt}${unsure}${item.text}`
+    return `[${tag} · 随手记] ${doubt}${unsure}${item.text}`
   }
 
   function label(ns, createdAt, now) {
