@@ -39,20 +39,17 @@ const HK_OFFSET_MS = 8 * 3600_000
 const FOCUS_DB_DEFAULT = 'C:/DSH/qwenstuff/focus-core/state/focus.db'
 const OLD_QQ_DB_DEFAULT = 'C:/DSH/qwenstuff/dsh-qq/state/memory.db'
 const LIVE_SRC_DEFAULT = path.join(LAB_ROOT, 'memory-fixture', 'latest')
-const OWNER_QQ_DEFAULT = '3429502459'
-const SELF_QQ_DEFAULT = '2593621742'
+const IDENTITY_ENV = { owner: 'ICL_OWNER_QQ', self: 'ICL_SELF_QQ' }
+// 本机真实身份令牌清单（QQ/昵称）放在 gitignored 的 lab 文件里，由真实 DB 生成；
+// 提交的代码里不写真实 QQ/人名。没有该文件时，隐私扫描退回"占位号段"结构启发式。
+const PRIVACY_TOKEN_FILE = path.join(BUILD_DIR, 'privacy-tokens.json')
+const PLACEHOLDER_QQ_PREFIX = '900'
 
 const ROLES = ['user', 'assistant', 'tool', 'env', 'memory']
 const SOURCES = ['human', 'agent_visible', 'agent_internal', 'tool', 'env', 'memory']
 const SPEAKER_KINDS = ['owner', 'self', 'person', 'system', 'unknown']
 const GOLD_TYPES = ['fact', 'preference', 'event', 'commitment', 'relationship', 'concept', 'person']
 const PROBE_KINDS = ['recall', 'eager', 'person', 'overview']
-
-// 真实身份令牌：只用于 validate 的隐私扫描（真实 fixture 允许出现但只报 warning；提交物出现即 error）。
-const PRIVACY_TOKENS = [
-  OWNER_QQ_DEFAULT, SELF_QQ_DEFAULT, '2173783633', '3862352984', '1057812765', '601357169',
-  '周子涵', '曾嘉睿', '郑皓元', 'Hahn123', '离线版', '大肥鱼',
-]
 
 /* ── 通用小工具 ─────────────────────────────────────────────── */
 
@@ -110,6 +107,90 @@ function statSafe(file) {
   } catch {
     return { file, exists: false }
   }
+}
+
+/* ── 身份发现与隐私扫描（提交代码不写真实 QQ/人名） ─────────── */
+
+/**
+ * 只读发现 owner/self 的 QQ 与显示名/别名：优先环境变量，其次旧 focus-core 库的
+ * principals/people/旧 dsh-qq persons。找不到返回 null，由调用方决定报错。
+ * 真实 QQ/人名只出现在运行时内存与 .state/lab 产物里，不写进提交代码。
+ */
+function discoverKnownIdentities() {
+  const found = { ownerQq: null, selfQq: null, ownerName: null, selfName: '鱼鱼', ownerAliases: [] }
+  const addOwnerAliases = (name) => {
+    for (const part of splitAliasParts(name)) if (part !== found.ownerName) found.ownerAliases.push(part)
+  }
+  try {
+    if (fs.existsSync(FOCUS_DB_DEFAULT)) {
+      const db = new DatabaseSync(FOCUS_DB_DEFAULT, { readOnly: true })
+      try {
+        const owner = db.prepare("SELECT qq, display_name FROM principals WHERE kind = 'owner' AND qq IS NOT NULL LIMIT 1").get()
+        if (owner?.qq) found.ownerQq = String(owner.qq)
+        if (owner?.display_name) { found.ownerName = String(owner.display_name); addOwnerAliases(found.ownerName) }
+        // 旧库里 self 以人物显示名登记（产品 persona 名）。
+        const self = db.prepare('SELECT qq, name FROM people WHERE name = ? AND qq IS NOT NULL LIMIT 1').get('鱼鱼')
+        if (self?.qq) found.selfQq = String(self.qq)
+        const ownerPeople = db.prepare('SELECT name FROM people WHERE qq = ?').all(found.ownerQq ?? '')
+        for (const person of ownerPeople) addOwnerAliases(person.name)
+      } finally { db.close() }
+    }
+  } catch { /* 发现失败不致命 */ }
+  try {
+    if (found.ownerQq && fs.existsSync(OLD_QQ_DB_DEFAULT)) {
+      const db = new DatabaseSync(OLD_QQ_DB_DEFAULT, { readOnly: true })
+      try {
+        for (const person of db.prepare('SELECT qq, name FROM persons WHERE qq = ?').all(found.ownerQq)) addOwnerAliases(person.name)
+      } finally { db.close() }
+    }
+  } catch { /* 跨源别名可选 */ }
+  found.ownerAliases = [...new Set(found.ownerAliases)]
+  return found
+}
+
+function resolveQqIdentity(argv, role, discovered) {
+  const cli = argValue(argv, `${role}-qq`)
+  if (cli) return String(cli)
+  if (process.env[IDENTITY_ENV[role]]) return String(process.env[IDENTITY_ENV[role]])
+  return discovered?.[`${role}Qq`] ?? null
+}
+
+/** 本机真实身份令牌（gitignored）；不存在时返回空数组。 */
+let privacyTokenCache = null
+function privacyTokens() {
+  if (privacyTokenCache) return privacyTokenCache
+  try {
+    const loaded = readJson(PRIVACY_TOKEN_FILE)
+    privacyTokenCache = Array.isArray(loaded) ? loaded.filter((item) => typeof item === 'string' && item.trim()) : []
+  } catch {
+    privacyTokenCache = []
+  }
+  return privacyTokenCache
+}
+
+/** 把显示名拆成可匹配的别名片段（去掉括注、昵称尾部 QQ/学号数字等）。 */
+function splitAliasParts(name) {
+  const parts = String(name ?? '').split(/[（()）·\s,，、/|]+/).map((item) => item.trim()).filter(Boolean)
+  const out = []
+  for (const part of parts) {
+    const withDigits = /^([\u3400-\u9fff]{2,6})\d{4,}$/.exec(part)
+    if (withDigits) { out.push(withDigits[1]); continue }
+    if (part.length >= 2 && !/^\d+$/.test(part) && part !== '私聊' && part !== '我') out.push(part)
+  }
+  return out
+}
+
+/** 隐私扫描：真实令牌文件 + 提交物的占位号段启发式（5–12 位数字且不以 900 开头）。 */
+function scanPrivacy(fixture, committed) {
+  const haystack = JSON.stringify(fixture)
+  const tokens = privacyTokens().filter((token) => haystack.includes(token))
+  const leaked = new Set(tokens)
+  if (committed) {
+    for (const match of haystack.matchAll(/\b\d{5,12}\b/g)) {
+      if (!match[0].startsWith(PLACEHOLDER_QQ_PREFIX)) leaked.add(match[0])
+    }
+  }
+  return [...leaked]
 }
 
 function pad(value, width) {
@@ -594,13 +675,13 @@ function validateFixtureObject(fixture, options = {}) {
   }
 
   // 隐私扫描：真实 fixture 只提示；提交物（synthetic 或路径在 tools/ 下）出现真实身份即错误。
-  const haystack = JSON.stringify(fixture)
-  const leaked = PRIVACY_TOKENS.filter((token) => haystack.includes(token))
+  const committed = Boolean(options.committed || fixture.kind === 'synthetic')
+  const leaked = scanPrivacy(fixture, committed)
   if (leaked.length) {
-    if (fixture.kind === 'synthetic' || options.committed) {
-      push(errors, '$.privacy', `提交物含真实身份令牌：${leaked.join(', ')}`)
+    if (committed) {
+      push(errors, '$.privacy', `提交物含真实身份令牌：${leaked.slice(0, 12).join(', ')}${leaked.length > 12 ? ` 等 ${leaked.length} 个` : ''}`)
     } else {
-      push(warnings, '$.privacy', `真实 fixture 含真实身份（预期内，仅 .state/lab）：${leaked.join(', ')}`)
+      push(warnings, '$.privacy', `真实 fixture 含真实身份（预期内，仅 .state/lab）：${leaked.slice(0, 12).join(', ')}${leaked.length > 12 ? ` 等 ${leaked.length} 个` : ''}`)
     }
   }
 
@@ -765,7 +846,23 @@ function buildPeopleMaps({ db, ownerQq, selfQq }) {
   const principals = db.prepare('SELECT * FROM principals').all()
   const ownerPrincipal = principals.find((item) => item.kind === 'owner') ?? null
   const ownerName = String(ownerPrincipal?.display_name ?? '主人')
-  return { peopleByQq, peopleByName, aliasByQq, oldNameToQq, ownerName, principals, ownerQq, selfQq }
+  // owner 的别名候选：显示名、people 表里的名字、旧库 persons 的名字、alias note/账号，
+  // 全部从数据里动态收集，避免把真实人名写进提交代码。
+  const ownerAliasCandidates = new Set()
+  if (ownerPrincipal?.display_name) for (const part of splitAliasParts(ownerPrincipal.display_name)) ownerAliasCandidates.add(part)
+  for (const person of peopleByQq.values()) if (person.qq === ownerQq && person.name) for (const part of splitAliasParts(person.name)) ownerAliasCandidates.add(part)
+  try {
+    if (fs.existsSync(OLD_QQ_DB_DEFAULT)) {
+      const oldDb = new DatabaseSync(OLD_QQ_DB_DEFAULT, { readOnly: true })
+      try {
+        for (const person of oldDb.prepare('SELECT qq, name FROM persons').all()) {
+          if (String(person.qq) === ownerQq && person.name) for (const part of splitAliasParts(person.name)) ownerAliasCandidates.add(part)
+        }
+      } finally { oldDb.close() }
+    }
+  } catch { /* 跨源别名可选 */ }
+  ownerAliasCandidates.delete(ownerName)
+  return { peopleByQq, peopleByName, aliasByQq, oldNameToQq, ownerName, ownerAliasCandidates, principals, ownerQq, selfQq }
 }
 
 /** 从 rows 里收集某真人 QQ 的别名证据（发消息时用的显示名）。 */
@@ -823,8 +920,6 @@ function buildRealEntities({ ownerQq, selfQq, ownerName, ownerAliases, peopleByQ
 async function cmdImportFocusCore(argv) {
   const dbPath = path.resolve(argValue(argv, 'db', FOCUS_DB_DEFAULT))
   const outDir = path.resolve(argValue(argv, 'out', path.join(CORPUS_ROOT, 'real-focuscore-2026-10')))
-  const ownerQq = String(argValue(argv, 'owner-qq', OWNER_QQ_DEFAULT))
-  const selfQq = String(argValue(argv, 'self-qq', SELF_QQ_DEFAULT))
   const force = hasFlag(argv, 'force')
   const writeRaw = flagValue(argv, 'raw', true)
   const goldMode = String(argValue(argv, 'gold', 'draft')) // draft | none
@@ -838,6 +933,10 @@ async function cmdImportFocusCore(argv) {
   const dbStat = statSafe(dbPath)
   const started = new Date().toISOString()
   try {
+    const discovered = discoverKnownIdentities()
+    const ownerQq = resolveQqIdentity(argv, 'owner', discovered)
+    const selfQq = resolveQqIdentity(argv, 'self', discovered)
+    if (!ownerQq || !selfQq) fatal('无法确定 owner/self 的 QQ：用 --owner-qq/--self-qq 或 ICL_OWNER_QQ/ICL_SELF_QQ 指定（可从旧库 principals/people 自动发现）')
     const maps = buildPeopleMaps({ db, ownerQq, selfQq })
     const activities = new Map(db.prepare('SELECT id, title, kind, transport FROM activities').all().map((item) => [String(item.id), item]))
     const messageRows = db.prepare('SELECT * FROM messages ORDER BY ts ASC, id ASC').all()
@@ -883,12 +982,19 @@ async function cmdImportFocusCore(argv) {
       })
     }
 
-    const ownerAliases = new Set([maps.ownerName])
-    for (const item of referenceMemories) {
-      const text = String(item.text ?? '')
-      for (const name of ['周子涵', 'Hahn123', '离线版']) if (text.includes(name)) ownerAliases.add(name)
+    // owner 别名：显示名/people/旧库动态收集；再用旧 memories 文本做命中过滤（只留文中出现过的）。
+    const ownerAliases = new Set()
+    for (const name of maps.ownerAliasCandidates) {
+      const hitInRows = entries.some((entry) => entry.meta?.rawSenderName && String(entry.meta.rawSenderName).includes(name))
+        || referenceMemories.some((item) => String(item.text ?? '').includes(name))
+      if (hitInRows) ownerAliases.add(name)
     }
-    for (const [qq, target] of maps.aliasByQq.entries()) if (String(target) === ownerQq) ownerAliases.add(String(qq))
+    for (const entry of entries) {
+      if (entry.meta?.rawSenderName && entry.meta?.origin === 'focus.qq_messages') {
+        const resolved = resolveSpeaker({ raw: entry.meta.rawSender, peopleByQq: maps.peopleByQq, peopleByName: maps.peopleByName, aliasByQq: maps.aliasByQq, oldNameToQq: maps.oldNameToQq, ownerQq, selfQq })
+        if (resolved.kind === 'owner') for (const part of splitAliasParts(entry.meta.rawSenderName)) ownerAliases.add(part)
+      }
+    }
     ownerAliases.delete('')
     const extraQqs = [...new Set(entries.map((entry) => entry.row.speaker?.kind === 'person' ? entry.row.speaker.value : null).filter((value) => /^\d{5,12}$/.test(String(value ?? ''))))]
     const entities = buildRealEntities({
@@ -1361,8 +1467,6 @@ function overlapDays(fromMs, toMs) {
 async function cmdImportOldQq(argv) {
   const dbPath = path.resolve(argValue(argv, 'db', OLD_QQ_DB_DEFAULT))
   const outDir = path.resolve(argValue(argv, 'out', path.join(CORPUS_ROOT, 'real-qq-2026-10')))
-  const ownerQq = String(argValue(argv, 'owner-qq', OWNER_QQ_DEFAULT))
-  const selfQq = String(argValue(argv, 'self-qq', SELF_QQ_DEFAULT))
   const force = hasFlag(argv, 'force')
   const writeRaw = flagValue(argv, 'raw', true)
   const goldMode = String(argValue(argv, 'gold', 'draft'))
@@ -1384,10 +1488,17 @@ async function cmdImportOldQq(argv) {
       if (person.qq) personByQq.set(String(person.qq), { qq: String(person.qq), name: String(person.name ?? '') })
       if (person.name) personByName.set(String(person.name), String(person.qq ?? ''))
     }
+    // owner：命令行/环境变量 → 私聊会话的对端 QQ；self：命令行/环境变量 → 跨源发现（同一 persona）。
+    const discovered = discoverKnownIdentities()
+    const privateConv = [...conversations.values()].find((conv) => String(conv.key).startsWith('private:'))
+    const ownerQq = resolveQqIdentity(argv, 'owner', discovered) ?? (privateConv ? String(privateConv.key).split(':')[1] : null)
+    const selfQq = resolveQqIdentity(argv, 'self', discovered) ?? 'self'
+    if (!ownerQq) fatal('无法确定 owner 的 QQ：用 --owner-qq 或 ICL_OWNER_QQ 指定')
     const rows = db.prepare('SELECT * FROM messages ORDER BY ts ASC, id ASC').all()
     const entries = []
     let order = 0
-    const ownerAliases = new Set([...personByName.entries()].filter(([, qq]) => qq === ownerQq).map(([name]) => name))
+    const ownerAliases = new Set()
+    for (const person of persons) if (String(person.qq) === ownerQq) for (const part of splitAliasParts(person.name)) ownerAliases.add(part)
     for (const message of rows) {
       const convKey = String(message.conv_key ?? '')
       const channel = convKeyToChannel(convKey)
@@ -1398,10 +1509,7 @@ async function cmdImportOldQq(argv) {
       let speaker
       if (isSelf) speaker = { kind: 'self', value: selfQq }
       else speaker = resolveSpeaker({ raw: rawSenderId, peopleByQq: personByQq, peopleByName: personByName, aliasByQq: new Map(), oldNameToQq: new Map(), ownerQq, selfQq })
-      if (!isSelf && (rawSenderId === ownerQq || /周子涵|Hahn123|离线版/.test(rawSenderName))) {
-        speaker = { kind: 'owner', value: ownerQq }
-        for (const name of rawSenderName.split(/[（(]/)[0].split(/\s+/)) if (name && name !== '私聊' && name !== '我') ownerAliases.add(name)
-      }
+      if (!isSelf && speaker.kind === 'owner') for (const part of splitAliasParts(rawSenderName)) ownerAliases.add(part)
       const built = makeRowFromMessage({ text: message.text, role, channel, speaker, sourceOverride: isSelf ? 'agent_visible' : 'human', visibleOverride: true })
       if (!built) continue
       entries.push({
@@ -1411,7 +1519,7 @@ async function cmdImportOldQq(argv) {
     }
     const extraQqs = [...new Set(entries.map((entry) => entry.row.speaker?.kind === 'person' ? entry.row.speaker.value : null).filter((value) => /^\d{5,12}$/.test(String(value ?? ''))))]
     const entities = buildRealEntities({
-      ownerQq, selfQq, ownerName: '主人', ownerAliases: [...ownerAliases], peopleByQq: personByQq,
+      ownerQq, selfQq, ownerName: discovered.ownerName ?? '主人', ownerAliases: [...ownerAliases], peopleByQq: personByQq,
       aliasByQq: new Map(), extraQqs, oldPersons: persons,
     })
     const assembled = assembleDays(entries)
@@ -1435,7 +1543,7 @@ async function cmdImportOldQq(argv) {
     let gold = { entities: [], memories: [], noise: [] }
     let probes = []
     const warnings = []
-    const persona = buildPersona(ownerQq, selfQq, '主人', [...ownerAliases])
+    const persona = buildPersona(ownerQq, selfQq, discovered.ownerName ?? '主人', [...ownerAliases])
     if (goldMode === 'draft') {
       const draft = await draftRealGold({
         fixtureId: 'real-qq-2026-10', persona, entities, days: assembled.days, referenceByDay,
@@ -1572,8 +1680,6 @@ function ownerQqFromPoke(text, maps) {
 async function cmdImportLive(argv) {
   const srcDir = path.resolve(argValue(argv, 'src', LIVE_SRC_DEFAULT))
   const outDir = path.resolve(argValue(argv, 'out', path.join(CORPUS_ROOT, 'real-live-2026-11')))
-  const ownerQq = String(argValue(argv, 'owner-qq', OWNER_QQ_DEFAULT))
-  const selfQq = String(argValue(argv, 'self-qq', SELF_QQ_DEFAULT))
   const force = hasFlag(argv, 'force')
   const writeRaw = flagValue(argv, 'raw', true)
   const goldMode = String(argValue(argv, 'gold', 'draft'))
@@ -1608,6 +1714,27 @@ async function cmdImportLive(argv) {
     }
   }
 
+  // 身份：self/owner 优先命令行/环境变量/旧库发现；live raw 本身只提供 QQ↔显示名与私聊对端线索。
+  const discovered = discoverKnownIdentities()
+  const countByValue = (values) => {
+    const counts = new Map()
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([value]) => value)
+  }
+  const allText = rawFiles.map((item) => item.rows.map((row) => row.text ?? '').join('\n')).join('\n')
+  const privateIds = [...allText.matchAll(/私聊 (\d{5,12})/g)].map((match) => match[1])
+  const selfFromRaw = [...nameToQq.entries()].find(([name]) => name.includes('鱼'))?.[1] ?? null
+  const selfQq = resolveQqIdentity(argv, 'self', discovered) ?? selfFromRaw ?? 'self'
+  const ownerQq = resolveQqIdentity(argv, 'owner', discovered)
+    ?? countByValue(privateIds.filter((qq) => qq !== selfQq))[0]
+    ?? privateIds.find((qq) => qq !== selfQq)
+    ?? null
+  if (!ownerQq) fatal('无法确定 owner 的 QQ：用 --owner-qq 或 ICL_OWNER_QQ 指定')
+  const ownerNames = new Set(discovered.ownerAliases)
+  for (const [name, qq] of nameToQq.entries()) if (qq === ownerQq) for (const part of splitAliasParts(name)) ownerNames.add(part)
+  for (const match of allText.matchAll(/私聊里 ([^\s：:，,]{1,20}) 说/g)) for (const part of splitAliasParts(match[1])) ownerNames.add(part)
+  const ownerName = discovered.ownerName ?? '主人'
+
   const maps = { ownerQq, selfQq, nameToQq, peopleByQq, peopleByName: new Map([...nameToQq.entries()]) }
   const entries = []
   let order = 0
@@ -1638,9 +1765,8 @@ async function cmdImportLive(argv) {
   }
 
   const extraQqs = [...new Set(entries.map((entry) => entry.row.speaker?.kind === 'person' ? entry.row.speaker.value : null).filter((value) => /^\d{5,12}$/.test(String(value ?? ''))))]
-  const ownerNames = new Set(['Hahn123', '离线版', '周子涵2025302114061', '周子涵'])
   const entities = buildRealEntities({
-    ownerQq, selfQq, ownerName: '主人', ownerAliases: [...ownerNames], peopleByQq, aliasByQq: new Map(),
+    ownerQq, selfQq, ownerName, ownerAliases: [...ownerNames], peopleByQq, aliasByQq: new Map(),
     extraQqs, extraNames: new Map([...nameToQq.entries()].map(([name, qq]) => [qq, name])),
   })
   const assembled = assembleDays(entries)
@@ -1662,7 +1788,7 @@ async function cmdImportLive(argv) {
   let gold = { entities: [], memories: [], noise: [] }
   let probes = []
   const warnings = []
-  const persona = buildPersona(ownerQq, selfQq, '主人', [...ownerNames])
+  const persona = buildPersona(ownerQq, selfQq, ownerName, [...ownerNames])
   if (goldMode === 'draft') {
     const draft = await draftRealGold({
       fixtureId: 'real-live-2026-11', persona, entities, days: assembled.days, referenceByDay,
