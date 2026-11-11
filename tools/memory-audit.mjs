@@ -161,6 +161,14 @@ const typed = {
   }])),
   live: typedRows.filter((item) => item.data?.superseded !== true).length,
   superseded: typedSuperseded.length,
+  // typed v2 entity add 层：块明确指向一个人时写入的规范化 subject（qq）。
+  withSubject: typedRows.filter((item) => item.data?.subject != null && item.data?.subject !== '').length,
+  subjectValues: Object.entries(typedRows.reduce((acc, item) => {
+    const subject = item.data?.subject == null ? '' : String(item.data.subject)
+    if (!subject) return acc
+    acc[subject] = (acc[subject] ?? 0) + 1
+    return acc
+  }, {})).sort((a, b) => b[1] - a[1]).slice(0, 10),
   danglingChains: 0,
   missingInvalidationTime: typedSuperseded.filter((item) => !Number(item.data?.invalidatedAt ?? 0)).length,
   suspiciousChains: [],
@@ -334,7 +342,7 @@ lines.push('')
 lines.push('## 关键信号')
 lines.push('')
 lines.push(`- event block：**${eventBlocks.length}**（superseded **${supersededEventBlocks.length}**）；近重复对：**${eventDupes.length}**`)
-lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**；可疑取代 **${typed.suspiciousChains.length}**`)
+lines.push(`- typed（fact/preference/commitment）：live **${typed.live}** / superseded **${typed.superseded}**；悬空失效链 **${typed.danglingChains}**；缺失效时间 **${typed.missingInvalidationTime}**；可疑取代 **${typed.suspiciousChains.length}**；带 subject **${typed.withSubject}**`)
 lines.push(`- 形成来源：真人/QQ 背书块 **${provenance.humanBackedBlocks}**；纯自我活动块 **${provenance.selfSourceBlocks}**；证据解析 **${provenance.resolved}/${provenance.dayEvidence}**`)
 lines.push(`- person block：**${personBlocks.length}**；可疑 alias：**${personAliases.length}**`)
 lines.push(`- lexicon：**${lexiconStats.total}**；工具/框架味：**${lexiconStats.toolish.length}**；候选：**${lexiconStats.candidates}**`)
@@ -424,6 +432,7 @@ if (jsonOnly) {
   console.log(md)
 }
 db.close()
+
 
 
 

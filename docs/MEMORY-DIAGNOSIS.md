@@ -224,6 +224,13 @@ live r1 70%/r5 90%/miss 10%；raw falseInjection 在 QQ/live 升到 100%（返�
 judge 三源全部判"提到但没答"→ adequacy-adjusted false injection = 0，QQ/live 门控改用 adequacy 口径。
 下一轮：QQ 剩 2 miss、三源 fresh 方差复跑、validity 抽审扩大、门控接 CI、typed entity 层。
 
+**Phase 2 第 19 段（第 20 轮，本轮）**：typed v2 entity add 层第一刀——typed 记录在块明确指向一个人时
+写规范化 `data.subject`（合成偏好库 60 条 live typed 中 48 条带 subject，80%）；audit 新增带 subject 指标。
+三源 fresh 方差复跑发现**评测必须串行**：6 路并行 fresh 会打爆本地 bge-m3，QQ r5 72.7%→20.8%（基础设施噪声）；
+串行可信值：QQ r5 72.7%/miss 18.2%、focus r5 80/71%、live r5 88.9/94.4%。validity 抽审扩大：
+合成偏好 fresh R 92.9%、typed 60/superseded 40、悬空链 0，但可疑取代 2/40（~5%，单日例外被误当
+长期习惯失效）→ 下一轮加"单日例外不推翻习惯"约束。
+
 ## 7. 文档索引
 
 - `docs/MEMORY-CODE-AUDIT.md`：代码级问题清单（P0/P1/P2 + file:line + 复现命令）

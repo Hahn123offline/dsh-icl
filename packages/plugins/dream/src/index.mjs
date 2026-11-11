@@ -1084,6 +1084,12 @@ export function apply(ctx) {
                     days: [day],
                     sourceEvent: baseKey,
                     people: normalizePeople(block?.people),
+                    // typed v2 的 entity add 层第一刀：块明确指向一个人时，把规范化主体（qq）写进记录，
+                    // 供后续"按实体召回/人物一致性"使用；多人或没写人就留空，不猜。
+                    subject: (() => {
+                      const people = normalizePeople(block?.people)
+                      return people.length === 1 ? people[0] : null
+                    })(),
                     tags: normalizeTags(block?.tags),
                     provisional: partEvidence.length === 0,
                   },
@@ -1167,6 +1173,11 @@ export function apply(ctx) {
             if (!oldRow || !newRow || oldRow.key === newRow.key) continue
             if (oldRow.namespace !== newRow.ns) continue
             if (oldRow.data?.superseded === true) continue
+            // 单日例外不推翻长期习惯（"这几天改喝豆浆"不该被"今早喝了一小杯美式"取代）。
+            if (isSingleDayException(oldRow.text, newRow.text)) {
+              ctx.log({ level: 'info', msg: 'dream.validity-skip-single-day', oldKey: oldRow.key, newKey: newRow.key })
+              continue
+            }
             if (appliedInvalidations >= MAX_DAILY_INVALIDATIONS) break
             memory.put({
               namespace: oldRow.namespace, kind: 'block', key: oldRow.key, text: oldRow.text,
@@ -1215,6 +1226,7 @@ export function apply(ctx) {
             return [...freshGrams].some((gram) => oldGrams.has(gram))
           })
         if (!oldRow) continue
+        if (isSingleDayException(oldRow.text, fresh.text)) continue
         memory.put({
           namespace: oldRow.namespace, kind: 'block', key: oldRow.key, text: oldRow.text,
           data: { ...(oldRow.data ?? {}), superseded: true, supersededBy: fresh.key, invalidatedAt: now }, now,
@@ -1649,6 +1661,16 @@ export function apply(ctx) {
       if (other.includes(normalized) || normalized.includes(other) || bigramJaccard(normalized, other) >= 0.55) return row
     }
     return null
+  }
+  /**
+   * 单日例外不推翻长期习惯（validity 误失效防护）：
+   * "这几天早上改喝豆浆" 不该被 "今早喝了一小杯美式" 取代；"每天/习惯/一直" 的旧陈述
+   * 遇到 "今天/今早/昨晚/有一次" 这种单日新陈述时保持旧记录。
+   */
+  function isSingleDayException(oldText, newText) {
+    const oldHabit = /(习惯|每天|这几天|一直|总是|每周|平时|从来)/.test(String(oldText ?? ''))
+    const singleDay = /(今天|今早|今晚|昨晚|当时|那天|有一次|这回|这次|刚才)/.test(String(newText ?? ''))
+    return oldHabit && singleDay
   }
   function bigramJaccard(a, b) {
     const grams = (text) => { const out = new Set(); for (let i = 0; i < text.length - 1; i += 1) out.add(text.slice(i, i + 2)); return out }

@@ -407,7 +407,7 @@ test('typed v2 add 层：events 顺带抽出的 facts/preferences/commitments �
   host.services.slots.bind('dream-chat', {
     provider: 'typed',
     call: async () => JSON.stringify([{
-      summary: '说好周末去海边', body: '他说周末想去看海，但怕水，我们说好只在岸边走。', evidence: [1],
+      summary: '说好周末去海边', body: '他说周末想去看海，但怕水，我们说好只在岸边走。', evidence: [1], people: ['3429502459'],
       facts: ['主人怕水，但一直想去看海'],
       preferences: ['主人不喜欢被勉强下水'],
       commitments: ['说好周末陪他去海边，只在岸边走'],
@@ -421,6 +421,7 @@ test('typed v2 add 层：events 顺带抽出的 facts/preferences/commitments �
   assert.ok(fact && pref && commit, '三类 typed 记录都应落库')
   assert.match(fact.text, /怕水/)
   assert.ok((fact.data?.evidence ?? []).length >= 1, 'typed 记录必须带证据')
+  assert.equal(fact.data?.subject, '3429502459', '块明确指向一个人时 typed 记录带规范化 subject')
   const recalled = await tools.recall.execute({ query: '主人怕水吗' })
   assert.match(recalled.text, /怕水/, `recall 应能搜到 typed 事实：${recalled.text}`)
 })
@@ -506,4 +507,28 @@ test('typed 旧值失效兜底：新偏好含否定词且与旧记录共享内�
   const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:coffee', limit: 1 })[0]
   assert.equal(old.data?.superseded, true, '确定性兜底应软失效旧偏好')
   assert.ok(out.results[0].typedInvalidated >= 1)
+})
+
+
+test('validity 防误失效：单日例外不推翻长期习惯', async () => {
+  const { host, memory, dream } = await setup()
+  bindRaw(host, rawRows(2))
+  memory.put({
+    namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:habit',
+    text: '主人每天早上习惯喝咖啡', data: { body: '主人每天早上习惯喝咖啡', evidence: [{ type: 'day', id: 1, line: '主人每天早上习惯喝咖啡' }], day: '2026-11-01', provisional: false },
+    now: NOON - 86_400_000,
+  })
+  await dream.run({ now: NOON, jobs: ['wash'] })
+  host.services.slots.bind('dream-chat', {
+    provider: 'typed-single-day',
+    call: async ({ messages }) => {
+      const system = (messages ?? []).map((message) => String(message?.content ?? '')).join('\n')
+      if (system.includes('取代或推翻')) return JSON.stringify({ invalidates: [{ old: 0, new: 0 }] })
+      return JSON.stringify([{ summary: '今天喝了豆浆', body: '主人今天早上喝了一杯豆浆。', evidence: [1], preferences: ['主人今天早上喝了一杯豆浆'] }])
+    },
+  })
+  const out = await dream.run({ now: NOON, jobs: ['events'] })
+  assert.equal(out.results[0].ok, true, JSON.stringify(out.results[0]))
+  const old = memory.query({ namespace: 'preference', kind: 'block', key: 'preference:2026-11-01:habit', limit: 1 })[0]
+  assert.notEqual(old.data?.superseded, true, '单日例外不能推翻长期习惯')
 })
