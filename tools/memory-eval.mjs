@@ -526,7 +526,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       })
       if (!options.quiet) {
         const m = retrieval.metrics
-        write(`retrieval（seed=${options.seed}）：recall@1=${pct(m.recallAt1)} recall@3=${pct(m.recallAt3)} recall@5=${pct(m.recallAt5)} MRR=${m.mrr == null ? '—' : m.mrr.toFixed(3)} miss=${pct(m.missRate)} falseInjection=${pct(m.falseInjectionRate)}`)
+        write(`retrieval（seed=${options.seed}）：recall@1=${pct(m.recallAt1)} recall@3=${pct(m.recallAt3)} recall@5=${pct(m.recallAt5)} anyHit@5=${pct(m.anyHitAt5)} MRR=${m.mrr == null ? '—' : m.mrr.toFixed(3)} miss=${pct(m.missRate)} falseInjection=${pct(m.falseInjectionRate)}`)
       }
       if (options.debug) {
         const recallLogs = logs.filter((row) => String(row.msg ?? '').startsWith('recall.'))

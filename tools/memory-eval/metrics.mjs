@@ -257,6 +257,8 @@ export function retrievalProbeMetrics(probe, rankedIds, relevantIds, options = {
   const ranked = rankedIds ?? []
   const relevant = relevantIds ?? []
   const hitTopK = ranked.slice(0, topK).filter((id) => relevant.map(String).includes(String(id)))
+  const relevantSet = new Set(relevant.map(String))
+  const anyHitAt = Object.fromEntries(k.map((n) => [`anyHitAt${n}`, ranked.slice(0, n).some((id) => relevantSet.has(String(id))) ? 1 : 0]))
   const mustNotRecall = options.mustNotRecallIds ?? []
   return {
     probeId: probe.id,
@@ -268,6 +270,7 @@ export function retrievalProbeMetrics(probe, rankedIds, relevantIds, options = {
     expectedCount: relevant.length,
     hitTopK: hitTopK.length,
     recallAt: Object.fromEntries(k.map((n) => [`recallAt${n}`, recallAtK(ranked, relevant, n)])),
+    anyHitAt,
     mrr: mrr(ranked, relevant),
     ndcgAt10: ndcgAtK(ranked, relevant, 10),
     injectionPrecision: injectionPrecision(ranked, relevant, topK),
@@ -312,3 +315,4 @@ export function idempotency(extractedA, extractedB) {
     stableRate: union ? stable / union : null,
   }
 }
+

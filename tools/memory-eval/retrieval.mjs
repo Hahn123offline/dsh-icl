@@ -310,6 +310,10 @@ function aggregate(results) {
       recallAt1: mean(expected.map((entry) => entry.metrics.recallAt.recallAt1)),
       recallAt3: mean(expected.map((entry) => entry.metrics.recallAt.recallAt3)),
       recallAt5: mean(expected.map((entry) => entry.metrics.recallAt.recallAt5)),
+      // v3 粗粒度口径：一条 gold 可能对应多个 episode，命中任意一个即视为"这题答得到"。
+      anyHitAt1: mean(expected.map((entry) => entry.metrics.anyHitAt?.anyHitAt1 ?? 0)),
+      anyHitAt3: mean(expected.map((entry) => entry.metrics.anyHitAt?.anyHitAt3 ?? 0)),
+      anyHitAt5: mean(expected.map((entry) => entry.metrics.anyHitAt?.anyHitAt5 ?? 0)),
       mrr: mean(expected.map((entry) => entry.metrics.mrr)),
       ndcgAt10: mean(expected.map((entry) => entry.metrics.ndcgAt10)),
       injectionPrecision: mean(group.map((entry) => entry.metrics.injectionPrecision)),
