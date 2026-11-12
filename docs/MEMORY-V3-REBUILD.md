@@ -2,6 +2,8 @@
 
 > 目标 ④/⑤：从 raw 全量重建（逐天幂等、可中断、旧库归档、可回滚），先在 lab 三源跑通；
 > live 切换前给出 dry-run 清单并停下等用户确认。**本文不执行任何 live 写入。**
+>
+> 用户决策（2026-11-12）：**live 重建等用户停 DSH 后执行**；recall 的 LLM rerank **默认关闭**。
 
 ## 1. Runner：`tools/memory-rebuild.mjs`
 
@@ -32,6 +34,28 @@ node tools/memory-rebuild.mjs --fixture <fixture目录> --out <重建目录> \
   完全一致；exportHash 因补记 skip 账本行而变化（预期）。
 - 目标目录：`.state/lab/lead/rebuild/{focus,qq,live}/`、`.state/lab/lead/rebuild/focus-idem/`。
 
+### 2.1 合并三源 fixture（live 全量重建输入）
+
+新增 corpus 子命令：
+
+```bash
+node tools/memory-corpus.mjs merge \
+  --inputs .state/lab/memory-corpus/real-focuscore-2026-10,.state/lab/memory-corpus/real-qq-2026-10,.state/lab/memory-corpus/live-2026-11-12 \
+  --out .state/lab/memory-corpus/live-rebuild-2026-11-12 --id live-rebuild-2026-11-12
+```
+
+- 合并结果：**19 天 / 1586 行 / 3 来源**（旧 focus-core 5 天 + 旧 QQ 5 天 + 当前 live 9 天；日期不重叠），
+  行 id 加来源前缀、跨来源重复行按 at/role/text/speaker 去重；gold/probes 清空（重建不需要 gold，
+  保留一个占位负例 probe 满足 schema）。
+- 旧 focus-core / 旧 QQ 的原始 DB 仍可通过 `import-focus-core` / `import-old-qq` 重新导入；
+  live 快照用 `tools/memory-fixture-export.mjs` 只读导出（本次已刷新到 2026-11-12，含 9 天 raw）。
+- staging 重建（lab）：`.state/lab/lead/rebuild/live-v3-2026-11-12/`；
+  **结果：19 天 / 67 episodes / 133 段 / 15 entities / 8 relations / 6 person 块 / 363 notes；
+  DB 4.3 MB；续跑 semanticHash 不变（3916371b…）**。
+- staging audit（只读）：entity 15 行（stub 10、alias 冲突 0）、关系边 8（悬空 0）、
+  person→entity 覆盖 100%、event/typed 0（v3 预期）、lexicon 36（工具味 1）。
+- 验证通过后，live 切换只需"备份旧库 + 拷 staging DB + 改 preset + 重启"。
+
 ## 3. Live 切换 dry-run（只读清点，未执行）
 
 ### 3.1 输入来源（read-only 清点）
@@ -45,7 +69,7 @@ node tools/memory-rebuild.mjs --fixture <fixture目录> --out <重建目录> \
 
 ### 3.2 规模与成本估算（按已有同构跑批外推）
 
-- 覆盖天数：约 **16 天**（旧 focus/QQ 10 天 + live 8 天，日期不重叠）。
+- 覆盖天数：约 **19 天**（旧 focus/QQ 10 天 + live 9 天，日期不重叠；合并 fixture 已生成 19 天/1586 行）。
 - 模型调用：约 **12 次/天 × 16 ≈ 190 次**（episodes/people/lexicon/consume/cleanup，含重试余量）。
 - Token：按现有 18 天实测（prompt 625k chars / output 168k chars）外推 → 约 **31 万 prompt tokens + 9 万 completion tokens**；
   成本按 cloud provider 当前价目结算（量级个位数人民币，以实际账单为准）。
@@ -78,3 +102,5 @@ node tools/memory-rebuild.mjs --fixture <fixture目录> --out <重建目录> \
 
 - lab 三源重建 + 幂等/归档/续跑已验证；live 未做任何写入。
 - 下一步（等用户确认后）：按 §3.3 执行 live 重建与切换；并补 focus 内容完整性缺口抽审。
+
+

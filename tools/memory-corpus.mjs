@@ -2450,6 +2450,7 @@ function printUsage(write = console.log) {
   node tools/memory-corpus.mjs import-focus-core [选项]
   node tools/memory-corpus.mjs import-old-qq [选项]
   node tools/memory-corpus.mjs import-live [选项]
+  node tools/memory-corpus.mjs merge --inputs <fixtureA,fixtureB,...> --out <dir> [--id <name>] [--force]
   node tools/memory-corpus.mjs synthetic [选项]
   node tools/memory-corpus.mjs validate --fixture <dir|fixture.json> [--json]
 
@@ -2511,6 +2512,92 @@ async function cmdValidate(argv) {
   return ok ? 0 : 2
 }
 
+/**
+ * merge：把多个 fixture 的 days/rows 合成一个 raw replay fixture（live 全量重建用）。
+ * 只合并原始行（gold/probes 清空），行 id 加来源前缀避免撞号，重复行按 at/role/text/source 去重。
+ */
+async function cmdMerge(argv) {
+  const inputs = String(argValue(argv, 'inputs') ?? '').split(',').map((part) => part.trim()).filter(Boolean)
+  if (!inputs.length) fatal('merge 需要 --inputs <fixtureA,fixtureB,...>')
+  const outDir = path.resolve(String(argValue(argv, 'out') ?? ''))
+  if (!outDir) fatal('merge 需要 --out <dir>')
+  const fixtureId = String(argValue(argv, 'id') ?? `merged-${new Date().toISOString().slice(0, 10)}`)
+  if (fs.existsSync(path.join(outDir, 'fixture.json')) && !hasFlag(argv, 'force')) fatal(`目标已存在：${outDir}（用 --force 覆盖）`)
+  fs.mkdirSync(outDir, { recursive: true })
+
+  const mergedDays = new Map()
+  const seenRows = new Set()
+  const entities = new Map()
+  const sources = []
+  let persona = null
+  let timezone = 'Asia/Hong_Kong'
+  for (const [index, input] of inputs.entries()) {
+    const fixture = readJson(path.resolve(input, 'fixture.json'))
+    const prefix = `s${index + 1}`
+    if (!persona && fixture.persona) persona = fixture.persona
+    if (fixture.timezone) timezone = fixture.timezone
+    for (const entity of fixture.gold?.entities ?? []) {
+      const key = String(entity.id ?? entity.name)
+      if (!entities.has(key)) entities.set(key, { ...entity, ids: [...(entity.ids ?? [])], aliases: [...(entity.aliases ?? [])] })
+      else {
+        const current = entities.get(key)
+        for (const id of entity.ids ?? []) if (!current.ids.some((x) => `${x.kind}:${x.value}` === `${id.kind}:${id.value}`)) current.ids.push(id)
+        for (const alias of entity.aliases ?? []) if (!current.aliases.includes(alias)) current.aliases.push(alias)
+      }
+    }
+    let rowCount = 0
+    for (const day of fixture.days ?? []) {
+      const entry = mergedDays.get(day.day) ?? { day: day.day, rows: [] }
+      for (const row of day.rows ?? []) {
+        const dedupeKey = `${row.at ?? ''}|${row.role ?? ''}|${row.source ?? ''}|${row.speaker?.value ?? ''}|${row.text ?? ''}`
+        if (seenRows.has(dedupeKey)) continue
+        seenRows.add(dedupeKey)
+        entry.rows.push({ ...row, id: `${prefix}-${row.id ?? `row-${rowCount + 1}`}` })
+        rowCount += 1
+      }
+      mergedDays.set(day.day, entry)
+    }
+    sources.push({ input: path.resolve(input), fixtureId: fixture.id ?? null, days: (fixture.days ?? []).length, rows: rowCount })
+  }
+  const days = [...mergedDays.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)))
+  // schema 要求至少 1 个 probe；重建用 fixture 不需要 gold/probes，这里放一个负例占位 probe。
+  const firstDay = days.find((day) => (day.rows ?? []).length)
+  const firstRow = firstDay?.rows?.[0]
+  const placeholderProbes = firstRow ? [{
+    id: 'p-01',
+    rowId: firstRow.id,
+    query: String(firstRow.text ?? '').slice(0, 80) || '这条消息讲的是什么？',
+    kind: 'recall',
+    expectedMemoryIds: [],
+    expectAnswer: '',
+    note: '重建 fixture 占位 probe（不参与质量门控）',
+  }] : []
+  const fixture = {
+    schema: 1,
+    kind: 'real',
+    id: fixtureId,
+    description: `合并 raw replay fixture（live 全量重建用）：${sources.map((source) => source.fixtureId ?? source.input).join(' + ')}`,
+    timezone,
+    persona: persona ?? {},
+    days,
+    gold: { entities: [...entities.values()], memories: [], noise: [] },
+    probes: placeholderProbes,
+  }
+  const report = validateFixtureObject(fixture, { committed: false })
+  if (!report.ok) {
+    for (const error of report.errors.slice(0, 20)) console.error(`❌ ${error.path}: ${error.message}`)
+    fatal('merge 结果未通过 fixture 校验')
+  }
+  fs.writeFileSync(path.join(outDir, 'fixture.json'), `${JSON.stringify(fixture, null, 2)}\n`, 'utf8')
+  fs.writeFileSync(path.join(outDir, 'build.json'), `${JSON.stringify({
+    schema: 1, fixtureId, kind: 'merged', generatedAt: new Date().toISOString(),
+    generator: 'tools/memory-corpus.mjs merge', sources,
+    counts: { days: days.length, rows: seenRows.size, goldMemories: 0 },
+  }, null, 2)}\n`, 'utf8')
+  console.log(`合并完成：${outDir}/fixture.json（${days.length} 天 / ${seenRows.size} 行 / ${sources.length} 个来源）`)
+  return 0
+}
+
 async function main(argv = process.argv.slice(2)) {
   const command = argv[0]
   try {
@@ -2518,6 +2605,7 @@ async function main(argv = process.argv.slice(2)) {
     if (command === 'import-old-qq') return await cmdImportOldQq(argv)
     if (command === 'import-live') return await cmdImportLive(argv)
     if (command === 'synthetic') return await cmdSynthetic(argv)
+    if (command === 'merge') return await cmdMerge(argv)
     if (command === 'validate') return await cmdValidate(argv)
     if (!command || command === 'help' || command === '--help' || command === '-h') { printUsage(); return 0 }
     printUsage((...args) => console.error(...args))
@@ -2535,3 +2623,4 @@ main().then((code) => { process.exitCode = typeof code === 'number' ? code : 0 }
   console.error(`memory-corpus 崩溃：${error?.stack ?? error}`)
   process.exitCode = 2
 })
+

@@ -45,7 +45,7 @@ const cacheDir = path.join(out, 'cache')
 fs.mkdirSync(stateRoot, { recursive: true })
 fs.mkdirSync(cacheDir, { recursive: true })
 
-const dbFile = path.join(stateRoot, 'memory.db')
+const dbFile = path.join(stateRoot, 'state', 'memory.db')
 let archived = null
 if (archiveOld && fs.existsSync(dbFile)) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -113,6 +113,7 @@ const manifest = {
   embedding: embedAdapter?.describe?.() ?? null,
   gitCommit,
   counts,
+  dbPath: dbFile,
   exportHash: hash.digest('hex'),
   semanticHash: semanticHash.digest('hex'),
   dayResults: run.dayResults,
@@ -122,7 +123,9 @@ fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null,
 console.log('重建完成：', JSON.stringify(counts))
 console.log('exportHash：', manifest.exportHash)
 console.log('semanticHash：', manifest.semanticHash)
+console.log('db：', dbFile)
 console.log('manifest：', path.join(out, 'manifest.json'))
 await closeFormation(run)
+
 
 
