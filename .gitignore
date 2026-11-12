@@ -7,3 +7,5 @@ __pycache__/
 config/icl.local.json
 mem_export.json
 media/
+
+embed-cache.json

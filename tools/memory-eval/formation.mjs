@@ -448,12 +448,14 @@ function failureSamples({ fixture, indexes, extracted, match, entityMatcher }) {
  * 跑一次 formation（独立临时库）。
  * @returns {Promise<{tempRoot:string, host:object, exported:Array, extracted:Array, match:object, metrics:object, samples:object, dayResults:Array, aux:object}>}
  */
-export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', logs = [] }) {
+export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, root = null, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', logs = [] }) {
   const effectiveSchema = schema === 'v3' ? 'v3' : 'v2'
   const effectiveJobs = jobs ?? (effectiveSchema === 'v3' ? V3_JOBS : FORMATION_JOBS)
   const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}) }
   const profileRows = selectProfileRows(fixture, indexes, profile)
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
+  // root 指定时用固定目录（重建/续跑用），否则每次新建临时库（评测用）。
+  const tempRoot = root ? path.resolve(root) : fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
+  const persistentRoot = Boolean(root) || keepTemp
   const hostBox = await createEvalHost({
     root: tempRoot,
     model,
@@ -578,10 +580,11 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
       rawContextCount: profileRows.context.length,
       modelStats: model.stats(),
       keepTemp,
+      persistentRoot,
     }
   } catch (error) {
     try { await hostBox.dispose() } catch { /* ignore */ }
-    try { if (!keepTemp) fs.rmSync(tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
+    try { if (!persistentRoot) fs.rmSync(tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
     throw error
   }
 }
@@ -589,10 +592,11 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
 /** 释放 formation 宿主；keepTemp=false 时顺带删临时库。 */
 export async function closeFormation(run) {
   try { await run.host?.dispose?.() } catch { /* ignore */ }
-  if (run?.keepTemp !== true) {
+  if (run?.persistentRoot !== true) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
 
 
 
