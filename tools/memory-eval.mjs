@@ -16,8 +16,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { REPO_ROOT, buildIndexes, identityConfigOf, loadFixture, normalizeFixture, sliceFixtureDays } from './memory-eval/fixture.mjs'
 import { createEmbedAdapter, createModelAdapter } from './memory-eval/model.mjs'
-import { closeFormation, runFormation } from './memory-eval/formation.mjs'
+import { closeFormation, runFormation, extractV3Blocks, matchV3 } from './memory-eval/formation.mjs'
 import { seedFormation, seedGold, runRetrieval } from './memory-eval/retrieval.mjs'
+import { createProvenance } from './memory-eval/provenance.mjs'
+import { matchFormation } from './memory-eval/matcher.mjs'
 import { createEvalHost } from './memory-eval/host.mjs'
 import { buildEvalJson, writeReports } from './memory-eval/report.mjs'
 import { assertNotLive, assertSafeOutDir, makeTempDir } from './memory-eval/safety.mjs'
@@ -26,7 +28,7 @@ import { idempotency } from './memory-eval/metrics.mjs'
 const MODES = ['all', 'formation', 'retrieval']
 const PROFILES = ['raw-all', 'raw-main', 'raw-human']
 const MODEL_KINDS = ['echo', 'cloud', 'local']
-const SEEDS = ['gold', 'formation']
+const SEEDS = ['gold', 'formation', 'db']
 // 三源基线门控预设（docs/MEMORY-BASELINES.md §3）。CI 用 --gate-preset <focus|qq|live>。
 const GATE_PRESETS = Object.freeze({
   focus: 'formation.recall>=0.75,retrieval.recallAt3>=0.65,retrieval.recallAt5>=0.75,retrieval.missRate<=0.25,retrieval.falseInjectionRate<=0',
@@ -79,6 +81,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     modelId: argValue(argv, 'model-id'),
     profile: String(argValue(argv, 'profile', 'raw-main')),
     seed: String(argValue(argv, 'seed', 'gold')),
+    db: argValue(argv, 'db'),
     days: String(argValue(argv, 'days', '')).split(',').map((day) => day.trim()).filter(Boolean),
     repeat: Math.max(1, Math.min(5, Number(argValue(argv, 'repeat', 1)) || 1)),
     label: argValue(argv, 'label'),
@@ -113,6 +116,11 @@ export function parseArgs(argv, cwd = process.cwd()) {
   if (options.gatePreset != null && !GATE_PRESETS[String(options.gatePreset)]) {
     throw new CliError(`--gate-preset 只能是 ${Object.keys(GATE_PRESETS).join('|')}：${options.gatePreset}`)
   }
+  if (options.seed === 'db') {
+    if (!options.db) throw new CliError('--seed db 需要 --db <memory.db 路径>')
+    options.db = path.resolve(cwd, String(options.db))
+    assertNotLive(options.db, 'db 路径')
+  }
   if (options.mode === 'retrieval' && options.seed === 'formation') {
     // 只跑 retrieval 时 seed=formation 仍需要先跑 formation，语义上等价于 all；明确支持。
   }
@@ -134,7 +142,7 @@ function printUsage(write = console.log) {
   --model-id <id>                    覆盖 provider 的 model
   --provider <id>                    指定 chat provider id
   --profile <raw-all|raw-main|raw-human>  默认 raw-main
-  --seed <gold|formation>            retrieval 的库来源，默认 gold
+  --seed <gold|formation|db>         retrieval 的库来源，默认 gold；db 时用 --db 指定已重建库
   --days <d1,d2,...>                 只跑指定日期（从 fixture 裁出子集，gold/probes 引用同步裁剪）
   --repeat <n>                       formation 重跑 n 次算幂等（1–5），默认 1
   --label <text>                     写进报告，用于改动前/后对照
@@ -459,7 +467,31 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     const retrievalStarted = Date.now()
     if (options.mode === 'retrieval' || options.mode === 'all') {
       let corpus = null
-      if (options.seed === 'formation') {
+      if (options.seed === 'db') {
+        // 直接从已重建的 v3 库做 retrieval（跳过 formation）：用于快速迭代召回；库是拷贝，不动原库。
+        const root = makeTempDir('icl-memory-eval-db-')
+        fs.mkdirSync(path.join(root, 'state'), { recursive: true })
+        fs.copyFileSync(options.db, path.join(root, 'state', 'memory.db'))
+        retrievalHost = await createEvalHost({
+          root, model, embedAdapter, timezone: indexes.timezone,
+          identity: identityConfigOf(fixture), formationProfile: 'raw-main',
+          mainRows: [], contextRows: [], recallConfig, eagerConfig, logs,
+        })
+        const exported = retrievalHost.shared.memory.exportAll?.()?.items ?? []
+        const provenance = createProvenance(fixture, indexes, exported)
+        const probeMatch = matchFormation({ fixture, indexes, extracted: [] })
+        const selfEntityValues = (fixture.gold?.entities ?? [])
+          .filter((entity) => {
+            const ids = (entity.ids ?? []).map((id) => String(id.value))
+            const name = String(entity.name ?? '').toLowerCase()
+            return ids.some((value) => indexes.selfIds.has(value)) || name === String(fixture.persona?.self?.name ?? '').toLowerCase()
+          })
+          .map((entity) => String(entity.id))
+        const { episodes, people } = extractV3Blocks({ indexes, exported, provenance, entityMatcher: probeMatch.entityMatcher, selfEntityValues })
+        const v3Match = matchV3({ fixture, indexes, episodes, people, entityMatcher: probeMatch.entityMatcher })
+        corpus = seedFormation({ extracted: [...episodes, ...people], match: v3Match })
+        warnings.push({ path: 'retrieval.seed', message: `--seed db：从 ${options.db} 拷贝库直接检索（episodes=${episodes.length} / person=${people.length}）` })
+      } else if (options.seed === 'formation') {
         if (!formationRun) {
           // retrieval-only + seed=formation：先补跑一次 formation（语义上等价 all，报告里注明）。
           formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, schema: options.schema, recallConfig, eagerConfig, logs })
@@ -587,6 +619,8 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
+
 
 
 

@@ -151,6 +151,7 @@ function formationMd(formation) {
       ['gold 覆盖', `${v3.goldCovered}/${v3.goldTotal}（${fmtPct(v3.goldCoverage)}）`],
       ['gold 内容完整性（内容词 ≥45%）', `${v3.goldContentCovered}/${v3.goldTotal}（${fmtPct(v3.goldContentRate)}）`],
       ['内容词平均覆盖率', fmtPct(v3.contentCompletenessAvg)],
+      ['材料行覆盖（day log 原话）', v3.materialCoverage ? `${v3.materialCoverage.covered}/${v3.materialCoverage.lines}（${fmtPct(v3.materialCoverage.rate)}）` : '—'],
       ['注释块（fact/pref/commit/rel）', `${v3.annotationRates.facts} / ${v3.annotationRates.preferences} / ${v3.annotationRates.commitments} / ${v3.annotationRates.relations}`],
     ]))
     const byType = Object.entries(v3.goldByType ?? {}).map(([type, row]) => `${type} ${row.covered}/${row.total}`).join(' · ')

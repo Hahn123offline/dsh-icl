@@ -492,10 +492,14 @@ export function apply(ctx) {
               const key = `episode:${parent.id}`
               const score = Number(hit.score ?? 0) * 0.9
               const previous = bestById.get(key)
-              if (previous && Number(previous.score) >= score) continue
+              const segmentTexts = [...new Set([...(previous?.segmentTexts ?? []), String(hit.item.text ?? '')])].slice(0, 3)
+              if (previous && Number(previous.score) >= score) {
+                previous.segmentTexts = segmentTexts
+                continue
+              }
               bestById.set(key, {
                 item: { id: parent.id, namespace: 'episode', kind: 'block', text: parent.text, data: parent.data, createdAt: parent.createdAt },
-                namespace: 'episode', score, sim: Number(hit.sim ?? 0),
+                namespace: 'episode', score, sim: Number(hit.sim ?? 0), segmentTexts,
                 uncertain: Number(hit.sim ?? 0) < 0.5, matchedQuery: subQuery, segment: true,
               })
             }
@@ -667,17 +671,24 @@ export function apply(ctx) {
             let boosted = false
             for (const entry of candidates) {
               if (entry.namespace !== 'episode') continue
-              const haystack = normalize(`${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '')}`)
-              let weightSum = 0
-              for (const gram of contentGrams) {
-                if (!haystack.includes(gram)) continue
-                let weight = Math.log(1 + docCount / ((df.get(gram) ?? 0) + 1))
-                // 端口号/群号这类数字内容词几乎唯一标识一段经历，权重加倍。
-                if (/^\d{3,}$/.test(gram)) weight *= 2.5
-                weightSum += weight
+              const haystacks = [
+                normalize(`${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '')}`),
+                ...(Array.isArray(entry.segmentTexts) ? entry.segmentTexts.map(normalize) : []),
+              ]
+              let bestWeight = 0
+              for (const haystack of haystacks) {
+                let weightSum = 0
+                for (const gram of contentGrams) {
+                  if (!haystack.includes(gram)) continue
+                  let weight = Math.log(1 + docCount / ((df.get(gram) ?? 0) + 1))
+                  // 端口号/群号这类数字内容词几乎唯一标识一段经历，权重加倍。
+                  if (/^\d{3,}$/.test(gram)) weight *= 2.5
+                  weightSum += weight
+                }
+                bestWeight = Math.max(bestWeight, weightSum)
               }
-              if (!weightSum) continue
-              entry.score = Number(entry.score) * (1 + Math.min(1.2, weightSum * 0.35))
+              if (!bestWeight) continue
+              entry.score = Number(entry.score) * (1 + Math.min(1.2, bestWeight * 0.35))
               boosted = true
             }
             if (boosted) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)

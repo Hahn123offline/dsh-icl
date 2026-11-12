@@ -13,7 +13,7 @@ import {
 } from './metrics.mjs'
 
 /** v3：从导出条目里取 episode（主单位）与 person 档案（人物 probe 用）。 */
-function extractV3Blocks({ indexes, exported, provenance, entityMatcher, selfEntityValues }) {
+export function extractV3Blocks({ indexes, exported, provenance, entityMatcher, selfEntityValues }) {
   const episodes = []
   const people = []
   for (const item of exported) {
@@ -77,7 +77,7 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
     }
     const containment = grams.length ? grams.filter((gram) => haystack.includes(gram)).length / grams.length : 0
     const eligible = want.size
-      ? (coverage >= 0.6 || (overlap >= 1 && (textSim >= 0.3 || annotationSim >= 0.5)) || containment >= 0.45)
+      ? (coverage >= 0.6 || (overlap >= 1 && (textSim >= 0.3 || annotationSim >= 0.5)) || containment >= 0.4)
       : (textSim >= 0.5 || annotationSim >= 0.5 || containment >= 0.5)
     return eligible ? { tier: 1, coverage, textSim, annotationSim, overlap, containment } : null
   }
@@ -144,7 +144,7 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
 }
 
 /** v3 formation 指标：块粒度/覆盖/注释，不报 v2 的 P/R。 */
-export function v3Metrics({ fixture, episodes, match }) {
+export function v3Metrics({ fixture, episodes, match, exported = [] }) {
   const golds = fixture.gold?.memories ?? []
   const byType = {}
   for (const gold of golds) {
@@ -184,6 +184,43 @@ export function v3Metrics({ fixture, episodes, match }) {
       episodeId: best.episodeId, text: String(gold.text ?? '').slice(0, 120),
     })
   }
+  // 材料行覆盖（确定性）：day log 每行原话的内容词是否落在某块 episode 正文/注释里。
+  // 只统计真正进入 formation 的材料行（raw-main：真人/她可见的回复/QQ 转述）；工具/推理行不算漏写。
+  const episodeHaystack = episodes.map((item) => normalize(`${item.text ?? ''} ${item.body ?? ''} ${JSON.stringify(item.data?.annotations ?? {})} ${JSON.stringify(item.data?.relations ?? [])}`))
+  const dayLogLines = []
+  for (const item of exported) {
+    if (item.namespace !== 'day' || item.kind !== 'log') continue
+    const data = item.data ?? {}
+    const sources = Array.isArray(data.sources) ? data.sources : []
+    const allowedSources = new Set(['human', 'agent_visible', 'qq_envelope', 'unknown'])
+    for (const line of String(item.text ?? '').split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.length < 8) continue
+      const idMatch = /^\[(\d+)\]/.exec(trimmed)
+      const source = idMatch ? String(sources[Number(idMatch[1]) - 1] ?? 'unknown') : 'unknown'
+      if (!allowedSources.has(source)) continue
+      const body = trimmed.replace(/^\[\d+\]\s*(?:\d{1,2}:\d{2}\s*)?(?:[^：:]{0,14}[：:])?/, '').trim()
+      if (body.length < 6) continue
+      dayLogLines.push(body)
+    }
+  }
+  const lineChecks = dayLogLines.map((line) => {
+    const grams = gramsOf(line)
+    if (!grams.length) return { line: line.slice(0, 80), coverage: 1, covered: true }
+    let best = 0
+    for (const haystack of episodeHaystack) {
+      const hit = grams.filter((gram) => haystack.includes(gram)).length
+      best = Math.max(best, hit / grams.length)
+    }
+    return { line: line.slice(0, 80), coverage: Math.round(best * 1000) / 1000, covered: best >= 0.45 }
+  })
+  const coveredLines = lineChecks.filter((row) => row.covered).length
+  const materialCoverage = {
+    lines: lineChecks.length,
+    covered: coveredLines,
+    rate: lineChecks.length ? coveredLines / lineChecks.length : null,
+    gaps: lineChecks.filter((row) => !row.covered).slice(0, 10),
+  }
   const contentCovered = contentChecks.filter((row) => row.completeness >= 0.45).length
   const contentGaps = contentChecks.filter((row) => row.completeness < 0.45).slice(0, 10)
   return {
@@ -210,6 +247,7 @@ export function v3Metrics({ fixture, episodes, match }) {
     goldContentCovered: contentCovered,
     goldContentRate: contentChecks.length ? contentCovered / contentChecks.length : null,
     contentGaps,
+    materialCoverage,
   }
 }
 
@@ -515,7 +553,7 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
     if (effectiveSchema === 'v3') {
       const { episodes, people } = extractV3Blocks({ indexes, exported, provenance, entityMatcher: probeMatch.entityMatcher, selfEntityValues })
       const v3Match = matchV3({ fixture, indexes, episodes, people, entityMatcher: probeMatch.entityMatcher })
-      schemaExtras = { episodes, people, match: v3Match, metrics: v3Metrics({ fixture, episodes, match: v3Match }) }
+      schemaExtras = { episodes, people, match: v3Match, metrics: v3Metrics({ fixture, episodes, match: v3Match, exported }) }
     }
     const { items: extractedV2, aux } = extractItems({
       indexes, exported, provenance,
