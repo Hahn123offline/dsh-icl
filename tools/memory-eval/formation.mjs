@@ -98,6 +98,15 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
         score = { tier: 1, coverage: 0, textSim: textSimilarity(gold.text, block.text), annotationSim: 0, overlap: 0 }
       } else {
         score = scoreEpisode(gold, want, block)
+        // person gold 的 recall 路径：只要 episode 引用了 gold 的证据行，就把它列入期望目标——
+        // 否则 person gold 只映射到 person 档案，recall 探针永远不可能命中（p-03 实测）。
+        if (!score && isPerson && block.kindKey === 'episode' && want.size) {
+          let overlap = 0
+          for (const rowId of block.rowIds ?? []) if (want.has(String(rowId))) overlap += 1
+          if (overlap >= 1) {
+            score = { tier: 1, coverage: overlap / want.size, textSim: textSimilarity(gold.text, `${block.text ?? ''}\n${block.body ?? ''}`), annotationSim: 0, overlap, containment: 0 }
+          }
+        }
       }
       if (!score) continue
       candidates.push({ gold, block, score })

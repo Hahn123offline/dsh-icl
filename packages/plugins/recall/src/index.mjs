@@ -104,6 +104,8 @@ export function apply(ctx) {
       for (let i = 0; i + 1 < run.length; i += 1) grams.add(run.slice(i, i + 2))
     }
     for (const word of (raw.match(/[a-z][a-z0-9_]{1,}/g) ?? [])) grams.add(word)
+    // 端口号/日期/群号这类 3 位以上数字是强内容词（"63071 端口为什么失败"靠它定位块）。
+    for (const number of (raw.match(/\d{3,}/g) ?? [])) grams.add(number)
     return [...grams]
   }
   function hasContentSignal(question, texts) {
@@ -470,6 +472,23 @@ export function apply(ctx) {
             await collectHits(subQuery, relaxedFloor, true)
           }
         }
+        // v3：episode 单独放宽一轮。粗块正文长、embedding 相似度普遍低于原子块，
+        // 严格 floor 会把正确块直接筛掉（实测期望块常落在 0.3–0.45）；这里只补 episode 候选，
+        // 分数打折、标记低置信，后续仍有内容词门槛与 IDF/实体排序把关。
+        if (question && searchQueries.length) {
+          const episodeFloor = Math.max(0.22, Math.min(floor, 0.45) - 0.15)
+          for (const subQuery of searchQueries.slice(0, 2)) {
+            const hits = await memory.search({ namespace: 'episode', query: subQuery, limit: 60, now })
+            for (const hit of hits) {
+              if (Number(hit.sim ?? 0) < episodeFloor) continue
+              const key = `episode:${hit.item.id}`
+              const score = Number(hit.score ?? 0) * 0.75
+              const previous = bestById.get(key)
+              if (previous && Number(previous.score) >= score) continue
+              bestById.set(key, { ...hit, namespace: 'episode', uncertain: Number(hit.sim ?? 0) < 0.5, matchedQuery: subQuery, widened: true })
+            }
+          }
+        }
         // 关系问题（A 和 B 是什么关系）：先认出问句里的实体，再用"实体对 + 关系"补搜一遍。
         // 关系澄清经常写在不带双方名字的事件块里（"主人澄清曾嘉睿是舍友，周子涵和离线版都是他自己"），
         // 单靠整句相似度会被"同一个人/网关"这类高相似事实挤掉。
@@ -623,7 +642,10 @@ export function apply(ctx) {
               let weightSum = 0
               for (const gram of contentGrams) {
                 if (!haystack.includes(gram)) continue
-                weightSum += Math.log(1 + docCount / ((df.get(gram) ?? 0) + 1))
+                let weight = Math.log(1 + docCount / ((df.get(gram) ?? 0) + 1))
+                // 端口号/群号这类数字内容词几乎唯一标识一段经历，权重加倍。
+                if (/^\d{3,}$/.test(gram)) weight *= 2.5
+                weightSum += weight
               }
               if (!weightSum) continue
               entry.score = Number(entry.score) * (1 + Math.min(1.2, weightSum * 0.35))
