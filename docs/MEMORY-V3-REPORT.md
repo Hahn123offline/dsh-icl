@@ -226,7 +226,11 @@ gold 被拆到多个 episode，返回一个正确块已能回答（miss=0）。
 - cleanup 只负责同日合并，跨天重复在形成阶段就挡掉（此前机制上无保证）。
 
 **验证**：全仓 **921 tests / 920 pass / 1 skip**；新增测试覆盖承诺注释展示、人物路由兜底、
-跨天合并（不新增重复块、days/mergedAcrossDays 正确）。改动为插件代码，需重启 DSH 生效。
+跨天合并（不新增重复块、days/mergedAcrossDays 正确）。
+
+**三源 db-seed 回归**（改动后 / 改动前）：focus recall@5 **90.6 / 87.2**（anyHit 100）、
+QQ **80.8 / 80.8**（anyHit 84.6）、live **100 / 94.4**（anyHit 100，miss 0）→ 注释路由让 focus/live 的严格召回提升，
+QQ 持平。改动为插件代码，需重启 DSH 生效。
 
 ## 3. 当前结论与问题
 
@@ -251,4 +255,5 @@ gold 被拆到多个 episode，返回一个正确块已能回答（miss=0）。
 3. QQ/live 用当前代码重跑 + 内容完整性抽审；
 4. 重建 runner（raw → v3 逐天幂等、可中断、旧库归档）在 lab 三源跑通；
 5. 三源稳定后出 live 重建 dry-run 清单，停下等用户确认。
+
 
