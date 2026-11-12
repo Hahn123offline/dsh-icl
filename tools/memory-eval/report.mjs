@@ -137,6 +137,25 @@ function metricTable(rows) {
 
 function formationMd(formation) {
   const m = formation.metrics
+  if (m.schema === 'v3' && m.v3) {
+    const v3 = m.v3
+    const lines = ['## Formation v3（episode，SPEC v3）', '']
+    lines.push(metricTable([
+      ['episodes', String(v3.episodes)],
+      ['days', String(v3.days)],
+      ['blocks/day', fmtNum(v3.blocksPerDay)],
+      ['正文均长', `${v3.bodyLenAvg} 字`],
+      ['正文 P50 / P90', `${v3.bodyLenP50} / ${v3.bodyLenP90} 字`],
+      ['证据行/块', fmtNum(v3.evidenceRowsAvg)],
+      ['带人物块', fmtPct(v3.peopleRate)],
+      ['gold 覆盖', `${v3.goldCovered}/${v3.goldTotal}（${fmtPct(v3.goldCoverage)}）`],
+      ['注释块（fact/pref/commit/rel）', `${v3.annotationRates.facts} / ${v3.annotationRates.preferences} / ${v3.annotationRates.commitments} / ${v3.annotationRates.relations}`],
+    ]))
+    const byType = Object.entries(v3.goldByType ?? {}).map(([type, row]) => `${type} ${row.covered}/${row.total}`).join(' · ')
+    lines.push('', `gold 按类型：${byType || '—'}`, '')
+    lines.push('', `每日块数：${Object.entries(v3.perDay ?? {}).map(([day, count]) => `${day}:${count}`).join(' ') || '—'}`, '')
+    return lines
+  }
   const lines = ['## Formation（SPEC §7.1）', '']
   lines.push(metricTable([
     ['extracted', String(m.counts.extracted)],

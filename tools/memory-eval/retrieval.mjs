@@ -105,7 +105,15 @@ export async function seedGold({ hostBox, fixture, indexes, logs = [] }) {
 export function seedFormation(run) {
   const items = (run.extracted ?? []).map(toItemView)
   const idByMemoryId = new Map()
-  for (const pair of run.match?.pairs ?? []) idByMemoryId.set(String(pair.goldId), String(pair.extractedId))
+  // v3 允许一条 gold 对应多个目标（person 档案 + episode）：value 可能是 string 或 string[]。
+  for (const pair of run.match?.pairs ?? []) {
+    const key = String(pair.goldId)
+    const id = String(pair.extractedId)
+    const previous = idByMemoryId.get(key)
+    if (previous == null) idByMemoryId.set(key, id)
+    else if (Array.isArray(previous)) { if (!previous.includes(id)) previous.push(id) }
+    else if (previous !== id) idByMemoryId.set(key, [previous, id])
+  }
   return {
     kind: 'formation',
     seedNow: null,
@@ -203,14 +211,19 @@ function relevantItemIds(probe, corpus) {
   const goldIds = [...(probe.expectedMemoryIds ?? []), ...(probe.expectedAny ?? [])]
   const ids = []
   const unresolved = []
+  const pushMapped = (itemId) => {
+    if (itemId == null) return false
+    for (const id of (Array.isArray(itemId) ? itemId : [itemId])) if (!ids.includes(String(id))) ids.push(String(id))
+    return true
+  }
   for (const goldId of goldIds) {
-    const itemId = corpus.idByMemoryId.get(String(goldId))
-    if (itemId == null) { unresolved.push(String(goldId)); continue }
-    if (!ids.includes(String(itemId))) ids.push(String(itemId))
+    if (!pushMapped(corpus.idByMemoryId.get(String(goldId)))) unresolved.push(String(goldId))
   }
   const mustNotRecallIds = (probe.mustNotRecall ?? [])
-    .map((goldId) => corpus.idByMemoryId.get(String(goldId)))
-    .filter((id) => id != null)
+    .flatMap((goldId) => {
+      const mapped = corpus.idByMemoryId.get(String(goldId))
+      return mapped == null ? [] : (Array.isArray(mapped) ? mapped : [mapped])
+    })
     .map(String)
   return { ids, unresolved, mustNotRecallIds }
 }

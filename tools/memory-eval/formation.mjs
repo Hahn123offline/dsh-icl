@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createEvalHost, FORMATION_JOBS } from './host.mjs'
+import { createEvalHost, FORMATION_JOBS, V3_JOBS } from './host.mjs'
 import { dayAtHour, identityConfigOf, SELF_SOURCE_KINDS } from './fixture.mjs'
 import { selectProfileRows } from './profile.mjs'
 import { createProvenance } from './provenance.mjs'
@@ -12,7 +12,152 @@ import {
   provenanceRate, selfSourceRate, textSimilarity,
 } from './metrics.mjs'
 
-/** 从导出条目里挑出"落库的块"，并解析 evidence → fixture rowId。 */
+/** v3：从导出条目里取 episode（主单位）与 person 档案（人物 probe 用）。 */
+function extractV3Blocks({ indexes, exported, provenance, entityMatcher, selfEntityValues }) {
+  const episodes = []
+  const people = []
+  for (const item of exported) {
+    if (item.data?.superseded === true) continue
+    const mapped = provenance.mapItem(item)
+    const rowIds = mapped.rowIds.filter((rowId) => indexes.rowsById.has(String(rowId)))
+    if (item.namespace === 'episode' && item.kind === 'block') {
+      if (Number(item.data?.parts?.part) > 1) continue
+      episodes.push({
+        id: String(item.id), itemId: item.id, namespace: 'episode', kind: 'block', kindKey: 'episode',
+        key: item.key, text: String(item.text ?? ''), body: String(item.data?.body ?? ''),
+        data: item.data ?? {}, rowIds, unresolved: mapped.unresolved, day: item.data?.day ?? null,
+        ids: [], aliases: [], people: (item.data?.people ?? []).map(String), tags: item.data?.tags ?? [],
+        provisional: item.data?.provisional === true, evidenceCount: rowIds.length + (mapped.unresolved?.length ?? 0),
+      })
+      continue
+    }
+    if (item.namespace === 'person' && item.kind === 'block') {
+      const block = {
+        id: String(item.id), itemId: item.id, namespace: 'person', kind: 'block', kindKey: 'person',
+        key: item.key, text: String(item.text ?? ''), body: String(item.data?.profile ?? item.data?.body ?? ''),
+        data: item.data ?? {}, rowIds, unresolved: mapped.unresolved, day: item.data?.day ?? null,
+        ids: Array.isArray(item.data?.ids) ? item.data.ids : [],
+        aliases: Array.isArray(item.data?.aliases) ? item.data.aliases : [],
+        people: [], tags: Array.isArray(item.data?.tags) ? item.data.tags : [],
+        provisional: item.data?.provisional === true, evidenceCount: rowIds.length + (mapped.unresolved?.length ?? 0),
+      }
+      const matched = entityMatcher.matchPersonBlock(block)
+      const selfEntity = matched.entityId != null && selfEntityValues.includes(String(matched.entityId))
+      block.matchedEntityId = matched.entityId
+      block.matchReason = matched.reason
+      block.isSelfEntity = selfEntity
+      people.push(block)
+    }
+  }
+  return { episodes, people }
+}
+
+/** v3 匹配：gold → episode（证据行覆盖/文本/注释相似）或 person 档案（身份匹配）。 */
+export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
+  const golds = fixture.gold?.memories ?? []
+  const candidates = []
+  const scoreEpisode = (gold, want, block) => {
+    let overlap = 0
+    for (const rowId of block.rowIds ?? []) if (want.has(String(rowId))) overlap += 1
+    const coverage = want.size ? overlap / want.size : 0
+    const textSim = textSimilarity(gold.text, `${block.text ?? ''}\n${block.body ?? ''}`)
+    const annotations = block.data?.annotations ?? {}
+    const annTexts = [...(annotations.facts ?? []), ...(annotations.preferences ?? []), ...(annotations.commitments ?? [])]
+    let annotationSim = 0
+    for (const text of annTexts) annotationSim = Math.max(annotationSim, textSimilarity(gold.text, String(text ?? '')))
+    const eligible = want.size
+      ? (coverage >= 0.6 || (overlap >= 1 && (textSim >= 0.3 || annotationSim >= 0.5)))
+      : (textSim >= 0.5 || annotationSim >= 0.5)
+    return eligible ? { tier: 1, coverage, textSim, annotationSim, overlap } : null
+  }
+  for (const gold of golds) {
+    const isPerson = String(gold.type) === 'person'
+    const want = new Set((gold.evidence ?? []).map(String).filter((rowId) => indexes.rowsById.has(rowId)))
+    // person gold 同时挂 person 档案（whois/person 探针）与覆盖它证据的 episode（recall 探针），
+    // 两种读路径都能命中同一条 gold。
+    const pool = isPerson ? [...people, ...episodes] : episodes
+    for (const block of pool) {
+      let score = null
+      if (isPerson && block.kindKey === 'person') {
+        const subjectEntityId = indexes.entityIdOfSubject?.(gold.subject) ?? null
+        const ok = subjectEntityId != null
+          ? String(block.matchedEntityId) === String(subjectEntityId)
+          : Boolean(block.matchedEntityId)
+        if (!ok) continue
+        score = { tier: 1, coverage: 0, textSim: textSimilarity(gold.text, block.text), annotationSim: 0, overlap: 0 }
+      } else {
+        score = scoreEpisode(gold, want, block)
+      }
+      if (!score) continue
+      candidates.push({ gold, block, score })
+    }
+  }
+  candidates.sort((a, b) =>
+    // v3：同一行证据可能被多个 episode 引用；优先选"正文真的讲了这条 gold"的那一块（文本/注释相似度高），
+    // 证据覆盖只做次级判据，否则 gold 会被映射到只是引用了同一行的其它 episode。
+    ((b.score.textSim + (b.score.annotationSim ?? 0)) - (a.score.textSim + (a.score.annotationSim ?? 0)))
+    || (b.score.coverage - a.score.coverage)
+    || String(a.gold.id).localeCompare(String(b.gold.id))
+    || String(a.block.id).localeCompare(String(b.block.id)))
+  const pairs = []
+  const matchedGold = new Set()
+  // v3 是多对一：一个 episode 很可能同时是多条 gold 的答案（这就是粗粒度记忆的目的），
+  // 所以不限制"一个块只能配一条 gold"；person gold 最多挂一条 person 档案 + 一条 episode。
+  const pairsByGold = new Map()
+  for (const candidate of candidates) {
+    const goldId = String(candidate.gold.id)
+    const blockId = String(candidate.block.id)
+    const usedKinds = pairsByGold.get(goldId) ?? new Set()
+    if (usedKinds.has(candidate.block.kindKey)) continue
+    usedKinds.add(candidate.block.kindKey)
+    pairsByGold.set(goldId, usedKinds)
+    matchedGold.add(goldId)
+    pairs.push({
+      goldId, goldType: candidate.gold.type, extractedId: blockId, kindKey: candidate.block.kindKey,
+      coverage: candidate.score.coverage, textSim: candidate.score.textSim, reason: 'v3-evidence',
+    })
+  }
+  const unmatchedGold = golds.filter((gold) => !matchedGold.has(String(gold.id))).map((gold) => String(gold.id))
+  return { pairs, matchedGold, matchedExtracted: new Set(pairs.map((pair) => pair.extractedId)), unmatchedGold, entityMatcher }
+}
+
+/** v3 formation 指标：块粒度/覆盖/注释，不报 v2 的 P/R。 */
+export function v3Metrics({ fixture, episodes, match }) {
+  const golds = fixture.gold?.memories ?? []
+  const byType = {}
+  for (const gold of golds) {
+    const type = String(gold.type ?? '?')
+    byType[type] ??= { total: 0, covered: 0 }
+    byType[type].total += 1
+    if (match.matchedGold?.has(String(gold.id))) byType[type].covered += 1
+  }
+  const bodyLens = episodes.map((item) => String(item.body ?? '').length).sort((a, b) => a - b)
+  const p = (q) => bodyLens[Math.min(bodyLens.length - 1, Math.floor(bodyLens.length * q))] ?? 0
+  const perDay = {}
+  for (const item of episodes) { const day = String(item.day ?? '?'); perDay[day] = (perDay[day] ?? 0) + 1 }
+  return {
+    episodes: episodes.length,
+    days: Object.keys(perDay).length,
+    blocksPerDay: Object.values(perDay).length ? episodes.length / Object.values(perDay).length : 0,
+    perDay,
+    bodyLenAvg: bodyLens.length ? Math.round(bodyLens.reduce((a, b) => a + b, 0) / bodyLens.length) : 0,
+    bodyLenP50: p(0.5),
+    bodyLenP90: p(0.9),
+    evidenceRowsAvg: episodes.length ? Math.round(episodes.reduce((n, item) => n + (item.rowIds?.length ?? 0), 0) / episodes.length) : 0,
+    peopleRate: episodes.length ? episodes.filter((item) => (item.people ?? []).length).length / episodes.length : null,
+    annotationRates: {
+      facts: episodes.filter((item) => (item.data?.annotations?.facts ?? []).length).length,
+      preferences: episodes.filter((item) => (item.data?.annotations?.preferences ?? []).length).length,
+      commitments: episodes.filter((item) => (item.data?.annotations?.commitments ?? []).length).length,
+      relations: episodes.filter((item) => (item.data?.relations ?? []).length).length,
+    },
+    goldTotal: golds.length,
+    goldCovered: match.matchedGold?.size ?? 0,
+    goldCoverage: golds.length ? (match.matchedGold?.size ?? 0) / golds.length : null,
+    goldByType: byType,
+  }
+}
+
 function extractItems({ indexes, exported, provenance, entityMatcher, selfEntityValues }) {
   const items = []
   const aux = { notes: 0, dayLogs: 0, dreamRuns: 0, continuationParts: 0, superseded: 0 }
@@ -248,7 +393,10 @@ function failureSamples({ fixture, indexes, extracted, match, entityMatcher }) {
  * 跑一次 formation（独立临时库）。
  * @returns {Promise<{tempRoot:string, host:object, exported:Array, extracted:Array, match:object, metrics:object, samples:object, dayResults:Array, aux:object}>}
  */
-export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, jobs = FORMATION_JOBS, recallConfig = null, eagerConfig = null, dreamConfig = null, logs = [] }) {
+export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', logs = [] }) {
+  const effectiveSchema = schema === 'v3' ? 'v3' : 'v2'
+  const effectiveJobs = jobs ?? (effectiveSchema === 'v3' ? V3_JOBS : FORMATION_JOBS)
+  const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}) }
   const profileRows = selectProfileRows(fixture, indexes, profile)
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
   const hostBox = await createEvalHost({
@@ -262,7 +410,7 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
     contextRows: profileRows.context,
     ...(recallConfig ? { recallConfig } : {}),
     ...(eagerConfig ? { eagerConfig } : {}),
-    ...(dreamConfig ? { dreamConfig } : {}),
+    ...(effectiveDreamConfig && Object.keys(effectiveDreamConfig).length ? { dreamConfig: effectiveDreamConfig } : {}),
     logs,
   })
   const dayResults = []
@@ -272,7 +420,7 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
       const now = dayAtHour(day.day, 0, indexes.timezone)
       let result = null
       try {
-        result = await hostBox.shared.dream.run({ now, jobs: [...jobs] })
+        result = await hostBox.shared.dream.run({ now, jobs: [...effectiveJobs] })
       } catch (error) {
         result = { ok: false, day: day.day, results: [], error: String(error?.message ?? error) }
       }
@@ -305,13 +453,25 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
         return ids.some((value) => indexes.selfIds.has(value)) || name === String(fixture.persona?.self?.name ?? '').toLowerCase()
       })
       .map((entity) => String(entity.id))
-    const { items: extracted, aux } = extractItems({
+    // v3：episode 为主单位；gold→episode 用证据行覆盖/文本/注释相似匹配。
+    let schemaExtras = null
+    if (effectiveSchema === 'v3') {
+      const { episodes, people } = extractV3Blocks({ indexes, exported, provenance, entityMatcher: probeMatch.entityMatcher, selfEntityValues })
+      const v3Match = matchV3({ fixture, indexes, episodes, people, entityMatcher: probeMatch.entityMatcher })
+      schemaExtras = { episodes, people, match: v3Match, metrics: v3Metrics({ fixture, episodes, match: v3Match }) }
+    }
+    const { items: extractedV2, aux } = extractItems({
       indexes, exported, provenance,
       entityMatcher: probeMatch.entityMatcher,
       selfEntityValues,
     })
-    const match = matchFormation({ fixture, indexes, extracted })
-    const metrics = formationMetrics({ fixture, indexes, extracted, aux, match })
+    const extracted = schemaExtras ? [...schemaExtras.episodes, ...schemaExtras.people] : extractedV2
+    const match = schemaExtras
+      ? schemaExtras.match
+      : matchFormation({ fixture, indexes, extracted })
+    const metrics = schemaExtras
+      ? { ...formationMetrics({ fixture, indexes, extracted: [], aux, match: { pairs: [], matchedGold: new Set(), unmatchedGold: [] } }), schema: 'v3', v3: schemaExtras.metrics }
+      : formationMetrics({ fixture, indexes, extracted, aux, match })
     // typed v2 entity 层指标（Phase 3）：只看覆盖率/悬空引用，不参与 P/R、不改召回。
     const entityRows = exported.filter((item) => item.namespace === 'entity' && item.kind === 'entity')
     const personBlockRows = exported.filter((item) => item.namespace === 'person' && item.kind === 'block' && item.data?.superseded !== true)
@@ -334,7 +494,17 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
       relations: relationRows.length,
       relationDangling: relationRows.filter((item) => !entityKeys.has(String(item.data?.from ?? '')) || !entityKeys.has(String(item.data?.to ?? ''))).length,
     }
-    const samples = failureSamples({ fixture, indexes, extracted, match })
+    const goldByIdForSamples = new Map((fixture.gold?.memories ?? []).map((memory) => [String(memory.id), memory]))
+    const samples = schemaExtras
+      ? {
+        unmatchedGold: (schemaExtras.match.unmatchedGold ?? []).slice(0, 10).map((goldId) => {
+          const gold = goldByIdForSamples.get(String(goldId))
+          return { goldId, type: gold?.type, subject: gold?.subject, text: gold?.text, evidence: gold?.evidence ?? [], nearest: null }
+        }),
+        unmatchedExtracted: [],
+        unresolvedEvidence: [],
+      }
+      : failureSamples({ fixture, indexes, extracted, match })
     return {
       tempRoot,
       host: hostBox,
@@ -368,5 +538,6 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
 
 

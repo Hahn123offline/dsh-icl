@@ -1696,7 +1696,7 @@ export function apply(ctx) {
           },
           now,
         })
-        if (typeof memory.index === 'function') void memory.index(created.id, `${title}\n${chunks[index]}`)
+        if (typeof memory.index === 'function') void memory.index(created.id, `${title}\n${chunks[index].slice(0, 900)}`)
         written.push(created.id)
         bodies.push(chunks[index])
       }
@@ -1762,7 +1762,7 @@ export function apply(ctx) {
               namespace: 'episode', kind: 'block', key: keepBlock.key, text: newTitle || keepBlock.text,
               data: { ...(keepBlock.data ?? {}), body: newBody, rewrittenAt: Number(now) }, now,
             })
-            if (typeof memory.index === 'function') void memory.index(keepBlock.id, `${newTitle || keepBlock.text}\n${newBody}`)
+            if (typeof memory.index === 'function') void memory.index(keepBlock.id, `${newTitle || keepBlock.text}\n${newBody.slice(0, 900)}`)
             used.add(keepBlock.id)
             episodesRewritten += 1
             ctx.log({ level: 'info', msg: 'dream.episode-rewritten', key: keepBlock.key, from: oldBody.length, to: newBody.length })
@@ -1803,7 +1803,7 @@ export function apply(ctx) {
               },
               now,
             })
-            if (typeof memory.index === 'function') void memory.index(created.id, `${mergedTitle}\n${chunks[index]}`)
+            if (typeof memory.index === 'function') void memory.index(created.id, `${mergedTitle}\n${chunks[index].slice(0, 900)}`)
             newIds.push(created.id)
           }
           for (const dropBlock of dropBlocks) {
@@ -2537,11 +2537,37 @@ export function apply(ctx) {
       const existing = findBlockByKey(keepKey)
       if (!existing) continue
       const ns = existing.namespace
+      const dropBlocks = drop.map((key) => findBlockByKey(key)).filter(Boolean)
+      // v3：合并时必须并集 dropped 块的证据/注释/关系，否则"合并=丢证据"，gold 覆盖会掉。
+      const mergedEvidence = dedupeEvidence([
+        ...(existing.data?.evidence ?? []),
+        ...dropBlocks.flatMap((block) => block.data?.evidence ?? []),
+      ])
       const data = {
         ...(existing.data ?? {}),
         body: String(op?.body ?? existing.data?.body ?? '').slice(0, 4000),
+        evidence: mergedEvidence,
         uncertain: op?.uncertain === true,
         mergedFrom: [...new Set([...(existing.data?.mergedFrom ?? []), ...drop])],
+      }
+      if (ns === 'episode') {
+        const unionList = (field) => [...new Set([
+          ...(existing.data?.[field] ?? []),
+          ...dropBlocks.flatMap((block) => [].concat(block.data?.[field] ?? [])),
+        ])]
+        data.people = unionList('people').slice(0, 20)
+        data.tags = unionList('tags').slice(0, 20)
+        data.sources = unionList('sources').slice(0, 40)
+        const ann = existing.data?.annotations ?? {}
+        data.annotations = {
+          facts: [...new Set([...(ann.facts ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.facts ?? [])])].slice(0, 20),
+          preferences: [...new Set([...(ann.preferences ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.preferences ?? [])])].slice(0, 20),
+          commitments: [...new Set([...(ann.commitments ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.commitments ?? [])])].slice(0, 20),
+        }
+        data.relations = [...new Map([
+          ...(existing.data?.relations ?? []),
+          ...dropBlocks.flatMap((block) => block.data?.relations ?? []),
+        ].map((relation) => [`${relation?.from}|${relation?.label}|${relation?.to}`, relation])).values()].slice(0, 10)
       }
       memory.put({ namespace: ns, kind: 'block', key: keepKey, text: text.slice(0, 400), data, now })
       if (data.uncertain) {
@@ -3052,6 +3078,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

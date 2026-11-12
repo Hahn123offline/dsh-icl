@@ -25,6 +25,7 @@ import { REPO_ROOT } from './fixture.mjs'
 
 export const FORMED_PLUGIN_ORDER = Object.freeze(['memory', 'recall', 'note', 'lexicon', 'dream', 'eager-recall', 'whois'])
 export const FORMATION_JOBS = Object.freeze(['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index'])
+export const V3_JOBS = Object.freeze(['wash', 'episodes', 'people', 'lexicon', 'consume', 'cleanup', 'index'])
 
 function readDreamPersona() {
   try {
@@ -180,3 +181,4 @@ export async function createEvalHost(options) {
     },
   }
 }
+

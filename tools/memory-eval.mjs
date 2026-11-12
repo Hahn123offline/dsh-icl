@@ -72,6 +72,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     fixture: argValue(argv, 'fixture'),
     outDir: argValue(argv, 'out'),
     mode: String(argValue(argv, 'mode', 'all')),
+    schema: String(argValue(argv, 'schema', 'v2')),
     model: String(argValue(argv, 'model', 'echo')),
     provider: argValue(argv, 'provider'),
     modelId: argValue(argv, 'model-id'),
@@ -105,6 +106,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
   if (!MODES.includes(options.mode)) throw new CliError(`--mode 只能是 ${MODES.join('|')}：${options.mode}`)
   if (!PROFILES.includes(options.profile)) throw new CliError(`--profile 只能是 ${PROFILES.join('|')}：${options.profile}`)
   if (!MODEL_KINDS.includes(options.model)) throw new CliError(`--model 只能是 ${MODEL_KINDS.join('|')}：${options.model}`)
+  if (!['v2', 'v3'].includes(options.schema)) throw new CliError(`--schema 只能是 v2|v3：${options.schema}`)
   if (!SEEDS.includes(options.seed)) throw new CliError(`--seed 只能是 ${SEEDS.join('|')}：${options.seed}`)
   if (options.gatePreset != null && !GATE_PRESETS[String(options.gatePreset)]) {
     throw new CliError(`--gate-preset 只能是 ${Object.keys(GATE_PRESETS).join('|')}：${options.gatePreset}`)
@@ -124,6 +126,7 @@ function printUsage(write = console.log) {
 
 选项：
   --mode <all|formation|retrieval>   默认 all
+  --schema <v2|v3>                   v3：episode 主单位（默认 v2，向后兼容）
   --model <echo|cloud|local>         默认 echo（离线）；cloud/local 读 config/icl.local.json
   --model-id <id>                    覆盖 provider 的 model
   --provider <id>                    指定 chat provider id
@@ -270,7 +273,11 @@ export async function judgeAnswerAdequacy({ retrieval, model, cacheOnly = false 
 
 export function evaluateGate(gate, evalJson) {  if (!gate) return null
   const results = gate.checks.map((check) => {
-    const value = pathValue(evalJson, GATE_PATHS[check.key])
+    // v3 没有 v2 的 formation P/R：formation.recall 用 episode 的 gold 证据覆盖率代替。
+    let value = pathValue(evalJson, GATE_PATHS[check.key])
+    if (check.key === 'formation.recall' && evalJson?.formation?.metrics?.schema === 'v3') {
+      value = evalJson.formation.metrics.v3?.goldCoverage ?? null
+    }
     const numeric = value == null ? null : Number(value)
     const pass = numeric != null && Number.isFinite(numeric)
       && (check.direction === 'min' ? numeric >= check.threshold : numeric <= check.threshold)
@@ -374,6 +381,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         model,
         embedAdapter,
         keepTemp: options.keepTemp,
+        schema: options.schema,
         recallConfig,
         eagerConfig,
         logs,
@@ -395,6 +403,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           model,
           embedAdapter,
           keepTemp: false,
+          schema: options.schema,
           recallConfig,
           eagerConfig,
           logs: [],
@@ -449,7 +458,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       if (options.seed === 'formation') {
         if (!formationRun) {
           // retrieval-only + seed=formation：先补跑一次 formation（语义上等价 all，报告里注明）。
-          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, recallConfig, eagerConfig, logs })
+          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, schema: options.schema, recallConfig, eagerConfig, logs })
           warnings.push({ path: 'retrieval.seed', message: 'retrieval-only + --seed formation：为建库补跑了一次 formation' })
         }
         corpus = seedFormation(formationRun)

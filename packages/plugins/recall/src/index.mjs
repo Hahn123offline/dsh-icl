@@ -502,7 +502,10 @@ export function apply(ctx) {
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
         // 把写着内容词的 fact 挤出采样区，导致明明有相关词却被判"没找到"（QQ p-05 实测）。
-        const gateCandidateTexts = candidates.slice(0, 100).map((entry) => entry.item.text)
+        // v3 经历块：内容词门槛要看"标题 + 正文开头"，否则创意标题不含问句用词会被误判"没找到"。
+        const gateCandidateTexts = candidates.slice(0, 100).map((entry) => entry.item.namespace === 'episode'
+          ? `${entry.item.text} ${String(entry.item.data?.body ?? '').slice(0, 400)}`
+          : entry.item.text)
         // 日期加分：问句带了"昨天/10月25日"这类日期时，同一天落库的记忆优先（只加分不硬过滤）。
         const queryDay = question ? parseQueryDay(question, now) : null
         if (queryDay && candidates.length) {
