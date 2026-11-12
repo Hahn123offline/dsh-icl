@@ -621,7 +621,8 @@ export function apply(ctx) {
       }
     }
     // typed 记录补 subjectEntity（subject 是旧兼容字段，可能是 QQ 字符串）。
-    for (const namespace of ['fact', 'preference', 'commitment']) {
+    // v3 下旧 typed 块只归档不参与召回；不再给它们补 entity 引用，避免污染 v3 图。
+    if (memorySchema === 'v2') for (const namespace of ['fact', 'preference', 'commitment']) {
       for (const row of memory.query({ namespace, kind: 'block', limit: 1000, order: 'desc' })) {
         if (row.data?.superseded === true) continue
         if (row.data?.subjectEntity) continue
@@ -632,8 +633,8 @@ export function apply(ctx) {
         stats.typedPatched += 1
       }
     }
-    // event 块补 entities（来自已有的 people，多值）。
-    for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000, order: 'desc' })) {
+    // event 块补 entities（来自已有的 people，多值）。v3 下旧 event 块归档，不再补引用。
+    if (memorySchema === 'v2') for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000, order: 'desc' })) {
       if (row.data?.superseded === true || Array.isArray(row.data?.entities)) continue
       const people = normalizePeople(row.data?.people)
       if (!people.length) continue
@@ -657,13 +658,15 @@ export function apply(ctx) {
     for (const block of memory.query({ namespace: 'person', kind: 'block', limit: 1000 })) {
       if (block.data?.entityId) referencedKeys.add(String(block.data.entityId))
     }
-    for (const namespace of ['fact', 'preference', 'commitment']) {
-      for (const row of memory.query({ namespace, kind: 'block', limit: 1000 })) {
-        if (row.data?.subjectEntity) referencedKeys.add(String(row.data.subjectEntity))
+    if (memorySchema === 'v2') {
+      for (const namespace of ['fact', 'preference', 'commitment']) {
+        for (const row of memory.query({ namespace, kind: 'block', limit: 1000 })) {
+          if (row.data?.subjectEntity) referencedKeys.add(String(row.data.subjectEntity))
+        }
       }
-    }
-    for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000 })) {
-      for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
+      for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000 })) {
+        for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
+      }
     }
     for (const row of memory.query({ namespace: 'episode', kind: 'block', limit: 1000 })) {
       for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
@@ -700,14 +703,16 @@ export function apply(ctx) {
       : null
     const RELATION_CUES = ['舍友', '室友', '同一个人', '朋友', '同事', '同学', '主人', '关系']
     let relationsTouched = 0
-    // 关系来源：typed fact（"X 是主人的舍友"）+ 事件块/经历块（关系澄清常写成事件）。
+    // 关系来源：v2 用 typed fact + 事件块；v3 只从经历块（旧 v2 块归档，不能污染 v3 关系图）。
     const relationSources = [
-      ...memory.query({ namespace: 'fact', kind: 'block', limit: 1000, order: 'desc' })
-        .filter((row) => row.data?.superseded !== true)
-        .map((row) => ({ key: row.key, text: String(row.text ?? ''), data: row.data ?? {} })),
-      ...memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
-        .filter((row) => row.data?.superseded !== true)
-        .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 600)}`, data: row.data ?? {} })),
+      ...(memorySchema === 'v2' ? [
+        ...memory.query({ namespace: 'fact', kind: 'block', limit: 1000, order: 'desc' })
+          .filter((row) => row.data?.superseded !== true)
+          .map((row) => ({ key: row.key, text: String(row.text ?? ''), data: row.data ?? {} })),
+        ...memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
+          .filter((row) => row.data?.superseded !== true)
+          .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 600)}`, data: row.data ?? {} })),
+      ] : []),
       ...memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
         .filter((row) => row.data?.superseded !== true)
         .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 1200)}`, data: row.data ?? {} })),

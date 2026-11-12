@@ -119,7 +119,6 @@ export function parseArgs(argv, cwd = process.cwd()) {
   if (options.seed === 'db') {
     if (!options.db) throw new CliError('--seed db 需要 --db <memory.db 路径>')
     options.db = path.resolve(cwd, String(options.db))
-    assertNotLive(options.db, 'db 路径')
   }
   if (options.mode === 'retrieval' && options.seed === 'formation') {
     // 只跑 retrieval 时 seed=formation 仍需要先跑 formation，语义上等价于 all；明确支持。
@@ -378,6 +377,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       ...(options.recallMinSim != null ? { minSim: options.recallMinSim } : {}),
       ...(options.recallMinSimNoEmbed != null ? { minSimNoEmbed: options.recallMinSimNoEmbed } : {}),
       ...(options.rerank !== 'off' ? { rerank: options.rerank } : {}),
+      ...(options.schema === 'v3' ? { schema: 'v3' } : {}),
     }
     const eagerConfig = {
       ...(options.eagerMinScore != null ? { minScore: options.eagerMinScore } : {}),
@@ -619,6 +619,7 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 
 

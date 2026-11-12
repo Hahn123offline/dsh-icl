@@ -64,6 +64,11 @@ export function apply(ctx) {
   //   无嵌入保持 0.2：0.3 起 recall@3 明显下滑（alias 41.7%→25%），且无嵌入本来 falseInjection=0。
   const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.45))
   const minSimNoEmbed = Math.max(0.01, Number(ctx.config.minSimNoEmbed ?? 0.2))
+  // v3：episode 是唯一事件/经历记忆，v2 的 event/fact/preference/commitment 旧块只归档不召回。
+  const memorySchema = String(ctx.config.schema ?? 'v2') === 'v3' ? 'v3' : 'v2'
+  const legacyHiddenNamespaces = memorySchema === 'v3'
+    ? new Set(['event', 'fact', 'preference', 'commitment'])
+    : new Set()
   // v3 可选：对 top 候选做一次 LLM 重排（默认关；lab A/B 验证用，线上需要显式打开）。
   // 复用 dream-chat 槽位（生产里已绑定）；槽位不可用时自动跳过，不影响召回。
   const rerankMode = String(ctx.config.rerank ?? 'off')
@@ -401,7 +406,7 @@ export function apply(ctx) {
         const namespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
           ? [kind]
           // resolve 是纠正反馈队列，不是回忆：即使 cursor 走 includeArchive 也不能混进来。
-          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
+          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false && !legacyHiddenNamespaces.has(ns))
         const seen = new Set()
         const deeper = Boolean(cursor)
         const floor = relevanceFloor({ deeper })
@@ -732,7 +737,7 @@ export function apply(ctx) {
         // 未整理笔记：显式 kind 时只看该类别；默认视图看所有类别（碎片不该被路由规则吞掉）。
         const pendingNamespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
           ? [kind]
-          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false)
+          : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false && !legacyHiddenNamespaces.has(ns))
         const pendingRaw = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
           // 未整理笔记也要服从会话过滤，否则 "只搜这个会话" 会被别的会话的碎片污染。

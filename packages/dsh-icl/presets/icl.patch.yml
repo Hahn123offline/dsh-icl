@@ -66,9 +66,13 @@
                 time:
                   awakeTick:
                     enabled: false
+                # v3（2026-11-12 用户拍板）：经历块（episode）为召回主单位，typed 降级为块内注释。
+                recall:
+                  schema: v3
                 # 产品不再自动排 nightly dream；睡眠时按 dream 标志触发。
                 dream:
                   scheduleEnabled: false
+                  memorySchema: 'v3'
                   # 身份链的产品已知事实（2026-11-11）：人物档案按账号归一，显示名只是 alias。
                   selfQQ: '2593621742'
                   ownerQQ: '3429502459'

@@ -20,6 +20,9 @@ export function apply(ctx) {
   const file = String(ctx.config.path ?? path.join(ctx.config.root ?? '.', 'state', 'memory.db'))
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
+  // 多进程/热迁移安全：重建工具会与运行中的 DSH 同时写同一个 DB；
+  // 给 SQLite 一个等待窗口，避免瞬时 database is locked 变成整夜 job 失败。
+  try { db.exec('PRAGMA busy_timeout = 5000') } catch { /* 旧 sqlite 不支持就算了 */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS mem_ns (
       id TEXT PRIMARY KEY,
