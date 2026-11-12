@@ -98,9 +98,24 @@ node tools/memory-corpus.mjs merge \
 - 需要用户拍板的两件事：①是否把旧 focus-core/旧 QQ 全量并入 live 重建（用户已说"全部从原始回填"，默认并入）；
   ②recall 的 LLM rerank 是否默认开启（成本/延迟 vs focus r5 84→99）。
 
-## 4. 状态
+## 4. Live 切换记录（2026-11-12 深夜执行，无需停 DSH）
+
+- 背景：助手运行在 DSH Desktop 内，停 DSH 则助手无法执行 → 改为**热迁移**；
+  先 VACUUM INTO 一致性备份，再单事务把 staging v3 数据导入运行中的 live 库（未改写/删除 v2 rows）。
+- 备份：~/.dsh/icl/state/archive/memory-v2-2026-11-12T13-11-32-243Z.db（另一份 13-10-32）。
+- 导入：67 episodes / 133 段 / 15 entities / 8 relations / 13 天 day log / 缺失 person 档案；
+  向量一并拷贝（live 库 322 条）。
+- preset 已切 v3：dream.memorySchema: v3、ecall.schema: v3、ager-recall.schema: v3。
+- 激活证据：重启后 22:27 的 dream-run 账本出现 pisodes job（不再有 vents）；
+  live 库当前：episode 67 / 段 133 / entity 16 / relation 18（悬空 0）/ person 12；旧 event 块 23 仅归档，不召回。
+- 已知待重启生效：eager-recall 之前直接走 memory.search，会漏进旧 v2 event/fact 块；已加 schema 过滤，
+  需再重启一次 DSH 生效。
+- 回滚：恢复上述备份 DB + preset 改回 v2（未删除任何旧数据）。
+
+## 5. 状态
 
 - lab 三源重建 + 幂等/归档/续跑已验证；live 未做任何写入。
 - 下一步（等用户确认后）：按 §3.3 执行 live 重建与切换；并补 focus 内容完整性缺口抽审。
+
 
 
