@@ -20,6 +20,14 @@ export function apply(ctx) {
   const minScoreNoEmbed = Number(ctx.config.minScoreNoEmbed ?? 0.2)
   const maxItems = Math.max(1, Number(ctx.config.maxItems ?? 2))
   const maxChars = Math.max(40, Number(ctx.config.maxChars ?? 200))
+  // v3：自动召回也不能注入旧 v2 事件/事实块或内部片段（episode 才是经历记忆）。
+  const memorySchema = String(ctx.config.schema ?? 'v2') === 'v3' ? 'v3' : 'v2'
+  const hiddenNamespaces = memorySchema === 'v3'
+    ? new Set(['event', 'fact', 'preference', 'commitment', 'episode-seg', 'relation'])
+    : new Set(['episode-seg'])
+
+  /** 与 recall 的 schema=v3 同口径：旧命名空间只归档，不注入。 */
+  function visibleHit(hit) { return !hiddenNamespaces.has(String(hit?.item?.namespace ?? '')) }
 
   // 用户批准（2026-11-06）：每次评估记 hits/injected/chars，进质量数据（E2 可判定）。
   const counterFile = ctx.config.counterFile ? String(ctx.config.counterFile) : null
@@ -55,6 +63,7 @@ export function apply(ctx) {
     const { threshold, embedded } = effectiveThreshold()
     const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore: threshold })
     const eligible = hits
+      .filter(visibleHit)
       .filter((h) => Number(h.score) >= threshold)
       .filter((h) => h.item.kind !== 'cursor')
       // 已消化的 note 已经变成块了，不能再以"未整理"身份重复注入（与 recall 同口径）。
@@ -102,4 +111,5 @@ export function apply(ctx) {
 
   ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars, cooldownMs })
 }
+
 
