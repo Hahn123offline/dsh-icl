@@ -26,13 +26,13 @@ function fakeChat(script) {
   return { call, calls }
 }
 
-async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null, scheduleEnabled = false } = {}) {
+async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null, scheduleEnabled = false, dreamConfig = {} } = {}) {
   const host = createHost({ log: (entry) => { logs?.push(entry) } })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'icl-dream2-'))
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   host.registerPlugin(timeManifest, time, { config: { dreamAt: '23:59', stateFile: path.join(root, 'time.json') } })
-  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。', scheduleEnabled, dayCutHour: 0 } })
+  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。', scheduleEnabled, dayCutHour: 0, ...dreamConfig } })
   await host.enable('memory')
   await host.enable('recall')
   await host.enable('time')
@@ -314,3 +314,33 @@ test('某一片模型调用失败：自动重试一次后恢复，不拖垮整�
   assert.ok(logs.some((entry) => entry.msg === 'dream.call-retry'), '必须有 call-retry 日志')
 })
 
+
+test('v3 稀疏日守卫：真人材料过少时不调模型、不硬整出块', async () => {
+  const now = Date.now()
+  const { host, memory, dream, chat } = await setup({ dreamConfig: { memorySchema: 'v3' } })
+  host.services.raw.register({
+    id: 'test-raw-sparse',
+    list: () => [{ text: '嗯', time: now - 10 * 60_000, role: 'user' }],
+    search: () => [],
+  })
+  const out = await dream.run({ now, jobs: ['wash', 'episodes'] })
+  const episodes = out.results.find((row) => row.job === 'episodes')
+  assert.equal(episodes.skipped, 'below-salience', JSON.stringify(out.results))
+  assert.equal(chat.calls.length, 0, '稀疏日不应调用形成模型')
+  assert.equal(memory.query({ namespace: 'episode', kind: 'block' }).length, 0)
+})
+
+test('v3 小材料合并：多片短材料只发一次形成调用', async () => {
+  const now = Date.now()
+  const { host, memory, dream, chat } = await setup({ dreamConfig: { memorySchema: 'v3' } })
+  const rows = [
+    { text: '今天下午主人让我再测一次 MC 的临时世界端口，结果 join 成功但 state 还是报 fetch failed，我照实说了一遍。', time: now - 120 * 60_000, role: 'user', source: 'human' },
+    { text: '晚上他又来问压缩上下文工具是不是一直挂着，我说没找到 compact_context，先别压免得记忆丢。', time: now - 60 * 60_000, role: 'user', source: 'human' },
+  ]
+  host.services.raw.register({ id: 'test-raw-coalesce', list: () => rows, search: () => [] })
+  const out = await dream.run({ now, jobs: ['wash', 'episodes'] })
+  const episodes = out.results.find((row) => row.job === 'episodes')
+  assert.equal(episodes.shards, 1, `应是合并后的 1 片：${JSON.stringify(episodes)}`)
+  assert.equal(chat.calls.length, 1, '小材料只应发一次形成调用')
+  assert.equal(memory.query({ namespace: 'episode', kind: 'block' }).length, 0, '模型输出 [] 时不落块')
+})

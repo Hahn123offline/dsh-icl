@@ -42,6 +42,10 @@ export function apply(ctx) {
   }
   // 用户批准（2026-11-06，首次 E2 实测）：同一条记忆短时间内别反复注入（实测 4 条 note 被注入 7–11 次）。
   const cooldownMs = Math.max(0, Number(ctx.config.cooldownMs ?? 180_000))
+  // 低于注入阈值但有相关的记忆：只给一行"可能记得"提示，不注入内容。
+  const hintThreshold = Math.max(0.2, Number(ctx.config.hintThreshold ?? 0.33))
+  const hintCooldownMs = Math.max(60_000, Number(ctx.config.hintCooldownMs ?? 300_000))
+  let lastHintAt = 0
   const recentInjected = new Map() // item.id -> last injected at
   /** 按句子边界截断（不要把"…别在"这种半句塞给模型）。 */
   function clipLine(value, max) {
@@ -89,7 +93,29 @@ export function apply(ctx) {
       queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, suppressed, threshold, embedded,
       candidateIds: summarize(hits),
     }
-    if (!picked.length) { recordCount(base); return null }
+    if (!picked.length) {
+      // 低置信提示（不自作主张注入内容）：有相关但不够确定的记忆时，只提示"可能有"，
+      // 让模型自己决定要不要 recall。这弥补"检索失败/低于阈值时 Agent 完全不知道自己记不记得"。
+      try {
+        const weakHits = await memory.search({ query, limit: 6, now: ctx.now() })
+        const weak = weakHits
+          .filter(visibleHit)
+          .filter((h) => h.item.kind !== 'cursor')
+          .filter((h) => !(h.item.kind === 'note' && h.item.data?.consolidated === true))
+          .filter((h) => Number(h.score) >= hintThreshold && Number(h.score) < threshold)
+        if (weak.length && nowMs - lastHintAt >= hintCooldownMs) {
+          lastHintAt = nowMs
+          const first = weak[0]
+          const tag = first.item.namespace === 'episode' ? '经历' : (first.item.kind === 'note' ? '未整理' : (first.item.namespace ?? '记忆'))
+          let hint = `你可能对「[${tag}] ${clipLine(first.item.text, 36)}」有相关记忆（不确定，仅供参考）；需要的话可以调 recall 查一下。`
+          if (hint.length > maxChars) hint = `${hint.slice(0, maxChars - 1).trimEnd()}…`
+          recordCount({ ...base, hint: true, hintIds: summarize(weak), chars: hint.length })
+          return hint
+        }
+      } catch { /* 提示失败就当没有 */ }
+      recordCount(base)
+      return null
+    }
     const lines = picked.map((h) => {
       const tag = h.item.kind === 'note' ? '未整理' : h.item.namespace === 'episode' ? '经历' : (h.item.namespace ?? '记忆')
       const doubt = h.item.data?.provisional === true ? '[存疑] ' : ''

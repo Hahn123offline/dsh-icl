@@ -867,7 +867,7 @@ export function apply(ctx) {
           if (anyKnown) return '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。'
           if (searchedCount > 0) {
             // 不回显用户原话：一来没必要，二来"只搜这个会话"时别的会话的关键词会误导她以为搜到过。
-            return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？`
+            return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？${memoryCoverageHint()}`
           }
           if (globalItems > 0) {
             return `这个范围里没有相关记忆（全局还有 ${globalItems} 条，可能是 ${scopeText} 过滤太窄；去掉限制再试一次？）`
@@ -961,10 +961,122 @@ export function apply(ctx) {
     } catch { return { items: [] } }
   }
 
+  /**
+   * 记忆自知（v3）：给模型一个便宜、确定性的"我记忆里有什么"快照。
+   * 走现有 world 状态总线（world_status 工具可展开 owner=memory），不另起一套提示词机制。
+   */
+  let memoryStateCache = { at: 0, value: null }
+  function memoryState() {
+    const now = ctx.now()
+    if (memoryStateCache.value && now - memoryStateCache.at < 30_000) return memoryStateCache.value
+    const live = (row) => row?.data?.superseded !== true && !(Number(row?.data?.parts?.part) > 1)
+    const episodes = memorySchema === 'v3'
+      ? memory.query({ namespace: 'episode', kind: 'block', limit: 800, order: 'desc' }).filter(live)
+      : []
+    const legacyEvents = memorySchema !== 'v3'
+      ? memory.query({ namespace: 'event', kind: 'block', limit: 800, order: 'desc' }).filter(live)
+      : []
+    const mainRows = episodes.length ? episodes : legacyEvents
+    const days = mainRows.map((row) => String(row.data?.day ?? '')).filter(Boolean).sort()
+    const firstDay = days[0] ?? null
+    const lastDay = days[days.length - 1] ?? null
+    // 最近一次 episodes job 的结果（形成了几段/是否失败）
+    let lastDream = null
+    for (const row of memory.query({ namespace: 'dream-run', kind: 'run', limit: 120, order: 'desc' })) {
+      if (!String(row.key ?? '').endsWith(':episodes')) continue
+      const data = row.data ?? {}
+      const finishedAt = Number(data.finishedAt ?? data.startedAt ?? row.createdAt ?? 0)
+      lastDream = {
+        day: String(data.day ?? String(row.key ?? '').split(':')[2] ?? ''),
+        at: finishedAt || null,
+        episodes: Number(data.episodes ?? 0),
+        ok: data.status !== 'failed' && data.ok !== false,
+        empty: data.empty === true,
+      }
+      break
+    }
+    const openCommitments = []
+    for (const row of mainRows) {
+      for (const text of row.data?.annotations?.commitments ?? []) {
+        const value = String(text ?? '').trim()
+        if (value.length >= 2 && !openCommitments.includes(value)) openCommitments.push(value)
+      }
+    }
+    const recent = mainRows
+      .slice()
+      .sort((a, b) => String(b.data?.day ?? '').localeCompare(String(a.data?.day ?? '')))
+      .slice(0, 5)
+      .map((row) => `· ${String(row.data?.day ?? '').slice(5)} ${String(row.text ?? '').slice(0, 42)}`)
+    const peopleBlocks = memory.query({ namespace: 'person', kind: 'block', limit: 500 }).filter(live)
+    const lexiconCount = memory.query({ namespace: 'lexicon', kind: 'term', limit: 500 }).length
+    const pendingNotes = memory.query({ namespace: 'note', kind: 'note', limit: 500 })
+      .filter((row) => row.data?.status !== 'done' && row.data?.status !== 'archived').length
+    const episodeCount = mainRows.length
+    const briefParts = [
+      `${memorySchema === 'v3' ? '经历' : '事件'} ${episodeCount} 段${firstDay ? `（${firstDay.slice(5)}..${lastDay.slice(5)}）` : ''}`,
+      lastDream ? `上次整理 ${lastDream.day ? lastDream.day.slice(5) : '—'} 形成 ${lastDream.episodes} 段${lastDream.ok ? '' : '（失败）'}` : null,
+      openCommitments.length ? `未结承诺 ${openCommitments.length}` : null,
+      `人物 ${peopleBlocks.length}`,
+      `语料 ${lexiconCount}`,
+    ].filter(Boolean)
+    const detailLines = [
+      `记忆状态：${briefParts.join('；')}。`,
+      lastDream ? `最近整理：${lastDream.day || '—'}${lastDream.ok ? '' : '（失败，可能需要重跑）'}，形成 ${lastDream.episodes} 段${lastDream.empty ? '（当天没有值得留下的新经历）' : ''}。` : '还没有过记忆整理记录。',
+      recent.length ? `最近 5 段：\n${recent.join('\n')}` : null,
+      openCommitments.length ? `未结承诺（块内注释）：\n${openCommitments.slice(0, 8).map((text) => `· ${text.slice(0, 90)}`).join('\n')}` : null,
+      `未消化笔记 ${pendingNotes} 条。记忆只覆盖整理过的内容；问过去细节先 recall（不确定就先查再答），问人用 whois。`,
+    ].filter(Boolean)
+    const value = { episodes: episodeCount, firstDay, lastDay, openCommitments, lastDream, brief: briefParts.join('；'), detail: detailLines.join('\n') }
+    memoryStateCache = { at: now, value }
+    return value
+  }
+  function memoryCoverageHint() {
+    try {
+      const state = memoryState()
+      if (!state.episodes) return ''
+      return `（当前记忆覆盖 ${state.firstDay ?? '—'}..${state.lastDay ?? '—'}，共 ${state.episodes} 段经历）`
+    } catch { return '' }
+  }
+  // 世界状态总线：一行"记忆状态"，细节由 world_status owner=memory 展开（复用既有提示词装配）。
+  try {
+    const world = ctx.services.get?.('world') ?? null
+    if (world?.registerSource) {
+      world.registerSource({
+        id: 'memory',
+        owner: 'memory',
+        title: '记忆',
+        order: 70,
+        cap: 1,
+        empty: () => {
+          const state = memoryState()
+          return state.episodes ? '无新变化' : '还没有整理过记忆'
+        },
+        items: () => {
+          const state = memoryState()
+          if (!state.episodes) return []
+          return [{ key: 'state', brief: state.brief, detail: state.detail }]
+        },
+      })
+    }
+  } catch (error) {
+    ctx.log({ level: 'warn', msg: 'recall.world-source-fail', error: String(error?.message ?? error).slice(0, 120) })
+  }
+  tools.memory_status = {
+    name: 'memory_status',
+    summary: 'Check what my memory currently covers: episode count/date range, last dream, open commitments, people and lexicon totals.',
+    when: ['before telling someone you do not remember something', 'when unsure how much memory you actually have', 'after a dream/nightly run to see what got formed'],
+    avoid: ['looking up a specific past event - use recall', 'looking up a person - use whois'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      try { return { text: memoryState().detail } } catch (error) { return { text: `记忆状态读取失败：${String(error?.message ?? error).slice(0, 120)}` } }
+    },
+  }
+
   for (const tool of Object.values(tools)) ctx.tools.register(tool)
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
 
 
 

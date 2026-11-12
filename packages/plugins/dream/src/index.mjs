@@ -1660,11 +1660,24 @@ export function apply(ctx) {
       ? formationLines(dayLog)
       : notes.slice().sort((a, b) => timeOf(a) - timeOf(b)).map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
     const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
+    const materialChars = material.reduce((sum, line) => sum + String(line).length, 0)
+    // 稀疏日守卫（用户 2026-11-13 拍板）：没有显式笔记、真人材料又极少 → 不调模型。
+    // 避免"没活硬整"：低信息日强行产出离散块，或为 300 字材料切 5 片发 5 次空调用。
+    if (!notes.length && materialChars < 60) {
+      ctx.log({ level: 'info', msg: 'dream.episodes-below-salience', day, materialChars })
+      return { job: 'episodes', ok: true, skipped: 'below-salience', blocks: 0, episodes: 0, materialChars, empty: true }
+    }
     const { shards, omitted: omittedShards } = shardByExperience(material, { gapMin: segmentGapMin })
     if (dayLog && notes.length) {
       shards.push(notes.slice(0, 40).map((note) => `n${note.id}｜${clipText(note.text, 240)}`))
     }
     if (omittedShards) ctx.log({ level: 'warn', msg: 'dream.episodes-shards-capped', omittedShards, kept: shards.length })
+    // 小材料（<900 字）不再按经历窗口切很多片：合并成一次调用，模型仍然可以输出 []。
+    const totalShardChars = shards.reduce((sum, lines) => sum + lines.join('\n').length, 0)
+    const modelShards = shards.length > 1 && totalShardChars < 900 ? [shards.flat()] : shards
+    if (modelShards.length !== shards.length) {
+      ctx.log({ level: 'info', msg: 'dream.episodes-shards-coalesced', from: shards.length, to: modelShards.length, chars: totalShardChars })
+    }
     const instruction = [
       '把今天的经历整理成"经历块"（episode），不要写成日记、流水账或要点清单。',
       '块是回忆的单位：一段连续经历 / 一个话题的来龙去脉，就写成一整块；块里自然包含起因、过程、感受和结论。',
@@ -1703,20 +1716,20 @@ export function apply(ctx) {
       }
       return { ok: true, blocks: out.value, chars: payload.length }
     }
-    for (let i = 0; i < shards.length; i += 1) {
+    for (let i = 0; i < modelShards.length; i += 1) {
       try {
-        const result = await runEpisodeShard(shards[i], String(i + 1))
+        const result = await runEpisodeShard(modelShards[i], String(i + 1))
         blocks.push(...result.blocks)
         shardResults.push({ index: i + 1, ok: true, blocks: result.blocks.length, chars: result.chars, ...(result.split ? { split: true } : {}) })
       } catch (error) {
         const reason = String(error?.message ?? error)
         shardResults.push({ index: i + 1, ok: false, error: reason })
-        ctx.log({ level: 'warn', msg: 'dream.shard-fail', job: 'episodes', shard: i + 1, shards: shards.length, error: reason })
+        ctx.log({ level: 'warn', msg: 'dream.shard-fail', job: 'episodes', shard: i + 1, shards: modelShards.length, error: reason })
       }
     }
     if (!shardResults.some((row) => row.ok)) {
       return {
-        job: 'episodes', ok: false, blocks: 0, shards: shards.length, failedShards: shardResults.length,
+        job: 'episodes', ok: false, blocks: 0, shards: modelShards.length, failedShards: shardResults.length,
         degraded: true, error: shardResults.map((row) => row.error).filter(Boolean).slice(0, 3).join('；'),
       }
     }
@@ -1960,12 +1973,12 @@ export function apply(ctx) {
     const empty = written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok)
     recordRun(day, 'episodes', {
       episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length, deferred, uncovered: uncovered.length,
-      bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
+      bodyAvg, shards: modelShards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
       payloadChars, empty,
     }, now)
     return {
       job: 'episodes', ok: true, blocks: written.length, episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length,
-      deferred, bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length,
+      deferred, bodyAvg, shards: modelShards.length, failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards, empty, payloadChars,
       degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
     }

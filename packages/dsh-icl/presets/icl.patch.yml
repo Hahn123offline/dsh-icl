@@ -71,6 +71,12 @@
                   schema: v3
                 eager-recall:
                   schema: v3
+                  # 低于注入阈值但有相关记忆时，只给一行"可能记得"提示（不注入内容）。
+                  hintThreshold: 0.33
+                  hintCooldownMs: 300000
+                # 记忆状态行加进 world 状态段；给 memory 一行加空间（仍由 world 截断）。
+                world-state:
+                  maxChars: 320
                 # 产品不再自动排 nightly dream；睡眠时按 dream 标志触发。
                 dream:
                   scheduleEnabled: false
