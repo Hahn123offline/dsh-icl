@@ -32,7 +32,7 @@ async function setup({ script = [], timezone = 'Asia/Hong_Kong', logs = null, sc
   host.registerPlugin(memoryManifest, memory, { config: { root } })
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1' } })
   host.registerPlugin(timeManifest, time, { config: { dreamAt: '23:59', stateFile: path.join(root, 'time.json') } })
-  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。', scheduleEnabled } })
+  host.registerPlugin(dreamManifest, dream, { config: { sessionId: 's1', timezone, persona: '你是她夜里的记忆沉淀器。', scheduleEnabled, dayCutHour: 0 } })
   await host.enable('memory')
   await host.enable('recall')
   await host.enable('time')
@@ -313,3 +313,4 @@ test('某一片模型调用失败：自动重试一次后恢复，不拖垮整�
   assert.ok(blocks.length >= 1, '块必须落库')
   assert.ok(logs.some((entry) => entry.msg === 'dream.call-retry'), '必须有 call-retry 日志')
 })
+
