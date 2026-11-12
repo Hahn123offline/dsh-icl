@@ -1576,6 +1576,7 @@ export function apply(ctx) {
       '同一次连续经历里的碎片放进同一块；不同时间段/不同话题的事分开写。',
       '每块输出对象：{"title":"一行标题（≤60字，不含QQ号）","body":"第一人称完整叙述（尽量把上下文写全，长度由内容决定）","people":["QQ号或名字"],"tags":["短标签"],"evidence":[id],"facts":[],"preferences":[],"commitments":[],"relations":[{"from":"A","to":"B","label":"关系"}]}',
       'body 要写成以后读起来能独立理解的叙述：谁、何时、发生了什么、结果如何；不要只写一句话摘要，也不要把同一件事拆成多条原子句。',
+      '正文尽量写全：把当时的对话细节、前后因果、数字/原话/感受写进去（通常几百字，内容多就上千字，没有硬性上限）；宁可一块写长，也不要压缩成一段干巴巴的摘要。',
       'facts/preferences/commitments 是块内注释：只有材料里明确出现的稳定信息才写，每条一句话，没有就省略（不要求每块都有）。',
       'relations 只写材料里明确说出的关系，label 用材料原词（如 舍友/同一个人/朋友/主人）；不确定就不写。',
       'evidence 必须是上面真实存在的编号；不能编。没有出处就不要写进块。',
@@ -1588,7 +1589,7 @@ export function apply(ctx) {
     const shardResults = []
     async function runEpisodeShard(lines, label, depth = 0) {
       const payload = `${lines.join('\n')}${hint}`
-      const out = await askJson({ instruction, payload, where: `episodes#${label}`, maxTokens: 4000 })
+      const out = await askJson({ instruction, payload, where: `episodes#${label}`, maxTokens: 5500 })
       if (!out.ok) {
         if (depth < 1 && lines.length >= 10) {
           const middle = Math.floor(lines.length / 2)
@@ -1703,6 +1704,7 @@ export function apply(ctx) {
     // v3 同日合并轮：模型认为属于同一段经历/同一主题的块合成更完整的块。
     // 不设数量目标、不强制合并（没有可合并就输出 []）；合并后必须保留双方全部细节。
     let episodesMerged = 0
+    let episodesRewritten = 0
     const baseEpisodes = written
       .map((id) => memory.query({ namespace: 'episode', kind: 'block', id, limit: 1 })[0])
       .filter((block) => block && !block.data?.parts)
@@ -1713,16 +1715,29 @@ export function apply(ctx) {
         })))
         const verdict = await askJson({
           instruction: [
-            '下面是今天已经写下的经历块。把其中真正属于同一段经历/同一主题、合并后回忆更完整的块合并起来；',
+            '下面是今天已经写下的经历块。任务：找出真正属于同一段经历/同一主题、合并后回忆更完整的块，合成更少的块。',
+            '只输出需要合并的组，每组至少 2 个块（keep + drop 里至少一个序号）；不需要合并的块不要出现在输出里，也不要单独改写它们。',
             '不要为了减少数量强行合并，也不要拆块。合并后的 body 必须保留双方全部细节（人物、数字、原话、因果），不要压缩成摘要。',
             '输出 JSON 数组：[{"keep": 保留的序号, "drop": [被并入的序号...], "title": "合并后标题", "body": "合并后完整正文"}]；',
             '没有需要合并的就输出 []。只输出 JSON。',
           ].join('\n'),
-          payload, where: 'episode-merge', maxTokens: 4000,
+          payload, where: 'episode-merge', maxTokens: 5000,
         })
-        const merges = verdict.ok
-          ? (Array.isArray(verdict.value) ? verdict.value : [])
-          : []
+        const rawMerges = verdict.ok ? (Array.isArray(verdict.value) ? verdict.value : []) : []
+        // 模型对"合并"的 JSON 形状不稳定：兼容 {keep,drop}、[[a,b],...]、{indices:[...]} 等写法。
+        const merges = []
+        for (const raw of rawMerges.slice(0, 8)) {
+          if (!raw || typeof raw !== 'object') continue
+          if (Array.isArray(raw)) {
+            const [keep, ...drops] = raw
+            merges.push({ keep, drop: drops })
+            continue
+          }
+          const keep = raw.keep ?? raw.keepIndex ?? raw.target ?? raw.idx ?? raw.index
+          const drops = raw.drop ?? raw.drops ?? raw.merge ?? raw.mergeWith ?? raw.with ?? raw.from ?? raw.indices ?? raw.indexes
+          const normalizedDrops = Array.isArray(drops) ? drops.filter((value) => value !== keep) : []
+          merges.push({ keep, drop: normalizedDrops, title: raw.title, body: raw.body })
+        }
         const used = new Set()
         const resolveEpisodeRef = (ref) => {
           if (ref == null) return null
@@ -1736,6 +1751,23 @@ export function apply(ctx) {
           const dropBlocks = (Array.isArray(merge?.drop) ? merge.drop : [])
             .map(resolveEpisodeRef)
             .filter((block) => block && block.id !== keepBlock?.id)
+          // 模型把"单块改写"也放进输出（drop 为空）：若正文确实更完整且没超上限，接受为改写；否则跳过。
+          if (keepBlock && !dropBlocks.length) {
+            const newBody = String(merge?.body ?? '').trim()
+            const newTitle = String(merge?.title ?? '').trim().slice(0, maxEpisodeTitle)
+            const oldBody = String(keepBlock.data?.body ?? '')
+            if (used.has(keepBlock.id) || !newBody || newBody.length <= oldBody.length) continue
+            if (newBody.length > maxEpisodeBody) continue
+            memory.put({
+              namespace: 'episode', kind: 'block', key: keepBlock.key, text: newTitle || keepBlock.text,
+              data: { ...(keepBlock.data ?? {}), body: newBody, rewrittenAt: Number(now) }, now,
+            })
+            if (typeof memory.index === 'function') void memory.index(keepBlock.id, `${newTitle || keepBlock.text}\n${newBody}`)
+            used.add(keepBlock.id)
+            episodesRewritten += 1
+            ctx.log({ level: 'info', msg: 'dream.episode-rewritten', key: keepBlock.key, from: oldBody.length, to: newBody.length })
+            continue
+          }
           if (!keepBlock || !dropBlocks.length) {
             ctx.log({ level: 'warn', msg: 'dream.episode-merge-skip', reason: 'invalid-refs', keep: String(merge?.keep ?? '').slice(0, 80), drop: (merge?.drop ?? []).length })
             continue
@@ -1788,7 +1820,7 @@ export function apply(ctx) {
           episodesMerged += dropBlocks.length
           ctx.log({ level: 'info', msg: 'dream.episode-merged', keep: keepBlock.key, dropped: dropBlocks.length, mergedTo: firstId })
         }
-        if (merges.length) ctx.log({ level: 'info', msg: 'dream.episode-merge', proposed: merges.length, applied: episodesMerged })
+        if (merges.length) ctx.log({ level: 'info', msg: 'dream.episode-merge', proposed: merges.length, applied: episodesMerged, rewritten: episodesRewritten })
       } catch (error) {
         ctx.log({ level: 'warn', msg: 'dream.episode-merge-fail', error: String(error?.message ?? error).slice(0, 160) })
       }
@@ -1823,12 +1855,12 @@ export function apply(ctx) {
       : 0
     const empty = written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok)
     recordRun(day, 'episodes', {
-      episodes: written.length, merged: episodesMerged, notes: notes.length, deferred, uncovered: uncovered.length,
+      episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length, deferred, uncovered: uncovered.length,
       bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
       payloadChars, empty,
     }, now)
     return {
-      job: 'episodes', ok: true, blocks: written.length, episodes: written.length, merged: episodesMerged, notes: notes.length,
+      job: 'episodes', ok: true, blocks: written.length, episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length,
       deferred, bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards, empty, payloadChars,
       degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
@@ -3020,6 +3052,10 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
+
+
+
 
 
 
