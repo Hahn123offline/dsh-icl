@@ -73,6 +73,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     outDir: argValue(argv, 'out'),
     mode: String(argValue(argv, 'mode', 'all')),
     schema: String(argValue(argv, 'schema', 'v2')),
+    rerank: String(argValue(argv, 'rerank', 'off')),
     model: String(argValue(argv, 'model', 'echo')),
     provider: argValue(argv, 'provider'),
     modelId: argValue(argv, 'model-id'),
@@ -107,6 +108,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
   if (!PROFILES.includes(options.profile)) throw new CliError(`--profile 只能是 ${PROFILES.join('|')}：${options.profile}`)
   if (!MODEL_KINDS.includes(options.model)) throw new CliError(`--model 只能是 ${MODEL_KINDS.join('|')}：${options.model}`)
   if (!['v2', 'v3'].includes(options.schema)) throw new CliError(`--schema 只能是 v2|v3：${options.schema}`)
+  if (!['off', 'llm'].includes(options.rerank)) throw new CliError(`--rerank 只能是 off|llm：${options.rerank}`)
   if (!SEEDS.includes(options.seed)) throw new CliError(`--seed 只能是 ${SEEDS.join('|')}：${options.seed}`)
   if (options.gatePreset != null && !GATE_PRESETS[String(options.gatePreset)]) {
     throw new CliError(`--gate-preset 只能是 ${Object.keys(GATE_PRESETS).join('|')}：${options.gatePreset}`)
@@ -127,6 +129,7 @@ function printUsage(write = console.log) {
 选项：
   --mode <all|formation|retrieval>   默认 all
   --schema <v2|v3>                   v3：episode 主单位（默认 v2，向后兼容）
+  --rerank <off|llm>                 v3 检索后重排（默认 off；llm 需 dream-chat 槽位）
   --model <echo|cloud|local>         默认 echo（离线）；cloud/local 读 config/icl.local.json
   --model-id <id>                    覆盖 provider 的 model
   --provider <id>                    指定 chat provider id
@@ -366,6 +369,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     const recallConfig = {
       ...(options.recallMinSim != null ? { minSim: options.recallMinSim } : {}),
       ...(options.recallMinSimNoEmbed != null ? { minSimNoEmbed: options.recallMinSimNoEmbed } : {}),
+      ...(options.rerank !== 'off' ? { rerank: options.rerank } : {}),
     }
     const eagerConfig = {
       ...(options.eagerMinScore != null ? { minScore: options.eagerMinScore } : {}),
@@ -583,6 +587,8 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
+
 
 
 

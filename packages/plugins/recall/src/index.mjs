@@ -64,6 +64,11 @@ export function apply(ctx) {
   //   无嵌入保持 0.2：0.3 起 recall@3 明显下滑（alias 41.7%→25%），且无嵌入本来 falseInjection=0。
   const minSim = Math.max(0.01, Number(ctx.config.minSim ?? 0.45))
   const minSimNoEmbed = Math.max(0.01, Number(ctx.config.minSimNoEmbed ?? 0.2))
+  // v3 可选：对 top 候选做一次 LLM 重排（默认关；lab A/B 验证用，线上需要显式打开）。
+  // 复用 dream-chat 槽位（生产里已绑定）；槽位不可用时自动跳过，不影响召回。
+  const rerankMode = String(ctx.config.rerank ?? 'off')
+  const rerankTop = Math.max(4, Number(ctx.config.rerankTop ?? 8))
+  const rerankSlot = String(ctx.config.rerankSlot ?? 'dream-chat')
   const relevanceFloor = ({ deeper }) => {
     let embedded = false
     try { embedded = Boolean(memory.stats?.()?.embedded) } catch { embedded = false }
@@ -585,7 +590,7 @@ export function apply(ctx) {
             })
           }
         }
-        const candidates = [...bestById.values()]
+        let candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
         // 把写着内容词的 fact 挤出采样区，导致明明有相关词却被判"没找到"（QQ p-05 实测）。
@@ -676,6 +681,34 @@ export function apply(ctx) {
               boosted = true
             }
             if (boosted) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+          }
+        }
+
+        // v3 可选 LLM 重排：只在显式开启时跑一次；失败/没槽位就保持原排序。
+        if (question && rerankMode !== 'off' && candidates.length > 4) {
+          try {
+            const pool = candidates.slice(0, rerankTop)
+            const catalog = pool.map((entry, index) => `[${index}] ${entry.item.text}｜${String(entry.item.data?.body ?? entry.item.data?.profile ?? '').slice(0, 320).replace(/\n/g, ' ')}`).join('\n')
+            const raw = await ctx.slots.call(rerankSlot, {
+              messages: [
+                { role: 'system', content: '你是记忆检索重排器。根据用户问题，从候选记忆中挑出最能回答问题的 1–3 条（按相关程度排序）；没有相关的输出空数组。只输出 JSON：{"picks":[编号,...]}，不要解释。' },
+                { role: 'user', content: `问题：${question}\n\n候选：\n${catalog}` },
+              ],
+              maxTokens: 240,
+            })
+            const match = /\{[\s\S]*\}/.exec(String(raw ?? ''))
+            const parsed = match ? JSON.parse(match[0]) : {}
+            const picks = (Array.isArray(parsed?.picks) ? parsed.picks : [])
+              .map((value) => Number(value))
+              .filter((value) => Number.isInteger(value) && value >= 0 && value < pool.length)
+            if (picks.length) {
+              const reordered = [...new Set(picks)].map((index) => pool[index])
+              const rest = candidates.filter((entry) => !reordered.includes(entry))
+              candidates = [...reordered, ...rest]
+              ctx.log({ level: 'info', msg: 'recall.rerank', picks: picks.length, pool: pool.length })
+            }
+          } catch (error) {
+            ctx.log({ level: 'warn', msg: 'recall.rerank-fail', error: String(error?.message ?? error).slice(0, 120) })
           }
         }
 
@@ -916,6 +949,7 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
 
 
 
