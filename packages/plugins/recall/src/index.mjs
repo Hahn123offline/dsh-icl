@@ -498,6 +498,38 @@ export function apply(ctx) {
             await collectHits(entityQuery, relaxedFloor, true)
           }
         }
+        // v3：实体对关系问题直接扫 episode。粗块正文可能只写"离线版/周子涵"等别名，
+        // 单靠整句检索召不回；这里按"同时提到双方"直接把 episode 加进候选（后续仍有内容词门槛）。
+        // 先补充 entity 层的实体（它的 aliases 覆盖所有称呼，比 person 档案的行更全）。
+        if (question) {
+          const lowerQ = question.toLowerCase()
+          for (const row of memory.query({ namespace: 'entity', kind: 'entity', limit: 500 })) {
+            if (row.data?.stub === true) continue
+            const forms = [...new Set([
+              String(row.text ?? '').trim(),
+              ...(row.data?.aliases ?? []).map((alias) => String(alias ?? '').trim()),
+              ...(row.data?.ids ?? []).map((id) => String(id?.value ?? '').trim()),
+            ].filter((form) => form.length >= 2))]
+            if (!forms.some((form) => lowerQ.includes(form.toLowerCase()))) continue
+            if (relationshipEntities.some((entity) => entity.canonical === row.key)) continue
+            relationshipEntities.push({ canonical: row.key, forms })
+          }
+        }
+        if (relationshipEntities.length >= 2) {
+          const episodeRows = memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
+          for (const row of episodeRows) {
+            if (row.data?.superseded === true) continue
+            const haystack = `${row.text ?? ''} ${String(row.data?.body ?? '')} ${JSON.stringify(row.data?.people ?? [])} ${JSON.stringify(row.data?.entities ?? [])}`.toLowerCase()
+            const mentioned = relationshipEntities.filter((entity) => entity.forms.some((form) => haystack.includes(form.toLowerCase()))).length
+            if (mentioned < 2) continue
+            const key = `episode:${row.id}`
+            if (bestById.has(key)) continue
+            bestById.set(key, {
+              item: { id: row.id, namespace: 'episode', kind: 'block', text: row.text, data: row.data, createdAt: row.createdAt },
+              namespace: 'episode', score: 50, sim: 0.6, uncertain: false, matchedQuery: 'entity-pair', boosted: true,
+            })
+          }
+        }
         const candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
@@ -553,6 +585,25 @@ export function apply(ctx) {
             return mentioned >= 2 && relationCue ? 2 : mentioned >= 1 ? 1 : 0
           }
           candidates.sort((a, b) => relationRank(b) - relationRank(a) || b.score - a.score || b.item.createdAt - a.item.createdAt)
+        }
+
+        // v3 经历块内容词覆盖加分：标题通常是创意概括，问句用词更多落在正文里；
+        // 按命中数量小幅加分，把"正文确实在讲这件事"的块提上来（不改变 v2 事件块排序）。
+        if (question && candidates.length) {
+          const contentGrams = contentBigramsOf(question)
+          if (contentGrams.length) {
+            let boosted = false
+            for (const entry of candidates) {
+              if (entry.namespace !== 'episode') continue
+              const haystack = `${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '').slice(0, 1500)}`.toLowerCase().replace(/\s+/g, '')
+              let hits = 0
+              for (const gram of contentGrams) if (haystack.includes(gram)) hits += 1
+              if (!hits) continue
+              entry.score = Number(entry.score) * (1 + Math.min(0.5, hits * 0.08))
+              boosted = true
+            }
+            if (boosted) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+          }
         }
 
         // 今天的 note 永远优先展示（带 [今天] 标签）

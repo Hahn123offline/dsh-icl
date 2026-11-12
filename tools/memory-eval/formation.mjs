@@ -65,10 +65,21 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
     const annTexts = [...(annotations.facts ?? []), ...(annotations.preferences ?? []), ...(annotations.commitments ?? [])]
     let annotationSim = 0
     for (const text of annTexts) annotationSim = Math.max(annotationSim, textSimilarity(gold.text, String(text ?? '')))
+    // 粗粒度 episode 的证据列表常是"引用了其中几行原话"，不一定逐行覆盖 gold 的全部证据；
+    // 再用 gold 内容词在 episode 正文里的出现比例兜底（>=0.45 视为这块讲了这件事）。
+    const normalize = (text) => String(text ?? '').toLowerCase().replace(/\s+/g, '')
+    const goldText = normalize(gold.text)
+    const haystack = normalize(`${block.text ?? ''} ${block.body ?? ''}`)
+    const grams = []
+    for (let i = 0; i + 1 < goldText.length; i += 1) {
+      const gram = goldText.slice(i, i + 2)
+      if (/^[\u4e00-\u9fff]{2}$/.test(gram)) grams.push(gram)
+    }
+    const containment = grams.length ? grams.filter((gram) => haystack.includes(gram)).length / grams.length : 0
     const eligible = want.size
-      ? (coverage >= 0.6 || (overlap >= 1 && (textSim >= 0.3 || annotationSim >= 0.5)))
-      : (textSim >= 0.5 || annotationSim >= 0.5)
-    return eligible ? { tier: 1, coverage, textSim, annotationSim, overlap } : null
+      ? (coverage >= 0.6 || (overlap >= 1 && (textSim >= 0.3 || annotationSim >= 0.5)) || containment >= 0.45)
+      : (textSim >= 0.5 || annotationSim >= 0.5 || containment >= 0.5)
+    return eligible ? { tier: 1, coverage, textSim, annotationSim, overlap, containment } : null
   }
   for (const gold of golds) {
     const isPerson = String(gold.type) === 'person'
@@ -96,6 +107,7 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
     // v3：同一行证据可能被多个 episode 引用；优先选"正文真的讲了这条 gold"的那一块（文本/注释相似度高），
     // 证据覆盖只做次级判据，否则 gold 会被映射到只是引用了同一行的其它 episode。
     ((b.score.textSim + (b.score.annotationSim ?? 0)) - (a.score.textSim + (a.score.annotationSim ?? 0)))
+    || ((b.score.containment ?? 0) - (a.score.containment ?? 0))
     || (b.score.coverage - a.score.coverage)
     || String(a.gold.id).localeCompare(String(b.gold.id))
     || String(a.block.id).localeCompare(String(b.block.id)))
