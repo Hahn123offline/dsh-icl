@@ -33,6 +33,8 @@ function dayKey(now) {
 
 const CATEGORIES = Object.freeze({
   event: { label: '事件', halfLifeDays: 30 },
+  // v3（2026-11-12）：经历块是召回主单位——一次回忆尽量给一整段有上下文的经历。
+  episode: { label: '经历', halfLifeDays: 120 },
   person: { label: '人物', halfLifeDays: 180 },
   slang: { label: '梗', halfLifeDays: 90 },
   // typed memory v2（Phase 2 起，additive）：稳定事实/偏好/承诺各一层，
@@ -756,6 +758,12 @@ export function apply(ctx) {
       return `[未整理 · ${day}] ${item.text}`
     }
     if (tag === '今天') return `[今天] ${item.text}`
+    // v3 经历块：标题 + 完整正文（长文本是刻意的——一次回忆给足上下文，不再只给一行原子摘要）。
+    if (item.namespace === 'episode' && item.kind === 'block') {
+      const body = String(item.data?.body ?? '').trim()
+      const head = `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
+      return body ? `${head}\n${body}` : head
+    }
     if (item.kind === 'block') return `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
     return `[${tag} · 随手记] ${doubt}${lowConfidence}${unsure}${item.text}`
   }

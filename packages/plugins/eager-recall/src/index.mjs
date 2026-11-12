@@ -82,7 +82,7 @@ export function apply(ctx) {
     }
     if (!picked.length) { recordCount(base); return null }
     const lines = picked.map((h) => {
-      const tag = h.item.kind === 'note' ? '未整理' : (h.item.namespace ?? '记忆')
+      const tag = h.item.kind === 'note' ? '未整理' : h.item.namespace === 'episode' ? '经历' : (h.item.namespace ?? '记忆')
       const doubt = h.item.data?.provisional === true ? '[存疑] ' : ''
       const unsure = h.clarity?.label ? `[${h.clarity.label}] ` : ''
       return `· [${tag}] ${doubt}${unsure}${clipLine(h.item.text, 80)}`
@@ -102,3 +102,4 @@ export function apply(ctx) {
 
   ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars, cooldownMs })
 }
+

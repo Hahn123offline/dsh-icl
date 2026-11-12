@@ -19,6 +19,9 @@ import { inferRawSource, FORMATION_SOURCES, RAW_SOURCES } from '../../../core/sr
 export const name = 'dream'
 
 const DEFAULT_JOBS = ['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
+// v3（用户 2026-11-12 拍板）：记忆以"经历块 episode"为主，typed 降级为块内注释。
+// episodes 替代 events；people 仍产出人物 synopsis；cleanup 增加跨块合并（含同主题 episode）。
+const DEFAULT_JOBS_V3 = ['wash', 'episodes', 'people', 'lexicon', 'consume', 'cleanup', 'index']
 
 function ymdOf(now, timezone = 'Asia/Hong_Kong') {
   return new Intl.DateTimeFormat('en-CA', {
@@ -146,6 +149,9 @@ export function apply(ctx) {
   const session = String(ctx.config.sessionId ?? 'default')
   const dreamAt = String(ctx.config.dreamAt ?? '23:00')
   if (!/^\d{1,2}:\d{2}$/.test(dreamAt)) throw new Error(`dreamAt 格式应为 HH:mm：${dreamAt}`)
+  // v3 记忆形态开关：v2=原子事件块+独立 typed；v3=粗粒度经历块（episode）+ typed 注释。
+  const memorySchema = String(ctx.config.memorySchema ?? 'v2').trim() === 'v3' ? 'v3' : 'v2'
+  const defaultJobs = memorySchema === 'v3' ? DEFAULT_JOBS_V3 : DEFAULT_JOBS
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
   try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
@@ -158,6 +164,8 @@ export function apply(ctx) {
   try { memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
   // typed v2 entity 层的关系边（Phase 3 第 3 步）：entity-to-entity，带 evidence；可召回（"关系"类问题）。
   try { memory.registerNamespace({ id: 'relation', label: '关系', recallable: true, halfLifeDays: 365, owner: 'dream' }) } catch { /* 已注册 */ }
+  // v3 经历块：召回主单位。text=一行标题，data.body=完整叙述（可以长），typed 事实挂 data.annotations。
+  try { memory.registerNamespace({ id: 'episode', label: '经历', recallable: true, halfLifeDays: 120, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
   // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
@@ -173,7 +181,10 @@ export function apply(ctx) {
   const groupIds = new Set((Array.isArray(ctx.config.groupIds) ? ctx.config.groupIds : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean))
   // cleanup 整理的块范围：typed v2 的事实/偏好/承诺也交给整理轮（否则旧值永远不失效）。
-  const CLEANUP_NAMESPACES = ['event', 'person', 'slang', 'fact', 'preference', 'commitment']
+  // v3 下经历块也参与整理：同一天/同一主题的 episode 会被模型合并成更少、更完整的块。
+  const CLEANUP_NAMESPACES = memorySchema === 'v3'
+    ? ['episode', 'person', 'slang']
+    : ['event', 'person', 'slang', 'fact', 'preference', 'commitment']
   // 形成材料 profile（评测 A/B 用；默认产品口径）：
   //   raw-main（默认）只吃真人/QQ 转述/她可见的回复；raw-human 再砍掉她自己的回复；
   //   raw-all 是"旧无门控基线"，连工具结果/环境通知都喂进去，只用于对照，不用于产品。
@@ -600,6 +611,15 @@ export function apply(ctx) {
       memory.put({ namespace: 'event', kind: 'block', key: row.key, text: row.text, data: { ...(row.data ?? {}), entities: [...new Set(entities)].slice(0, 10) }, now })
       stats.eventPatched += 1
     }
+    // v3 经历块同样按 people 补 entities 引用。
+    for (const row of memory.query({ namespace: 'episode', kind: 'block', limit: 1000, order: 'desc' })) {
+      if (row.data?.superseded === true || Array.isArray(row.data?.entities)) continue
+      const people = normalizePeople(row.data?.people)
+      if (!people.length) continue
+      const entities = people.map((value) => (/^\d{5,12}$/.test(value) ? `entity:qq:${value}` : `entity:person:${value}`))
+      memory.put({ namespace: 'episode', kind: 'block', key: row.key, text: row.text, data: { ...(row.data ?? {}), entities: [...new Set(entities)].slice(0, 10) }, now })
+      stats.episodePatched = (stats.episodePatched ?? 0) + 1
+    }
     // 悬空引用补 stub 实体（例如 event.people 里只有显示名、没有 person 档案）：让图闭合；
     // stub 标 provisional/stub，后续人物档案建起来时会被正式实体覆盖合并。
     const knownEntityKeys = new Set(memory.query({ namespace: 'entity', kind: 'entity', limit: 2000 }).map((row) => row.key))
@@ -613,6 +633,9 @@ export function apply(ctx) {
       }
     }
     for (const row of memory.query({ namespace: 'event', kind: 'block', limit: 1000 })) {
+      for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
+    }
+    for (const row of memory.query({ namespace: 'episode', kind: 'block', limit: 1000 })) {
       for (const key of Array.isArray(row.data?.entities) ? row.data.entities : []) referencedKeys.add(String(key))
     }
     for (const key of referencedKeys) {
@@ -647,7 +670,7 @@ export function apply(ctx) {
       : null
     const RELATION_CUES = ['舍友', '室友', '同一个人', '朋友', '同事', '同学', '主人', '关系']
     let relationsTouched = 0
-    // 关系来源：typed fact（"X 是主人的舍友"）+ 事件块（关系澄清常写成事件）。
+    // 关系来源：typed fact（"X 是主人的舍友"）+ 事件块/经历块（关系澄清常写成事件）。
     const relationSources = [
       ...memory.query({ namespace: 'fact', kind: 'block', limit: 1000, order: 'desc' })
         .filter((row) => row.data?.superseded !== true)
@@ -655,9 +678,53 @@ export function apply(ctx) {
       ...memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
         .filter((row) => row.data?.superseded !== true)
         .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 600)}`, data: row.data ?? {} })),
+      ...memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
+        .filter((row) => row.data?.superseded !== true)
+        .map((row) => ({ key: row.key, text: `${row.text ?? ''} ${String(row.data?.body ?? '').slice(0, 1200)}`, data: row.data ?? {} })),
     ]
+    const entityByMention = (value) => {
+      const text = String(value ?? '').trim()
+      if (!text) return null
+      if (/^\d{5,12}$/.test(text)) {
+        return entityRows.find((row) => (row.data?.ids ?? []).some((id) => String(id.kind) === 'qq' && String(id.value) === text)) ?? null
+      }
+      return entityRows.find((row) => mentionFormsOf(row).some((form) => form === text || text.includes(form))) ?? null
+    }
+    const upsertRelation = (fromRow, toRow, rawLabel, source) => {
+      if (!fromRow || !toRow || fromRow.key === toRow.key) return
+      const label = String(rawLabel ?? '').trim().slice(0, 20) || '相关'
+      const relationKey = `relation:${fromRow.key}:${label}:${toRow.key}`
+      const existing = memory.query({ namespace: 'relation', kind: 'relation', key: relationKey, limit: 1 })[0]
+      const evidence = Array.isArray(source.data?.evidence) ? source.data.evidence : []
+      const sourceKeys = [...new Set([...(existing?.data?.sourceKeys ?? []), source.key])]
+      const nextData = {
+        from: fromRow.key, to: toRow.key, label,
+        evidence: (existing?.data?.evidence ?? []).concat(evidence).slice(0, 20),
+        sourceKeys: sourceKeys.slice(0, 20),
+        day: existing?.data?.day ?? source.data?.day ?? null,
+        provisional: evidence.length === 0,
+        updatedAt: Number(now),
+      }
+      const displayText = `${fromRow.text} 与 ${toRow.text}：${label}`
+      const same = existing && existing.text === displayText
+        && JSON.stringify(existing.data?.sourceKeys ?? []) === JSON.stringify(nextData.sourceKeys)
+      if (!same) memory.put({ namespace: 'relation', kind: 'relation', key: relationKey, text: displayText, data: nextData, now })
+      relationsTouched += 1
+    }
+    // v3：episode 里模型显式给出的关系（A-B-label）优先。
+    for (const source of relationSources.filter((entry) => String(entry.key).startsWith('epi:'))) {
+      for (const relation of Array.isArray(source.data?.relations) ? source.data.relations : []) {
+        const from = String(relation?.from ?? '').trim()
+        const to = String(relation?.to ?? '').trim()
+        const label = String(relation?.label ?? '').trim() || '相关'
+        const fromRow = entityByMention(from) ?? (String(from).includes('主人') ? ownerEntity : null)
+        const toRow = entityByMention(to) ?? (String(to).includes('主人') ? ownerEntity : null)
+        if (fromRow && toRow) upsertRelation(fromRow, toRow, label, source)
+      }
+    }
+    // 兜底：从文本里识别"关系词 + ≥2 个实体提及"（v2 兼容 + v3 未显式标注的块）。
     for (const source of relationSources) {
-      const { key: sourceKey, text } = source
+      const { text } = source
       if (!text) continue
       const cue = RELATION_CUES.find((label) => text.includes(label))
       if (!cue) continue
@@ -671,24 +738,7 @@ export function apply(ctx) {
       if (unique.length < 2 && ownerEntity && !unique.some((row) => row.key === ownerEntity.key) && text.includes('主人')) unique.push(ownerEntity)
       if (unique.length < 2) continue
       const [from, to] = unique.slice(0, 2)
-      const label = cue === '关系' ? '相关' : cue
-      const relationKey = `relation:${from.key}:${label}:${to.key}`
-      const existing = memory.query({ namespace: 'relation', kind: 'relation', key: relationKey, limit: 1 })[0]
-      const evidence = Array.isArray(source.data?.evidence) ? source.data.evidence : []
-      const sourceKeys = [...new Set([...(existing?.data?.sourceKeys ?? []), sourceKey])]
-      const nextData = {
-        from: from.key, to: to.key, label,
-        evidence: (existing?.data?.evidence ?? []).concat(evidence).slice(0, 20),
-        sourceKeys: sourceKeys.slice(0, 20),
-        day: existing?.data?.day ?? source.data?.day ?? null,
-        provisional: evidence.length === 0,
-        updatedAt: Number(now),
-      }
-      const displayText = `${from.text} 与 ${to.text}：${label}`
-      const same = existing && existing.text === displayText
-        && JSON.stringify(existing.data?.sourceKeys ?? []) === JSON.stringify(nextData.sourceKeys)
-      if (!same) memory.put({ namespace: 'relation', kind: 'relation', key: relationKey, text: displayText, data: nextData, now })
-      relationsTouched += 1
+      upsertRelation(from, to, cue === '关系' ? '相关' : cue, source)
     }
     // 关系边的 validity：所有来源 fact 都失效时，关系边也软失效（证据不再成立）。
     let relationsInvalidated = 0
@@ -697,7 +747,7 @@ export function apply(ctx) {
       const sources = Array.isArray(relation.data?.sourceKeys) ? relation.data.sourceKeys : []
       if (!sources.length) continue
       const anyLive = sources.some((key) => {
-        const namespace = String(key).startsWith('evt:') ? 'event' : 'fact'
+        const namespace = String(key).startsWith('epi:') ? 'episode' : String(key).startsWith('evt:') ? 'event' : 'fact'
         const row = memory.query({ namespace, kind: 'block', key, limit: 1 })[0]
         return row && row.data?.superseded !== true
       })
@@ -1494,6 +1544,297 @@ export function apply(ctx) {
     }
   }
 
+  /* ── episodes：v3 主记忆块（粗粒度经历 + 块内注释） ─────────────── */
+
+  /**
+   * v3 的记忆主单位（用户 2026-11-12 拍板）：
+   * - 一段连续经历 / 一个话题写成一整块，正文由内容决定，不设固定条数、不硬性拆原子节点；
+   * - 块内可带 facts/preferences/commitments 注释（供查询/实体/关系用，但不再作为独立召回单位）；
+   * - 没有值得留下的经历就输出 []，不为了凑数造块。
+   */
+  async function jobEpisodes({ now, force = false }) {
+    const day = dayKey(now, tzOf())
+    if (!force && alreadyRan(day, 'episodes')) return { job: 'episodes', skipped: 'already-ran' }
+    const notes = consolidated(memory.query({ namespace: 'event', kind: 'note', limit: 500, order: 'desc' }))
+    const dayLog = readDayLog(day)
+    if (!notes.length && !dayLog) return { job: 'episodes', skipped: 'no-notes' }
+    const timeOf = (n) => Number(n.data?.at ?? n.createdAt ?? 0)
+    const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
+    const material = dayLog
+      ? formationLines(dayLog)
+      : notes.slice().sort((a, b) => timeOf(a) - timeOf(b)).map((n) => `[${n.id}] ${hhmm(timeOf(n))} ${clipText(n.text)}`)
+    const hint = dayLog ? '\n\n（上面每行开头的编号就是 evidence 要用的编号）' : ''
+    const { shards, omitted: omittedShards } = shardByExperience(material, { gapMin: segmentGapMin })
+    if (dayLog && notes.length) {
+      shards.push(notes.slice(0, 40).map((note) => `n${note.id}｜${clipText(note.text, 240)}`))
+    }
+    if (omittedShards) ctx.log({ level: 'warn', msg: 'dream.episodes-shards-capped', omittedShards, kept: shards.length })
+    const instruction = [
+      '把今天的经历整理成"经历块"（episode），不要写成日记、流水账或要点清单。',
+      '块是回忆的单位：一段连续经历 / 一个话题的来龙去脉，就写成一整块；块里自然包含起因、过程、感受和结论。',
+      '不要按"每件事一块"机械切分，也不要用固定数量凑块；今天没有值得留下的经历就输出 []。',
+      '同一次连续经历里的碎片放进同一块；不同时间段/不同话题的事分开写。',
+      '每块输出对象：{"title":"一行标题（≤60字，不含QQ号）","body":"第一人称完整叙述（尽量把上下文写全，长度由内容决定）","people":["QQ号或名字"],"tags":["短标签"],"evidence":[id],"facts":[],"preferences":[],"commitments":[],"relations":[{"from":"A","to":"B","label":"关系"}]}',
+      'body 要写成以后读起来能独立理解的叙述：谁、何时、发生了什么、结果如何；不要只写一句话摘要，也不要把同一件事拆成多条原子句。',
+      'facts/preferences/commitments 是块内注释：只有材料里明确出现的稳定信息才写，每条一句话，没有就省略（不要求每块都有）。',
+      'relations 只写材料里明确说出的关系，label 用材料原词（如 舍友/同一个人/朋友/主人）；不确定就不写。',
+      'evidence 必须是上面真实存在的编号；不能编。没有出处就不要写进块。',
+      '如果材料里出现 n<数字> 开头的行，那是她主动记下的笔记，证据要写成对应的 n<数字>（例如 n12）。',
+      '只输出 JSON 数组，不要解释。',
+    ].join('\n')
+    const maxEpisodeBody = Math.max(400, Number(ctx.config.maxEpisodeBody ?? 2400))
+    const maxEpisodeTitle = Math.max(40, Number(ctx.config.maxEpisodeTitle ?? 80))
+    const blocks = []
+    const shardResults = []
+    async function runEpisodeShard(lines, label, depth = 0) {
+      const payload = `${lines.join('\n')}${hint}`
+      const out = await askJson({ instruction, payload, where: `episodes#${label}`, maxTokens: 4000 })
+      if (!out.ok) {
+        if (depth < 1 && lines.length >= 10) {
+          const middle = Math.floor(lines.length / 2)
+          const partial = []
+          for (const [partLabel, part] of [[`${label}a`, lines.slice(0, middle)], [`${label}b`, lines.slice(middle)]]) {
+            try { partial.push(await runEpisodeShard(part, partLabel, depth + 1)) } catch { /* 半边失败也保留另一半 */ }
+          }
+          if (partial.length) {
+            ctx.log({ level: 'warn', msg: 'dream.shard-split', job: 'episodes', shard: label, half: partial.length })
+            return { ok: true, blocks: partial.flatMap((entry) => entry.blocks), chars: payload.length, split: true, partial: partial.length < 2 }
+          }
+        }
+        throw new Error(`模型输出不可解析：${out.error}`)
+      }
+      return { ok: true, blocks: out.value, chars: payload.length }
+    }
+    for (let i = 0; i < shards.length; i += 1) {
+      try {
+        const result = await runEpisodeShard(shards[i], String(i + 1))
+        blocks.push(...result.blocks)
+        shardResults.push({ index: i + 1, ok: true, blocks: result.blocks.length, chars: result.chars, ...(result.split ? { split: true } : {}) })
+      } catch (error) {
+        const reason = String(error?.message ?? error)
+        shardResults.push({ index: i + 1, ok: false, error: reason })
+        ctx.log({ level: 'warn', msg: 'dream.shard-fail', job: 'episodes', shard: i + 1, shards: shards.length, error: reason })
+      }
+    }
+    if (!shardResults.some((row) => row.ok)) {
+      return {
+        job: 'episodes', ok: false, blocks: 0, shards: shards.length, failedShards: shardResults.length,
+        degraded: true, error: shardResults.map((row) => row.error).filter(Boolean).slice(0, 3).join('；'),
+      }
+    }
+    const normalizeRelations = (list) => {
+      const out = []
+      for (const entry of Array.isArray(list) ? list : []) {
+        const from = String(entry?.from ?? '').trim()
+        const to = String(entry?.to ?? '').trim()
+        const label = String(entry?.label ?? '').trim().slice(0, 20)
+        if (!from || !to || from === to) continue
+        const normalized = { from: from.slice(0, 40), to: to.slice(0, 40), label: label || '相关' }
+        if (!out.some((x) => x.from === normalized.from && x.to === normalized.to && x.label === normalized.label)) out.push(normalized)
+      }
+      return out.slice(0, 10)
+    }
+    const normalizeAnnotations = (list) => {
+      const out = []
+      for (const raw of Array.isArray(list) ? list : []) {
+        const text = String(raw && typeof raw === 'object' ? raw.text ?? '' : raw ?? '').trim().slice(0, 200)
+        if (text.length >= 2 && !out.includes(text)) out.push(text)
+      }
+      return out.slice(0, 20)
+    }
+    let written = []
+    const dayLines = dayLog ? dayLogIndex(dayLog) : null
+    const bodies = []
+    for (const block of blocks) {
+      const titleRaw = String(block?.title ?? block?.summary ?? '').trim()
+      if (!titleRaw) continue
+      const title = titleRaw.slice(0, maxEpisodeTitle)
+      const evidence = []
+      for (const rawId of (Array.isArray(block?.evidence) ? block.evidence : [])) {
+        const token = String(rawId ?? '').trim()
+        const noteHit = /^n(\d+)$/i.exec(token)
+        if (noteHit) {
+          const note = notes.find((n) => Number(n.id) === Number(noteHit[1]))
+          if (note) evidence.push({ type: 'note', id: Number(note.id), line: clipText(note.text, 160), at: Number(note.data?.at ?? note.createdAt ?? now) })
+          continue
+        }
+        const id = Number(token)
+        if (dayLines && dayLines.has(id)) evidence.push(dayEvidence(dayLines, id))
+        else if (!dayLines && Number.isFinite(id)) evidence.push(...validEvidence([id], notes))
+      }
+      // 没有出处就不落块（"没有出处不要写进块"）；不弹问题、不硬造。
+      if (!evidence.length) continue
+      const body = String(block?.body ?? '').trim() || title
+      const chunks = splitBodyChunks(body, maxEpisodeBody)
+      const keyBase = `epi:${day}:${hash(title)}`
+      for (let index = 0; index < chunks.length; index += 1) {
+        const part = index + 1
+        const key = index === 0 ? keyBase : `${keyBase}:p${part}`
+        const previous = memory.query({ namespace: 'episode', kind: 'block', key, limit: 1 })[0]
+        const partEvidence = dedupeEvidence([...(previous?.data?.evidence ?? []), ...evidence])
+        const created = memory.put({
+          namespace: 'episode',
+          kind: 'block',
+          key,
+          text: index === 0 ? title : `${title}（${part}/${chunks.length}）`.slice(0, maxEpisodeTitle + 8),
+          data: {
+            body: chunks[index],
+            evidence: partEvidence,
+            provisional: partEvidence.length === 0,
+            day,
+            ...(chunks.length > 1 ? { parts: { groupId: hash(title), part, total: chunks.length } } : {}),
+            people: normalizePeople(block?.people),
+            tags: normalizeTags(block?.tags),
+            annotations: {
+              facts: normalizeAnnotations(block?.facts),
+              preferences: normalizeAnnotations(block?.preferences),
+              commitments: normalizeAnnotations(block?.commitments),
+            },
+            relations: normalizeRelations(block?.relations),
+            sources: [...new Set([...notes.map((n) => n.key).filter(Boolean), ...(previous?.data?.sources ?? [])])].slice(0, 40),
+          },
+          now,
+        })
+        if (typeof memory.index === 'function') void memory.index(created.id, `${title}\n${chunks[index]}`)
+        written.push(created.id)
+        bodies.push(chunks[index])
+      }
+    }
+    // v3 同日合并轮：模型认为属于同一段经历/同一主题的块合成更完整的块。
+    // 不设数量目标、不强制合并（没有可合并就输出 []）；合并后必须保留双方全部细节。
+    let episodesMerged = 0
+    const baseEpisodes = written
+      .map((id) => memory.query({ namespace: 'episode', kind: 'block', id, limit: 1 })[0])
+      .filter((block) => block && !block.data?.parts)
+    if (baseEpisodes.length >= 5) {
+      try {
+        const payload = JSON.stringify(baseEpisodes.map((block, index) => ({
+          index, title: block.text, body: String(block.data?.body ?? '').slice(0, 400), day,
+        })))
+        const verdict = await askJson({
+          instruction: [
+            '下面是今天已经写下的经历块。把其中真正属于同一段经历/同一主题、合并后回忆更完整的块合并起来；',
+            '不要为了减少数量强行合并，也不要拆块。合并后的 body 必须保留双方全部细节（人物、数字、原话、因果），不要压缩成摘要。',
+            '输出 JSON 数组：[{"keep": 保留的序号, "drop": [被并入的序号...], "title": "合并后标题", "body": "合并后完整正文"}]；',
+            '没有需要合并的就输出 []。只输出 JSON。',
+          ].join('\n'),
+          payload, where: 'episode-merge', maxTokens: 4000,
+        })
+        const merges = verdict.ok
+          ? (Array.isArray(verdict.value) ? verdict.value : [])
+          : []
+        const used = new Set()
+        const resolveEpisodeRef = (ref) => {
+          if (ref == null) return null
+          const numeric = Number(ref)
+          if (Number.isInteger(numeric) && numeric >= 0 && numeric < baseEpisodes.length) return baseEpisodes[numeric]
+          const text = String(ref)
+          return baseEpisodes.find((block) => block.key === text || block.text === text) ?? null
+        }
+        for (const merge of merges.slice(0, 8)) {
+          const keepBlock = resolveEpisodeRef(merge?.keep)
+          const dropBlocks = (Array.isArray(merge?.drop) ? merge.drop : [])
+            .map(resolveEpisodeRef)
+            .filter((block) => block && block.id !== keepBlock?.id)
+          if (!keepBlock || !dropBlocks.length) {
+            ctx.log({ level: 'warn', msg: 'dream.episode-merge-skip', reason: 'invalid-refs', keep: String(merge?.keep ?? '').slice(0, 80), drop: (merge?.drop ?? []).length })
+            continue
+          }
+          if (used.has(keepBlock.id)) continue
+          if (dropBlocks.some((block) => used.has(block.id))) continue
+          const mergedEvidence = dedupeEvidence([...(keepBlock.data?.evidence ?? []), ...dropBlocks.flatMap((block) => block.data?.evidence ?? [])])
+          const mergedBody = String(merge?.body ?? '').trim()
+            || [keepBlock.data?.body, ...dropBlocks.map((block) => block.data?.body)].filter(Boolean).join('\n\n')
+          const mergedTitle = String(merge?.title ?? keepBlock.text).trim().slice(0, maxEpisodeTitle) || keepBlock.text
+          const mergedAnnotations = {
+            facts: normalizeAnnotations([...(keepBlock.data?.annotations?.facts ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.facts ?? [])]),
+            preferences: normalizeAnnotations([...(keepBlock.data?.annotations?.preferences ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.preferences ?? [])]),
+            commitments: normalizeAnnotations([...(keepBlock.data?.annotations?.commitments ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.commitments ?? [])]),
+          }
+          const mergedRelations = normalizeRelations([...(keepBlock.data?.relations ?? []), ...dropBlocks.flatMap((block) => block.data?.relations ?? [])])
+          const people = [...new Set([...(keepBlock.data?.people ?? []), ...dropBlocks.flatMap((block) => block.data?.people ?? [])])]
+          const chunks = splitBodyChunks(mergedBody, maxEpisodeBody)
+          const newIds = []
+          for (let index = 0; index < chunks.length; index += 1) {
+            const part = index + 1
+            const key = index === 0 ? keepBlock.key : `${keepBlock.key}:p${part}`
+            const created = memory.put({
+              namespace: 'episode', kind: 'block', key,
+              text: index === 0 ? mergedTitle : `${mergedTitle}（${part}/${chunks.length}）`.slice(0, maxEpisodeTitle + 8),
+              data: {
+                body: chunks[index], evidence: mergedEvidence, provisional: mergedEvidence.length === 0, day,
+                ...(chunks.length > 1 ? { parts: { groupId: hash(mergedTitle), part, total: chunks.length } } : {}),
+                people, tags: normalizeTags([...(keepBlock.data?.tags ?? []), ...dropBlocks.flatMap((block) => block.data?.tags ?? [])]),
+                annotations: mergedAnnotations, relations: mergedRelations,
+                sources: [...new Set([...(keepBlock.data?.sources ?? []), ...dropBlocks.flatMap((block) => block.data?.sources ?? [])])].slice(0, 40),
+                mergedFrom: [...new Set([...(keepBlock.data?.mergedFrom ?? []), keepBlock.key, ...dropBlocks.map((block) => block.key)])].slice(0, 20),
+              },
+              now,
+            })
+            if (typeof memory.index === 'function') void memory.index(created.id, `${mergedTitle}\n${chunks[index]}`)
+            newIds.push(created.id)
+          }
+          for (const dropBlock of dropBlocks) {
+            memory.put({
+              namespace: 'episode', kind: 'block', key: dropBlock.key, text: dropBlock.text,
+              data: { ...(dropBlock.data ?? {}), superseded: true, supersededBy: keepBlock.key, invalidatedAt: Number(now) }, now,
+            })
+          }
+          used.add(keepBlock.id)
+          for (const dropBlock of dropBlocks) used.add(dropBlock.id)
+          const firstId = newIds.indexOf(keepBlock.id) >= 0 ? keepBlock.id : newIds[0]
+          written = written.filter((id) => id !== keepBlock.id && !dropBlocks.some((block) => block.id === id))
+          written.push(...newIds)
+          episodesMerged += dropBlocks.length
+          ctx.log({ level: 'info', msg: 'dream.episode-merged', keep: keepBlock.key, dropped: dropBlocks.length, mergedTo: firstId })
+        }
+        if (merges.length) ctx.log({ level: 'info', msg: 'dream.episode-merge', proposed: merges.length, applied: episodesMerged })
+      } catch (error) {
+        ctx.log({ level: 'warn', msg: 'dream.episode-merge-fail', error: String(error?.message ?? error).slice(0, 160) })
+      }
+    }
+    // 只标"真的被某块引用/覆盖"的 note；未被引用的继续待消化（跨天重试）。
+    const citedNotes = new Set()
+    const blockTexts = []
+    for (const id of written) {
+      const block = memory.query({ namespace: 'episode', kind: 'block', id, limit: 1 })[0]
+      if (!block) continue
+      blockTexts.push(`${block.text}\n${block.data?.body ?? ''}`)
+      for (const e of block.data?.evidence ?? []) if (e.type === 'note') citedNotes.add(Number(e.id))
+    }
+    const noteCoveredByBlock = (note) => {
+      const body = normalizeBodyText(note.text)
+      if (body.length < 8) return false
+      return blockTexts.some((text) => {
+        const normalized = normalizeBodyText(text)
+        return normalized.includes(body) || bigramJaccard(normalized, body) >= 0.5
+      })
+    }
+    const uncovered = []
+    for (const note of notes) {
+      if (note.data?.consolidated === true) continue
+      if (citedNotes.has(Number(note.id)) || noteCoveredByBlock(note)) { markNotes([note], now); continue }
+      uncovered.push(note)
+    }
+    const deferred = uncovered.length
+    const payloadChars = shardResults.reduce((sum, row) => sum + (row.chars ?? 0), 0)
+    const bodyAvg = written.length
+      ? Math.round(written.reduce((sum, id) => sum + String(memory.query({ namespace: 'episode', kind: 'block', id, limit: 1 })[0]?.data?.body ?? '').length, 0) / written.length)
+      : 0
+    const empty = written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok)
+    recordRun(day, 'episodes', {
+      episodes: written.length, merged: episodesMerged, notes: notes.length, deferred, uncovered: uncovered.length,
+      bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
+      payloadChars, empty,
+    }, now)
+    return {
+      job: 'episodes', ok: true, blocks: written.length, episodes: written.length, merged: episodesMerged, notes: notes.length,
+      deferred, bodyAvg, shards: shards.length, failedShards: shardResults.filter((row) => !row.ok).length,
+      omittedShards, empty, payloadChars,
+      degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
+    }
+  }
+
   /* ── people：逐人整块重写 ─────────────────────────────────────── */
 
   async function jobPeople({ now, force = false }) {
@@ -2060,7 +2401,7 @@ export function apply(ctx) {
     for (const ns of CLEANUP_NAMESPACES) {
       for (const b of memory.query({ namespace: ns, kind: 'block', limit: 500, order: 'desc' })) {
         if (b.data?.superseded === true) continue
-        blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, 400) })
+        blocks.push({ ns, key: b.key, id: b.id, text: b.text, people: (b.data?.people ?? []).map(String), body: String(b.data?.body ?? b.data?.profile ?? b.data?.narrative ?? '').slice(0, ns === 'episode' ? 900 : 400) })
       }
     }
     if (blocks.length < 2 && !pendingResolves.length && identity.merged === 0) return { job: 'cleanup', skipped: 'nothing-to-do' }
@@ -2117,13 +2458,21 @@ export function apply(ctx) {
           '',
           '规则：',
           '· 只合并真正说的是同一件事/同一个人的块；没把握就不合并。',
-          '· 事实/偏好/承诺块出现新旧矛盾时（例如旧偏好已被新偏好替代、旧端口/旧承诺已过时）：保留新的块，把旧的 key 放进 drop（软删保留历史，不丢证据）；分不清新旧就设 uncertain。',
-          '· 事实/偏好/承诺块只在同类型之间合并；不要把它们并进事件块/人物块（结构化层要保留，旧值失效由夜间 validity 判定处理）。',
+          ...(memorySchema === 'v3' ? [
+            '· v3 经历块（episode）：把讲同一段经历/同一主题、时间相近的块合并成更少、更完整的块；合并后的 body 要保留双方全部细节（可以较长），不要压缩成摘要。',
+            '· 不要为了凑块数或"长度均匀"强行合并/拆分；没有可合并的内容就原样保留。',
+            '· episode 里的 facts/preferences/commitments 注释与 relations 也要合并去重；注释出现新旧矛盾时保留新的，并在 body 里写明变化。',
+          ] : [
+            '· 事实/偏好/承诺块出现新旧矛盾时（例如旧偏好已被新偏好替代、旧端口/旧承诺已过时）：保留新的块，把旧的 key 放进 drop（软删保留历史，不丢证据）；分不清新旧就设 uncertain。',
+            '· 事实/偏好/承诺块只在同类型之间合并；不要把它们并进事件块/人物块（结构化层要保留，旧值失效由夜间 validity 判定处理）。',
+          ]),
           '· 同一事实的多个块可以合并成一条，保留更完整的措辞与双方 evidence。',
           '· 两个块互相矛盾且分不清对错：合并为一块并把 uncertain 设为 true，正文里写明"不确定"。',
           '· 人物块可以用 people 里含该 QQ 的事件块来补充或修正；改写时整块重写，不要丢旧信息。',
           '· 主会话的纠正优,：按它改写对应的块（事件或人物档案），并把对应 resolve note 放进 consumed。',
-          '· 合并后的 text 一行、body 一小段；删掉的 key 不要再出现在别的操作里。',
+          ...(memorySchema === 'v3'
+            ? ['· 合并后的 text 一行标题、body 保留完整叙述（不设硬性长度上限）；删掉的 key 不要再出现在别的操作里。']
+            : ['· 合并后的 text 一行、body 一小段；删掉的 key 不要再出现在别的操作里。']),
           '· 不要为了“长度差不多”而合并：小块没有矛盾就原样留着。',
           '· 允许跨天合并：两个块讲的是同一件事（哪怕隔了几天），合并成一块，保留双方细节。',
           '· 目标是去重与消除矛盾，不是把所有块整理成一个样子。',
@@ -2473,7 +2822,7 @@ export function apply(ctx) {
     return { job: 'consume', ok: true, written, archived }
   }
 
-  const JOBS = { wash: jobWash, events: jobEvents, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, consume: jobConsume, cleanup: jobCleanup, index: jobIndex }
+  const JOBS = { wash: jobWash, events: jobEvents, episodes: jobEpisodes, people: jobPeople, slang: jobSlang, lexicon: jobLexicon, consume: jobConsume, cleanup: jobCleanup, index: jobIndex }
 
   /**
    * 跑一轮做梦。jobs 可按需指定（默认三个都跑）。
@@ -2541,8 +2890,9 @@ export function apply(ctx) {
    * 信号触发撞上在飞回合直接返回 skipped:'in-flight'；手动/强制跑则等上一轮结束再走
    * （那时成功账本已在，自然会跳过已完成的 job）。
    */
-  async function run({ now = ctx.now(), jobs = DEFAULT_JOBS, force = false, trigger = 'manual' } = {}) {
+  async function run({ now = ctx.now(), jobs = null, force = false, trigger = 'manual' } = {}) {
     const entryDay = dayKey(now, tzOf())
+    const jobNames = jobs == null ? defaultJobs : jobs
     if (inFlight) {
       if (trigger !== 'manual' && !force) {
         ctx.log({ level: 'info', msg: 'dream.run-skip', reason: 'in-flight', day: entryDay, trigger })
@@ -2557,7 +2907,7 @@ export function apply(ctx) {
       const results = []
       // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
       askedThisRun.clear()
-      for (const name of jobs) {
+      for (const name of jobNames) {
         const job = JOBS[name]
         if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
         const claim = beginRun(day, name, dreamNow, force)
