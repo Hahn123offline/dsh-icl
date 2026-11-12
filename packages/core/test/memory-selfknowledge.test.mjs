@@ -62,3 +62,36 @@ test('低置信召回提示：有相关但低于注入阈值时，只提示可�
   assert.ok(!/你可能记得（检索结果/.test(text), '低置信提示不应把内容当记忆注入')
 })
 
+
+test('意图路由：问承诺时，episode 的块内承诺会被加分并直接展示', async () => {
+  const { tools, memory } = await setup()
+  memory.put({
+    namespace: 'episode', kind: 'block', key: 'epi:promise', text: '周末直播安排',
+    data: {
+      body: '晚上聊到周末的安排，说好了一起看直播。', day: '2026-11-11',
+      evidence: [{ type: 'day', id: 1, line: 'x' }], provisional: false,
+      annotations: { commitments: ['答应周末一起看直播', '答应下周三前把工具修好'] },
+    },
+  })
+  const out = await tools.recall.execute({ query: '我答应过什么还没做的？' })
+  assert.match(out.text, /块内承诺：/, `应展示块内承诺，实际：${out.text}`)
+  assert.match(out.text, /答应周末一起看直播/)
+})
+
+test('意图路由：问"是谁"时，即使人物档案分数被经历块压过，也会补进结果', async () => {
+  const { tools, memory } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:42', text: '3429502459（主人）',
+    data: {
+      profile: '主人，QQ 3429502459，一直在帮我搭环境、调权限。',
+      ids: [{ kind: 'qq', value: '3429502459' }],
+      familiarity: '很熟',
+    },
+  })
+  memory.put({
+    namespace: 'episode', kind: 'block', key: 'epi:owner', text: '主人帮我修桥接',
+    data: { body: '主人晚上帮我修了桥接，还调了权限。', day: '2026-11-11', evidence: [{ type: 'day', id: 1, line: 'x' }], provisional: false },
+  })
+  const out = await tools.recall.execute({ query: '3429502459 是谁？' })
+  assert.match(out.text, /主人，QQ 3429502459/, `应包含人物档案，实际：${out.text}`)
+})

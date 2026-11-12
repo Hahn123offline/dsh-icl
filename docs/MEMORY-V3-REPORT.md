@@ -204,6 +204,30 @@ gold 被拆到多个 episode，返回一个正确块已能回答（miss=0）。
 **验证**：全仓 **918 tests / 917 pass / 1 skip**；新增测试覆盖 world 状态行、memory_status、
 低置信提示、稀疏日不调模型、小材料只发一次调用。以上改动需重启 DSH 一次生效。
 
+### 2.11 第 9 轮：意图路由 / 注释可见性 / 跨天去重（用户 2026-11-13 认可的三项）
+
+**① 意图路由（queryIntent → 分类）**
+- 意图扩展：person / commitment / preference / **fact**（"说过什么/提过/是不是真的"）/ event；
+- `INTENT_BOOST` 增加 episode 权重（v2 时代只映射 event/fact/commitment，v3 下这些命名空间已隐藏）；
+- **注释补召回**：问承诺/偏好/事实时直接扫 episode.annotations（向量/字面索引只覆盖标题+正文，
+  注释里的承诺原本永远召不回），命中 3 条以内注入候选并 ×1.4 加分；
+- **人物路由兜底**：明确问"谁/关系/名字"时，若候选里有 person 块却没被选中，强制补一条放最前
+  （关系类问题需要档案佐证）；人物块渲染补上 `data.profile` 前 400 字（原来只给标题）。
+
+**② 块内注释可见性**
+- 内存字面检索通道（`memory.search`）与 recall 内容词门槛/IDF 都纳入 annotations 文本；
+- episode 写入时向量索引文本也加入 facts/preferences/commitments；
+- 意图命中注释时，渲染成 `（块内承诺：…；）` 直接附在正文后——承诺/偏好类问题不再只看到正文。
+
+**③ 跨天近重复抑制（形成阶段）**
+- 新 episode 与**更早**已有 episode 做确定性相似度检查（长度比 ≥0.5、去空白 bigram Jaccard ≥0.62）；
+- 命中则并入旧块：正文追加、evidence/people/tags/annotations 取并集、`days` 记录跨天、
+  `mergedAcrossDays` 计数；日志 `dream.episode-crossday-merged`；
+- cleanup 只负责同日合并，跨天重复在形成阶段就挡掉（此前机制上无保证）。
+
+**验证**：全仓 **921 tests / 920 pass / 1 skip**；新增测试覆盖承诺注释展示、人物路由兜底、
+跨天合并（不新增重复块、days/mergedAcrossDays 正确）。改动为插件代码，需重启 DSH 生效。
+
 ## 3. 当前结论与问题
 
 - **成块形态达标**：块大、上下文完整、非配额化（用户已确认"最接近理想记忆块"）；

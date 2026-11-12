@@ -203,16 +203,18 @@ export function apply(ctx) {
     if (/(?:谁|是谁|什么关系|关系|怎么认识|认识谁|叫什么|名字|身份|昵称|别名|舍友|朋友|主人是)/i.test(text)) return 'person'
     if (/(?:答应|承诺|说好|保证|还没|未了|打算|计划|以后要|什么时候给)/.test(text)) return 'commitment'
     if (/(?:喜欢|讨厌|偏好|习惯|口味|怕什么|雷点|愿意|更想|宁可)/.test(text)) return 'preference'
+    if (/(?:说过什么|说了什么|提过|提到过|事实|是不是|真的|有没有说过|知道什么)/.test(text)) return 'fact'
     if (/(?:发生了什么|做过|去过|看到|遇见|遇到|经历|那天|昨晚|上次|后来|结果|怎么[\u4e00-\u9fff]|做了什么)/.test(text)) return 'event'
     return 'mixed'
   }
 
   /** 意图加分表：key 是意图，value 是 namespace → 倍率。 */
   const INTENT_BOOST = {
-    event: { event: 1.25, lexicon: 1.05 },
-    commitment: { commitment: 1.3, fact: 1.1 },
-    preference: { preference: 1.3, fact: 1.1 },
-    person: { person: 1.3 },
+    event: { event: 1.25, episode: 1.1, lexicon: 1.05 },
+    commitment: { commitment: 1.3, episode: 1.15, fact: 1.1 },
+    preference: { preference: 1.3, episode: 1.15, fact: 1.1 },
+    fact: { fact: 1.2, episode: 1.15, commitment: 1.05 },
+    person: { person: 1.3, episode: 1.05 },
     mixed: {},
   }
 
@@ -601,11 +603,44 @@ export function apply(ctx) {
         }
         let candidates = [...bestById.values()]
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+        // 意图路由补召回（2026-11-13）：注释字段直接扫 episode。向量/字面索引只覆盖标题+正文，
+        // 承诺/偏好/事实常常只存在于 episode.annotations 里，不扫就永远召不回。
+        const annotationField = { commitment: 'commitments', preference: 'preferences', fact: 'facts' }[intent]
+        if (question && annotationField) {
+          const grams = contentBigramsOf(question)
+          if (grams.length) {
+            let addedByAnnotation = 0
+            for (const row of memory.query({ namespace: 'episode', kind: 'block', limit: 500 })) {
+              if (row.data?.superseded === true || Number(row.data?.parts?.part) > 1) continue
+              const values = (row.data?.annotations?.[annotationField] ?? []).map(String).filter(Boolean)
+              if (!values.length) continue
+              const hits = values.filter((value) => {
+                const plain = value.toLowerCase().replace(/\s+/g, '')
+                return grams.some((gram) => plain.includes(gram))
+              })
+              if (!hits.length) continue
+              const key = `episode:${row.id}`
+              if (bestById.has(key)) continue
+              bestById.set(key, {
+                item: { id: row.id, namespace: 'episode', kind: 'block', text: row.text, data: row.data, createdAt: row.createdAt },
+                namespace: 'episode',
+                score: 0.6 + Math.min(0.15, hits.length * 0.05),
+                sim: 0.6, uncertain: false, matchedQuery: 'annotation', boosted: true,
+              })
+              addedByAnnotation += 1
+              if (addedByAnnotation >= 3) break
+            }
+            if (addedByAnnotation) {
+              candidates = [...bestById.values()]
+              candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+            }
+          }
+        }
         // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
         // 把写着内容词的 fact 挤出采样区，导致明明有相关词却被判"没找到"（QQ p-05 实测）。
         // v3 经历块：内容词门槛要看"标题 + 正文开头"，否则创意标题不含问句用词会被误判"没找到"。
         const gateCandidateTexts = candidates.slice(0, 100).map((entry) => entry.item.namespace === 'episode'
-          ? `${entry.item.text} ${String(entry.item.data?.body ?? '').slice(0, 400)}`
+          ? `${entry.item.text} ${String(entry.item.data?.body ?? '').slice(0, 400)} ${Object.values(entry.item.data?.annotations ?? {}).flat().join(' ').slice(0, 300)}`
           : entry.item.text)
         // 日期加分：问句带了"昨天/10月25日"这类日期时，同一天落库的记忆优先（只加分不硬过滤）。
         const queryDay = question ? parseQueryDay(question, now) : null
@@ -665,7 +700,7 @@ export function apply(ctx) {
             const normalize = (text) => String(text ?? '').toLowerCase().replace(/\s+/g, '')
             const episodeDocs = memory.query({ namespace: 'episode', kind: 'block', limit: 500 })
               .filter((row) => row.data?.superseded !== true && !(Number(row.data?.parts?.part) > 1))
-              .map((row) => normalize(`${row.text ?? ''} ${String(row.data?.body ?? '')}`))
+              .map((row) => normalize(`${row.text ?? ''} ${String(row.data?.body ?? '')} ${Object.values(row.data?.annotations ?? {}).flat().join(' ')}`))
             const docCount = Math.max(1, episodeDocs.length)
             const df = new Map()
             for (const gram of contentGrams) {
@@ -676,8 +711,9 @@ export function apply(ctx) {
             let boosted = false
             for (const entry of candidates) {
               if (entry.namespace !== 'episode') continue
+              const annotationText = Object.values(entry.item.data?.annotations ?? {}).flat().join(' ')
               const haystacks = [
-                normalize(`${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '')}`),
+                normalize(`${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '')} ${annotationText}`),
                 ...(Array.isArray(entry.segmentTexts) ? entry.segmentTexts.map(normalize) : []),
               ]
               let bestWeight = 0
@@ -697,6 +733,32 @@ export function apply(ctx) {
               boosted = true
             }
             if (boosted) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
+          }
+        }
+
+        // 意图路由（v3，2026-11-13）：问承诺/偏好/事实时，答案常常只在 episode 的块内注释里
+        // （正文没复述）。按注释字段做内容词匹配 → 温和加分，并把命中的注释挂到 entry 上供渲染。
+        const ANNOTATION_FIELD = { commitment: ['commitments', '承诺'], preference: ['preferences', '偏好'], fact: ['facts', '事实'] }[intent]
+        if (question && ANNOTATION_FIELD && candidates.length) {
+          const [field, label] = ANNOTATION_FIELD
+          const grams = contentBigramsOf(question)
+          if (grams.length) {
+            let boostedByAnnotation = false
+            for (const entry of candidates) {
+              if (entry.namespace !== 'episode') continue
+              const values = (entry.item.data?.annotations?.[field] ?? []).map(String).filter(Boolean)
+              if (!values.length) continue
+              const matched = values.filter((value) => {
+                const plain = value.toLowerCase().replace(/\s+/g, '')
+                return grams.some((gram) => plain.includes(gram))
+              })
+              if (!matched.length) continue
+              entry.score = Number(entry.score) * 1.4
+              entry.intentAnnotations = matched.slice(0, 2)
+              entry.annotationLabel = label
+              boostedByAnnotation = true
+            }
+            if (boostedByAnnotation) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
           }
         }
 
@@ -808,6 +870,29 @@ export function apply(ctx) {
             personTaken += 1
           }
           take(entry, label(entry.namespace, entry.item.createdAt, now))
+        }
+
+        // 意图路由兜底（2026-11-13）：明确问"谁/关系/名字"时，人物档案常被更长的经历块压过；
+        // 若候选里有 person 块却没被选中，强制补一条放在最前（关系类问题本来就需要档案佐证）。
+        if (intent === 'person' && personTaken === 0) {
+          const personCandidate = usableCandidates.find((entry) => entry.namespace === 'person')
+          if (personCandidate && !seen.has(personCandidate.item.id) && !inWindow.has(personCandidate.item.id)) {
+            const personText = renderEntry(personCandidate, label('person', personCandidate.item.createdAt, now))
+            const cost = estimateTokens(personText)
+            while (picked.length && tokens + cost > budgetTokens) {
+              const removed = picked.pop()
+              tokens -= removed.tokens
+              const index = additions.findIndex((add) => add.id === removed.entry.item.id)
+              if (index >= 0) additions.splice(index, 1)
+            }
+            if (picked.length === 0 || tokens + cost <= budgetTokens) {
+              picked.unshift({ entry: personCandidate, tag: label('person', personCandidate.item.createdAt, now), text: personText, tokens: cost })
+              additions.unshift({ id: personCandidate.item.id, tokens: cost })
+              tokens += cost
+              seen.add(personCandidate.item.id)
+              ctx.log({ level: 'info', msg: 'recall.person-routing', query: question.slice(0, 40) })
+            }
+          }
         }
 
         const nextCursor = rollCursor(stored, additions)
@@ -938,7 +1023,17 @@ export function apply(ctx) {
     if (item.namespace === 'episode' && item.kind === 'block') {
       const body = String(item.data?.body ?? '').trim()
       const head = `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
-      return body ? `${head}\n${body}` : head
+      // 意图路由命中块内注释时，把答案直接附在正文后（否则承诺/偏好类问题只能看到正文）。
+      const annotationLines = Array.isArray(entry.intentAnnotations) && entry.intentAnnotations.length
+        ? `\n（块内${entry.annotationLabel ?? '注释'}：${entry.intentAnnotations.join('；')}）`
+        : ''
+      return body ? `${head}\n${body}${annotationLines}` : `${head}${annotationLines}`
+    }
+    // 人物档案：问"是谁/关系"时需要档案正文，不能只给一行标题（whois 仍是首选，但 recall
+    // 作为兜底也得答得出来）。只截一段，避免把整份长档案塞进预算。
+    if (item.namespace === 'person' && item.kind === 'block' && item.data?.profile) {
+      const head = `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
+      return `${head}\n${String(item.data.profile).trim().slice(0, 400)}`
     }
     if (item.kind === 'block') return `[${tag}] ${doubt}${lowConfidence}${unsure}${item.text}`
     return `[${tag} · 随手记] ${doubt}${lowConfidence}${unsure}${item.text}`

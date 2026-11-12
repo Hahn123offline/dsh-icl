@@ -1756,6 +1756,63 @@ export function apply(ctx) {
     let written = []
     const dayLines = dayLog ? dayLogIndex(dayLog) : null
     const bodies = []
+    let crossDayMerged = 0
+    // 跨天近重复抑制（2026-11-13 用户拍板）：同一件还在继续的事，模型第二天会从新 raw 再叙述一遍。
+    // 与近 14 天已有 episode 高度相似时，并入旧块（正文/证据/注释/人物取并集），不再新造一块；
+    // cleanup 只负责同日合并，跨天重复必须在形成阶段挡掉。
+    const findSimilarRecentEpisode = (title, body) => {
+      const normalize = (value) => String(value ?? '').toLowerCase().replace(/\s+/g, '')
+      const target = normalize(`${title} ${body}`)
+      if (target.length < 60) return null
+      let best = null
+      for (const row of memory.query({ namespace: 'episode', kind: 'block', limit: 500 })) {
+        if (row.data?.superseded === true || row.data?.parts) continue
+        const otherDay = String(row.data?.day ?? '')
+        if (!otherDay || otherDay >= day) continue // 只看更早的块
+        const candidate = normalize(`${row.text ?? ''} ${String(row.data?.body ?? '')}`)
+        if (candidate.length < 40) continue
+        const shorter = Math.min(candidate.length, target.length)
+        const longer = Math.max(candidate.length, target.length)
+        if (shorter / longer < 0.5) continue
+        const contained = candidate.includes(target) || target.includes(candidate)
+        const jac = contained ? 1 : bigramJaccard(candidate, target)
+        if (jac < 0.62) continue
+        if (!best || jac > best.jac) best = { row, jac }
+      }
+      return best
+    }
+    const mergeEpisodeAcrossDays = (existing, title, body, evidence) => {
+      const oldBody = String(existing.data?.body ?? '').trim()
+      const already = oldBody.toLowerCase().replace(/\s+/g, '').includes(String(body).toLowerCase().replace(/\s+/g, ''))
+      const mergedBody = already || !body ? oldBody : `${oldBody}\n\n${body}`
+      const data = existing.data ?? {}
+      const union = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])]
+      memory.put({
+        namespace: 'episode',
+        kind: 'block',
+        key: existing.key,
+        text: existing.text,
+        data: {
+          ...data,
+          body: mergedBody.slice(0, 6000),
+          evidence: dedupeEvidence([...(data.evidence ?? []), ...evidence]),
+          days: union(Array.isArray(data.days) ? data.days : [data.day], [day]).filter(Boolean),
+          mergedAcrossDays: Number(data.mergedAcrossDays ?? 0) + 1,
+          people: union(data.people, []),
+          tags: union(data.tags, []),
+          annotations: {
+            facts: union(data.annotations?.facts, []),
+            preferences: union(data.annotations?.preferences, []),
+            commitments: union(data.annotations?.commitments, []),
+          },
+          relations: data.relations ?? [],
+          sources: data.sources ?? [],
+        },
+        now,
+      })
+      if (typeof memory.index === 'function') void memory.index(existing.id, `${existing.text}\n${mergedBody.slice(0, 900)}`)
+      ctx.log({ level: 'info', msg: 'dream.episode-crossday-merged', keep: existing.key, day, title: title.slice(0, 40) })
+    }
     for (const block of blocks) {
       const titleRaw = String(block?.title ?? block?.summary ?? '').trim()
       if (!titleRaw) continue
@@ -1776,6 +1833,15 @@ export function apply(ctx) {
       // 没有出处就不落块（"没有出处不要写进块"）；不弹问题、不硬造。
       if (!evidence.length) continue
       const body = String(block?.body ?? '').trim() || title
+      // 跨天近重复：同一件事在第二天被重新叙述时并入旧块，不再新增重复经历。
+      const crossDayMatch = findSimilarRecentEpisode(title, body)
+      if (crossDayMatch) {
+        mergeEpisodeAcrossDays(crossDayMatch.row, title, body, evidence)
+        bodies.push(body)
+        written.push(crossDayMatch.row.id)
+        crossDayMerged += 1
+        continue
+      }
       const chunks = splitBodyChunks(body, maxEpisodeBody)
       const keyBase = `epi:${day}:${hash(title)}`
       for (let index = 0; index < chunks.length; index += 1) {
@@ -1806,7 +1872,7 @@ export function apply(ctx) {
           },
           now,
         })
-        if (typeof memory.index === 'function') void memory.index(created.id, `${title}\n${chunks[index].slice(0, 900)}`)
+        if (typeof memory.index === 'function') void memory.index(created.id, `${title}\n${chunks[index].slice(0, 900)}\n${[block?.facts, block?.preferences, block?.commitments].flat().filter(Boolean).map(String).join(' ').slice(0, 300)}`)
         written.push(created.id)
         bodies.push(chunks[index])
       }
@@ -1972,12 +2038,14 @@ export function apply(ctx) {
       : 0
     const empty = written.length === 0 && shardResults.length > 0 && shardResults.every((row) => row.ok)
     recordRun(day, 'episodes', {
-      episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length, deferred, uncovered: uncovered.length,
+      episodes: Math.max(0, written.length - crossDayMerged), merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length, deferred, uncovered: uncovered.length,
+      mergedAcrossDays: crossDayMerged,
       bodyAvg, shards: modelShards.length, failedShards: shardResults.filter((row) => !row.ok).length, omittedShards,
       payloadChars, empty,
     }, now)
     return {
-      job: 'episodes', ok: true, blocks: written.length, episodes: written.length, merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length,
+      job: 'episodes', ok: true, blocks: written.length, episodes: Math.max(0, written.length - crossDayMerged), merged: episodesMerged, rewritten: episodesRewritten, notes: notes.length,
+      mergedAcrossDays: crossDayMerged,
       deferred, bodyAvg, shards: modelShards.length, failedShards: shardResults.filter((row) => !row.ok).length,
       omittedShards, empty, payloadChars,
       degraded: shardResults.some((row) => !row.ok) || omittedShards > 0,
@@ -3200,6 +3268,9 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
+
+
 
 
 

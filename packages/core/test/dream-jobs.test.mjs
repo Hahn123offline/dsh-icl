@@ -344,3 +344,30 @@ test('v3 小材料合并：多片短材料只发一次形成调用', async () =>
   assert.equal(chat.calls.length, 1, '小材料只应发一次形成调用')
   assert.equal(memory.query({ namespace: 'episode', kind: 'block' }).length, 0, '模型输出 [] 时不落块')
 })
+
+test('v3 跨天近重复：第二天重述同一件事并入旧块，不新增重复经历', async () => {
+  const now = Date.now()
+  const body = '主人让我测试 MC 服务器端口 63071，结果桥接还是报 fetch failed，我先退出来等他修。'
+  const script = [['经历块', JSON.stringify([{ title: '测试 MC 端口 63071 失败', body, evidence: [1] }])]]
+  const { host, memory, dream } = await setup({ script, dreamConfig: { memorySchema: 'v3' } })
+  memory.put({
+    namespace: 'episode', kind: 'block', key: 'epi:2026-11-11:old', text: '测试 MC 端口 63071 失败',
+    data: { body, day: '2026-11-11', evidence: [{ type: 'day', id: 1, line: 'x' }], provisional: false },
+  })
+  host.services.raw.register({
+    id: 'test-raw-dedupe',
+    list: () => [{ text: '今天又测了一次 MC 服务器端口 63071，结果还是桥接报错 fetch failed，我把日志也翻了一遍，没发现新东西，就先没再折腾，等主人那边修。', time: now - 60 * 60_000, role: 'user', source: 'human' }],
+    search: () => [],
+  })
+  const out = await dream.run({ now, jobs: ['wash', 'episodes'] })
+  const episodes = out.results.find((row) => row.job === 'episodes')
+  assert.equal(episodes.mergedAcrossDays, 1, JSON.stringify(episodes))
+  const blocks = memory.query({ namespace: 'episode', kind: 'block' })
+  assert.equal(blocks.length, 1, '不应新增重复块')
+  assert.equal(blocks[0].data.mergedAcrossDays, 1)
+  assert.match(String(blocks[0].data.body), /63071/)
+  assert.ok(String(blocks[0].data.days).includes('2026-11-11'))
+})
+
+
+

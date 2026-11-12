@@ -327,9 +327,10 @@ export function apply(ctx) {
       const scored = []
       for (const row of rows) {
         const item = rowToItem(row)
-        // 字面通道看"摘要 + 正文"：事件块的正文比一行 summary 更接近用户问法
-        // （"她看到了哪些奇怪账号"→正文里才有大肥鱼家族/游戏角色这些词）。
-        const lexicalText = `${item.text ?? ''}\n${String(item.data?.body ?? item.data?.profile ?? item.data?.narrative ?? '')}`.slice(0, 1500)
+        // 字面通道看"摘要 + 正文 + 块内注释"：承诺/偏好类问题常常只在注释里出现
+        // （v3 episode 的 annotations 是答案所在，正文不一定复述）。
+        const annotationText = Object.values(item.data?.annotations ?? {}).flat().map(String).join(' ')
+        const lexicalText = `${item.text ?? ''}\n${String(item.data?.body ?? item.data?.profile ?? item.data?.narrative ?? '')}\n${annotationText}`.slice(0, 1500)
         let sim = 0
         if (qvec) {
           const hit = db.prepare('SELECT vec, dim FROM mem_vec WHERE item_id = ?').get(row.id)
