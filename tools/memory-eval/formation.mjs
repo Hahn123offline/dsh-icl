@@ -113,16 +113,17 @@ export function matchV3({ fixture, indexes, episodes, people, entityMatcher }) {
     || String(a.block.id).localeCompare(String(b.block.id)))
   const pairs = []
   const matchedGold = new Set()
-  // v3 是多对一：一个 episode 很可能同时是多条 gold 的答案（这就是粗粒度记忆的目的），
-  // 所以不限制"一个块只能配一条 gold"；person gold 最多挂一条 person 档案 + 一条 episode。
+  // v3 是多对一、也是"一条 gold 可能被多块 episode 分别讲到"：期望目标最多 3 个 episode
+  // （person gold 额外挂 1 条 person 档案），检索命中任一块都算这条 gold 被召回。
   const pairsByGold = new Map()
   for (const candidate of candidates) {
     const goldId = String(candidate.gold.id)
     const blockId = String(candidate.block.id)
-    const usedKinds = pairsByGold.get(goldId) ?? new Set()
-    if (usedKinds.has(candidate.block.kindKey)) continue
-    usedKinds.add(candidate.block.kindKey)
-    pairsByGold.set(goldId, usedKinds)
+    const state = pairsByGold.get(goldId) ?? { person: 0, episode: 0 }
+    if (candidate.block.kindKey === 'person' && state.person >= 1) continue
+    if (candidate.block.kindKey !== 'person' && state.episode >= 3) continue
+    state[candidate.block.kindKey === 'person' ? 'person' : 'episode'] += 1
+    pairsByGold.set(goldId, state)
     matchedGold.add(goldId)
     pairs.push({
       goldId, goldType: candidate.gold.type, extractedId: blockId, kindKey: candidate.block.kindKey,
@@ -147,6 +148,35 @@ export function v3Metrics({ fixture, episodes, match }) {
   const p = (q) => bodyLens[Math.min(bodyLens.length - 1, Math.floor(bodyLens.length * q))] ?? 0
   const perDay = {}
   for (const item of episodes) { const day = String(item.day ?? '?'); perDay[day] = (perDay[day] ?? 0) + 1 }
+  // 内容完整性：不依赖"证据映射是否命中"，直接看 gold 的内容词有多少出现在最好的一块 episode 正文里。
+  // 这是防止"命中率靠期望映射筛掉难例"的幸存者偏差指标。
+  const normalize = (text) => String(text ?? '').toLowerCase().replace(/\s+/g, '')
+  const gramsOf = (text) => {
+    const normalized = normalize(text)
+    const grams = []
+    for (let i = 0; i + 1 < normalized.length; i += 1) {
+      const gram = normalized.slice(i, i + 2)
+      if (/^[\u4e00-\u9fff]{2}$/.test(gram)) grams.push(gram)
+    }
+    return grams
+  }
+  const contentChecks = []
+  for (const gold of golds) {
+    const grams = gramsOf(gold.text)
+    let best = { completeness: 0, episodeId: null }
+    for (const item of episodes) {
+      const haystack = normalize(`${item.text ?? ''} ${item.body ?? ''}`)
+      const hit = grams.filter((gram) => haystack.includes(gram)).length
+      const completeness = grams.length ? hit / grams.length : 0
+      if (completeness > best.completeness) best = { completeness, episodeId: item.id }
+    }
+    contentChecks.push({
+      goldId: String(gold.id), type: gold.type, completeness: Math.round(best.completeness * 1000) / 1000,
+      episodeId: best.episodeId, text: String(gold.text ?? '').slice(0, 120),
+    })
+  }
+  const contentCovered = contentChecks.filter((row) => row.completeness >= 0.45).length
+  const contentGaps = contentChecks.filter((row) => row.completeness < 0.45).slice(0, 10)
   return {
     episodes: episodes.length,
     days: Object.keys(perDay).length,
@@ -167,6 +197,10 @@ export function v3Metrics({ fixture, episodes, match }) {
     goldCovered: match.matchedGold?.size ?? 0,
     goldCoverage: golds.length ? (match.matchedGold?.size ?? 0) / golds.length : null,
     goldByType: byType,
+    contentCompletenessAvg: contentChecks.length ? contentChecks.reduce((a, b) => a + b.completeness, 0) / contentChecks.length : null,
+    goldContentCovered: contentCovered,
+    goldContentRate: contentChecks.length ? contentCovered / contentChecks.length : null,
+    contentGaps,
   }
 }
 
@@ -550,6 +584,8 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
+
 
 
 

@@ -71,7 +71,35 @@ export function parseJsonStrict(raw) {
   try {
     const parsed = JSON.parse(body.slice(from, end + 1))
     return { ok: true, value: Array.isArray(parsed) ? parsed : [parsed] }
-  } catch { return { ok: false, error: 'bad-json' } }
+  } catch {
+    // 截断兜底：繁忙日模型输出可能被 token 上限截断，整段 JSON 不合法；
+    // 扫描前面已经完整的对象逐个解析，能救回多少是多少（丢尾部，不丢整天）。
+    const salvaged = []
+    let depth = 0
+    let inString = false
+    let escaped = false
+    let objStart = -1
+    for (let i = from + 1; i < body.length; i += 1) {
+      const char = body[i]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') inString = false
+        continue
+      }
+      if (char === '"') { inString = true; continue }
+      if (char === '{') { if (depth === 0) objStart = i; depth += 1; continue }
+      if (char === '}' && depth > 0) {
+        depth -= 1
+        if (depth === 0 && objStart >= 0) {
+          try { salvaged.push(JSON.parse(body.slice(objStart, i + 1))) } catch { /* 跳过坏对象 */ }
+          objStart = -1
+        }
+      }
+    }
+    if (salvaged.length) return { ok: true, value: salvaged, salvaged: true }
+    return { ok: false, error: 'bad-json' }
+  }
 }
 
 /** 宽容版：解析失败返回 []（只给"宁可空也不报错"的旧调用方用）。 */
@@ -1574,6 +1602,7 @@ export function apply(ctx) {
       '块是回忆的单位：一段连续经历 / 一个话题的来龙去脉，就写成一整块；块里自然包含起因、过程、感受和结论。',
       '不要按"每件事一块"机械切分，也不要用固定数量凑块；今天没有值得留下的经历就输出 []。',
       '同一次连续经历里的碎片放进同一块；不同时间段/不同话题的事分开写。',
+      '完整性：当天材料里每一段值得留下的经历都要写进某一块，不要因为合并/概括漏掉事件、数字、原话和承诺；合并时宁可写长，也不要把细节压没。',
       '每块输出对象：{"title":"一行标题（≤60字，不含QQ号）","body":"第一人称完整叙述（尽量把上下文写全，长度由内容决定）","people":["QQ号或名字"],"tags":["短标签"],"evidence":[id],"facts":[],"preferences":[],"commitments":[],"relations":[{"from":"A","to":"B","label":"关系"}]}',
       'body 要写成以后读起来能独立理解的叙述：谁、何时、发生了什么、结果如何；不要只写一句话摘要，也不要把同一件事拆成多条原子句。',
       '正文尽量写全：把当时的对话细节、前后因果、数字/原话/感受写进去（通常几百字，内容多就上千字，没有硬性上限）；宁可一块写长，也不要压缩成一段干巴巴的摘要。',
@@ -1589,9 +1618,9 @@ export function apply(ctx) {
     const shardResults = []
     async function runEpisodeShard(lines, label, depth = 0) {
       const payload = `${lines.join('\n')}${hint}`
-      const out = await askJson({ instruction, payload, where: `episodes#${label}`, maxTokens: 5500 })
+      const out = await askJson({ instruction, payload, where: `episodes#${label}`, maxTokens: 7500 })
       if (!out.ok) {
-        if (depth < 1 && lines.length >= 10) {
+        if (depth < 2 && lines.length >= 6) {
           const middle = Math.floor(lines.length / 2)
           const partial = []
           for (const [partLabel, part] of [[`${label}a`, lines.slice(0, middle)], [`${label}b`, lines.slice(middle)]]) {
@@ -1775,8 +1804,15 @@ export function apply(ctx) {
           if (used.has(keepBlock.id)) continue
           if (dropBlocks.some((block) => used.has(block.id))) continue
           const mergedEvidence = dedupeEvidence([...(keepBlock.data?.evidence ?? []), ...dropBlocks.flatMap((block) => block.data?.evidence ?? [])])
-          const mergedBody = String(merge?.body ?? '').trim()
-            || [keepBlock.data?.body, ...dropBlocks.map((block) => block.data?.body)].filter(Boolean).join('\n\n')
+          const sourceBodies = [keepBlock.data?.body, ...dropBlocks.map((block) => block.data?.body)].filter(Boolean).map(String)
+          const unionBody = sourceBodies.join('\n\n')
+          let mergedBody = String(merge?.body ?? '').trim()
+          // 合并不能让内容变少：模型若把多块压成比原文短得多的摘要，直接退回"原文拼接"，
+          // 宁可正文长一点，也不要在合并轮丢细节（这是 episode 完整性的底线）。
+          if (!mergedBody || mergedBody.length < Math.min(unionBody.length, 1600) * 0.8) {
+            if (mergedBody) ctx.log({ level: 'warn', msg: 'dream.episode-merge-body-fallback', key: keepBlock.key, merged: mergedBody.length, union: unionBody.length })
+            mergedBody = unionBody
+          }
           const mergedTitle = String(merge?.title ?? keepBlock.text).trim().slice(0, maxEpisodeTitle) || keepBlock.text
           const mergedAnnotations = {
             facts: normalizeAnnotations([...(keepBlock.data?.annotations?.facts ?? []), ...dropBlocks.flatMap((block) => block.data?.annotations?.facts ?? [])]),
@@ -3078,6 +3114,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 

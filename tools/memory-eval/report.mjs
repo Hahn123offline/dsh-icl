@@ -149,11 +149,18 @@ function formationMd(formation) {
       ['证据行/块', fmtNum(v3.evidenceRowsAvg)],
       ['带人物块', fmtPct(v3.peopleRate)],
       ['gold 覆盖', `${v3.goldCovered}/${v3.goldTotal}（${fmtPct(v3.goldCoverage)}）`],
+      ['gold 内容完整性（内容词 ≥45%）', `${v3.goldContentCovered}/${v3.goldTotal}（${fmtPct(v3.goldContentRate)}）`],
+      ['内容词平均覆盖率', fmtPct(v3.contentCompletenessAvg)],
       ['注释块（fact/pref/commit/rel）', `${v3.annotationRates.facts} / ${v3.annotationRates.preferences} / ${v3.annotationRates.commitments} / ${v3.annotationRates.relations}`],
     ]))
     const byType = Object.entries(v3.goldByType ?? {}).map(([type, row]) => `${type} ${row.covered}/${row.total}`).join(' · ')
     lines.push('', `gold 按类型：${byType || '—'}`, '')
     lines.push('', `每日块数：${Object.entries(v3.perDay ?? {}).map(([day, count]) => `${day}:${count}`).join(' ') || '—'}`, '')
+    if ((v3.contentGaps ?? []).length) {
+      lines.push('内容完整性缺口（gold 内容词 <45% 出现在最好的一块里）：', '')
+      for (const row of v3.contentGaps.slice(0, 6)) lines.push(`- ${row.goldId} [${row.type}] ${Math.round((row.completeness ?? 0) * 100)}%：${row.text}`)
+      lines.push('')
+    }
     return lines
   }
   const lines = ['## Formation（SPEC §7.1）', '']

@@ -517,16 +517,28 @@ export function apply(ctx) {
         }
         if (relationshipEntities.length >= 2) {
           const episodeRows = memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
+          const questionGrams = question ? contentBigramsOf(question) : []
+          const matched = []
           for (const row of episodeRows) {
-            if (row.data?.superseded === true) continue
+            if (row.data?.superseded === true || Number(row.data?.parts?.part) > 1) continue
             const haystack = `${row.text ?? ''} ${String(row.data?.body ?? '')} ${JSON.stringify(row.data?.people ?? [])} ${JSON.stringify(row.data?.entities ?? [])}`.toLowerCase()
             const mentioned = relationshipEntities.filter((entity) => entity.forms.some((form) => haystack.includes(form.toLowerCase()))).length
             if (mentioned < 2) continue
-            const key = `episode:${row.id}`
+            const contentHits = questionGrams.filter((gram) => haystack.includes(gram)).length
+            matched.push({ row, contentHits })
+          }
+          // 只补最相关的 3 块，分数按"问题内容词命中数"排序、略高于当前最好候选，
+          // 避免实体对扫描用硬编码高分淹没真正的答案（p-03 实测被 6 块关系邻居挤出 top5）。
+          matched.sort((a, b) => b.contentHits - a.contentHits || Number(b.row.createdAt ?? 0) - Number(a.row.createdAt ?? 0))
+          const bestScore = [...bestById.values()].reduce((max, entry) => Math.max(max, Number(entry.score) || 0), 0)
+          for (const [index, entry] of matched.slice(0, 3).entries()) {
+            const key = `episode:${entry.row.id}`
             if (bestById.has(key)) continue
             bestById.set(key, {
-              item: { id: row.id, namespace: 'episode', kind: 'block', text: row.text, data: row.data, createdAt: row.createdAt },
-              namespace: 'episode', score: 50, sim: 0.6, uncertain: false, matchedQuery: 'entity-pair', boosted: true,
+              item: { id: entry.row.id, namespace: 'episode', kind: 'block', text: entry.row.text, data: entry.row.data, createdAt: entry.row.createdAt },
+              namespace: 'episode',
+              score: (bestScore + 0.6) * (1 - index * 0.04),
+              sim: 0.6, uncertain: false, matchedQuery: 'entity-pair', boosted: true,
             })
           }
         }
@@ -589,17 +601,32 @@ export function apply(ctx) {
 
         // v3 经历块内容词覆盖加分：标题通常是创意概括，问句用词更多落在正文里；
         // 按命中数量小幅加分，把"正文确实在讲这件事"的块提上来（不改变 v2 事件块排序）。
+        // 用 IDF 权重：稀有词（弱爆了/盲人/端口号）比"舍友/主人"这类高频词更能定位答案。
         if (question && candidates.length) {
           const contentGrams = contentBigramsOf(question)
           if (contentGrams.length) {
+            const normalize = (text) => String(text ?? '').toLowerCase().replace(/\s+/g, '')
+            const episodeDocs = memory.query({ namespace: 'episode', kind: 'block', limit: 500 })
+              .filter((row) => row.data?.superseded !== true && !(Number(row.data?.parts?.part) > 1))
+              .map((row) => normalize(`${row.text ?? ''} ${String(row.data?.body ?? '')}`))
+            const docCount = Math.max(1, episodeDocs.length)
+            const df = new Map()
+            for (const gram of contentGrams) {
+              let count = 0
+              for (const doc of episodeDocs) if (doc.includes(gram)) count += 1
+              df.set(gram, count)
+            }
             let boosted = false
             for (const entry of candidates) {
               if (entry.namespace !== 'episode') continue
-              const haystack = `${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '').slice(0, 1500)}`.toLowerCase().replace(/\s+/g, '')
-              let hits = 0
-              for (const gram of contentGrams) if (haystack.includes(gram)) hits += 1
-              if (!hits) continue
-              entry.score = Number(entry.score) * (1 + Math.min(0.5, hits * 0.08))
+              const haystack = normalize(`${entry.item.text ?? ''} ${String(entry.item.data?.body ?? '')}`)
+              let weightSum = 0
+              for (const gram of contentGrams) {
+                if (!haystack.includes(gram)) continue
+                weightSum += Math.log(1 + docCount / ((df.get(gram) ?? 0) + 1))
+              }
+              if (!weightSum) continue
+              entry.score = Number(entry.score) * (1 + Math.min(1.2, weightSum * 0.35))
               boosted = true
             }
             if (boosted) candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
