@@ -472,6 +472,30 @@ export function apply(ctx) {
             await collectHits(subQuery, relaxedFloor, true)
           }
         }
+        // v3 分段索引：先匹配 episode 正文的"段"，再把命中段回映射到整个 episode。
+        // 粗块整体向量会把问句细节稀释；段级向量能定位"哪一段在讲这件事"，返回仍是完整经历块。
+        if (question && searchQueries.length) {
+          const segmentFloor = Math.max(0.28, Math.min(floor, 0.45) - 0.1)
+          for (const subQuery of searchQueries.slice(0, 2)) {
+            const hits = await memory.search({ namespace: 'episode-seg', query: subQuery, limit: 80, now })
+            for (const hit of hits) {
+              if (Number(hit.sim ?? 0) < segmentFloor) continue
+              const parentKey = String(hit.item.data?.parentKey ?? '')
+              if (!parentKey) continue
+              const parent = memory.query({ namespace: 'episode', kind: 'block', key: parentKey, limit: 1 })[0]
+              if (!parent || parent.data?.superseded === true) continue
+              const key = `episode:${parent.id}`
+              const score = Number(hit.score ?? 0) * 0.9
+              const previous = bestById.get(key)
+              if (previous && Number(previous.score) >= score) continue
+              bestById.set(key, {
+                item: { id: parent.id, namespace: 'episode', kind: 'block', text: parent.text, data: parent.data, createdAt: parent.createdAt },
+                namespace: 'episode', score, sim: Number(hit.sim ?? 0),
+                uncertain: Number(hit.sim ?? 0) < 0.5, matchedQuery: subQuery, segment: true,
+              })
+            }
+          }
+        }
         // v3：episode 单独放宽一轮。粗块正文长、embedding 相似度普遍低于原子块，
         // 严格 floor 会把正确块直接筛掉（实测期望块常落在 0.3–0.45）；这里只补 episode 候选，
         // 分数打折、标记低置信，后续仍有内容词门槛与 IDF/实体排序把关。

@@ -194,6 +194,8 @@ export function apply(ctx) {
   try { memory.registerNamespace({ id: 'relation', label: '关系', recallable: true, halfLifeDays: 365, owner: 'dream' }) } catch { /* 已注册 */ }
   // v3 经历块：召回主单位。text=一行标题，data.body=完整叙述（可以长），typed 事实挂 data.annotations。
   try { memory.registerNamespace({ id: 'episode', label: '经历', recallable: true, halfLifeDays: 120, owner: 'dream' }) } catch { /* 已注册 */ }
+  // episode 正文分段索引（v3 检索）：段级向量只用于"找到属于哪段经历"，不直接返回给模型。
+  try { memory.registerNamespace({ id: 'episode-seg', label: '经历片段', recallable: true, halfLifeDays: 120, owner: 'dream' }) } catch { /* 已注册 */ }
 
   const persona = String(ctx.config.persona ?? loadPersona(ctx) ?? '')
   // 身份链的产品已知事实（审计 F5）：自我的 QQ 与主人的 QQ 由配置给出，
@@ -788,6 +790,67 @@ export function apply(ctx) {
     }
     stats.relations = relationsTouched
     stats.relationsInvalidated = relationsInvalidated
+    return stats
+  }
+
+  /**
+   * v3 检索：把 episode 正文切成小段（~260 字、句边界）做分段索引。
+   * 段只用于"定位属于哪段经历"：命中段后回映射到父 episode，返回给模型的仍是完整经历块。
+   * 幂等：每次 run 末尾按当前 live episodes 重建；内容没变不重写，父块消失则删段。
+   */
+  function syncEpisodeSegments(now = ctx.now()) {
+    const stats = { segments: 0, written: 0, removed: 0 }
+    const episodes = memory.query({ namespace: 'episode', kind: 'block', limit: 2000, order: 'desc' })
+      .filter((row) => row.data?.superseded !== true)
+    const existing = memory.query({ namespace: 'episode-seg', kind: 'segment', limit: 5000, order: 'desc' })
+    const byParent = new Map()
+    for (const row of existing) {
+      const parentKey = String(row.data?.parentKey ?? '')
+      if (!parentKey) continue
+      if (!byParent.has(parentKey)) byParent.set(parentKey, [])
+      byParent.get(parentKey).push(row)
+    }
+    const liveParents = new Set()
+    for (const episode of episodes) {
+      liveParents.add(String(episode.key))
+      const body = String(episode.data?.body ?? '').trim()
+      if (body.length < 60) continue
+      const chunks = []
+      let current = ''
+      for (const sentence of body.split(/(?<=[。！？!?\n])/)) {
+        const next = current + sentence
+        if (next.length > 260 && current.length >= 60) { chunks.push(current); current = sentence } else current = next
+      }
+      if (current.trim()) chunks.push(current)
+      const desired = chunks.map((text, index) => ({
+        key: `eseg:${hash(episode.key)}:${index + 1}`,
+        text: text.trim(),
+        ordinal: index + 1,
+      }))
+      const previousByKey = new Map((byParent.get(String(episode.key)) ?? []).map((row) => [String(row.key), row]))
+      for (const segment of desired) {
+        const old = previousByKey.get(segment.key)
+        if (old && String(old.text) === segment.text) { previousByKey.delete(segment.key); continue }
+        const created = memory.put({
+          namespace: 'episode-seg', kind: 'segment', key: segment.key, text: segment.text,
+          data: {
+            parentKey: String(episode.key), parentId: Number(episode.id),
+            day: episode.data?.day ?? null, ordinal: segment.ordinal,
+            parentText: String(episode.text ?? '').slice(0, 120),
+          },
+          now,
+        })
+        if (typeof memory.index === 'function') void memory.index(created.id, segment.text)
+        stats.written += 1
+        previousByKey.delete(segment.key)
+      }
+      for (const stale of previousByKey.values()) { memory.remove({ namespace: 'episode-seg', key: stale.key }); stats.removed += 1 }
+    }
+    for (const [parentKey, rows] of byParent) {
+      if (liveParents.has(parentKey)) continue
+      for (const row of rows) { memory.remove({ namespace: 'episode-seg', key: row.key }); stats.removed += 1 }
+    }
+    stats.segments = memory.query({ namespace: 'episode-seg', kind: 'segment', limit: 5000 }).length
     return stats
   }
 
@@ -3022,12 +3085,17 @@ export function apply(ctx) {
       try { entitySync = syncEntities(dreamNow) } catch (error) {
         ctx.log({ level: 'warn', msg: 'dream.entity-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
       }
+      // v3 分段索引：cleanup/合并结束之后重建 episode 正文分段（纯确定性，段级向量供检索定位）。
+      let segmentSync = null
+      try { segmentSync = syncEpisodeSegments(dreamNow) } catch (error) {
+        ctx.log({ level: 'warn', msg: 'dream.segment-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
+      }
       // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
       for (const result of results) recordOutcome(day, result, dreamNow)
       const pruned = pruneRuns(dreamNow)
       // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
       const receipt = emitDreamResult({ now: dreamNow, results })
-      return { ok, day, results, pruned, receipt, targetNow: dreamNow, entitySync }
+      return { ok, day, results, pruned, receipt, targetNow: dreamNow, entitySync, segmentSync }
     })()
     inFlight = task
     try { return await task } finally { if (inFlight === task) inFlight = null }
@@ -3114,6 +3182,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 
