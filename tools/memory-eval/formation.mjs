@@ -489,7 +489,7 @@ function failureSamples({ fixture, indexes, extracted, match, entityMatcher }) {
 export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, root = null, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', partition = 'day', logs = [] }) {
   const effectiveSchema = schema === 'v3' ? 'v3' : 'v2'
   const effectiveJobs = jobs ?? (effectiveSchema === 'v3' ? V3_JOBS : FORMATION_JOBS)
-  const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}), ...(partition === 'segment' ? { partition: 'segment', segmentCursorInit: 'zero' } : {}) }
+  const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}), ...(partition === 'segment' ? { partition: 'segment', segmentCursorInit: 'zero', segmentReplay: true } : {}) }
   const profileRows = selectProfileRows(fixture, indexes, profile)
   // root 指定时用固定目录（重建/续跑用），否则每次新建临时库（评测用）。
   const tempRoot = root ? path.resolve(root) : fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
@@ -635,6 +635,7 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
 
 
 

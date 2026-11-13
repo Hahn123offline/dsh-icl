@@ -329,3 +329,31 @@ dream.run(trigger, now):
 待 S3/S4：
 - 三源 formation A/B（day vs segment）确认指标不回退；
 - live 迁移 dry-run/备份/切换（S4，需要用户重启窗口）。
+
+---
+
+## 14. S3 首轮 A/B（2026-11-13，lab，未切换 live）
+
+统一条件：`--mode all --schema v3 --seed formation --embed --model cloud`；day 用 mode=all，segment 用 `--partition segment`（replay 可见性：job now=段起点日 00:00，避免评测时"未来块不可见"）。
+
+| 素材 | 模式 | episodes | goldCoverage | goldContent | anyHit@5 | recall@5 |
+|---|---|---:|---:|---:|---:|---:|
+| focus | day（本轮） | 31 | 87.5% | 56.3% | 100% | 92.7% |
+| focus | segment（2 次） | 26 / 28 | 90.6% | 50–59% | 93.8% | 80.2–77.6% |
+| QQ | day（旧 r3，待同代码重跑） | 14 | 80% | — | — | 83.3% |
+| QQ | segment | 12 | 95% | — | 92.3% | 92.3% |
+| live | day（旧 r3，待同代码重跑） | 26 | 87.5% | — | — | 100% |
+| live | segment | 25 | 75% | — | 100% | 93.8% |
+
+**初步结论**
+- 段模式形成链路可用，formation coverage 在 focus/QQ 不低，但 live coverage 下降（75% vs 87.5%）；
+- 检索：QQ segment 明显更好；live anyHit 100；focus 有一题（p-08）因**同日故事被拆成 309/310 两段**，
+  期望集合只包含 309、实际返回 310 → anyHit 93.8（低于 V1 门槛 95）；
+- 说明：这不是分区正确性问题，而是"段模式改变了块粒度 → 期望映射/同主题合并"需要再对齐；
+- 旧 day 基线不是同代码同 seed 重跑，S3 尚不能下"通过/不通过"结论。
+
+**S3b 待做（在 S4 前）**
+1. 用当前代码重跑 QQ/live 的 day 模式，同 seed/同 repeat，做公平 A/B；
+2. 处理 focus p-08：要么让期望映射包含同一主题的相邻段，要么在段内合并轮保证同故事不拆；
+3. 各源 2–3 次重复，确认 anyHit ≥95%（或明确为映射 artifact）；
+4. 通过后再进入 S4（live dry-run + 备份 + 切换窗口）。

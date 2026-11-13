@@ -193,6 +193,9 @@ export function apply(ctx) {
   const partitionMode = String(ctx.config.partition ?? 'day') === 'segment' ? 'segment' : 'day'
   // 首次启用段模式时的 cursor 初始化：head=只消费启用后的新行（生产安全）；zero=从最早 raw 重放（lab/测试）。
   const segmentCursorInit = String(ctx.config.segmentCursorInit ?? 'head') === 'zero' ? 'zero' : 'head'
+  // eval replay 约定：段模式若按切点时刻写 created_at，评测中当天探针会看不见未来形成的块；
+  // replay 模式下 job 的 now 用段起点日 00:00（与 day 模式评测约定一致）。生产不设。
+  const segmentReplay = ctx.config.segmentReplay === true
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
   // 段模式的控制面（不可召回）：段记录 + 消费游标。
@@ -3238,6 +3241,7 @@ export function apply(ctx) {
       status: 'open',
       // 天语义只作为参考：段起点日；模型可见层用它，不用 segmentId。
       referenceDay: dayKey(startAt, tzOf()),
+      referenceStartAt: dayRange(startAt, tzOf()).start,
       rows: rows.map((row) => ({
         id: rawRowId(row), time: Number(row.time ?? 0), sessionId: row.sessionId ?? null, seq: row.seq ?? null,
         role: row.role ?? null, text: String(row.text ?? ''),
@@ -3289,7 +3293,9 @@ export function apply(ctx) {
       }
       try {
         // day 模式：按"凌晨算前一天"把运行时刻换成整理对象；段模式：dreamNow 即段切点，day 是段 id（内部）。
-        const dreamNow = partitionMode === 'segment' ? Number(segment.data.cutAt) : targetDayInstant(now)
+        const dreamNow = partitionMode === 'segment'
+          ? (segmentReplay ? Number(segment.data.referenceStartAt) : Number(segment.data.cutAt))
+          : targetDayInstant(now)
         const day = partitionMode === 'segment' ? segment.key : dayKey(dreamNow, tzOf())
         const results = []
         // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
@@ -3431,6 +3437,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 
