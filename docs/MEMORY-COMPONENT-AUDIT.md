@@ -183,3 +183,21 @@ live 实测（只读）：
 6. **承诺生命周期**（可选新功能）：只有确认"承诺跟踪"是产品需求才立项，不在 V1。
 
 > 本轮不改这些，是因为它们需要你确认契约方向；继续打补丁只会加深三套词表的漂移。
+
+---
+
+## 8. 契约修复落地状态（2026-11-13 晚）
+
+用户确认按 1→2→3 执行后，已落地：
+
+- **C1（typed 分类 ↔ annotations）**：已修。v3 不再暴露 typed kind；统一能力表 `packages/core/src/memory-capabilities.mjs`
+  规定 v3 可查询类型 = episode/person/lexicon，event/fact/preference/commitment/slang 为归档 namespace。
+- **C2（whois 读 v2）**：已修。whois 增加 schema 配置，v3 分支只读 episode/annotations，不读 event/typed；
+  同时补上从未输出的 person profile 正文。
+- **C3（能力标记 vs 实际可查询性）**：部分修。recall/eager/状态已统一走能力表；
+  `mem_ns.recallable` 旧标记仍是数据库里的历史值（没有消费者依赖它，但仍是脏数据）。
+- **C4（"未结承诺"语义）**：已修措辞。world 不再显示「未结承诺」；memory_status 标注"历史记录，不跟踪完成状态"。
+- **C5（旧分类别名/死分类）**：工具面已清（v3 无 event/typed kind）；slang 归档、note 队列等仍保留待观察。
+- **C6/C7（段级分区 / 历史 provenance）**：未修，属独立设计议题，不在本轮。
+
+三源 db-seed 回归：focus 90.6 / QQ 96.2 / live 100（anyHit 全 100），无回退。

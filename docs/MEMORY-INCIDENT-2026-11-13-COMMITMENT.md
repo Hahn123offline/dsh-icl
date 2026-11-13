@@ -78,3 +78,25 @@ ICL 看到「未结承诺 25」后调用：
   - 世界状态行是否显示「块内承诺 N 条（历史累计）」；
   - ICL 是否能用 `kind=commitment` 直接看到承诺；
   - 下次 dream 账本时间/目标日是否符合预期。
+
+---
+
+## 6. 契约修复更新（2026-11-13 晚，替换最初的映射补丁）
+
+用户确认"按 1→2→3 修契约"后，已把最初 `kind→annotations` 的临时映射替换为：
+
+1. **统一能力表** `packages/core/src/memory-capabilities.mjs`：
+   - v3 可查询类型只有 `episode / person / lexicon`；
+   - `event / fact / preference / commitment / slang` 标记为归档 namespace，v3 读取路径不得读取；
+   - recall kind 枚举、默认范围、eager 可见集、memory_status 词表由同一份表驱动。
+2. **recall**：v3 拒绝 `kind=commitment/fact/preference/event`，返回
+   "没有这个记忆分类：… 可用：episode / person / lexicon"，不再静默查旧 namespace；
+   承诺问题用 `recall(query)`，注释仍参与内容门槛/排序，并展示为「块内承诺：…」。
+3. **whois**：改用同一 schema/能力表，v3 只读 episode/annotations；补上此前从未输出的档案正文；
+   "最近事件"来自 episode（按 people/entities/别名）。
+4. **自知**：world 不再显示「未结承诺」；memory_status 只写"块内承诺注释（历史记录，不跟踪完成状态）"。
+5. 测试：新增 whois v3、kind 枚举、旧 kind 拒绝、状态措辞；全仓 925 tests / 924 pass。
+6. 三源 db-seed 回归：focus 90.6/anyHit 100、QQ 96.2/anyHit 100、live 100/anyHit 100（无回退）。
+
+**仍需遵守**：本修复只统一了 v3 读取契约；`mem_ns.recallable` 旧标记、段级分区、v2 归档数据清理
+仍是后续独立议题（见 MEMORY-COMPONENT-AUDIT.md）。

@@ -6,8 +6,14 @@
 //   · 最近提到这个人的事件，由 whois 自己拼（memory 只提供查询原语）
 export const name = 'whois'
 
+import { memoryCapabilities } from '../../../core/src/memory-capabilities.mjs'
+
 export function apply(ctx) {
   const memory = ctx.services.require('memory')
+  // schema 由 preset 显式声明：v3 只读 episode/annotations，v2 保留旧路径；
+  // 两种 schema 的读取分支互斥，不做"v3 读不到再回退 v2"的混合读取。
+  const memorySchema = String(ctx.config.schema ?? 'v2') === 'v3' ? 'v3' : 'v2'
+  const capabilities = memoryCapabilities(memorySchema)
 
   /**
    * 最近提到这个人的事件：用档案里的**全部身份入口**（qq/id/别名/显示名）去比
@@ -49,8 +55,30 @@ export function apply(ctx) {
     return blocks
   }
 
+  function liveEpisodes(limit = 500) {
+    return memory.query({ namespace: 'episode', kind: 'block', limit, order: 'desc' })
+      .filter((row) => row.data?.superseded !== true && !(Number(row.data?.parts?.part) > 1))
+  }
+
   function entityFactsOf(entity, limit = 4) {
     if (!entity?.key) return []
+    if (memorySchema === 'v3') {
+      // v3 没有独立 typed 条目：事实/偏好/承诺是 episode 的块内注释。
+      // 只看"提到这个人"的经历，把其注释当历史摘要展示；不回退任何 v2 namespace。
+      const rows = liveEpisodes()
+        .filter((row) => (row.data?.entities ?? []).includes(entity.key))
+      const out = []
+      for (const row of rows) {
+        for (const field of ['facts', 'preferences', 'commitments']) {
+          for (const text of row.data?.annotations?.[field] ?? []) {
+            const value = String(text ?? '').trim()
+            if (value && !out.some((x) => x.text === value)) out.push({ text: value, data: { from: row.key } })
+            if (out.length >= limit) return out
+          }
+        }
+      }
+      return out
+    }
     const out = []
     for (const namespace of ['preference', 'commitment', 'fact']) {
       const rows = memory.query({ namespace, kind: 'block', limit: 500, order: 'desc' })
@@ -69,6 +97,17 @@ export function apply(ctx) {
       ...(person?.data?.aliases ?? []).map(String),
     ].map((x) => x.trim()).filter(Boolean))
     if (!wanted.size) return []
+    if (memorySchema === 'v3') {
+      // v3：最近发生的事在 episode，不在归档的 event。
+      return liveEpisodes()
+        .filter((row) => {
+          const people = (row.data?.people ?? []).map(String)
+          if (people.some((value) => wanted.has(value))) return true
+          const text = `${row.text ?? ''} ${String(row.data?.body ?? '')}`.toLowerCase()
+          return [...wanted].some((form) => form.length >= 2 && text.includes(form.toLowerCase()))
+        })
+        .slice(0, Math.max(1, Number(limit) || 3))
+    }
     return memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
       .filter((b) => Array.isArray(b.data?.people) && b.data.people.some((p) => wanted.has(String(p))))
       .slice(0, Math.max(1, Number(limit) || 3))
@@ -114,10 +153,17 @@ export function apply(ctx) {
       }
       const person = people[0]
       const events = recentEventsFor(person, qq ?? null, 3)
-      const entityEvents = entity ? memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
-        .filter((block) => block.data?.superseded !== true && Array.isArray(block.data?.entities) && block.data.entities.includes(entity.key))
-        .slice(0, 2) : []
+      const entityEvents = entity
+        ? (memorySchema === 'v3'
+          ? liveEpisodes().filter((block) => Array.isArray(block.data?.entities) && block.data.entities.includes(entity.key)).slice(0, 2)
+          : memory.query({ namespace: 'event', kind: 'block', limit: 500, order: 'desc' })
+            .filter((block) => block.data?.superseded !== true && Array.isArray(block.data?.entities) && block.data.entities.includes(entity.key))
+            .slice(0, 2))
+        : []
       const parts = [line(person)]
+      // 档案正文才是"这个人是谁"的主体；旧实现只给一行标题+熟悉度，profile 从没输出过。
+      const profile = String(person.data?.profile ?? person.data?.narrative ?? '').trim()
+      if (profile) parts.push(`档案：${profile.slice(0, 600)}`)
       // entity 归并：同一实体多份档案/别名一起给出（把"显示名各建一份"的旧问题在读取侧兜住）。
       if (entity) {
         const aliases = [...new Set([...(entity.data?.aliases ?? []).map(String), ...people.flatMap((p) => (p.data?.aliases ?? []).map(String))])]
@@ -185,7 +231,7 @@ export function apply(ctx) {
       const mergedEvents = [...events, ...entityEvents.filter((block) => !events.some((event) => event.id === block.id))].slice(0, 4)
       if (mergedEvents.length) {
         parts.push('最近提到 TA 的事：')
-        parts.push(...mergedEvents.map((e) => `· ${e.text}`))
+        parts.push(...mergedEvents.map((e) => `· ${e.text}${e.data?.day ? `（${String(e.data.day).slice(5)}）` : ''}`))
       }
       return { text: parts.join('\n') }
     },

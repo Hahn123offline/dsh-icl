@@ -9,10 +9,12 @@ import * as memory from '../../plugins/memory/src/index.mjs'
 import * as recall from '../../plugins/recall/src/index.mjs'
 import * as eager from '../../plugins/eager-recall/src/index.mjs'
 import * as worldState from '../../plugins/world-state/src/index.mjs'
+import * as whois from '../../plugins/whois/src/index.mjs'
 import memoryManifest from '../../plugins/memory/manifest.json' with { type: 'json' }
 import recallManifest from '../../plugins/recall/manifest.json' with { type: 'json' }
 import eagerManifest from '../../plugins/eager-recall/manifest.json' with { type: 'json' }
 import worldManifest from '../../plugins/world-state/manifest.json' with { type: 'json' }
+import whoisManifest from '../../plugins/whois/manifest.json' with { type: 'json' }
 
 async function setup() {
   const host = createHost({ log: () => {} })
@@ -21,10 +23,12 @@ async function setup() {
   host.registerPlugin(worldManifest, worldState, {})
   host.registerPlugin(recallManifest, recall, { config: { sessionId: 's1', schema: 'v3' } })
   host.registerPlugin(eagerManifest, eager, { config: { schema: 'v3', minScore: 0.99, minScoreNoEmbed: 0.99, hintThreshold: 0.2, hintCooldownMs: 60_000 } })
+  host.registerPlugin(whoisManifest, whois, { config: { schema: 'v3' } })
   await host.enable('memory')
   await host.enable('world-state')
   await host.enable('recall')
   await host.enable('eager-recall')
+  await host.enable('whois')
   const tools = Object.fromEntries(host.services.tools.list().map((tool) => [tool.name, tool]))
   return { host, tools, memory: host.shared.get('memory') }
 }
@@ -43,8 +47,9 @@ test('记忆自知：world 状态行 + memory_status 工具给出经历范围/�
   const status = await tools.memory_status.execute({})
   assert.match(status.text, /记忆状态/)
   assert.match(status.text, /经历 2 段/)
-  assert.match(status.text, /块内承诺/)
-  assert.match(status.text, /历史累计/)
+  assert.match(status.text, /块内承诺注释/)
+  assert.match(status.text, /历史记录/)
+  assert.doesNotMatch(status.text, /未结承诺/)
   assert.match(status.text, /答应周末一起看直播/)
   const world = host.shared.get('world')
   const owner = world.read({ owner: 'memory' })
@@ -99,6 +104,7 @@ test('意图路由：问"是谁"时，即使人物档案分数被经历块压过
 
 test('人物短笔记不占人物档案配额：档案和短事实能同时出现', async () => {
   const { tools, memory } = await setup()
+  memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'test' })
   memory.put({
     namespace: 'person', kind: 'block', key: 'person:3429502459', text: '主人（3429502459）',
     data: { profile: '主人最近在赶复习，下周考试，离散和计组之前没好好学，说主要还是自己菜。', ids: [{ kind: 'qq', value: '3429502459' }], familiarity: '很熟' },
@@ -113,18 +119,46 @@ test('人物短笔记不占人物档案配额：档案和短事实能同时出�
 
 
 
-test('v3 kind=commitment 无 query：直接列块内承诺，而不是"记忆是空的"', async () => {
-  const { tools, memory } = await setup()
-  seedEpisode(memory, { day: '2026-11-10', key: 'epi:c1', title: '周末直播安排', body: '晚上聊到周末的安排。', commitments: ['答应周末一起看直播'] })
-  const out = await tools.recall.execute({ kind: 'commitment', limit: 5 })
-  assert.match(out.text, /块内承诺：/, `应列出块内承诺，实际：${out.text}`)
-  assert.match(out.text, /答应周末一起看直播/)
-  assert.doesNotMatch(out.text, /记忆是空的|没有能想起来的/)
+test('v3 recall 只枚举真实存在的记忆类型（不再暴露 event/typed 死分类）', async () => {
+  const { tools } = await setup()
+  const recallTool = tools.recall
+  assert.ok(recallTool, '应有 recall 工具')
+  const ids = recallTool.parameters?.properties?.kind?.enum ?? []
+  assert.deepEqual(ids, ['episode', 'person', 'lexicon'])
 })
 
-test('v3 kind=event 映射到 episode（旧 event 分类已归档）', async () => {
-  const { tools, memory } = await setup()
-  seedEpisode(memory, { day: '2026-11-10', key: 'epi:e1', title: '修好了视频工具', body: '下午修好了视频工具。' })
-  const out = await tools.recall.execute({ kind: 'event', limit: 5 })
-  assert.match(out.text, /修好了视频工具/, `kind=event 应能看到 episode，实际：${out.text}`)
+test('v3 旧 kind 明确拒绝并给可用分类，而不是返回"记忆是空的"', async () => {
+  const { tools } = await setup()
+  const out = await tools.recall.execute({ kind: 'commitment', limit: 5 })
+  assert.match(out.text, /没有这个记忆分类/)
+  assert.match(out.text, /episode/)
 })
+
+test('whois v3：最近事件与事实摘要读 episode/annotations，不读归档的 v2 namespace', async () => {
+  const { tools, memory } = await setup()
+  memory.registerNamespace({ id: 'entity', label: '实体', recallable: false, owner: 'test' })
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: '主人（3429502459）',
+    data: {
+      profile: '主人，QQ 3429502459，一直在帮我搭环境。', subject: { kind: 'qq', value: '3429502459' },
+      ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['主人'], familiarity: '很熟', claims: [], evidence: [],
+    },
+  })
+  memory.put({
+    namespace: 'entity', kind: 'entity', key: 'entity:qq:3429502459', text: '主人',
+    data: { ids: [{ kind: 'qq', value: '3429502459' }], aliases: ['主人'], stub: false },
+  })
+  memory.put({
+    namespace: 'episode', kind: 'block', key: 'epi:whois', text: '主人答应周末看直播',
+    data: {
+      body: '晚上主人说周末一起看直播。', day: '2026-11-11', evidence: [{ type: 'day', id: 1, line: 'x' }],
+      people: ['3429502459'], entities: ['entity:qq:3429502459'],
+      annotations: { facts: [], preferences: [], commitments: ['答应周末一起看直播'] },
+    },
+  })
+  const out = await tools.whois.execute({ qq: '3429502459' })
+  assert.match(out.text, /一直在帮我搭环境/, `应含人物档案：${out.text}`)
+  assert.match(out.text, /主人答应周末看直播/, `最近事件应读 episode：${out.text}`)
+  assert.match(out.text, /答应周末一起看直播/, `事实摘要应读块内注释：${out.text}`)
+})
+

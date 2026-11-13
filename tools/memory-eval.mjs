@@ -384,6 +384,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     const eagerConfig = {
       ...(options.eagerMinScore != null ? { minScore: options.eagerMinScore } : {}),
       ...(options.eagerMinScoreNoEmbed != null ? { minScoreNoEmbed: options.eagerMinScoreNoEmbed } : {}),
+      ...(options.schema === 'v3' ? { schema: 'v3' } : {}),
     }
 
     const formationStarted = Date.now()

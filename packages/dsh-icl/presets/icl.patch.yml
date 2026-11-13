@@ -74,6 +74,9 @@
                   # 低于注入阈值但有相关记忆时，只给一行"可能记得"提示（不注入内容）。
                   hintThreshold: 0.33
                   hintCooldownMs: 300000
+                # whois 与 recall/eager 同 schema：v3 只读 episode/annotations，不读归档的 v2 namespace。
+                whois:
+                  schema: v3
                 # 记忆状态行加进 world 状态段；给 memory 一行加空间（仍由 world 截断）。
                 world-state:
                   maxChars: 320

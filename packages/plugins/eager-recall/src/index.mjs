@@ -6,6 +6,7 @@
 //   2. 宁缺毋滥：低于阈值一条都不给
 //   3. 只给参考：标明这是记忆检索结果，不是事实
 import fs from 'node:fs'
+import { memoryCapabilities } from '../../../core/src/memory-capabilities.mjs'
 
 export const name = 'eager-recall'
 
@@ -25,12 +26,11 @@ export function apply(ctx) {
   const maxChars = Math.max(40, Number(ctx.config.maxChars ?? 200))
   // v3：自动召回也不能注入旧 v2 事件/事实块或内部片段（episode 才是经历记忆）。
   const memorySchema = String(ctx.config.schema ?? 'v2') === 'v3' ? 'v3' : 'v2'
-  const hiddenNamespaces = memorySchema === 'v3'
-    ? new Set(['event', 'fact', 'preference', 'commitment', 'episode-seg', 'relation'])
-    : new Set(['episode-seg'])
+  // 统一能力表：只有当前 schema 声明的记忆类型能进入自动召回；归档/内部 namespace 一律不读。
+  const capabilities = memoryCapabilities(memorySchema)
 
-  /** 与 recall 的 schema=v3 同口径：旧命名空间只归档，不注入。 */
-  function visibleHit(hit) { return !hiddenNamespaces.has(String(hit?.item?.namespace ?? '')) }
+  /** 与 recall 的 schema 同口径：旧命名空间只归档，不注入。 */
+  function visibleHit(hit) { return Object.hasOwn(capabilities.kinds, String(hit?.item?.namespace ?? '')) }
 
   // 用户批准（2026-11-06）：每次评估记 hits/injected/chars，进质量数据（E2 可判定）。
   const counterFile = ctx.config.counterFile ? String(ctx.config.counterFile) : null
