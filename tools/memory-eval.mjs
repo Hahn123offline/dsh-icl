@@ -422,6 +422,14 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           eagerConfig,
           logs: [],
         })
+        const v3Summary = (metrics) => ({
+          episodes: metrics.v3?.episodes ?? null,
+          bodyLenAvg: metrics.v3?.bodyLenAvg ?? null,
+          goldCoverage: metrics.v3?.goldCoverage ?? null,
+          goldContentRate: metrics.v3?.goldContentRate ?? null,
+          materialCoverage: metrics.v3?.materialCoverage?.rate ?? null,
+          contentGaps: metrics.v3?.contentGaps?.length ?? null,
+        })
         repeats = repeats ?? [{
           index: 1,
           extracted: formationRun.metrics.counts.extracted,
@@ -430,6 +438,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           recall: formationRun.metrics.overall.recall,
           duplicatePairs: formationRun.metrics.dedup.pairs,
           duplicateRate: formationRun.metrics.dedup.rate,
+          ...v3Summary(formationRun.metrics),
         }]
         repeats.push({
           index,
@@ -439,6 +448,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           recall: extra.metrics.overall.recall,
           duplicatePairs: extra.metrics.dedup.pairs,
           duplicateRate: extra.metrics.dedup.rate,
+          ...v3Summary(extra.metrics),
         })
         if (!idem) {
           idem = {
@@ -621,6 +631,7 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 
 
