@@ -357,3 +357,33 @@ dream.run(trigger, now):
 2. 处理 focus p-08：要么让期望映射包含同一主题的相邻段，要么在段内合并轮保证同故事不拆；
 3. 各源 2–3 次重复，确认 anyHit ≥95%（或明确为映射 artifact）；
 4. 通过后再进入 S4（live dry-run + 备份 + 切换窗口）。
+
+---
+
+## 15. S3 最终判定（2026-11-13，公平重跑后）
+
+同代码、同 `--seed formation --embed --model cloud` 的公平对照（day 均为当前代码；focus day 跑了 3 次）：
+
+| 素材 | day | segment |
+|---|---|---|
+| focus | anyHit **100%** ×3；r5 88.5–92.7；episodes 31；coverage 87.5% | anyHit **93.8%** ×2；r5 77.6–80.2；episodes 26–28；coverage 90.6% |
+| QQ | anyHit **100%**；r5 100%；episodes 10；coverage 75% | anyHit **92.3%**；r5 92.3%；episodes 12；coverage 95% |
+| live | anyHit **88.9%**；r5 88.9%；episodes 32；coverage 87.5% | anyHit **100%**；r5 93.8%；episodes 25；coverage 75% |
+
+补充实验：段内兄弟补召回（p-08 的 63071 + 临时世界）只让 focus 从 93.8→93.3、QQ 92.3→91.7，
+mixed 且不泛化，已回滚，未提交。
+
+**判定：S3 不通过（不能进 S4 切换）。**
+- 段模式在 live 的检索 anyHit 更好，但 formation coverage 明显低（75% vs 87.5%）；
+- focus/QQ 的 anyHit 低于 V1 门槛 95%，源于"同一段连续经历被拆成多个 episode"与
+  "多子句 probe 的期望映射只含其中一块"；
+- 这是粒度/映射对齐问题，不是分区正确性问题。分区不变量本身在 S1 单测中成立。
+
+**S3c（S4 前必须解决）**
+1. formation：段内同故事合并（优先确定性规则：同段 + 共享 numeric/entity/证据行 + 相邻时间，
+   再让模型合并），目标恢复 day 模式的"一段连续经历一个块"；
+2. 评测：多子句 probe 的期望映射要覆盖同一 gold 的多个 episode（或明确只测单 fact）；
+3. 三源各 2–3 次公平 repeat，门槛：anyHit ≥95%（或明确为映射 artifact）、coverage 不低于 day 5pt；
+4. 全过后才进 S4。
+
+**当前状态**：`partition` 默认 day，live 未切换；段模式代码/评测/迁移工具均在 lab。
