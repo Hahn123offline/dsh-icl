@@ -486,10 +486,10 @@ function failureSamples({ fixture, indexes, extracted, match, entityMatcher }) {
  * 跑一次 formation（独立临时库）。
  * @returns {Promise<{tempRoot:string, host:object, exported:Array, extracted:Array, match:object, metrics:object, samples:object, dayResults:Array, aux:object}>}
  */
-export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, root = null, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', logs = [] }) {
+export async function runFormation({ fixture, indexes, profile = 'raw-main', model, embedAdapter = null, keepTemp = false, root = null, jobs = null, recallConfig = null, eagerConfig = null, dreamConfig = null, schema = 'v2', partition = 'day', logs = [] }) {
   const effectiveSchema = schema === 'v3' ? 'v3' : 'v2'
   const effectiveJobs = jobs ?? (effectiveSchema === 'v3' ? V3_JOBS : FORMATION_JOBS)
-  const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}) }
+  const effectiveDreamConfig = { ...(dreamConfig ?? {}), ...(effectiveSchema === 'v3' ? { memorySchema: 'v3' } : {}), ...(partition === 'segment' ? { partition: 'segment', segmentCursorInit: 'zero' } : {}) }
   const profileRows = selectProfileRows(fixture, indexes, profile)
   // root 指定时用固定目录（重建/续跑用），否则每次新建临时库（评测用）。
   const tempRoot = root ? path.resolve(root) : fs.mkdtempSync(path.join(os.tmpdir(), 'icl-memory-eval-'))
@@ -512,7 +512,8 @@ export async function runFormation({ fixture, indexes, profile = 'raw-main', mod
   try {
     for (const day of fixture.days ?? []) {
       // replay 约定：当天记忆在 00:00 视为已整理完（同日任意探针可见，未来天不可见；host 关掉 dayCutHour）。
-      const now = dayAtHour(day.day, 0, indexes.timezone)
+      // day 模式：当天 00:00 视为已整理（评测约定）；segment 模式：dream 在当天结束时切段，才能包含全天材料。
+      const now = partition === 'segment' ? dayAtHour(day.day, 23, indexes.timezone) + 59 * 60_000 + 999 : dayAtHour(day.day, 0, indexes.timezone)
       let result = null
       try {
         result = await hostBox.shared.dream.run({ now, jobs: [...effectiveJobs] })
@@ -634,6 +635,7 @@ export async function closeFormation(run) {
     try { fs.rmSync(run.tempRoot, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
+
 
 
 

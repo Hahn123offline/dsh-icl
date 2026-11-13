@@ -111,8 +111,14 @@ export async function createEvalHost(options) {
   }
 
   // raw 源：id 稳定；主材料行 + 仅兜底行都保留，list 只回主材料（profile 过滤在这里生效）。
-  const listedRows = Array.isArray(options.mainRows) ? options.mainRows : []
-  const searchRows = [...listedRows, ...(Array.isArray(options.contextRows) ? options.contextRows : [])]
+  // 段模式需要 per-session seq 推进游标：fixture 行没有 seq 时补一个稳定序号（时间序）。
+  const stableSeq = (rows) => (Array.isArray(rows) ? rows : []).map((row, index) => ({
+    ...row,
+    sessionId: row.sessionId ?? 'fixture',
+    seq: Number.isFinite(Number(row.seq)) ? Number(row.seq) : index + 1,
+  }))
+  const listedRows = stableSeq(options.mainRows)
+  const searchRows = [...listedRows, ...stableSeq(options.contextRows)]
   host.services.raw.register({
     id: 'fixture',
     list: ({ since = null, until = null, limit = 2000 } = {}) => {

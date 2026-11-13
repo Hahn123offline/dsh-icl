@@ -304,3 +304,28 @@ dream.run(trigger, now):
 - 评测/重建工具仍走 day 模式（formation replay 尚未按段喂 raw；S2 适配）；
 - 存量 day log/episode 的 legacy segment 登记与 cursor 初始化工具（S2/S4）；
 - 三源 A/B 与 live dry-run（S3/S4）。
+
+---
+
+## 13. S2 实现状态（2026-11-13）
+
+已完成：
+
+1. **评测适配**：`memory-eval --partition segment`
+   - eval host 给 fixture raw 行补稳定 `sessionId/seq`（时间序），段模式游标才能推进；
+   - formation replay 在段模式下用"当天 23:59"作为 dream 切点（day 模式仍用 00:00 评测约定）；
+   - smoke：focus 单日 `--partition segment` 形成 **4 episodes / goldCoverage 85.7%**，无错误；
+   - 默认仍 `--partition day`，不影响既有结果。
+2. **存量迁移工具**：`tools/memory-segment-migrate.mjs`
+   - 默认 dry-run（无写锁、只读）；
+   - 把历史 day log 登记为 `seg:legacy:<day>`（legacy:true、status=done、rows/times/sources）；
+   - 给旧 episode 回填 `segmentId`（仅当该 day 有 legacy segment）；
+   - 从 raw 计算 per-session max seq，写 `dream-cursor`（head 语义）；
+   - live 路径写入必须 `--yes-write-live`；lab 写库已验证。
+   - live dry-run 结果：20 个 day log → 20 legacy segments、67 episodes 可回填、
+     13 个 raw session 的 cursor。
+3. 测试：全仓 **927 tests / 926 pass / 1 skip**，评测自测 28/28。
+
+待 S3/S4：
+- 三源 formation A/B（day vs segment）确认指标不回退；
+- live 迁移 dry-run/备份/切换（S4，需要用户重启窗口）。

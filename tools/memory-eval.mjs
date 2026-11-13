@@ -97,6 +97,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     keepTemp: hasFlag(argv, 'keep-temp'),
     recallMinSim: optionalNumber(argValue(argv, 'recall-min-sim')),
     recallLimit: optionalNumber(argValue(argv, 'recall-limit')),
+    partition: String(argValue(argv, 'partition') ?? 'day'),
     recallMinSimNoEmbed: optionalNumber(argValue(argv, 'recall-min-sim-noembed')),
     eagerMinScore: optionalNumber(argValue(argv, 'eager-min-score')),
     eagerMinScoreNoEmbed: optionalNumber(argValue(argv, 'eager-min-score-noembed')),
@@ -397,6 +398,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         embedAdapter,
         keepTemp: options.keepTemp,
         schema: options.schema,
+        partition: options.partition,
         recallConfig,
         eagerConfig,
         logs,
@@ -419,6 +421,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           embedAdapter,
           keepTemp: false,
           schema: options.schema,
+          partition: options.partition,
           recallConfig,
           eagerConfig,
           logs: [],
@@ -507,7 +510,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       } else if (options.seed === 'formation') {
         if (!formationRun) {
           // retrieval-only + seed=formation：先补跑一次 formation（语义上等价 all，报告里注明）。
-          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, schema: options.schema, recallConfig, eagerConfig, logs })
+          formationRun = await runFormation({ fixture, indexes, profile: options.profile, model, embedAdapter, keepTemp: options.keepTemp, schema: options.schema, partition: options.partition, recallConfig, eagerConfig, logs })
           warnings.push({ path: 'retrieval.seed', message: 'retrieval-only + --seed formation：为建库补跑了一次 formation' })
         }
         corpus = seedFormation(formationRun)
@@ -632,6 +635,8 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
+
 
 
 
