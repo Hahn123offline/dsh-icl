@@ -95,3 +95,18 @@ test('意图路由：问"是谁"时，即使人物档案分数被经历块压过
   const out = await tools.recall.execute({ query: '3429502459 是谁？' })
   assert.match(out.text, /主人，QQ 3429502459/, `应包含人物档案，实际：${out.text}`)
 })
+
+test('人物短笔记不占人物档案配额：档案和短事实能同时出现', async () => {
+  const { tools, memory } = await setup()
+  memory.put({
+    namespace: 'person', kind: 'block', key: 'person:3429502459', text: '主人（3429502459）',
+    data: { profile: '主人最近在赶复习，下周考试，离散和计组之前没好好学，说主要还是自己菜。', ids: [{ kind: 'qq', value: '3429502459' }], familiarity: '很熟' },
+  })
+  memory.put({
+    namespace: 'person', kind: 'note', key: 'note:review', text: '早，还在赶，复习中',
+    data: { at: Date.now(), day: '2026-11-11' },
+  })
+  const out = await tools.recall.execute({ query: '复习中' })
+  assert.match(out.text, /离散和计组/, `人物档案不应被人物短笔记挤掉：${out.text}`)
+})
+

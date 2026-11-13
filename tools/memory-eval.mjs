@@ -96,6 +96,7 @@ export function parseArgs(argv, cwd = process.cwd()) {
     embedProvider: argValue(argv, 'embed-provider'),
     keepTemp: hasFlag(argv, 'keep-temp'),
     recallMinSim: optionalNumber(argValue(argv, 'recall-min-sim')),
+    recallLimit: optionalNumber(argValue(argv, 'recall-limit')),
     recallMinSimNoEmbed: optionalNumber(argValue(argv, 'recall-min-sim-noembed')),
     eagerMinScore: optionalNumber(argValue(argv, 'eager-min-score')),
     eagerMinScoreNoEmbed: optionalNumber(argValue(argv, 'eager-min-score-noembed')),
@@ -378,6 +379,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       ...(options.recallMinSimNoEmbed != null ? { minSimNoEmbed: options.recallMinSimNoEmbed } : {}),
       ...(options.rerank !== 'off' ? { rerank: options.rerank } : {}),
       ...(options.schema === 'v3' ? { schema: 'v3' } : {}),
+      ...(options.recallLimit != null ? { limit: options.recallLimit } : {}),
     }
     const eagerConfig = {
       ...(options.eagerMinScore != null ? { minScore: options.eagerMinScore } : {}),
@@ -619,6 +621,7 @@ if (DIRECT) {
     process.exitCode = 2
   })
 }
+
 
 
 

@@ -54,6 +54,9 @@ export function apply(ctx) {
   const memory = ctx.services.require('memory')
   const session = String(ctx.config.sessionId ?? 'default')
   const budgetTokens = Math.max(500, Number(ctx.config.budgetTokens) || DEFAULT_BUDGET_TOKENS)
+  // 一次回忆默认返回几条：产品默认 6；粗粒度 episode 下多目标问题常需要 8 条才能覆盖，
+  // 允许配置在评测里做 A/B（2026-11-13 第 10 轮）。
+  const defaultLimit = Math.max(1, Math.min(20, Number(ctx.config.limit) || DEFAULT_LIMIT))
   // 相关性下限：memory.search 只过滤 sim<=0；这里再按"与 query 的相关度"挡掉
   // "字面碰巧共享一两个二字组"的凑数结果。有嵌入时用混合相似度，没嵌入时用二元组覆盖率。
   // cursor/继续翻 时放宽到 0.05（她要"再想想"，不能因为淡了就再也翻不出来）。
@@ -123,6 +126,14 @@ export function apply(ctx) {
     if (!grams.length) return true
     const bodies = (texts ?? []).map((text) => String(text ?? '').toLowerCase().replace(/\s+/g, ''))
     return grams.some((gram) => bodies.some((body) => body.includes(gram)))
+  }
+  /** 噪声笔记：纯表情/单字/空白笔记不参与回忆（QQ 实测 😭 笔记会挤掉真正的人物档案）。 */
+  function isNoiseNoteItem(item) {
+    if (!item || item.kind !== 'note') return false
+    const text = String(item.text ?? '').replace(/\s+/g, '')
+    if (!text) return true
+    const meaningful = text.match(/[\u4e00-\u9fffA-Za-z0-9]/g) ?? []
+    return meaningful.length < 2
   }
 
   /**
@@ -354,7 +365,7 @@ export function apply(ctx) {
           overview: { type: 'boolean', description: 'Set true for a time-ordered summary of the last few days (what happened recently).' },
         },
       },
-      async execute({ kind = null, query = '', limit = DEFAULT_LIMIT, cursor = null, tag = null, conv = null, days = 2, overview = false } = {}) {
+      async execute({ kind = null, query = '', limit = defaultLimit, cursor = null, tag = null, conv = null, days = 2, overview = false } = {}) {
         const now = ctx.now()
 
         // 人物是显式参数：kind='person' 才按身份查档案，不做字数猜测。
@@ -601,7 +612,7 @@ export function apply(ctx) {
             })
           }
         }
-        let candidates = [...bestById.values()]
+        let candidates = [...bestById.values()].filter((entry) => !isNoiseNoteItem(entry.item))
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         // 意图路由补召回（2026-11-13）：注释字段直接扫 episode。向量/字面索引只覆盖标题+正文，
         // 承诺/偏好/事实常常只存在于 episode.annotations 里，不扫就永远召不回。
@@ -631,7 +642,7 @@ export function apply(ctx) {
               if (addedByAnnotation >= 3) break
             }
             if (addedByAnnotation) {
-              candidates = [...bestById.values()]
+              candidates = [...bestById.values()].filter((entry) => !isNoiseNoteItem(entry.item))
               candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
             }
           }
@@ -802,6 +813,7 @@ export function apply(ctx) {
           : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false && !legacyHiddenNamespaces.has(ns))
         const pendingRaw = tag ? [] : pendingNamespaces.flatMap((ns) => memory.query({ namespace: ns, kind: 'note', limit: 200, order: 'desc' })
           .filter((item) => item.data?.consolidated !== true)
+          .filter((item) => !isNoiseNoteItem(item))
           // 未整理笔记也要服从会话过滤，否则 "只搜这个会话" 会被别的会话的碎片污染。
           .filter((item) => !conv || String(item.data?.origin?.conv ?? '') === String(conv))
           .map((item) => ({ item, score: 1.15, namespace: ns })))
@@ -865,7 +877,9 @@ export function apply(ctx) {
         const personQuota = intent === 'person' ? 2 : 1
         let personTaken = 0
         for (const entry of usableCandidates.slice(0, 100)) {
-          if (entry.namespace === 'person') {
+          // 人物配额只限制长档案（person block）：人物 note 是短事实，不该占档案配额，
+          // 否则一条"😭"笔记就会把真正的复习/身份事实挤出结果（QQ p-01 实测）。
+          if (entry.namespace === 'person' && entry.item.kind === 'block') {
             if (personTaken >= personQuota) continue
             personTaken += 1
           }
@@ -1171,6 +1185,8 @@ export function apply(ctx) {
   ctx.services.provide('recall', { categories: CATEGORIES, budgetTokens, cursorOf: () => loadCursor(), resetCursor: () => { memory.remove({ namespace: cursorNamespace, key: cursorKey }); return { reset: true } } })
   ctx.log({ msg: 'recall.ready', session, budgetTokens })
 }
+
+
 
 
 

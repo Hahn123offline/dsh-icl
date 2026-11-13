@@ -15,6 +15,9 @@ export function apply(ctx) {
   const enabled = ctx.config.enabled !== false
   // 0.50 是小样本标定出来的；0.55 在我们的混合评分上会漏掉一半该命中的。
   const minScore = Number(ctx.config.minScore ?? 0.5)
+  // 语义阈值：场景是"旧但语义完全对得上"的记忆（QQ p-07：正确答案 sim 0.51，但衰减后 score 掉到
+  // 0.5 以下，按 score 阈值会被整体过滤掉）。语义优先时允许 sim 达标但 score 未达标的候选进入。
+  const minSim = Number(ctx.config.minSim ?? 0.5)
   // 没有绑定嵌入时，memory.search 退化成二元组重叠度，分数整体低一档（实测同义句 0.25），
   // 0.5 会让这个插件永远 0 注入。所以退化路径单独用一个更低、且明确写出来的阈值。
   const minScoreNoEmbed = Number(ctx.config.minScoreNoEmbed ?? 0.2)
@@ -65,10 +68,16 @@ export function apply(ctx) {
     const query = String(message ?? '').trim()
     if (!query) return null
     const { threshold, embedded } = effectiveThreshold()
-    const hits = await memory.search({ query, limit: Math.max(4, maxItems * 3), now: ctx.now(), minScore: threshold })
-    const eligible = hits
+    // 取更宽的候选池再按语义重排：要注入的只有 2 条，但候选池太小、且 score 含衰减，
+    // 会把"语义最像但较旧"的经历挡在池外（QQ p-07 实测）。
+    // limit 要足够宽：eval 里前面的 recall 会 boost 命中块、把旧块按 score 挤出 top-k（QQ p-07 实测）；
+    // memory.search 本来就把全库打分完，宽 limit 只是多回传几十条，开销可忽略。
+    const hits = await memory.search({ query, limit: Math.max(40, maxItems * 20), now: ctx.now(), minScore: threshold * 0.6 })
+    const rankedHits = [...hits].sort((a, b) => Number(b.sim ?? 0) - Number(a.sim ?? 0) || Number(b.score ?? 0) - Number(a.score ?? 0))
+    const eligible = rankedHits
       .filter(visibleHit)
-      .filter((h) => Number(h.score) >= threshold)
+      // 语义达标 OR 混合分达标：保留旧口径，同时允许"语义很像、但衰减把分数压下去"的旧记忆。
+      .filter((h) => Number(h.score) >= threshold || Number(h.sim ?? 0) >= minSim)
       .filter((h) => h.item.kind !== 'cursor')
       // 已消化的 note 已经变成块了，不能再以"未整理"身份重复注入（与 recall 同口径）。
       .filter((h) => !(h.item.kind === 'note' && h.item.data?.consolidated === true))
@@ -91,7 +100,7 @@ export function apply(ctx) {
     }))
     const base = {
       queryChars: query.length, hits: hits.length, injected: picked.length, chars: 0, suppressed, threshold, embedded,
-      candidateIds: summarize(hits),
+      candidateIds: summarize(rankedHits),
     }
     if (!picked.length) {
       // 低置信提示（不自作主张注入内容）：有相关但不够确定的记忆时，只提示"可能有"，
@@ -99,6 +108,8 @@ export function apply(ctx) {
       try {
         const weakHits = await memory.search({ query, limit: 6, now: ctx.now() })
         const weak = weakHits
+          .slice()
+          .sort((a, b) => Number(b.sim ?? 0) - Number(a.sim ?? 0) || Number(b.score ?? 0) - Number(a.score ?? 0))
           .filter(visibleHit)
           .filter((h) => h.item.kind !== 'cursor')
           .filter((h) => !(h.item.kind === 'note' && h.item.data?.consolidated === true))
@@ -137,5 +148,8 @@ export function apply(ctx) {
 
   ctx.log({ msg: 'eager-recall.ready', enabled, minScore, minScoreNoEmbed, maxItems, maxChars, cooldownMs })
 }
+
+
+
 
 
