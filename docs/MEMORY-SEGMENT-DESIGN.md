@@ -276,3 +276,31 @@ dream.run(trigger, now):
 4. S0 工具将成为 S3/S4 的验收脚本（覆盖/重叠/pending/legacy 断言）。
 
 **S0 不改变任何记忆数据。**
+
+---
+
+## 12. S1 实现状态（2026-11-13）
+
+已实现（配置开关，**默认 day，生产未切换**）：
+
+- `dream.partition: 'day' | 'segment'`（默认 day）；`dream.segmentCursorInit: 'head' | 'zero'`
+  - head：首次启用只消费启用后的新行（生产安全，避免重放历史）；
+  - zero：从最早 raw 重放（lab/测试用）。
+- 新增内部 namespace（不可召回）：`dream-segment`（段记录）、`dream-cursor`（per-session seq 游标）。
+- 段记录：cutAt/startAt/endAt/trigger/referenceDay/rows/jobs/log/status；
+- 运行算法：有未完成段只重试该段；无未完成段且有新行才切段；无新行返回
+  `skipped: no-new-material`；job 失败 → 段 `failed`、cursor 不动；全部完成 → 段 `done`、cursor 前进。
+- 段日志替代 day log 作为本段形成输入（wash 不再写 day namespace，段日志存段记录）；
+  people/lexicon/episodes 通过 `readDayLog(segmentKey)` 读本段材料。
+- episode key 变为 `epi:<segmentId>:<hash(title)>`；`data` 增加 `segmentId/rangeStart/rangeEnd`；
+  `data.day` 保留为**段起点日**（天语义）。
+- dream-run 账本 key 自动变为 `run:<segmentId>:<job>`；记录 `referenceDay`，memory_status 用它显示日期。
+- 单元测试（`dream-jobs.test.mjs`）：
+  - 切段/cursor/无新行不建段/下一段不重叠；
+  - 失败不推进 cursor，重试复用同一段；
+  - 天语义：episode.data.day 是段起点日，key 段隔离。
+
+**尚未做（S2/S3）**：
+- 评测/重建工具仍走 day 模式（formation replay 尚未按段喂 raw；S2 适配）；
+- 存量 day log/episode 的 legacy segment 登记与 cursor 初始化工具（S2/S4）；
+- 三源 A/B 与 live dry-run（S3/S4）。

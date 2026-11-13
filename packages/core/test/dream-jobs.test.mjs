@@ -371,3 +371,62 @@ test('v3 跨天近重复：第二天重述同一件事并入旧块，不新增�
 
 
 
+
+test('段模式 S1：dream 切段、cursor 前进、无新行不建段、下一段不重叠', async () => {
+  const now = Date.parse('2026-11-13T21:06:00+08:00')
+  const script = [['经历块', JSON.stringify([{ title: '测试段分区', body: '主人让我测试这条消息能不能被段模式正确整理，我记录下这次测试的过程和结果。', evidence: [1] }])]]
+  const { host, memory, dream } = await setup({ script, dreamConfig: { memorySchema: 'v3', partition: 'segment', segmentCursorInit: 'zero', dayCutHour: 0 } })
+  const rows = [
+    { sessionId: 's1', seq: 1, time: now - 60 * 60_000, role: 'user', sourceKind: 'human', text: '主人：帮我测试一下段模式，这条消息属于第一段。' },
+    { sessionId: 's1', seq: 2, time: now - 30 * 60_000, role: 'assistant', sourceKind: 'agent_visible', text: '我：好的，我会把这次测试完整记下来，看看段边界是否正确。' },
+  ]
+  host.services.raw.register({ id: 'test-raw-segment', list: () => rows, search: () => [] })
+  const first = await dream.run({ now, jobs: ['wash', 'episodes'] })
+  assert.equal(first.segmentStatus, 'done', JSON.stringify(first))
+  assert.ok(String(first.segmentId).startsWith('seg:'), '应生成段 id')
+  const episodes = memory.query({ namespace: 'episode', kind: 'block' })
+  assert.equal(episodes.length, 1)
+  assert.match(String(episodes[0].key), /^epi:seg:/, 'episode key 必须段隔离')
+  assert.equal(episodes[0].data.day, '2026-11-13', '天语义保留为段起点日')
+  assert.equal(episodes[0].data.segmentId, first.segmentId)
+  const cursor = memory.query({ namespace: 'dream-cursor', kind: 'cursor', limit: 1 })[0]
+  assert.equal(cursor?.data?.perSession?.s1, 2)
+  const segmentRows = memory.query({ namespace: 'dream-segment', kind: 'segment', limit: 10 })
+  assert.equal(segmentRows.length, 1)
+  // 没有新行：不建空段、不推进 cursor
+  const second = await dream.run({ now: now + 10 * 60_000, jobs: ['wash', 'episodes'] })
+  assert.equal(second.skipped, 'no-new-material')
+  assert.equal(memory.query({ namespace: 'dream-segment', kind: 'segment', limit: 10 }).length, 1)
+  // 新行：形成第二段，两段 rowIds 不重叠
+  rows.push({ sessionId: 's1', seq: 3, time: now + 5 * 60_000, role: 'user', sourceKind: 'human', text: '主人：这是第二段的新消息，应该归到下个段里。' })
+  const third = await dream.run({ now: now + 20 * 60_000, jobs: ['wash', 'episodes'] })
+  assert.equal(third.segmentStatus, 'done', JSON.stringify(third))
+  assert.notEqual(third.segmentId, first.segmentId)
+  const segments = memory.query({ namespace: 'dream-segment', kind: 'segment', limit: 10, order: 'asc' })
+  assert.equal(segments.length, 2)
+  const ids0 = new Set(segments[0].data.rows.map((row) => row.id))
+  const ids1 = new Set(segments[1].data.rows.map((row) => row.id))
+  assert.equal([...ids0].filter((id) => ids1.has(id)).length, 0, '段之间不得重叠')
+})
+
+test('段模式 S1：job 失败时 cursor 不动，重试同一段而不切新段', async () => {
+  const now = Date.parse('2026-11-13T23:00:00+08:00')
+  const script = [['经历块', 'not json at all']]
+  const { host, memory, dream } = await setup({ script, dreamConfig: { memorySchema: 'v3', partition: 'segment', segmentCursorInit: 'zero', dayCutHour: 0 } })
+  const rows = [{ sessionId: 's2', seq: 1, time: now - 30 * 60_000, role: 'user', sourceKind: 'human', text: '主人：这条消息先让模型失败一次，验证失败后重试同一个段；内容写得长一点，避免被稀疏守卫提前跳过，这样才能真正检测 job 失败路径。' }]
+  host.services.raw.register({ id: 'test-raw-retry', list: () => rows, search: () => [] })
+  const failed = await dream.run({ now, jobs: ['wash', 'episodes'] })
+  assert.equal(failed.segmentStatus, 'failed', JSON.stringify(failed))
+  const cursorAfterFail = memory.query({ namespace: 'dream-cursor', kind: 'cursor', limit: 1 })[0]
+  assert.notEqual(cursorAfterFail?.data?.perSession?.s2, 1, '失败时 cursor 不能前进')
+  const failedSegmentId = failed.segmentId
+  // 修好模型输出后重试：应复用同一个段
+  script[0][1] = JSON.stringify([{ title: '重试成功', body: '这次重试成功了，消息被整理进同一个段。', evidence: [1] }])
+  const retried = await dream.run({ now: now + 5 * 60_000, jobs: ['wash', 'episodes'] })
+  assert.equal(retried.segmentStatus, 'done', JSON.stringify(retried))
+  assert.equal(retried.segmentId, failedSegmentId, '重试不得切新段')
+  assert.equal(memory.query({ namespace: 'dream-segment', kind: 'segment', limit: 10 }).length, 1)
+  const cursorAfterRetry = memory.query({ namespace: 'dream-cursor', kind: 'cursor', limit: 1 })[0]
+  assert.equal(cursorAfterRetry?.data?.perSession?.s2, 1)
+})
+

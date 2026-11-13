@@ -1101,7 +1101,7 @@ export function apply(ctx) {
       const data = row.data ?? {}
       const finishedAt = Number(data.finishedAt ?? data.startedAt ?? row.createdAt ?? 0)
       lastDream = {
-        day: String(data.day ?? String(row.key ?? '').split(':')[2] ?? ''),
+        day: String(data.referenceDay ?? data.day ?? String(row.key ?? '').split(':')[2] ?? ''),
         at: finishedAt || null,
         episodes: Number(data.episodes ?? 0),
         ok: data.status !== 'failed' && data.ok !== false,

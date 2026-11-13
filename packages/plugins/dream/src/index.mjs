@@ -18,6 +18,10 @@ import { inferRawSource, FORMATION_SOURCES, RAW_SOURCES } from '../../../core/sr
 
 export const name = 'dream'
 
+// 段模式下的当前段（模块级）：dayKey/dayRange 在 job 内部被调用，需要拿到"本次 dream 的段"。
+// dream 单飞 + 测试串行使用；非段模式始终为 null。
+let ACTIVE_SEGMENT = null
+
 const DEFAULT_JOBS = ['wash', 'events', 'people', 'lexicon', 'consume', 'cleanup', 'index']
 // v3（用户 2026-11-12 拍板）：记忆以"经历块 episode"为主，typed 降级为块内注释。
 // episodes 替代 events；people 仍产出人物 synopsis；cleanup 增加跨块合并（含同主题 episode）。
@@ -38,6 +42,8 @@ function offsetMinutes(instant, timezone) {
   return sign * (Number(match[2]) * 60 + Number(match[3]))
 }
 function dayRange(now, timezone = 'Asia/Hong_Kong') {
+  // 段模式：job 内部的"当天范围"由当前段决定（dream 是唯一分区者），不是自然日。
+  if (ACTIVE_SEGMENT) return { start: Number(ACTIVE_SEGMENT.data.startAt), end: Number(ACTIVE_SEGMENT.data.cutAt) + 1 }
   const date = ymdOf(now, timezone)
   const utcMidnight = Date.parse(`${date}T00:00:00Z`)
   const first = utcMidnight - offsetMinutes(utcMidnight, timezone) * 60_000
@@ -45,6 +51,8 @@ function dayRange(now, timezone = 'Asia/Hong_Kong') {
   return { start, end: start + 24 * 3600_000 }
 }
 function dayKey(now, timezone = 'Asia/Hong_Kong') {
+  // 段模式下返回 segmentId：job 的 ledger/episode key 自动按段隔离，不再按自然日。
+  if (ACTIVE_SEGMENT) return String(ACTIVE_SEGMENT.key)
   return ymdOf(now, timezone)
 }
 
@@ -180,8 +188,16 @@ export function apply(ctx) {
   // v3 记忆形态开关：v2=原子事件块+独立 typed；v3=粗粒度经历块（episode）+ typed 注释。
   const memorySchema = String(ctx.config.memorySchema ?? 'v2').trim() === 'v3' ? 'v3' : 'v2'
   const defaultJobs = memorySchema === 'v3' ? DEFAULT_JOBS_V3 : DEFAULT_JOBS
+  // 分区模式（S1，默认 day；lab/生产切换前显式打开 segment）。
+  // segment：dream 是唯一分区者，按"未消费 raw 行 + 本次 dream 切点"切段。
+  const partitionMode = String(ctx.config.partition ?? 'day') === 'segment' ? 'segment' : 'day'
+  // 首次启用段模式时的 cursor 初始化：head=只消费启用后的新行（生产安全）；zero=从最早 raw 重放（lab/测试）。
+  const segmentCursorInit = String(ctx.config.segmentCursorInit ?? 'head') === 'zero' ? 'zero' : 'head'
 
   memory.registerNamespace({ id: 'dream-run', label: '做梦记录', recallable: false, owner: 'dream' })
+  // 段模式的控制面（不可召回）：段记录 + 消费游标。
+  memory.registerNamespace({ id: 'dream-segment', label: '记忆分区段', recallable: false, owner: 'dream' })
+  memory.registerNamespace({ id: 'dream-cursor', label: '记忆分区游标', recallable: false, owner: 'dream' })
   try { memory.registerNamespace({ id: 'day', label: '当天原话', recallable: false, owner: 'dream' }) } catch { /* 已注册 */ }
   // typed memory v2 的 add 层（Phase 2，additive）：事实/偏好/承诺先作为普通可召回命名空间存在，
   // 由 events 的同一次模型调用顺带抽出；v2 再升级为带 validity/entity 的正式记录。
@@ -384,6 +400,11 @@ export function apply(ctx) {
    * 返回与旧单条兼容的视图 { text, data:{times,...} }：行号是绝对编号，拼接不改变 evidence 映射。
    */
   function readDayLog(day) {
+    // 段模式：job 读取的是当前段的日志，不是 day namespace。
+    if (ACTIVE_SEGMENT && String(day) === String(ACTIVE_SEGMENT.key)) {
+      const log = ACTIVE_SEGMENT.data?.log
+      return log ? { text: String(log.text ?? ''), data: { ...(log.data ?? {}), day: ACTIVE_SEGMENT.data.referenceDay } } : null
+    }
     let rows = []
     try { rows = memory.query({ namespace: 'day', kind: 'log', limit: 500 }) } catch { rows = [] }
     const parts = rows.filter((row) => isDayLogKey(day, row.key))
@@ -983,7 +1004,7 @@ export function apply(ctx) {
     memory.put({
       namespace: 'dream-run', kind: 'run', key: runKey(day, job),
       text: row?.text ?? `${day} ${job}`,
-      data: { ...prev, ...detail, job, day, status: 'success', ...(prev.startedAt ? { startedAt: Number(prev.startedAt) } : {}), finishedAt: Number(now) },
+      data: { ...prev, ...detail, job, day, status: 'success', ...(ACTIVE_SEGMENT ? { referenceDay: ACTIVE_SEGMENT.data.referenceDay, segmentId: ACTIVE_SEGMENT.key } : {}), ...(prev.startedAt ? { startedAt: Number(prev.startedAt) } : {}), finishedAt: Number(now) },
       now,
     })
   }
@@ -1050,7 +1071,7 @@ export function apply(ctx) {
     if (result?.ok === false) {
       memory.put({
         namespace: 'dream-run', kind: 'run', key: `fail:${day}:${job}`, text: `${day} ${job} fail`,
-        data: { ok: false, job, error: String(result.error ?? 'unknown'), ...(result.degraded ? { degraded: true } : {}), ...(result.failedShards ? { failedShards: result.failedShards } : {}) },
+        data: { ok: false, job, error: String(result.error ?? 'unknown'), ...(result.degraded ? { degraded: true } : {}), ...(result.failedShards ? { failedShards: result.failedShards } : {}), ...(ACTIVE_SEGMENT ? { referenceDay: ACTIVE_SEGMENT.data.referenceDay, segmentId: ACTIVE_SEGMENT.key } : {}) },
         now,
       })
       return
@@ -1058,7 +1079,7 @@ export function apply(ctx) {
     if (result?.skipped) {
       memory.put({
         namespace: 'dream-run', kind: 'run', key: `skip:${day}:${job}`, text: `${day} ${job} skip`,
-        data: { ok: true, job, skipped: String(result.skipped), ...(result.rawSources ? { rawSources: result.rawSources } : {}), ...(Number(result.missing) ? { missing: Number(result.missing) } : {}) },
+        data: { ok: true, job, skipped: String(result.skipped), ...(result.rawSources ? { rawSources: result.rawSources } : {}), ...(Number(result.missing) ? { missing: Number(result.missing) } : {}), ...(ACTIVE_SEGMENT ? { referenceDay: ACTIVE_SEGMENT.data.referenceDay, segmentId: ACTIVE_SEGMENT.key } : {}) },
         now,
       })
       return
@@ -1101,16 +1122,20 @@ export function apply(ctx) {
     // 没有原料时要能分清"今天真没说话"和"原文层没接上"：把来源清单一起带回去。
     let rawSources = []
     try { rawSources = ctx.services.raw?.ids?.() ?? [] } catch { rawSources = [] }
+    // 段模式：本段的 raw 行在 createSegment 时已快照，wash 只处理这个段。
+    // day 模式保持原行为（按自然日向 raw 服务取数）。
     let rows = []
     try {
-      rows = await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 2000 }) ?? []
+      rows = ACTIVE_SEGMENT
+        ? (ACTIVE_SEGMENT.data.rows ?? []).map((row) => ({ ...row, time: row.time, sourceKind: row.sourceKind, text: row.text }))
+        : await ctx.services.raw?.list?.({ since: dayStartOf(now), until: dayEndOf(now), limit: 2000 }) ?? []
     } catch (error) {
       return { job: 'wash', skipped: 'no-raw', rawSources, error: String(error?.message ?? error) }
     }
     if (!rows.length) return { job: 'wash', skipped: 'no-raw', rawSources }
 
-    const startMs = dayStartOf(now)
-    const endMs = dayEndOf(now)
+    const startMs = ACTIVE_SEGMENT ? Number(ACTIVE_SEGMENT.data.startAt) : dayStartOf(now)
+    const endMs = ACTIVE_SEGMENT ? Number(ACTIVE_SEGMENT.data.cutAt) + 1 : dayEndOf(now)
     const timeOfRow = (r) => Number(r.time ?? r.createdAt ?? 0)
     const hhmm = (at) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
     /**
@@ -1186,6 +1211,21 @@ export function apply(ctx) {
       kept.push(...tailLines)
       lines = kept
       total = lines.reduce((n, line) => n + line.length + 1, 0)
+    }
+    // 段模式：把本段日志存进段记录，不写 day namespace；job 通过 readDayLog(segmentKey) 读取。
+    if (ACTIVE_SEGMENT) {
+      const text = lines.join('\n')
+      const logData = {
+        part: 1, parts: 1, lines: lines.length, totalLines: cleaned.length, omittedLines, chars: text.length,
+        times: cleaned.map((x) => x.at),
+        rowIds: cleaned.map((x) => x.rowId ?? null),
+        sources: cleaned.map((x) => x.source),
+        speakers: cleaned.map((x) => x.speaker ?? null),
+        channels: cleaned.map((x) => x.channel ?? null),
+      }
+      updateSegment(ACTIVE_SEGMENT, { log: { text, data: logData } })
+      recordRun(day, 'wash', { lines: lines.length, totalLines: cleaned.length, omittedLines, chars: text.length, parts: 1 }, now)
+      return { job: 'wash', ok: true, lines: lines.length, totalLines: cleaned.length, omittedLines, chars: text.length, parts: 1, segment: ACTIVE_SEGMENT.key, referenceDay: ACTIVE_SEGMENT.data.referenceDay }
     }
     // 用户批准（2026-11-06）：day log 分段落盘，每段 ≤ maxSegmentChars（默认 40k），行号仍是绝对编号；
     // events/lexicon 通过 readDayLog(day) 按段拼接读取。先清掉当天旧分段，force 重跑不留过期部分。
@@ -1858,7 +1898,9 @@ export function apply(ctx) {
             body: chunks[index],
             evidence: partEvidence,
             provisional: partEvidence.length === 0,
-            day,
+            // 天语义保留：day 是段起点日（参考），segmentId 只在内部；不把 segmentId 写进模型可见文本。
+            day: ACTIVE_SEGMENT?.data?.referenceDay ?? day,
+            ...(ACTIVE_SEGMENT ? { segmentId: ACTIVE_SEGMENT.key, rangeStart: ACTIVE_SEGMENT.data.startAt, rangeEnd: ACTIVE_SEGMENT.data.endAt } : {}),
             ...(chunks.length > 1 ? { parts: { groupId: hash(title), part, total: chunks.length } } : {}),
             people: normalizePeople(block?.people),
             tags: normalizeTags(block?.tags),
@@ -1977,7 +2019,9 @@ export function apply(ctx) {
               namespace: 'episode', kind: 'block', key,
               text: index === 0 ? mergedTitle : `${mergedTitle}（${part}/${chunks.length}）`.slice(0, maxEpisodeTitle + 8),
               data: {
-                body: chunks[index], evidence: mergedEvidence, provisional: mergedEvidence.length === 0, day,
+                body: chunks[index], evidence: mergedEvidence, provisional: mergedEvidence.length === 0,
+                day: keepBlock.data?.day ?? ACTIVE_SEGMENT?.data?.referenceDay ?? day,
+                ...(ACTIVE_SEGMENT ? { segmentId: ACTIVE_SEGMENT.key, rangeStart: ACTIVE_SEGMENT.data.startAt, rangeEnd: ACTIVE_SEGMENT.data.endAt } : {}),
                 ...(chunks.length > 1 ? { parts: { groupId: hash(mergedTitle), part, total: chunks.length } } : {}),
                 people, tags: normalizeTags([...(keepBlock.data?.tags ?? []), ...dropBlocks.flatMap((block) => block.data?.tags ?? [])]),
                 annotations: mergedAnnotations, relations: mergedRelations,
@@ -3133,6 +3177,95 @@ export function apply(ctx) {
    * 信号触发撞上在飞回合直接返回 skipped:'in-flight'；手动/强制跑则等上一轮结束再走
    * （那时成功账本已在，自然会跳过已完成的 job）。
    */
+  /* ── 段模式（S1）：dream 是唯一分区者 ─────────────────────────── */
+
+  const SEGMENT_NS = 'dream-segment'
+  const CURSOR_NS = 'dream-cursor'
+  const CURSOR_KEY = 'cursor:main'
+
+  function loadCursor() {
+    const row = memory.query({ namespace: CURSOR_NS, kind: 'cursor', key: CURSOR_KEY, limit: 1 })[0]
+    return row?.data?.perSession ?? null
+  }
+  function saveCursor(perSession) {
+    memory.put({ namespace: CURSOR_NS, kind: 'cursor', key: CURSOR_KEY, text: `${Object.keys(perSession).length} sessions`, data: { perSession, updatedAt: ctx.now() }, now: ctx.now() })
+  }
+  function rawRowId(row) {
+    return row?.id ?? row?.rowId ?? (row?.sessionId != null && row?.seq != null ? `${row.sessionId}:${row.seq}` : `${row?.sessionId ?? ''}:${row?.time ?? ''}`)
+  }
+  async function allRawRows() {
+    try { return await (ctx.services.raw?.list?.({ limit: 5000 }) ?? []) } catch { return [] }
+  }
+  async function unconsumedRows(cutAt) {
+    const rows = (await allRawRows()).filter((row) => Number(row.time ?? row.createdAt ?? 0) <= cutAt)
+    let cursor = loadCursor()
+    if (!cursor) {
+      if (segmentCursorInit === 'zero') cursor = {}
+      else {
+        // 生产首次启用：只消费启用之后的新行，避免把历史 raw 再形成一遍。
+        const perSession = {}
+        for (const row of rows) {
+          const sessionId = String(row.sessionId ?? '')
+          const seq = Number(row.seq)
+          if (sessionId && Number.isFinite(seq)) perSession[sessionId] = Math.max(perSession[sessionId] ?? 0, seq)
+        }
+        saveCursor(perSession)
+        return []
+      }
+    }
+    return rows
+      .filter((row) => {
+        const sessionId = String(row.sessionId ?? '')
+        const seq = Number(row.seq)
+        return !Number.isFinite(seq) ? true : seq > (cursor[sessionId] ?? 0)
+      })
+      .sort((a, b) => Number(a.time ?? 0) - Number(b.time ?? 0) || String(rawRowId(a)).localeCompare(String(rawRowId(b))))
+  }
+  function latestOpenSegment() {
+    const rows = memory.query({ namespace: SEGMENT_NS, kind: 'segment', limit: 100, order: 'desc' })
+    return rows.find((row) => row.data?.status === 'open' || row.data?.status === 'failed') ?? null
+  }
+  async function ensureSegment(now, trigger) {
+    const open = latestOpenSegment()
+    if (open) return { key: open.key, data: open.data }
+    const rows = await unconsumedRows(now)
+    if (!rows.length) return null
+    const startAt = Number(rows[0].time ?? now)
+    const endAt = Number(rows.at(-1).time ?? now)
+    const key = `seg:${new Date(now).toISOString()}:${hash(rows.map(rawRowId).join('|'))}`
+    const data = {
+      cutAt: now, startAt, endAt, trigger,
+      status: 'open',
+      // 天语义只作为参考：段起点日；模型可见层用它，不用 segmentId。
+      referenceDay: dayKey(startAt, tzOf()),
+      rows: rows.map((row) => ({
+        id: rawRowId(row), time: Number(row.time ?? 0), sessionId: row.sessionId ?? null, seq: row.seq ?? null,
+        role: row.role ?? null, text: String(row.text ?? ''),
+        // 保留原始来源信息，wash 重跑时 inferRawSource 才能得到同样的分类。
+        sourceKind: row.sourceKind ?? null, source: row.source ?? null,
+        sender: row.sender ?? null, speaker: row.speaker ?? null, channel: row.channel ?? null,
+      })),
+      jobs: {}, log: null,
+    }
+    memory.put({ namespace: SEGMENT_NS, kind: 'segment', key, text: `${data.referenceDay} 段`, data, now })
+    return { key, data }
+  }
+  function updateSegment(segment, patch) {
+    const data = { ...segment.data, ...patch }
+    memory.put({ namespace: SEGMENT_NS, kind: 'segment', key: segment.key, text: `${data.referenceDay} 段`, data, now: ctx.now() })
+    segment.data = data
+    return segment
+  }
+  function advanceCursor(segment) {
+    const perSession = { ...(loadCursor() ?? {}) }
+    for (const row of segment.data.rows ?? []) {
+      if (row.sessionId == null || row.seq == null) continue
+      const sessionId = String(row.sessionId)
+      perSession[sessionId] = Math.max(perSession[sessionId] ?? 0, Number(row.seq))
+    }
+    saveCursor(perSession)
+  }
+
   async function run({ now = ctx.now(), jobs = null, force = false, trigger = 'manual' } = {}) {
     const entryDay = dayKey(now, tzOf())
     const jobNames = jobs == null ? defaultJobs : jobs
@@ -3144,44 +3277,74 @@ export function apply(ctx) {
       try { await inFlight } catch { /* 上一轮失败不挡这一轮 */ }
     }
     const task = (async () => {
-      // 先按"凌晨算前一天"把运行时刻换成整理对象的时刻；后续所有 job 的 dayKey/dayRange 都跟它走。
-      const dreamNow = targetDayInstant(now)
-      const day = dayKey(dreamNow, tzOf())
-      const results = []
-      // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
-      askedThisRun.clear()
-      for (const name of jobNames) {
-        const job = JOBS[name]
-        if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
-        const claim = beginRun(day, name, dreamNow, force)
-        if (claim.skip) { results.push({ job: name, ok: true, skipped: claim.skip }); continue }
-        try {
-          const result = await job({ now: dreamNow, force, attempt: claim.attempt })
-          settleRun(day, name, result, dreamNow, claim)
-          results.push(result)
-        } catch (error) {
-          const failed = { job: name, ok: false, error: String(error?.message ?? error) }
-          settleRun(day, name, failed, dreamNow, claim)
-          results.push(failed)
+      // 段模式：先确定本次 dream 要消费的段（没有新材料就不建段）。
+      let segment = null
+      if (partitionMode === 'segment') {
+        segment = await ensureSegment(now, trigger)
+        if (!segment) {
+          ctx.log({ level: 'info', msg: 'dream.segment.no-new-material', trigger })
+          return { ok: true, day: null, results: [{ job: 'run', ok: true, skipped: 'no-new-material' }], skipped: 'no-new-material', pruned: 0, receipt: null }
         }
+        ACTIVE_SEGMENT = segment
       }
-      const ok = results.every((r) => r.ok !== false)
-      // Phase 3 entity 层：每晚 job 结束后做一次幂等同步（纯确定性、不调模型；失败不影响 job 结果）。
-      let entitySync = null
-      try { entitySync = syncEntities(dreamNow) } catch (error) {
-        ctx.log({ level: 'warn', msg: 'dream.entity-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
+      try {
+        // day 模式：按"凌晨算前一天"把运行时刻换成整理对象；段模式：dreamNow 即段切点，day 是段 id（内部）。
+        const dreamNow = partitionMode === 'segment' ? Number(segment.data.cutAt) : targetDayInstant(now)
+        const day = partitionMode === 'segment' ? segment.key : dayKey(dreamNow, tzOf())
+        const results = []
+        // 每轮重新计"提过几个疑问"：旧实现从进程启动起累计，5 条之后整晚不再提任何问题。
+        askedThisRun.clear()
+        for (const name of jobNames) {
+          const job = JOBS[name]
+          if (!job) { results.push({ job: name, ok: false, error: 'unknown-job' }); continue }
+          const claim = beginRun(day, name, dreamNow, force)
+          if (claim.skip) { results.push({ job: name, ok: true, skipped: claim.skip }); continue }
+          try {
+            const result = await job({ now: dreamNow, force, attempt: claim.attempt })
+            settleRun(day, name, result, dreamNow, claim)
+            results.push(result)
+          } catch (error) {
+            const failed = { job: name, ok: false, error: String(error?.message ?? error) }
+            settleRun(day, name, failed, dreamNow, claim)
+            results.push(failed)
+          }
+        }
+        const ok = results.every((r) => r.ok !== false)
+        // Phase 3 entity 层：每晚 job 结束后做一次幂等同步（纯确定性、不调模型；失败不影响 job 结果）。
+        let entitySync = null
+        try { entitySync = syncEntities(dreamNow) } catch (error) {
+          ctx.log({ level: 'warn', msg: 'dream.entity-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
+        }
+        // v3 分段索引：cleanup/合并结束之后重建 episode 正文分段（纯确定性，段级向量供检索定位）。
+        let segmentSync = null
+        try { segmentSync = syncEpisodeSegments(dreamNow) } catch (error) {
+          ctx.log({ level: 'warn', msg: 'dream.segment-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
+        }
+        // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
+        for (const result of results) recordOutcome(day, result, dreamNow)
+        const pruned = pruneRuns(dreamNow)
+        if (partitionMode === 'segment') {
+          const failed = results.some((row) => row.ok === false)
+          updateSegment(segment, {
+            status: failed ? 'failed' : 'done',
+            jobs: Object.fromEntries(results.map((row) => [row.job, row.ok === false ? 'failed' : (row.skipped ? 'skipped' : 'done')])),
+            finishedAt: ctx.now(),
+          })
+          // cursor 只在段完成后前进；失败时保持不动，下次重试同一个段。
+          if (!failed) advanceCursor(segment)
+        }
+        // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
+        const receipt = emitDreamResult({ now: dreamNow, results })
+        return {
+          ok,
+          // 模型/回执可见的是"天"（段起点日）；segmentId 仅诊断字段。
+          day: partitionMode === 'segment' ? segment.data.referenceDay : day,
+          results, pruned, receipt, targetNow: dreamNow, entitySync, segmentSync,
+          ...(partitionMode === 'segment' ? { segmentId: segment.key, segmentStatus: segment.data.status, referenceDay: segment.data.referenceDay } : {}),
+        }
+      } finally {
+        if (partitionMode === 'segment') ACTIVE_SEGMENT = null
       }
-      // v3 分段索引：cleanup/合并结束之后重建 episode 正文分段（纯确定性，段级向量供检索定位）。
-      let segmentSync = null
-      try { segmentSync = syncEpisodeSegments(dreamNow) } catch (error) {
-        ctx.log({ level: 'warn', msg: 'dream.segment-sync-fail', error: String(error?.message ?? error).slice(0, 200) })
-      }
-      // 失败/跳过也落账（成功 job 已各自 recordRun；这里补齐三态，E2 才不会"缺行"）。
-      for (const result of results) recordOutcome(day, result, dreamNow)
-      const pruned = pruneRuns(dreamNow)
-      // 回执只发一次（全 skip 时不发）；runFromSignal 的异常路径在 catch 里补失败回执。
-      const receipt = emitDreamResult({ now: dreamNow, results })
-      return { ok, day, results, pruned, receipt, targetNow: dreamNow, entitySync, segmentSync }
     })()
     inFlight = task
     try { return await task } finally { if (inFlight === task) inFlight = null }
@@ -3268,6 +3431,7 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
 
 
 
