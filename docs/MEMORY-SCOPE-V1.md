@@ -175,6 +175,12 @@ V1 不追研究前沿，只保证四条需求在 live 上稳定成立。
 3. 把本文件作为 [docs/MEMORY-V3-REPORT.md](MEMORY-V3-REPORT.md) 的上级范围文件，变更需改本文件；
 4. 观察期开始前拍一张基线快照（live 计数、DB 大小、dream-run 成功率）。
 
+### 观察期记录
+
+- 2026-11-13 21:22（第 1 天）：暴露 P0「状态说承诺 25 / recall kind=commitment 返回空」，
+  根因与修复见 [MEMORY-INCIDENT-2026-11-13-COMMITMENT.md](MEMORY-INCIDENT-2026-11-13-COMMITMENT.md)；
+  同时发现"未完结日被提前 dream 并写死账本"的潜在数据丢失问题（待决策，未修）。
+
 ---
 
 ## 8. 待用户拍板

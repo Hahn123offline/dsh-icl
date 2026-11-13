@@ -43,7 +43,8 @@ test('记忆自知：world 状态行 + memory_status 工具给出经历范围/�
   const status = await tools.memory_status.execute({})
   assert.match(status.text, /记忆状态/)
   assert.match(status.text, /经历 2 段/)
-  assert.match(status.text, /未结承诺/)
+  assert.match(status.text, /块内承诺/)
+  assert.match(status.text, /历史累计/)
   assert.match(status.text, /答应周末一起看直播/)
   const world = host.shared.get('world')
   const owner = world.read({ owner: 'memory' })
@@ -110,3 +111,20 @@ test('人物短笔记不占人物档案配额：档案和短事实能同时出�
   assert.match(out.text, /离散和计组/, `人物档案不应被人物短笔记挤掉：${out.text}`)
 })
 
+
+
+test('v3 kind=commitment 无 query：直接列块内承诺，而不是"记忆是空的"', async () => {
+  const { tools, memory } = await setup()
+  seedEpisode(memory, { day: '2026-11-10', key: 'epi:c1', title: '周末直播安排', body: '晚上聊到周末的安排。', commitments: ['答应周末一起看直播'] })
+  const out = await tools.recall.execute({ kind: 'commitment', limit: 5 })
+  assert.match(out.text, /块内承诺：/, `应列出块内承诺，实际：${out.text}`)
+  assert.match(out.text, /答应周末一起看直播/)
+  assert.doesNotMatch(out.text, /记忆是空的|没有能想起来的/)
+})
+
+test('v3 kind=event 映射到 episode（旧 event 分类已归档）', async () => {
+  const { tools, memory } = await setup()
+  seedEpisode(memory, { day: '2026-11-10', key: 'epi:e1', title: '修好了视频工具', body: '下午修好了视频工具。' })
+  const out = await tools.recall.execute({ kind: 'event', limit: 5 })
+  assert.match(out.text, /修好了视频工具/, `kind=event 应能看到 episode，实际：${out.text}`)
+})

@@ -350,7 +350,7 @@ export function apply(ctx) {
         'before answering something you are not sure about - check memory instead of guessing',
       ],
       avoid: ['looking up who a person is - use whois for identity, accounts and closeness'],
-      description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. If nothing relevant is found it says so explicitly - with the scope searched and a next step - and never pads with unrelated notes. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
+      description: 'With no query this is an overview of the last few days. kind narrows to event / person / slang; in v3, kind=event reads episodes, and kind=commitment / fact / preference lists the annotations inside episodes (pass no query to see the recent ones). pass kind=person together with a QQ number or a name to read that person\'s file. query filters by meaning; tag narrows to a label. If nothing relevant is found it says so explicitly - with the scope searched and a next step - and never pads with unrelated notes. Passing cursor means "keep digging": it searches deeper, including things that have faded, and does not repeat what you already saw.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -413,11 +413,29 @@ export function apply(ctx) {
         }
 
         const question = String(query ?? '').trim()
+        // v3 分类映射（2026-11-13 P0）：episode 是唯一经历块，旧 namespace 已归档。
+        // kind=event 映射到 episode；kind=commitment/fact/preference 映射到 episode 的块内注释，
+        // 否则模型按 world 状态里的"承诺 N 条"调用 kind=commitment 只会搜到空的旧 namespace。
+        const annotationKind = { commitment: ['commitments', '承诺'], fact: ['facts', '事实'], preference: ['preferences', '偏好'] }[kind] ?? null
+        const isV3 = memorySchema === 'v3'
+        if (isV3 && annotationKind && !question && !cursor) {
+          const [field, annotationLabel] = annotationKind
+          const annotated = memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
+            .filter((row) => row.data?.superseded !== true && !(Number(row.data?.parts?.part) > 1))
+            .map((row) => ({ row, values: (row.data?.annotations?.[field] ?? []).map(String).filter(Boolean) }))
+            .filter((entry) => entry.values.length)
+          if (annotated.length) {
+            const pickedRows = annotated.slice(0, Math.max(1, Number(limit) || DEFAULT_LIMIT))
+            const text = pickedRows.map(({ row, values }) => `[经历 · ${shortDate(row.createdAt)}] ${row.text}\n（块内${annotationLabel}：${values.slice(0, 3).join('；').slice(0, 240)}）`).join('\n')
+            return { text, cursor: null, more: annotated.length > pickedRows.length }
+          }
+          return { text: `没有任何${annotationLabel}注释（v3 里这类信息记在经历块的 annotations 里，旧 ${kind} 分类已归档）。`, cursor: null, more: false }
+        }
         // 人物档案又长又"人味重"，容易占满召回配额；默认仍检索所有类别，
         // 但在挑选阶段给 person 最多 1 条配额（见下方 personQuota），既保留"是谁"的能力，
         // 又不让它把事件/fact 的位次全部挤掉（端到端实测 person profile 单条约 1500 tokens）。
         const namespaces = kind && CATEGORIES[kind] && CATEGORIES[kind].recallable !== false
-          ? [kind]
+          ? [isV3 && (kind === 'event' || annotationKind) ? 'episode' : kind]
           // resolve 是纠正反馈队列，不是回忆：即使 cursor 走 includeArchive 也不能混进来。
           : Object.keys(CATEGORIES).filter((ns) => CATEGORIES[ns].recallable !== false && !legacyHiddenNamespaces.has(ns))
         const seen = new Set()
@@ -616,7 +634,7 @@ export function apply(ctx) {
         candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         // 意图路由补召回（2026-11-13）：注释字段直接扫 episode。向量/字面索引只覆盖标题+正文，
         // 承诺/偏好/事实常常只存在于 episode.annotations 里，不扫就永远召不回。
-        const annotationField = { commitment: 'commitments', preference: 'preferences', fact: 'facts' }[intent]
+        const annotationField = annotationKind ? annotationKind[0] : { commitment: 'commitments', preference: 'preferences', fact: 'facts' }[intent]
         if (question && annotationField) {
           const grams = contentBigramsOf(question)
           if (grams.length) {
@@ -646,6 +664,25 @@ export function apply(ctx) {
               candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
             }
           }
+        }
+        // 显式 kind=commitment/fact/preference（v3）：只返回带该注释字段的经历，并把注释挂出来，
+        // 否则模型会看到"分类里有 25 条承诺"却搜不到任何东西（2026-11-13 live P0）。
+        let annotationKindTotal = 0
+        if (isV3 && annotationKind) {
+          const [field, annotationLabel] = annotationKind
+          const allAnnotated = memory.query({ namespace: 'episode', kind: 'block', limit: 500, order: 'desc' })
+            .filter((row) => row.data?.superseded !== true && !(Number(row.data?.parts?.part) > 1))
+            .map((row) => ({ row, values: (row.data?.annotations?.[field] ?? []).map(String).filter(Boolean) }))
+            .filter((entry) => entry.values.length)
+          annotationKindTotal = allAnnotated.length
+          candidates = candidates
+            .filter((entry) => entry.namespace === 'episode' && (entry.item.data?.annotations?.[field] ?? []).length)
+            .map((entry) => ({
+              ...entry,
+              intentAnnotations: (entry.item.data.annotations[field] ?? []).map(String).slice(0, 2),
+              annotationLabel,
+            }))
+          candidates.sort((a, b) => b.score - a.score || b.item.createdAt - a.item.createdAt)
         }
         // 内容词门槛的取样要按"加分前"的纯相关度排序：日期/意图加分后 top8 可能全是事件块，
         // 把写着内容词的 fact 挤出采样区，导致明明有相关词却被判"没找到"（QQ p-05 实测）。
@@ -964,6 +1001,9 @@ export function apply(ctx) {
         const emptyText = (() => {
           if (!question) return '最近没有能想起来的（范围内的记忆是空的）。'
           if (anyKnown) return '这几条刚才已经给过你了（就在上面的上下文里）；要找别的，把要找的事说具体一点。'
+          if (annotationKind && annotationKindTotal > 0) {
+            return `没找到和问题相关的${annotationKind[1]}，但记忆里有 ${annotationKindTotal} 段经历带${annotationKind[1]}注释；不带 query 可以直接看最近的那些，或换个说法。${memoryCoverageHint()}`
+          }
           if (searchedCount > 0) {
             // 不回显用户原话：一来没必要，二来"只搜这个会话"时别的会话的关键词会误导她以为搜到过。
             return `没找到相关记忆：检索了 ${searchedCount} 条（范围：${scopeText}），都不够相关。要不要换个说法、去掉 tag/会话过滤，或用 cursor 继续翻更早的？${memoryCoverageHint()}`
@@ -1124,7 +1164,7 @@ export function apply(ctx) {
     const briefParts = [
       `${memorySchema === 'v3' ? '经历' : '事件'} ${episodeCount} 段${firstDay ? `（${firstDay.slice(5)}..${lastDay.slice(5)}）` : ''}`,
       lastDream ? `上次整理 ${lastDream.day ? lastDream.day.slice(5) : '—'} 形成 ${lastDream.episodes} 段${lastDream.ok ? '' : '（失败）'}` : null,
-      openCommitments.length ? `未结承诺 ${openCommitments.length}` : null,
+      openCommitments.length ? `块内承诺 ${openCommitments.length} 条（历史累计）` : null,
       `人物 ${peopleBlocks.length}`,
       `语料 ${lexiconCount}`,
     ].filter(Boolean)
@@ -1132,7 +1172,7 @@ export function apply(ctx) {
       `记忆状态：${briefParts.join('；')}。`,
       lastDream ? `最近整理：${lastDream.day || '—'}${lastDream.ok ? '' : '（失败，可能需要重跑）'}，形成 ${lastDream.episodes} 段${lastDream.empty ? '（当天没有值得留下的新经历）' : ''}。` : '还没有过记忆整理记录。',
       recent.length ? `最近 5 段：\n${recent.join('\n')}` : null,
-      openCommitments.length ? `未结承诺（块内注释）：\n${openCommitments.slice(0, 8).map((text) => `· ${text.slice(0, 90)}`).join('\n')}` : null,
+      openCommitments.length ? `块内承诺（历史累计，可能已兑现/过时；用 recall kind=commitment 查看）：\n${openCommitments.slice(0, 8).map((text) => `· ${text.slice(0, 90)}`).join('\n')}` : null,
       `未消化笔记 ${pendingNotes} 条。记忆只覆盖整理过的内容；问过去细节先 recall（不确定就先查再答），问人用 whois。`,
     ].filter(Boolean)
     const value = { episodes: episodeCount, firstDay, lastDay, openCommitments, lastDream, brief: briefParts.join('；'), detail: detailLines.join('\n') }
