@@ -443,3 +443,32 @@ mixed 且不泛化，已回滚，未提交。
 - 剩余待确认：live segment 的 goldCoverage 一轮 75% vs day 87.5%（可能为形成方差/映射），S4 前建议再跑 1–2 次确认。
 
 **当前生产**：`partition=day` 未切换；时间和答案可回答性改动为向后兼容（day 模式也写 timeStart/timeEnd）。
+
+---
+
+## 18. S4 dry-run（2026-11-14，live 拷贝，未碰 live）
+
+步骤：
+1. 复制 live DB + raw 到 `.state/lab/lead/s4-dryrun/<stamp>/`；
+2. 迁移工具写入：20 个 legacy segments、67 个旧 episode 回填 segmentId、13 个 raw session 的 cursor；
+3. 在拷贝上启用 `partition=segment`，用**合成 2 条新 raw 行**跑一次完整 dream；
+4. 再跑第二次 dream 验证"无新行不建段"。
+
+结果：
+- 段记录：20 legacy + 1 新段（`seg:2026-11-14T06:10:38...`，status=done，rows=2，referenceDay=11-14）；
+- 新 episode：key 段隔离、`data.day=11-14`、`timeStart/timeEnd` 正确、body 204 字；
+- cursor：新增 `s4-dryrun:2`，旧 session 游标保留；
+- 第二次 run：`skipped: no-new-material`，没有新建空段；
+- 拷贝库检索（live fixture db-seed）：anyHit 88.9% / miss 11.1%，与切换前 live 库一致（未引入新回退）。
+
+**dry-run 结论：迁移 + 段 dream + 时间字段 + cursor 均按设计工作，可进入真实切换。**
+
+### 真实切换步骤（待用户确认/重启窗口）
+1. `VACUUM INTO` 备份 live DB；记录 raw 文件与 git commit；
+2. 对 live DB 执行迁移工具（`--write --yes-write-live`）；
+3. preset 增加 `dream.partition: segment`、`segmentCursorInit: head`（默认成为段模式）；
+4. 重启 DSH；
+5. 启动后验证：memory_status 显示真实整理时间；下一次 dream 只消费新 raw（旧行不重复）；audit 段记录/cursor；
+6. 回滚：preset 改回 day + 恢复备份（legacy segments/cursor 可保留，不影响 day 模式）。
+
+风险与回滚均已定义；切换前 live 仍是 day 模式。
