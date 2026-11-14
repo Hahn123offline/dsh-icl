@@ -84,6 +84,10 @@
                 dream:
                   scheduleEnabled: false
                   memorySchema: 'v3'
+                  # 2026-11-14 用户确认：dream 是唯一分区者；段由本次 dream 切点决定，
+                  # 时间只做参考；已迁移历史 day log 为 legacy 段并初始化 cursor。
+                  partition: segment
+                  segmentCursorInit: head
                   # 身份链的产品已知事实（2026-11-11）：人物档案按账号归一，显示名只是 alias。
                   selfQQ: '2593621742'
                   ownerQQ: '3429502459'

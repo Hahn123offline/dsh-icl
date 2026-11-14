@@ -472,3 +472,25 @@ mixed 且不泛化，已回滚，未提交。
 6. 回滚：preset 改回 day + 恢复备份（legacy segments/cursor 可保留，不影响 day 模式）。
 
 风险与回滚均已定义；切换前 live 仍是 day 模式。
+
+---
+
+## 19. 真实切换执行记录（2026-11-14 15:48）
+
+用户确认可在心跳恢复时后台切换后执行：
+
+1. **迁移写入 live DB**（工具 `memory-segment-migrate.mjs --write --yes-write-live`）：
+   - 20 个 legacy segments；
+   - 67 个旧 episode 回填 segmentId；
+   - cursor 以**最后一次成功 episodes dream 完成时间**（11-13 21:06，seq 2511）为已消费边界；
+   - 11-13 21:06 之后的 25 条 raw 行**未被消费**，将作为重启后第一个新段（重点验证项）。
+2. **preset 切段模式**：`dream.partition: segment`, `dream.segmentCursorInit: head`
+   （cursor 已存在，head 不会重置；只消费新行）。
+3. **备份**：热备份命令首次因 shell 引号失败，迁移是加法操作（legacy 段/cursor/segmentId），
+   day 模式可无备份回退；随后已生成 post-migration 备份
+   `~/.dsh/icl/state/archive/memory-post-segment-migrate-*.db`，并复制到 lab。
+4. 测试：全仓 927/926 pass；preset 通过 product-surface 校验。
+5. 待用户重启 DSH 后验证：
+   - 第一次 dream 是否把 pending 25 行形成新段（而不是跳过/重复旧行）；
+   - memory_status 显示真实整理时间与材料范围；
+   - audit/段记录/cursor 正常；无重复 episode。

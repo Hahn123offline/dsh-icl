@@ -94,21 +94,28 @@ try {
     if (write) updateItem.run(JSON.stringify({ ...data, segmentId }), now, row.id)
     report.episodesBackfilled += 1
   }
-  // 3. cursor：从 raw 推出 per-session 最大 seq（head 语义）。
+  // 3. cursor：以"最后一次成功 episodes dream 的完成时间"为已消费边界。
+  // 不能用当前 raw 最大 seq（会把上次 dream 之后尚未整理的新消息永久跳过）。
   if (rawFile && fs.existsSync(rawFile)) {
+    const lastRun = db.prepare("SELECT key, created_at, data FROM mem_items WHERE namespace='dream-run' AND key LIKE '%:episodes' ORDER BY created_at DESC LIMIT 1").get()
+    let lastData = {}
+    try { lastData = JSON.parse(lastRun?.data ?? '{}') } catch { lastData = {} }
+    const cursorCutAt = Number(lastData.finishedAt ?? lastRun?.created_at ?? 0)
     const perSession = {}
     for (const line of fs.readFileSync(rawFile, 'utf8').split('\n')) {
       if (!line.trim()) continue
       let row = null
       try { row = JSON.parse(line) } catch { continue }
+      if (cursorCutAt > 0 && Number(row.time) > cursorCutAt) continue // 之后的行属于下一次 dream
       const sessionId = String(row.sessionId ?? '')
       const seq = Number(row.seq)
       if (sessionId && Number.isFinite(seq)) perSession[sessionId] = Math.max(perSession[sessionId] ?? 0, seq)
     }
-    report.cursor = { perSession, sessions: Object.keys(perSession).length }
+    report.cursorCutAt = cursorCutAt ? new Date(cursorCutAt).toISOString() : null
+    report.cursor = { perSession, sessions: Object.keys(perSession).length, cutAt: report.cursorCutAt }
     if (write) {
       const existing = db.prepare("SELECT id FROM mem_items WHERE namespace='dream-cursor' AND kind='cursor' AND key='cursor:main'").get()
-      const cursorData = JSON.stringify({ perSession, updatedAt: now })
+      const cursorData = JSON.stringify({ perSession, updatedAt: now, cutAt: cursorCutAt || null })
       if (existing) updateItem.run(cursorData, now, existing.id)
       else insertItem.run('dream-cursor', 'cursor', 'cursor:main', `${Object.keys(perSession).length} sessions`, cursorData, 1, 0, null, now, now)
     }
