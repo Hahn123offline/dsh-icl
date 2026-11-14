@@ -210,8 +210,11 @@ export function buildGroupSignal({
   const activity = activityIdForGroup(gid)
   const richInfo = rich && typeof rich === 'object' ? rich : emptyRich()
   const atSelf = richInfo.atSelf === true
+  // 紧急修复（2026-11-14）：群普通消息必须是 ambient，进 focus 积压；
+  // 只有明确 @ 到自己才带 at/mention 直达。此前只在短时间刷屏时才标 ambient，导致安静群每条都穿透。
   const tags = ['qq', 'group']
   if (atSelf) tags.push('at', 'mention')
+  else tags.push('ambient')
   return {
     id: signalIdFor({ scope: 'group', peerId: gid, messageId, at, text: body }),
     from: { plugin: 'qq', activity },
@@ -223,6 +226,7 @@ export function buildGroupSignal({
     createdAt: at,
     expiresAt: null,
     meta: {
+      ambient: !atSelf,
       qq: {
         scope: 'group',
         groupId: gid,
@@ -245,3 +249,4 @@ export function buildGroupSignal({
     },
   }
 }
+

@@ -619,7 +619,7 @@ function groupMessageEvent({ groupId = 601357169, groupName = '测试群', from 
   }
 }
 
-test('群聊 G1：安静群普通消息直达，@ 直达；focus 该群后普通消息直达', async () => {
+test('群聊 G1：普通消息一律 ambient 进 backlog，只有 @ 直达', async () => {
   FakeWebSocket.reset()
   const host = createHost({ log: () => {} })
   host.registerPlugin(focusManifest, focusModule, {})
@@ -633,10 +633,8 @@ test('群聊 G1：安静群普通消息直达，@ 直达；focus 该群后普通
   const focus = host.services.focus
 
   ws.emit('message', eventFrame(groupMessageEvent({ text: '普通消息一', messageId: 8811 })))
-  const quiet = host.services.delivery.drain('session').map((b) => b.text).join('\n')
-  assert.match(quiet, /普通消息一/, '安静群的普通消息应能叫醒')
-  assert.match(quiet, /QQ10001/, '群消息必须带发送者 QQ 号，跨群才能认人')
-  assert.equal(focus.backlog().length, 0)
+  assert.equal(host.services.delivery.drain('session').length, 0, '普通群消息不能叫醒')
+  assert.ok(focus.backlog().some((row) => row.focus === 'qq:group:601357169'), '普通群消息进该群 backlog')
 
   ws.emit('message', eventFrame(groupMessageEvent({ text: '@你 急事', messageId: 8812, at: 2593621742 })))
   const direct = host.services.delivery.drain('session').map((b) => b.text).join('\n')
@@ -647,8 +645,8 @@ test('群聊 G1：安静群普通消息直达，@ 直达；focus 该群后普通
   await enter.execute({ title: '测试群', activity: 'qq:group:601357169' })
   host.services.delivery.drain('session').forEach((b) => host.services.delivery.ack(b.id))
   ws.emit('message', eventFrame(groupMessageEvent({ text: '本群普通消息', messageId: 8813 })))
-  const inFocus = host.services.delivery.drain('session').map((b) => b.text).join('\n')
-  assert.match(inFocus, /本群普通消息/)
+  assert.equal(host.services.delivery.drain('session').length, 0, 'focus 该群时普通消息也不逐条穿透')
+  assert.ok(focus.backlog().some((row) => row.focus === 'qq:group:601357169'))
 
   ws.emit('message', eventFrame(groupMessageEvent({ groupId: 1057812765, groupName: '另一个群', text: '别群消息', messageId: 8814 })))
   assert.equal(host.services.delivery.pendingCount(), 0, '别群普通消息进 backlog')
@@ -658,7 +656,7 @@ test('群聊 G1：安静群普通消息直达，@ 直达；focus 该群后普通
   host.disable('focus')
 })
 
-test('群聊 gate：默认忽略，allowlist 才收；普通消息不预标 ambient、@ self 带 at/mention', () => {
+test('群聊 gate：默认忽略，allowlist 才收；普通消息 ambient、@ self 带 at/mention', () => {
   const off = createInboundGate({ groupPolicy: 'ignore', allowGroups: ['601357169'], selfId: '2593621742' })
   assert.equal(off.admit(groupMessageEvent({ text: '群' })).code, 'group')
 
@@ -666,7 +664,8 @@ test('群聊 gate：默认忽略，allowlist 才收；普通消息不预标 ambi
   const plain = gate.admit(groupMessageEvent({ text: '普通', messageId: 8901 }))
   assert.equal(plain.accept, true)
   assert.equal(plain.scope, 'group')
-  assert.equal(plain.signal.tags.includes('ambient'), false, '安静群普通消息默认不标 ambient')
+  assert.equal(plain.signal.tags.includes('ambient'), true, '普通群消息必须是 ambient')
+  assert.equal(plain.signal.meta.ambient, true)
   assert.ok(!plain.signal.tags.includes('mention'))
   assert.equal(plain.signal.from.activity, 'qq:group:601357169')
 
@@ -744,7 +743,7 @@ test('未读摘要：旧消息在下一轮 turnText 里可见，不依赖主动�
 
 
 
-test('群聊 busyness：安静群普通消息直达；短窗口刷屏后进 ambient backlog', async () => {
+test('群聊 busyness：普通消息进 ambient backlog；刷屏批量仍进 backlog', async () => {
   FakeWebSocket.reset()
   const host = createHost({ log: () => {} })
   host.registerPlugin(focusManifest, focusModule, {})
@@ -825,7 +824,8 @@ test('群级静音：消息入账为未读并标 muted，但不投递；解除�
   assert.match(history.text, /muted/)
   await mute.execute({ group: '601357169', muted: false })
   ws.emit('message', eventFrame(groupMessageEvent({ text: '解除后消息', messageId: 9922 })))
-  assert.ok(host.services.delivery.pendingCount() >= 1, '解除静音后普通群消息恢复直达')
+  assert.equal(host.services.delivery.pendingCount(), 0, '解除静音后普通群消息仍不穿透，只进 backlog')
+  assert.ok(host.services.focus.backlog().some((row) => row.focus === 'qq:group:601357169'))
   host.disable('qq')
 })
 
@@ -849,3 +849,5 @@ test('读工具统一：qq_unread/history/mark_read/replied 接受群号', async
   assert.match(mark.text, /群 601357169/)
   host.disable('qq')
 })
+
+

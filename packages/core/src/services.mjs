@@ -593,12 +593,12 @@ export function createFocusService({ now = () => Date.now() } = {}) {
       const tags = Array.isArray(signal.tags) ? signal.tags.map(String) : []
       const privileged = from === 'time' || tags.includes('admin') || tags.includes('alarm')
       const ambient = tags.includes('ambient') || signal.meta?.ambient === true
-      // 群聊 ambient 即使没有 focus 也先攒在活动 backlog，不叫醒；
+      // 群聊 ambient 一律先攒在活动 backlog，不叫醒；即使 focus 正在该群，也不让普通消息逐条穿透。
       // @/mention 不是 ambient，私聊也不是 ambient（保持"空闲私聊直达"）。
+      if (ambient && !privileged && !tags.includes('mention') && !tags.includes('at')) {
+        return { deliver: false, reason: 'ambient' }
+      }
       if (!cur) {
-        if (ambient && !privileged && !tags.includes('mention') && !tags.includes('at')) {
-          return { deliver: false, reason: 'ambient-no-focus' }
-        }
         return { deliver: true, reason: 'no-focus' }
       }
       if (privileged) return { deliver: true, reason: 'privileged', focus: cur.label }
