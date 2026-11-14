@@ -1243,8 +1243,12 @@ export function apply(ctx) {
     } catch { /* focus 坏了不影响心跳 */ }
     let notes = 0
     try { notes = Math.max(0, Number(ctx.services.get('note')?.count?.()) || 0) } catch { notes = 0 }
+    let qqUnread = 0
+    try { qqUnread = Math.max(0, Number(ctx.services.get('qq')?.unreadTotal?.()) || 0) } catch { qqUnread = 0 }
     const queue = state.queue.length
-    return { backlog, backlogTotal, notes, queue, total: backlogTotal + notes + queue }
+    // focus backlog 与 QQ 账本未读可能重叠：取较大者，避免同一批消息把 pending 翻倍。
+    const total = Math.max(backlogTotal, qqUnread) + notes + queue
+    return { backlog, backlogTotal, qqUnread, notes, queue, total }
   }
 
   function activityLabel(row) {
@@ -1272,6 +1276,7 @@ export function apply(ctx) {
       wait.push(`· ${activityLabel(row)} +${row.count}${oldest != null ? `（最早 ${oldest} 分钟前）` : ''}${row.lastText ? `，最近：${clipBriefText(row.lastText, 60)}` : ''}`)
     }
     if (p.notes) wait.push(`· 心里惦记 ${p.notes} 条（见「心里惦记的事」）`)
+    if (p.qqUnread > p.backlogTotal) wait.push(`· QQ 未读 ${p.qqUnread} 条（qq_unread 查看；看过不回用 qq_mark_read）`)
     if (p.queue) wait.push(`· 时间积压 ${p.queue} 条`)
     lines.push(wait.length ? `等你：\n${wait.join('\n')}` : '等你：没有。')
     lines.push('可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。')

@@ -454,12 +454,28 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
 
 验证：
 
-- `npm test`：**934 tests / 933 pass / 0 fail / 1 skip**。
+- `npm test`：**936 tests / 935 pass / 0 fail / 1 skip**。
 - live 账本副本迁移验证：旧库 `attended_seq` 自动回填 `seen_seq`（私聊 81/81/81 → seen 81、未读 0；群 16+2 未读保持不变）。
 - 干净上下文 lab（不读聊天历史）：`.state/lab/lead/attention-research/verify-clean-context.mjs`
   → **16/16 checks**（静态 sim.md 策略存在；空状态跳过后退避；有积压发决策简报；简报含群名/条数/
   no-op/focus 用法/对外主动关；长静默封顶醒一次并给自由活动清单）。
 - 结论：行为不依赖 live 聊天里那句「刷屏不用回」；18:18 的旁证已标 caveat。
+
+### 10.1 重启后首夜事故：冷恢复未读摘要把睡着的她叫醒了（已修）
+
+重启后 2026-11-15 00:20（睡眠 span 内），bridge 的「冷启动未读摘要」路径
+（`promptUnreadWithoutAgent`）绕过 signals/delivery，直接用 `session.prompt` 把 QQ 未读摘要投进会话，
+产生了 turn 和一条 assistant 消息。这是**结构性旁路**，不是心跳。
+
+修复：
+
+- bridge 的冷恢复前先问 time：睡眠/静音/暂停/安静安排/**时间队列已有积压**时一律不冷恢复；
+  醒来后再走正常投递。
+- time 的条件心跳 pending 增加 **QQ 账本未读**（`qq.unreadTotal`，seen 口径）：
+  即使 focus backlog 被清空，账本里的未读也不会从「等你」里消失。
+- 冷路径不再调用 `markUnreadDigest` 二次补标（上一版会把**没展示**的下一窗口也标成 seen；本次事故里 #21–#24 就是这样被误标的，内容仍在账本）。
+- 新增测试：冷恢复被睡眠/队列挡住、醒来后恢复；QQ 未读会计入心跳 pending。
+- 注意：这次修复仍需**再次重启 DSH** 才生效。
 
 生效方式：**需要重启 DSH Desktop**（插件代码从仓库软链加载；preset 不需要改）。
 回滚：把 `time.heartbeat.conditional` 设为 `false` 即回到旧心跳；QQ seen 是新增列，旧数据自动为 0。

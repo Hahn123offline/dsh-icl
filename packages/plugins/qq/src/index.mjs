@@ -2188,6 +2188,14 @@ export async function apply(ctx) {
       notifyPending: (reason = 'session-bind') => notifyPending(reason),
       unreadDigest: (maxChars = 700) => unreadDigest(maxChars),
       markUnreadDigest: (maxChars = 1500) => unreadDigest(maxChars, { markDelivered: true }),
+      /** 账本里"还没看过"的总数（seen 口径，含被 focus/time 拦下的消息）。给 time 的条件心跳用。 */
+      unreadTotal: () => {
+        try {
+          const privateUnread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.unread ?? 0), 0)
+          const groupUnread = groupWatermarks().reduce((sum, row) => sum + Number(row.unread ?? 0), 0)
+          return privateUnread + groupUnread
+        } catch { return 0 }
+      },
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
       skills: () => SKILLS.map((s) => ({ ...s })),

@@ -724,6 +724,19 @@ test('心跳条件唤醒：有积压就发决策简报（不是状态播报）',
   assert.equal(api.status().heartbeat.lastKind, 'attend')
 })
 
+test('心跳条件唤醒：QQ 账本未读也算 pending（focus backlog 被清掉时仍会醒）', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1 } } })
+  host.shared.set('qq', { unreadTotal: () => 7 })
+  emitTurnEnd(host, 1)
+  virtualNow += 61_000
+  api.tick()
+  const text = drainText(host)
+  assert.match(text, /【心跳】/)
+  assert.match(text, /QQ 未读 7 条/)
+  assert.equal(api.status().heartbeat.lastKind, 'attend')
+})
+
 test('心跳长静默：无事封顶后仍醒一次，给自由活动清单', async () => {
   let virtualNow = MON_0900
   const { host, api } = await boot({

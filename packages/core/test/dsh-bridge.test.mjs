@@ -1400,11 +1400,37 @@ test('桥：冷启动没有 delivery 队列时，用未读摘要冷恢复会话'
   ctx.get = (name) => name === 'iclHost'
     ? { prompt: async ({ sessionId, text }) => { prompted = { sessionId, text }; return { ok: true } } }
     : null
-  host.shared.set('qq', { unreadDigest: () => 'QQ 还有没看过的消息：旧消息', markUnreadDigest: () => {} })
+  host.shared.set('qq', { unreadDigest: () => 'QQ 还有没看过的消息：旧消息', markUnreadDigest: () => { throw new Error('冷路径不应再补标 seen') } })
   const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), sessionId: 'session-cold' } })
   bridge.start()
   assert.deepEqual(await bridge.tick(), { sent: 1 })
   assert.equal(prompted?.sessionId, 'session-cold')
+  assert.match(prompted?.text ?? '', /旧消息/)
+  bridge.dispose()
+})
+
+test('桥：冷启动未读摘要被睡眠/时间队列挡住，醒来后才冷恢复', async () => {
+  const root = tempRoot('prompt-cold-unread-sleep')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  let prompted = null
+  ctx.get = (name) => name === 'iclHost'
+    ? { prompt: async ({ sessionId, text }) => { prompted = { sessionId, text }; return { ok: true } } }
+    : null
+  host.shared.set('qq', { unreadDigest: () => 'QQ 还有没看过的消息：旧消息', markUnreadDigest: () => {} })
+  let timeState = { phase: 'sleeping', backlog: 0, lock: null, pausedMode: { active: false }, spans: [] }
+  host.shared.set('time', { status: () => timeState })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl'), sessionId: 'session-cold' } })
+  bridge.start()
+  assert.deepEqual(await bridge.tick(), { sent: 0, skipped: 'no-agent' }, '睡着时不冷恢复')
+  assert.equal(prompted, null)
+  // 时间队列里有积压（等醒后释放）时也不冷恢复
+  timeState = { phase: 'awake', backlog: 1, lock: null, pausedMode: { active: false }, spans: [] }
+  assert.deepEqual(await bridge.tick(), { sent: 0, skipped: 'no-agent' })
+  assert.equal(prompted, null)
+  // 醒来且队列清空后才冷恢复一次
+  timeState = { phase: 'awake', backlog: 0, lock: null, pausedMode: { active: false }, spans: [] }
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
   assert.match(prompted?.text ?? '', /旧消息/)
   bridge.dispose()
 })

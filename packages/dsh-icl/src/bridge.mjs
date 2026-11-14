@@ -932,9 +932,30 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     }
   }
 
+  /**
+   * 冷恢复前的"外部提醒是否被时间闸门挡住"。这条路径绕过 signals/delivery（直接 session.prompt），
+   * 睡眠/静音/暂停/安静安排期间必须自己判一次，否则会像 2026-11-15 00:20 那样把睡着的她叫起来看群。
+   * time 自己的闹钟仍走 delivery（已过闸门），不在这里拦。
+   */
+  function timeHoldsExternalDelivery() {
+    try {
+      const timeApi = host.shared.get('time') ?? null
+      const s = timeApi?.status?.() ?? null
+      if (!s) return false
+      if (s.phase && s.phase !== 'awake') return true
+      if (s.lock?.muted) return true
+      if (s.pausedMode?.active || s.pausedMode?.phasePaused) return true
+      if ((s.spans ?? []).some((span) => span?.quiet === true)) return true
+      // 时间队列里已经有等醒后释放的消息：不要再用"未读摘要"绕过去叫醒她。
+      if (Number(s.backlog) > 0) return true
+      return false
+    } catch { return false }
+  }
+
   /** 重启后 delivery 队列是空的，但 QQ 账本里可能还有 attended 之前的旧消息；主动冷恢复一次。 */
   async function promptUnreadWithoutAgent() {
     if (state.coldUnreadTried) return 0
+    if (timeHoldsExternalDelivery()) return 0
     const qq = (() => { try { return host.shared.get('qq') ?? null } catch { return null } })()
     if (!qq?.unreadDigest) return 0
     const sessionId = state.session?.id ?? lastSessionIdHint()
@@ -950,7 +971,8 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
         report('delivery.prompt-unread', result.out?.result?.error ?? result.error ?? result.out)
         return 0
       }
-      try { qq.markUnreadDigest?.(1500) } catch { /* 水位失败不影响唤醒 */ }
+      // 不再在冷路径里重新生成一次摘要去"补标已看"——上一版那会把没展示的下一窗口也标成 seen。
+      // 真正展示给模型的消息由本轮 prompt.onTurn 的 unreadDigest({markDelivered:true}) 负责标记。
       return 1
     } catch (error) {
       state.coldUnreadTried = false
