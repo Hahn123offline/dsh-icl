@@ -417,3 +417,15 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
   - Discord Guild `default_message_notifications` — https://discord.com/developers/docs/resources/guild
 - 仓库内：`docs/FOCUS.md`、`docs/TIME-HEARTBEAT.md`、`docs/DELIVERY-POLICY-DESIGN.md`、
   `docs/SOUL-RESEARCH.md`（主动性 vs 发送权分离）、`docs/PURPOSE.md`
+
+---
+
+## 9. 验证记录（2026-11-14）
+
+- **测试全绿**：18:21 跑 `npm test` → `tests 929 / pass 928 / fail 0 / skipped 1`
+  （与注意力相关的 focus/time/qq 用例均通过；本轮未改代码，只新增文档与 `.state/lab` 脚本）。
+- **live 未改行为**：只提交了本文档（`docs(attention)`），没有动 preset、state 或插件代码。
+- **18:18 首次真实 tick 的后续**：18:21 查 QQ 账本仍是 121 条 / 已交付 103 条，
+  那 16 条群消息并未因为「看过」而推进；下一次心跳（19:20）会再次报同一批。
+  这实证了 §5.10 的缺口：没有 ack，就会「同一批永远重报」。
+
