@@ -10,6 +10,7 @@ import * as qqModule from '../../plugins/qq/src/index.mjs'
 import manifest from '../../plugins/qq/manifest.json' with { type: 'json' }
 import { createFakeOneBot } from '../../plugins/qq/tools/fake-onebot.mjs'
 import { createLedger } from '../../plugins/qq/src/ledger.mjs'
+import { DatabaseSync } from 'node:sqlite'
 
 const TOKEN = 'p1-token'
 const OWNER = '10001'
@@ -261,4 +262,25 @@ test('回复即自动已读：发送前已有的该聊天消息自动算看过�
     assert.match(unread2.text, /未读 1 条/)
     assert.match(unread2.text, /后来的/)
   } finally { await env.cleanup() }
+})
+
+test('账本迁移：旧库 attended_seq 回填 seen_seq（重启不把已读重报成未读）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-p1-seen-mig-'))
+  const file = path.join(dir, 'seen.db')
+  try {
+    let ledger = createLedger({ file })
+    ledger.append({ activity: 'qq:private:10003', qqId: 's1', at: 1000 })
+    ledger.markDelivered('qq:private:10003', 1)
+    ledger.markRead('qq:private:10003', { throughSeq: 1 })
+    ledger.close()
+    // 模拟旧库：只有 attended_seq，seen_seq 还是 0
+    const db = new DatabaseSync(file)
+    db.exec("UPDATE qq_activity SET seen_seq = 0 WHERE activity = 'qq:private:10003'")
+    db.close()
+    ledger = createLedger({ file })
+    const wm = ledger.watermarks('qq:private:10003')
+    assert.equal(wm.seenSeq, 1, '打开旧库时应把 seen 补到 attended')
+    assert.equal(wm.unread, 0, '已读消息不应在重启后重新变成未读')
+    ledger.close()
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) } catch { /* sqlite 句柄延迟 */ } }
 })

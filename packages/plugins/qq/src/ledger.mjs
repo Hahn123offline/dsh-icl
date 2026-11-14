@@ -284,6 +284,9 @@ function sqliteLedger(file, log) {
     try { db.exec('ALTER TABLE qq_messages ADD COLUMN blocked_reason TEXT') } catch { /* 已存在 */ }
     try { db.exec('ALTER TABLE qq_messages ADD COLUMN blocked_at INTEGER') } catch { /* 已存在 */ }
     try { db.exec('ALTER TABLE qq_activity ADD COLUMN seen_seq INTEGER NOT NULL DEFAULT 0') } catch { /* 已存在 */ }
+    // 旧库迁移：旧代码只有 attended_seq（已读）；首次升级时把 seen 至少补到 attended，
+    // 否则重启后世界状态会把历史上所有已读消息重新报成未读。
+    try { db.exec('UPDATE qq_activity SET seen_seq = attended_seq WHERE seen_seq < attended_seq') } catch { /* 忽略 */ }
   } catch (error) {
     try { db?.close() } catch { /* ignore */ }
     log?.({ level: 'warn', msg: 'qq.ledger.open-fail', error: String(error?.message ?? error), file })

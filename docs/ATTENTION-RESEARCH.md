@@ -454,7 +454,8 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
 
 验证：
 
-- `npm test`：**933 tests / 932 pass / 0 fail / 1 skip**。
+- `npm test`：**934 tests / 933 pass / 0 fail / 1 skip**。
+- live 账本副本迁移验证：旧库 `attended_seq` 自动回填 `seen_seq`（私聊 81/81/81 → seen 81、未读 0；群 16+2 未读保持不变）。
 - 干净上下文 lab（不读聊天历史）：`.state/lab/lead/attention-research/verify-clean-context.mjs`
   → **16/16 checks**（静态 sim.md 策略存在；空状态跳过后退避；有积压发决策简报；简报含群名/条数/
   no-op/focus 用法/对外主动关；长静默封顶醒一次并给自由活动清单）。
