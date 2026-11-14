@@ -494,3 +494,20 @@ mixed 且不泛化，已回滚，未提交。
    - 第一次 dream 是否把 pending 25 行形成新段（而不是跳过/重复旧行）；
    - memory_status 显示真实整理时间与材料范围；
    - audit/段记录/cursor 正常；无重复 episode。
+
+---
+
+## 20. 切换后验证（2026-11-14，live 拷贝 + 真实 pending raw）
+
+重启后，用**当前 live 库 + 真实的 25 条 pending raw 行**在 lab 拷贝上跑第一次段 dream：
+
+- 新段：`seg:2026-11-14T07:54:29...`，status=**done**，rows=**25**；
+  referenceDay=11-14，startAt/cutAt 正确；
+- jobs：wash/episodes/people/cleanup/index done，lexicon/consume skipped（无待办材料）；
+- 新 episode：`epi:seg:...`，`day=11-14`，`timeStart/timeEnd` 正确，body 374 字；
+- cursor 前进到 `session-0ba1...:2641`（最后一行 raw）；
+- 第二次 run：`no-new-material`，不建空段；
+- legacy segments 20 个保持不变。
+
+**结论：迁移 + cursor + 段 dream 在真实 pending 数据上按设计工作。**
+live 侧 preset 已切 segment；下一次真实 dream（睡眠触发）应复现同样行为，届时可再用 live audit 确认。
