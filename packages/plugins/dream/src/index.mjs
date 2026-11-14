@@ -1007,7 +1007,7 @@ export function apply(ctx) {
     memory.put({
       namespace: 'dream-run', kind: 'run', key: runKey(day, job),
       text: row?.text ?? `${day} ${job}`,
-      data: { ...prev, ...detail, job, day, status: 'success', ...(ACTIVE_SEGMENT ? { referenceDay: ACTIVE_SEGMENT.data.referenceDay, segmentId: ACTIVE_SEGMENT.key } : {}), ...(prev.startedAt ? { startedAt: Number(prev.startedAt) } : {}), finishedAt: Number(now) },
+      data: { ...prev, ...detail, job, day, status: 'success', ...(ACTIVE_SEGMENT ? { referenceDay: ACTIVE_SEGMENT.data.referenceDay, segmentId: ACTIVE_SEGMENT.key, rangeStart: ACTIVE_SEGMENT.data.startAt, rangeEnd: ACTIVE_SEGMENT.data.endAt } : {}), ...(prev.startedAt ? { startedAt: Number(prev.startedAt) } : {}), finishedAt: Number(now) },
       now,
     })
   }
@@ -1892,6 +1892,10 @@ export function apply(ctx) {
         const key = index === 0 ? keyBase : `${keyBase}:p${part}`
         const previous = memory.query({ namespace: 'episode', kind: 'block', key, limit: 1 })[0]
         const partEvidence = dedupeEvidence([...(previous?.data?.evidence ?? []), ...evidence])
+        // 时间契约（S3d）：块自带真实时间范围；day 只是展示派生，分区/账本不参与语义时间。
+        const evidenceTimes = evidence.map((entry) => Number(entry.at)).filter((value) => Number.isFinite(value) && value > 0)
+        const blockTimeStart = evidenceTimes.length ? Math.min(...evidenceTimes) : (ACTIVE_SEGMENT ? Number(ACTIVE_SEGMENT.data.startAt) : Number(now))
+        const blockTimeEnd = evidenceTimes.length ? Math.max(...evidenceTimes) : (ACTIVE_SEGMENT ? Number(ACTIVE_SEGMENT.data.endAt) : Number(now))
         const created = memory.put({
           namespace: 'episode',
           kind: 'block',
@@ -1903,6 +1907,8 @@ export function apply(ctx) {
             provisional: partEvidence.length === 0,
             // 天语义保留：day 是段起点日（参考），segmentId 只在内部；不把 segmentId 写进模型可见文本。
             day: ACTIVE_SEGMENT?.data?.referenceDay ?? day,
+            timeStart: blockTimeStart,
+            timeEnd: blockTimeEnd,
             ...(ACTIVE_SEGMENT ? { segmentId: ACTIVE_SEGMENT.key, rangeStart: ACTIVE_SEGMENT.data.startAt, rangeEnd: ACTIVE_SEGMENT.data.endAt } : {}),
             ...(chunks.length > 1 ? { parts: { groupId: hash(title), part, total: chunks.length } } : {}),
             people: normalizePeople(block?.people),
@@ -2024,6 +2030,8 @@ export function apply(ctx) {
               data: {
                 body: chunks[index], evidence: mergedEvidence, provisional: mergedEvidence.length === 0,
                 day: keepBlock.data?.day ?? ACTIVE_SEGMENT?.data?.referenceDay ?? day,
+                timeStart: Math.min(...[keepBlock, ...dropBlocks].map((block) => Number(block.data?.timeStart ?? block.data?.rangeStart ?? now)).filter(Number.isFinite), Number(now)),
+                timeEnd: Math.max(...[keepBlock, ...dropBlocks].map((block) => Number(block.data?.timeEnd ?? block.data?.rangeEnd ?? now)).filter(Number.isFinite), Number(now)),
                 ...(ACTIVE_SEGMENT ? { segmentId: ACTIVE_SEGMENT.key, rangeStart: ACTIVE_SEGMENT.data.startAt, rangeEnd: ACTIVE_SEGMENT.data.endAt } : {}),
                 ...(chunks.length > 1 ? { parts: { groupId: hash(mergedTitle), part, total: chunks.length } } : {}),
                 people, tags: normalizeTags([...(keepBlock.data?.tags ?? []), ...dropBlocks.flatMap((block) => block.data?.tags ?? [])]),
@@ -3437,6 +3445,8 @@ function loadPersona(ctx) {
   const file = ctx.config.personaFile || path.join(String(ctx.config.root ?? '.'), 'prompts', 'dream.md')
   try { return fs.readFileSync(file, 'utf8') } catch { return null }
 }
+
+
 
 
 

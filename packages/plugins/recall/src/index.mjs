@@ -662,8 +662,15 @@ export function apply(ctx) {
         const queryDay = question ? parseQueryDay(question, now) : null
         if (queryDay && candidates.length) {
           let boostedByDay = false
+          // 时间契约：日期命中优先看块的真实时间区间；day 只是没有时间戳时的兼容字段。
+          const dayStart = Date.parse(`${queryDay}T00:00:00`)
+          const dayEnd = dayStart + 86_400_000
           for (const entry of candidates) {
-            if (String(entry.item.data?.day ?? '') === queryDay) {
+            const data = entry.item.data ?? {}
+            const timeStart = Number(data.timeStart ?? 0)
+            const timeEnd = Number(data.timeEnd ?? 0)
+            const timeOverlap = Number.isFinite(timeStart) && Number.isFinite(timeEnd) && timeStart < dayEnd && timeEnd >= dayStart
+            if (String(data.day ?? '') === queryDay || timeOverlap) {
               entry.score = Number(entry.score) * 1.35
               boostedByDay = true
             }
@@ -1103,6 +1110,8 @@ export function apply(ctx) {
       lastDream = {
         day: String(data.referenceDay ?? data.day ?? String(row.key ?? '').split(':')[2] ?? ''),
         at: finishedAt || null,
+        rngStart: Number(data.rangeStart ?? 0) || null,
+        rngEnd: Number(data.rangeEnd ?? 0) || null,
         episodes: Number(data.episodes ?? 0),
         ok: data.status !== 'failed' && data.ok !== false,
         empty: data.empty === true,
@@ -1126,15 +1135,19 @@ export function apply(ctx) {
     const pendingNotes = memory.query({ namespace: 'note', kind: 'note', limit: 500 })
       .filter((row) => row.data?.status !== 'done' && row.data?.status !== 'archived').length
     const episodeCount = mainRows.length
+    const hhmmOf = (value) => (value ? new Date(Number(value)).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) : '')
     const briefParts = [
       `${memorySchema === 'v3' ? '经历' : '事件'} ${episodeCount} 段${firstDay ? `（${firstDay.slice(5)}..${lastDay.slice(5)}）` : ''}`,
-      lastDream ? `上次整理 ${lastDream.day ? lastDream.day.slice(5) : '—'} 形成 ${lastDream.episodes} 段${lastDream.ok ? '' : '（失败）'}` : null,
+      lastDream ? `上次整理 ${lastDream.day ? lastDream.day.slice(5) : '—'}${lastDream.at ? ` ${hhmmOf(lastDream.at)}` : ''} 形成 ${lastDream.episodes} 段${lastDream.ok ? '' : '（失败）'}` : null,
       `人物 ${peopleBlocks.length}`,
       `语料 ${lexiconCount}`,
     ].filter(Boolean)
+    const materialRange = lastDream?.rngStart && lastDream?.rngEnd
+      ? `材料时间 ${new Date(lastDream.rngStart).toLocaleString('zh-CN', { hour12: false })}～${new Date(lastDream.rngEnd).toLocaleString('zh-CN', { hour12: false })}`
+      : null
     const detailLines = [
       `记忆状态：${briefParts.join('；')}。`,
-      lastDream ? `最近整理：${lastDream.day || '—'}${lastDream.ok ? '' : '（失败，可能需要重跑）'}，形成 ${lastDream.episodes} 段${lastDream.empty ? '（当天没有值得留下的新经历）' : ''}。` : '还没有过记忆整理记录。',
+      lastDream ? `最近整理：${lastDream.day || '—'}${lastDream.at ? ` ${hhmmOf(lastDream.at)}` : ''}${lastDream.ok ? '' : '（失败，可能需要重跑）'}，形成 ${lastDream.episodes} 段${lastDream.empty ? '（当天没有值得留下的新经历）' : ''}${materialRange ? `；${materialRange}` : ''}。` : '还没有过记忆整理记录。',
       recent.length ? `最近 5 段：\n${recent.join('\n')}` : null,
       openCommitments.length ? `块内承诺注释（历史记录，不跟踪完成状态；可用 recall 搜索相关经历查看）：\n${openCommitments.slice(0, 8).map((text) => `· ${text.slice(0, 90)}`).join('\n')}` : null,
       `未消化笔记 ${pendingNotes} 条。记忆只覆盖整理过的内容；问过去细节先 recall（不确定就先查再答），问人用 whois。`,

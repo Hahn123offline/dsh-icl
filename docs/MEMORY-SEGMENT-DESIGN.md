@@ -414,3 +414,32 @@ mixed 且不泛化，已回滚，未提交。
    而不是继续堆相邻/兄弟规则。
 
 **当前生产状态**：`partition=day`，live 未切换；S4 关闭。
+
+---
+
+## 17. S3d：时间契约 + 答案可回答性 A/B（2026-11-14）
+
+按用户方向实现"纯 dream 切 + 时间戳"的解耦，不改分区规则：
+
+1. **episode 时间字段**：每个块写 `timeStart/timeEnd`（来自 evidence 的 at，段模式缺省用段范围）；
+2. **dream 账本**记录段材料 `rangeStart/rangeEnd`；
+3. **memory_status** 显示真实整理时间（`上次整理 11-13 21:06`）与材料时间范围，不再只给日期；
+4. **检索日期加权**改为"块时间区间与查询日重叠"，`data.day` 仅作兼容；
+5. 新增 lab 工具 `tools/memory-answerability.mjs`：不看 block-id anyHit，
+   用模型判断"返回上下文是否足以回答 expectAnswer"，对比 day/segment。
+
+### 答案可回答性 A/B（同 fixture、同 eval 返回文本）
+
+| 素材 | day answerable / full / mean | segment answerable / full / mean |
+|---|---|---|
+| focus | 88.9% / 44.4% / 1.33 | **88.9% / 55.6% / 1.44** |
+| QQ | 88.9% / 66.7% / 1.56 | **100% / 55.6% / 1.56** |
+| live | 87.5% / 50.0% / 1.38 | 87.5% / 37.5% / 1.25 |
+
+**结论（支持用户判断）**
+- 按"能否回答"的口径，段模式 **不差于 day**（focus/live 持平，QQ 更好）；
+- 之前 focus 93.8 / QQ 92.3 的 block-id anyHit 差距，主要是"同一答案被拆成两块 + 期望映射只认一块"的度量 artifact；
+- 因此"改变切分规则不应损害成块质量"在答案可回答性上成立；真正需要保留的是**时间戳契约**，而不是把段当日用。
+- 剩余待确认：live segment 的 goldCoverage 一轮 75% vs day 87.5%（可能为形成方差/映射），S4 前建议再跑 1–2 次确认。
+
+**当前生产**：`partition=day` 未切换；时间和答案可回答性改动为向后兼容（day 模式也写 timeStart/timeEnd）。
