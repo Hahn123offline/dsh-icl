@@ -110,3 +110,11 @@
 | 测试 | `focus-semantics.test.mjs`（7 个）+ bridge 落盘恢复测试 |
 | 持久化 | `state/focus.json`（租约 + 积压，原子写）；启动恢复；desktop 已验证 |
 | 未做 | Activity 注册表、watermark/未读、nudge、外部连接器 |
+
+## 7. 2026-11-15：默认穿透与「做事状态」
+
+- `focus_enter` 默认 pierce 改为 `qq:private:* = always`、`qq:group:* = mention`：
+  旧默认 `{}` 会让 `resolvePierce` 回落到 mention，导致进入 focus 后**主人私聊也被拦进积压**。
+- 群普通消息仍是「只拉不推」：进该群 backlog；@ 才直达。
+- focus 定位为「我正在做这件事」的显式状态：多步任务先进入，做完/放弃再离开；
+  离开时回放积压摘要。它不再只是勿扰开关。

@@ -50,7 +50,7 @@ async function setup() {
   }
 }
 
-test('focus 拦下：offer accepted+queued 不记 delivered；mark_read 不跨；释放回执后才补', async () => {
+test('focus 拦下：queued ≠ delivered；显式 ack 可以收尾（跨过未交付），不假装已交付', async () => {
   const env = await setup()
   try {
     const lease = env.host.services.focus.enter({ label: 'qq:test', interruptible: false })
@@ -65,29 +65,25 @@ test('focus 拦下：offer accepted+queued 不记 delivered；mark_read 不跨�
       const wm = status.ledger.watermarks.find((w) => w.peer === OWNER)
       assert.equal(wm.deliveredSeq, 0)
       assert.equal(wm.attendedSeq, 0)
+      assert.equal(wm.seenSeq, 0)
       const unread = await env.tool('qq_unread').execute({ peer: OWNER })
-      assert.match(unread.text, /已交付 #0，水位 #0/)
+      assert.match(unread.text, /已看 #0，已交付 #0/)
       assert.match(unread.text, /\[未交付/)
+      assert.equal(env.host.services.focus.backlog().reduce((n, row) => n + row.count, 0), 1)
       const read = await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
-      assert.match(read.text, /水位没有推进/)
-      assert.match(read.text, /未交付 1 条/)
-      assert.equal(env.host.services.delivery.drain('session').length, 0, 'focus 积压下不应有 QQ 投递')
+      assert.match(read.text, /已看 #1/)
+      assert.match(read.text, /剩余未读 0 条/)
+      const acked = env.qq.status().ledger.watermarks.find((w) => w.peer === OWNER)
+      assert.equal(acked.seenSeq, 1, 'ack 推进"看过"水位')
+      assert.equal(acked.deliveredSeq, 0, 'ack 不代表进过投递队列')
+      assert.equal(env.host.services.focus.backlog().reduce((n, row) => n + row.count, 0), 0, 'ack 应清掉 focus backlog')
+      assert.equal(env.host.services.delivery.drain('session').length, 0, 'ack 不发消息')
     } finally {
       lease.release()
     }
-    // 释放 focus：summary 进管道；host 调 focus-backlog 回执，只补 delivered。
-    const ok = await waitFor(() => {
-      const wm = env.qq.status().ledger.watermarks.find((w) => w.peer === OWNER)
-      return wm && wm.deliveredSeq >= 1
-    })
-    assert.equal(ok, true, 'focus 重放回执后 deliveredSeq 应前进')
-    const after = env.qq.status()
-    assert.equal(after.ledger.watermarks.find((w) => w.peer === OWNER).attendedSeq, 0, '回执不算已读')
-    assert.ok((after.ledger.deliveredVia['focus-backlog']?.accepted ?? 0) >= 1)
-    const unreadAfter = await env.tool('qq_unread').execute({ peer: OWNER })
-    assert.doesNotMatch(unreadAfter.text, /\[未交付/)
-    const readAfter = await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
-    assert.match(readAfter.text, /已把私聊/)
+    // 已经 ack 过的消息不再需要重放回执；delivered 保持 0（省一次投递/打断）。
+    await sleep(120)
+    assert.equal(env.qq.status().ledger.watermarks.find((w) => w.peer === OWNER).deliveredSeq, 0)
   } finally { await env.cleanup() }
 })
 

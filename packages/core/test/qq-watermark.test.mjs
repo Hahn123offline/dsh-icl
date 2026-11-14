@@ -1,5 +1,5 @@
-// P0 消息不丢：被 time 拦下（静音/睡眠）的消息不能被 qq_mark_read 跨过；
-// 三个水位分开显示；未交付仍可见、nudge 仍会尝试提醒。
+// P0 消息不丢：被 time 拦下（静音/睡眠）的消息仍进账本；ack（qq_mark_read）可以标记"看过不回"，
+// 只清提醒、不假装已交付；内容始终能用 afterSeq:0 回看。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -26,7 +26,7 @@ async function waitFor(predicate, { timeoutMs = 5000, stepMs = 20 } = {}) {
   return predicate()
 }
 
-test('未交付消息：mark_read 不能跨过；qq_unread 仍可见；nudge 仍尝试提醒', async () => {
+test('未交付消息：ack 可以标记看过不回（不假装已交付）；内容仍可回看；nudge 仍尝试提醒', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-watermark-'))
   const fake = await createFakeOneBot({ port: 0, token: TOKEN })
   const host = createHost({ log: () => {} })
@@ -63,27 +63,29 @@ test('未交付消息：mark_read 不能跨过；qq_unread 仍可见；nudge 仍
     assert.ok(Object.keys(qq.status().stats.blockedReasons ?? {}).length > 0, 'status 给出被拦原因')
 
     const unread = await tool('qq_unread').execute({ peer: OWNER })
-    assert.match(unread.text, /最后 #3，已交付 #0，水位 #0/)
-    assert.match(unread.text, /未交付 3 条/)
+    assert.match(unread.text, /最后 #3，已看 #0，已交付 #0/)
+    assert.match(unread.text, /未读 3 条/)
     assert.equal((unread.text.match(/未交付/g) ?? []).length >= 3, true)
     assert.match(unread.text, /静音里第一条/)
-
-    const beforeFrames = fake.sendActions().length
-    const read = await tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 3 })
-    assert.match(read.text, /水位没有推进/)
-    assert.match(read.text, /未交付 3 条/)
-    assert.match(read.text, /不会被标掉/)
-    assert.equal(fake.sendActions().length, beforeFrames, 'mark_read 不发 QQ 消息')
-
-    const after = await tool('qq_unread').execute({ peer: OWNER })
-    assert.match(after.text, /已交付 #0，水位 #0/)
-    assert.match(after.text, /静音里第三条/, '未交付消息不能从 unread 消失')
 
     // nudge 仍会提醒（虽然提醒 signal 也被 time 拦，但规划器确实发出尝试）
     await waitFor(() => (qq.status().wake?.emittedByKind?.nudge ?? 0) >= 1, { timeoutMs: 4000 })
     const wake = qq.status().wake
     assert.ok((wake.emittedByKind.nudge ?? 0) >= 1, 'nudge 仍尝试提醒未交付消息')
     assert.ok((wake.skippedBudget ?? 0) >= 0)
+
+    const beforeFrames = fake.sendActions().length
+    const read = await tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 3 })
+    assert.match(read.text, /已把私聊/)
+    assert.match(read.text, /已看 #3/)
+    assert.match(read.text, /剩余未读 0 条/)
+    assert.equal(fake.sendActions().length, beforeFrames, 'mark_read 不发 QQ 消息')
+
+    const after = await tool('qq_unread').execute({ peer: OWNER })
+    assert.match(after.text, /最后 #3，已看 #3/)
+    assert.match(after.text, /没有未读消息/)
+    const afterAll = await tool('qq_unread').execute({ peer: OWNER, afterSeq: 0 })
+    assert.match(afterAll.text, /静音里第三条/, 'ack 后消息仍在账本，可回看')
 
     // 跨模块：time/focus 重放完自己的 backlog 后调用 noteDeliveredSeqs。
     // 只补 delivered，不推 attended；幂等；空洞不推进；失败不抛。
@@ -94,6 +96,7 @@ test('未交付消息：mark_read 不能跨过；qq_unread 仍可见；nudge 仍
     assert.equal(receipt1.accepted, 1)
     assert.equal(receipt1.deliveredSeq, 0, 'seq1 还空着：连续交付水位仍是 0')
     assert.equal(receipt1.attendedSeq, 0)
+    assert.equal(receipt1.seenSeq, 3, 'ack 的 seen 不受 delivered 空洞影响')
     const receipt2 = service.noteDeliveredSeqs({ activity, seqs: [1, 3, 3], via: 'time-backlog' })
     assert.equal(receipt2.accepted, 2)
     assert.equal(receipt2.skipped, 0)
@@ -108,16 +111,20 @@ test('未交付消息：mark_read 不能跨过；qq_unread 仍可见；nudge 仍
     assert.equal(via.calls, 3)
 
     const afterReceipt = await tool('qq_unread').execute({ peer: OWNER })
-    assert.match(afterReceipt.text, /已交付 #3，水位 #0/)
-    assert.doesNotMatch(afterReceipt.text, /\[未交付/, '补推后行上的未交付标记消失')
-    assert.match(afterReceipt.text, /静音里第三条/)
+    assert.match(afterReceipt.text, /已看 #3，已交付 #3/)
+    assert.match(afterReceipt.text, /没有未读消息/)
+    const afterReceiptAll = await tool('qq_unread').execute({ peer: OWNER, afterSeq: 0 })
+    assert.doesNotMatch(afterReceiptAll.text, /\[未交付/, '补推后行上的未交付标记消失')
+    assert.match(afterReceiptAll.text, /静音里第三条/)
 
-    // 交付补齐后 mark_read 才能推进到 3
+    // 补齐 delivered 后 mark_read 不再推进（seen 已经是 3）；三条仍可回看
     const readAfterReceipt = await tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 3 })
-    assert.match(readAfterReceipt.text, /已把私聊/)
+    assert.match(readAfterReceipt.text, /已看水位没有推进/)
     const finalUnread = await tool('qq_unread').execute({ peer: OWNER })
-    assert.match(finalUnread.text, /水位 #3/)
-    assert.match(finalUnread.text, /没有水位之后的未读/)
+    assert.match(finalUnread.text, /已看 #3/)
+    assert.match(finalUnread.text, /没有未读消息/)
+    const finalAll = await tool('qq_unread').execute({ peer: OWNER, afterSeq: 0 })
+    assert.match(finalAll.text, /静音里第三条/)
 
     // 参数别名/失败路径：不抛、不误伤
     const peerAlias = service.noteDeliveredSeqs({ peer: OWNER, seqs: [], via: 'focus-backlog' })

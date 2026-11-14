@@ -695,7 +695,7 @@ test('群聊只读工具：qq_groups 报未读，qq_group_history 能看群账�
   const tools = host.services.tools.list()
   const groups = await tools.find((t) => t.name === 'qq_groups').execute()
   assert.match(groups.text, /601357169/)
-  assert.match(groups.text, /未交付 1 条/)
+  assert.match(groups.text, /未读 1 条/)
   const history = await tools.find((t) => t.name === 'qq_group_history').execute({ group: '601357169' })
   assert.match(history.text, /群历史一条/)
   host.disable('qq')

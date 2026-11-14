@@ -85,3 +85,12 @@
 - GUI 时间视图（当前先 statusText；后续可共用结构化 status）
 - 随机间隔是否要可复现 seed（测试用固定 base 覆盖，生产用 `Math.random`）
 - 心跳历史/频率调整的长期观测（可作为质量数据）
+
+## 9. 2026-11-15 升级：条件/自适应心跳（L1+L2）
+
+用户拍板后，心跳从「到点必发状态播报」升级为「条件唤醒 + 决策简报」：
+
+- 有 pending（focus 积压 / note open / time 队列）才叫醒；没有就**不产生 turn**，只记 `heartbeat-skip-empty`；
+- 无事时下一次间隔 ×`backoffFactor`（默认 1.5），封顶 `maxBackoffMul`（默认 12）；外部活动（QQ/信号/日程）到来立刻回到基线；
+- 间隔到 `longSilenceSec`（默认 3h）仍无事 → 醒一次「长静默」tick，给自由活动清单（L2），但仍禁止对外主动；
+- 决策简报内容：你在做什么 / 谁在等你（按群 +N + 最近一条）/ 可以什么都不做 / focus 用法 / 对外主动关；`heartbeat.conditional:false` 回滚到旧行为。

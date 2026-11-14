@@ -9,7 +9,9 @@ import { randomUUID } from 'node:crypto'
 
 export const name = 'focus'
 
-const DEFAULT_PIERCE = Object.freeze({})
+// 默认穿透：专注不是失联。主人私聊永远能找到；群只在 @/点名时穿透；别处普通消息进积压。
+// 2026-11-15：旧默认是 {}，而 resolvePierce 的默认级别是 mention —— 一旦 focus，连主人私聊都会被拦。
+const DEFAULT_PIERCE = Object.freeze({ 'qq:private:*': 'always', 'qq:group:*': 'mention' })
 
 /** 事实状态的粒度：分钟一抖会把前缀缓存整段打掉，所以按 5 分钟取整。 */
 const MINUTES_BUCKET = 5

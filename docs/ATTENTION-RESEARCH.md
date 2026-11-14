@@ -103,6 +103,11 @@
      旧实现有三档水位（delivered / model-seen / acknowledged），当前只有两档（delivered / attended），
      缺的正是「她看过了，但决定不回」这一档。
 
+> **重要 caveat（用户 2026-11-15 指出）**：18:18 这次「不回」很可能受用户此前在 QQ 里说过
+> 「群里刷屏不用回」影响——这是**上下文/提示词**的作用，不足以证明注意力机制本身生效。
+> 因此策略必须写进静态 `prompts/sim.md`，并在**干净上下文**（不依赖聊天里的口头指令）里验证；
+> 18:18 只作为「提示词影响很大」的旁证，不计入验收。
+
 ---
 
 ## 2. 外部研究结论（详见 external.md）
@@ -429,3 +434,31 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
   那 16 条群消息并未因为「看过」而推进；下一次心跳（19:20）会再次报同一批。
   这实证了 §5.10 的缺口：没有 ack，就会「同一批永远重报」。
 
+
+---
+
+## 10. 实施记录（2026-11-15，L1+L2 已落仓库，重启后生效）
+
+用户拍板：L1+L2 先；focus 默认穿透按建议；条件/自适应心跳按建议；Stage C 再加预算工具；
+显式 ack + 「在某个聊天回复即自动已读」；sim.md 的「不要自己开跑」改为允许 L1+L2、禁止 L3。
+
+已改（**仅仓库，live 未重启前不生效**）：
+
+| 层 | 改动 |
+|---|---|
+| `time` | 条件/自适应心跳：有 pending 才叫醒；无事跳过并按 `backoffFactor` 拉长（`maxBackoffMul` 封顶），外部活动重置；封顶后触发「长静默」tick（L2 自由活动清单）；`heartbeat.conditional:false` 可回滚旧行为；简报取代状态播报 |
+| `qq` | 账本新增 `seen_seq`（未读 = lastSeq - seen）；`qq_mark_read` 改为显式 ack（可跨未交付，内容仍在账本）；**回复某聊天即自动 seen**（发送前 lastSeq 快照，发送后新到的不算）；ack/回复时清对应 focus backlog |
+| `focus` | 默认 pierce = 私聊 always + 群 mention（旧默认会让 focus 拦掉主人私聊） |
+| `prompts/sim.md` | 写清 L1/L2/L3、no-op 合法、focus 用法、群 backlog/@/ack/回复即已读 |
+| 文档 | `docs/QQ.md`、`docs/QQ-GAP.md` 水位语义同步 |
+
+验证：
+
+- `npm test`：**933 tests / 932 pass / 0 fail / 1 skip**。
+- 干净上下文 lab（不读聊天历史）：`.state/lab/lead/attention-research/verify-clean-context.mjs`
+  → **16/16 checks**（静态 sim.md 策略存在；空状态跳过后退避；有积压发决策简报；简报含群名/条数/
+  no-op/focus 用法/对外主动关；长静默封顶醒一次并给自由活动清单）。
+- 结论：行为不依赖 live 聊天里那句「刷屏不用回」；18:18 的旁证已标 caveat。
+
+生效方式：**需要重启 DSH Desktop**（插件代码从仓库软链加载；preset 不需要改）。
+回滚：把 `time.heartbeat.conditional` 设为 `false` 即回到旧心跳；QQ seen 是新增列，旧数据自动为 0。

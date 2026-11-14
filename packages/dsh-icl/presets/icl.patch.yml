@@ -66,6 +66,13 @@
                 time:
                   awakeTick:
                     enabled: false
+                  # 2026-11-15 用户拍板：条件/自适应心跳。没有等的事就不叫醒；无事间隔逐渐拉长，
+                  # 3h 封顶后醒一次"长静默"（自己的时间，不发对外消息）。conditional:false 回滚旧行为。
+                  heartbeat:
+                    conditional: true
+                    longSilenceSec: 10800
+                    backoffFactor: 1.5
+                    maxBackoffMul: 12
                 # v3（2026-11-12 用户拍板）：经历块（episode）为召回主单位，typed 降级为块内注释。
                 recall:
                   schema: v3
@@ -158,7 +165,7 @@
                     mentionQuietMs: 3000
                     maxHoldMs: 20000
                     maxBatchMessages: 20
-                    # 安静群 ordinary 直接回；>5/5s 才由 debounce 标 ambient。
+                    # 群普通消息一律 ambient（只进该群 backlog，等她自己看）；@ 才直达。
                     groupQuietMs: 6000
                     groupMentionQuietMs: 3000
                     groupMaxHoldMs: 20000

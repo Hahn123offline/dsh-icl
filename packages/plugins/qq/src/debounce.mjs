@@ -129,8 +129,8 @@ export function createInboundDebouncer({
     clearTimers(entry)
     const signal = mergeSignals(entry.items)
     if (!signal) return null
-    // 旧 busyness 规则：安静群的普通消息应当能叫醒；只有峰值速率超过 RATE_FAST
-    // 才标 ambient，交给 focus 进 backlog。@ 永远不标 ambient。
+    // 群普通消息在 normalize 阶段已一律标 ambient（只进 backlog，不逐条穿透）；
+    // 这里保留旧的 busyness 兜底：@ 永不标；峰值高时再补一次 ambient。
     if (entry.isGroup) {
       const mention = Array.isArray(signal.tags) && (signal.tags.includes('mention') || signal.tags.includes('at'))
       if (!mention && Number(entry.peakRate ?? 0) > RATE_FAST) {

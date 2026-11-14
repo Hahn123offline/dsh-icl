@@ -453,6 +453,7 @@ export async function apply(ctx) {
         lastSeq: watermark.lastSeq,
         deliveredSeq: watermark.deliveredSeq,
         attendedSeq: watermark.attendedSeq,
+        seenSeq: watermark.seenSeq,
         at: stamp,
       }
     } catch (error) {
@@ -467,12 +468,16 @@ export async function apply(ctx) {
       .filter((row) => ledgerPeerOf(row.activity))
       .map((row) => {
         const known = ledger.lastKnown(row.activity) ?? {}
+        const lastSeq = known.lastSeq ?? row.total ?? 0
+        const seenSeq = known.seenSeq ?? row.seenSeq ?? 0
         return {
           peer: ledgerPeerOf(row.activity),
-          lastSeq: known.lastSeq ?? row.total ?? 0,
+          lastSeq,
           deliveredSeq: known.deliveredSeq ?? row.deliveredSeq ?? 0,
           attendedSeq: known.attendedSeq ?? row.attendedSeq ?? 0,
-          undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
+          seenSeq,
+          unread: Math.max(0, lastSeq - seenSeq),
+          undelivered: Math.max(0, lastSeq - (known.deliveredSeq ?? 0)),
         }
       })
   }
@@ -483,16 +488,20 @@ export async function apply(ctx) {
       .filter((row) => /^qq:group:\d+$/.test(String(row.activity ?? '')))
       .map((row) => {
         const known = ledger.lastKnown(row.activity) ?? {}
+        const lastSeq = known.lastSeq ?? row.total ?? 0
+        const seenSeq = known.seenSeq ?? row.seenSeq ?? 0
         return {
           activity: String(row.activity),
           groupId: String(row.activity).slice('qq:group:'.length),
-          lastSeq: known.lastSeq ?? row.total ?? 0,
+          lastSeq,
           deliveredSeq: known.deliveredSeq ?? 0,
           attendedSeq: known.attendedSeq ?? 0,
-          undelivered: Math.max(0, (known.lastSeq ?? 0) - (known.deliveredSeq ?? 0)),
+          seenSeq,
+          unread: Math.max(0, lastSeq - seenSeq),
+          undelivered: Math.max(0, lastSeq - (known.deliveredSeq ?? 0)),
         }
       })
-      .filter((row) => (unattended ? row.lastSeq > row.attendedSeq : row.undelivered > 0))
+      .filter((row) => (unattended ? row.unread > 0 : row.unread > 0))
   }
 
   /**
@@ -507,32 +516,32 @@ export async function apply(ctx) {
       if (!marks.has(activity)) marks.set(activity, [])
       for (const msg of msgs) marks.get(activity).push(msg.seq)
     }
-    const privateRows = ledgerWatermarks().filter((row) => Number(row.lastSeq) > Number(row.attendedSeq))
+    const privateRows = ledgerWatermarks().filter((row) => Number(row.unread) > 0)
     for (const row of privateRows.slice(0, 4)) {
       const activity = activityIdForPrivate(row.peer)
       const msgs = (ledger.unread(activity, { limit: 4 })?.messages ?? []).slice(0, 4)
       collect(activity, msgs)
-      const unread = Math.max(0, Number(row.lastSeq) - Number(row.attendedSeq))
+      const unread = Math.max(0, Number(row.unread) || 0)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`私聊 ${row.peer}（${unread} 条未读）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
-    const groupRows = groupWatermarks({ unattended: true })
+    const groupRows = groupWatermarks()
     for (const row of groupRows.slice(0, 4)) {
       const msgs = (ledger.unread(row.activity, { limit: 4 })?.messages ?? []).slice(0, 4)
       collect(row.activity, msgs)
-      const unread = Math.max(0, Number(row.lastSeq) - Number(row.attendedSeq))
+      const unread = Math.max(0, Number(row.unread) || 0)
       const lines = msgs.map((msg) => `· #${msg.seq} ${msg.sender ? `${msg.sender}：` : ''}${String(msg.text ?? '').slice(0, 120)}`)
       blocks.push(`群 ${row.groupId}（${unread} 条未读）${lines.length ? `\n${lines.join('\n')}` : ''}`)
     }
     if (!blocks.length) return ''
     if (markDelivered) {
-      // 摘要已经进了本轮上下文：标 delivered，并把 attended 推到看过的最后一条；
-      // 未展示的后续未交付留给下一轮。
+      // 摘要已经进了本轮上下文：标 delivered，并把 seen 推到看过的最后一条；
+      // 未展示的后续未读留给下一轮。
       for (const [activity, seqs] of marks) {
         try {
           ledger.markDeliveredSeqs(activity, seqs)
           const through = Math.max(...seqs)
-          if (Number.isFinite(through)) ledger.markRead(activity, { throughSeq: through })
+          if (Number.isFinite(through)) ledger.markSeen(activity, { throughSeq: through })
         } catch { /* 水位失败不影响摘要 */ }
       }
     }
@@ -686,7 +695,12 @@ export async function apply(ctx) {
             const target = ledger.replyState(activity, { messageId: replyToMessageId })
             if (target?.found) through = Math.max(through, Number(target.seq) || 0)
           }
-          if (through > 0) ledger.markReplied(activity, { throughSeq: through, at })
+          if (through > 0) {
+            ledger.markReplied(activity, { throughSeq: through, at })
+            // 回复即已读：发送前快照到的 lastSeq 之内的消息都不再提醒（发送后新到的不算）。
+            ledger.markSeen(activity, { throughSeq: through, at })
+            ackFocusBacklog(activity, through)
+          }
           if (kind !== 'group') noteWakeOutbound(activity)
         },
       })
@@ -839,6 +853,7 @@ export async function apply(ctx) {
             const shown = snapshotSeqs.filter((seq) => seq <= snapshot.readThroughSeq)
             if (shown.length) ledger.markDeliveredSeqs(emission.activity, shown)
             ledger.markRead(emission.activity, { throughSeq: snapshot.readThroughSeq })
+            ledger.markSeen(emission.activity, { throughSeq: snapshot.readThroughSeq })
           } catch { /* 水位失败不影响唤醒 */ }
         }
         stats.wakeDelivered = (stats.wakeDelivered ?? 0) + 1
@@ -1708,7 +1723,7 @@ export async function apply(ctx) {
         const blocked = s.stats?.blockedReasons && Object.keys(s.stats.blockedReasons).length
           ? `；被拦原因：${Object.entries(s.stats.blockedReasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${reason}×${count}`).join('，')}`
           : ''
-        lines.push(`账本水位（delivered ≠ seen ≠ attended）：${lw.map((w) => `${w.peer} 最后#${w.lastSeq}/已交付#${w.deliveredSeq}/已读#${w.attendedSeq}${w.undelivered ? `（未交付 ${w.undelivered}，不会被 mark_read 跨过）` : ''}`).join('；')}${blocked}`)
+        lines.push(`账本水位（未读 = 最后 - 已看；已看 ≠ 已回）：${lw.map((w) => `${w.peer} 最后#${w.lastSeq}/已看#${w.seenSeq ?? 0}/已交付#${w.deliveredSeq}${w.undelivered ? `（未交付 ${w.undelivered} 条，也在账本里）` : ''}`).join('；')}${blocked}`)
         const via = s.ledger?.deliveredVia ?? {}
         const viaKeys = Object.keys(via)
         if (viaKeys.length) {
@@ -1716,7 +1731,7 @@ export async function apply(ctx) {
         }
         if (s.stats?.queued) {
           const reasons = Object.entries(s.stats.queuedReasons ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${reason}×${count}`).join('，')
-          lines.push(`focus 积压（queued ≠ delivered）：本次 ${s.stats.queued} 条${reasons ? `（${reasons}）` : ''}；重放回执后才补 delivered，mark_read 不能跨过`)
+          lines.push(`focus 积压（queued ≠ delivered）：本次 ${s.stats.queued} 条${reasons ? `（${reasons}）` : ''}；重放回执后才补 delivered；看过不回用 qq_mark_read 收尾`)
         }
       }
       const media = s.media ?? {}
@@ -1860,9 +1875,33 @@ export async function apply(ctx) {
     return `#${row.seq} ${formatLedgerTime(row.at)} ${sender}${row.text || ''}${flag}`.trim()
   }
 
+  /** 收尾：某 activity 的消息被看过/回过之后，把对应的 focus backlog 桶清掉（只清 seq 已覆盖的）。 */
+  function ackFocusBacklog(activity, throughSeq) {
+    try {
+      const target = String(activity)
+      const drain = ctx.focus?.drainBacklog
+      if (typeof drain !== 'function') return 0
+      const rows = ctx.focus.backlog?.() ?? []
+      const keys = new Set()
+      for (const row of rows) {
+        if (String(row.focus) !== target) continue
+        const seqs = (row.items ?? []).flatMap((item) => {
+          const list = [item.qq?.seq]
+          for (const entry of (item.qqSeqs ?? [])) list.push(entry?.seq)
+          return list
+        }).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        const maxSeq = seqs.length ? Math.max(...seqs) : 0
+        if (!maxSeq || maxSeq <= Number(throughSeq)) keys.add(row.focus)
+      }
+      if (!keys.size) return 0
+      const picked = drain((row) => keys.has(row.focus))
+      return picked.reduce((n, row) => n + Number(row.count ?? 0), 0)
+    } catch { return 0 }
+  }
+
   ctx.tools.register({
     name: 'qq_unread',
-    summary: '看 QQ 私聊或白名单群未读（账本口径，三个数分开：lastSeq 最后一条 / deliveredSeq 连续已交付高水位 / attendedSeq 已读水位）。被 time/focus/静音拦下的消息算"未交付"，不会被 mark_read 跨过，也不会从 unread 里消失。',
+    summary: '看 QQ 私聊或白名单群未读（账本口径：lastSeq 最后一条 / seenSeq 看到哪 / deliveredSeq 已交付）。未读 = lastSeq - seenSeq；被 time/focus/静音拦下的消息也算未读，仍能看到；看过不回用 qq_mark_read 收尾。',
     when: ['想知道有没有还没处理的 QQ 私聊或群消息', '想确认上次看到哪条（水位）', '怀疑有被睡眠/静音/群静音拦下的消息'],
     avoid: ['把 delivered 当成"模型看过"（delivered 只代表进了投递队列）', '用 qq_history 补看具体内容'],
     parameters: {
@@ -1885,20 +1924,20 @@ export async function apply(ctx) {
           const known = ledger.lastKnown(row.activity)
           const group = /^qq:group:(\d+)$/.exec(String(row.activity))
           const label = group ? `群 ${group[1]}` : `私聊 ${ledgerPeerOf(row.activity) ?? row.activity}`
-          const attended = known?.attendedSeq ?? row.attendedSeq ?? 0
+          const seen = known?.seenSeq ?? row.seenSeq ?? 0
           const delivered = known?.deliveredSeq ?? row.deliveredSeq ?? 0
           const last = known?.lastSeq ?? row.total ?? 0
           const undelivered = Math.max(0, last - delivered)
-          return `- ${label}：最后 #${last}，已交付 #${delivered}，水位 #${attended}，未读约 ${Math.max(0, last - attended)} 条${undelivered ? `（其中未交付 ${undelivered} 条，不会被 mark_read 跨过）` : ''}`
+          return `- ${label}：最后 #${last}，已看 #${seen}，已交付 #${delivered}，未读 ${Math.max(0, last - seen)} 条${undelivered ? `（其中 ${undelivered} 条被拦下、未交付，但也能看）` : ''}`
         })
-        return { text: `QQ 账本（delivered ≠ seen ≠ attended）：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号或群号"} 看具体未读，或 qq_history 补看。` }
+        return { text: `QQ 账本（未读 = 最后 - 已看；已看 ≠ 已回）：\n${lines.join('\n')}\n用 qq_unread {peer:"QQ号或群号"} 看具体未读，或 qq_history 补看。` }
       }
       const out = ledger.unread(target.activity, { afterSeq: afterSeq == null ? null : Number(afterSeq), limit })
-      const head = `${target.label}：最后 #${out.watermark.lastSeq}，已交付 #${out.watermark.deliveredSeq}，水位 #${out.watermark.attendedSeq}`
-      if (!out.messages.length) return { text: `${head}；没有水位之后的未读消息。` }
+      const head = `${target.label}：最后 #${out.watermark.lastSeq}，已看 #${out.watermark.seenSeq}，已交付 #${out.watermark.deliveredSeq}`
+      if (!out.messages.length) return { text: `${head}；没有未读消息。` }
       const undelivered = out.messages.filter((row) => row.deliveredAt == null).length
       return {
-        text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中未交付 ${undelivered} 条：可能被 time/focus/静音拦下，详见行尾标记；mark_read 不能跨过）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}`,
+        text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中 ${undelivered} 条被 time/focus/静音拦下、未交付，但也能看）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}\n（看过了不想回：qq_mark_read 标记；它不会发消息，也不代表已回。）`,
       }
     },
   })
@@ -1970,10 +2009,10 @@ export async function apply(ctx) {
       const lines = ids.map((groupId) => {
         const activity = activityIdForGroup(groupId)
         const known = ledger.lastKnown(activity) ?? {}
-        const unread = Math.max(0, Number(known.lastSeq ?? 0) - Number(known.deliveredSeq ?? 0))
+        const unread = Math.max(0, Number(known.lastSeq ?? 0) - Number(known.seenSeq ?? 0))
         const last = (ledger.messages(activity, { limit: 1 }) ?? []).at(-1)
         const focusMark = String(ctx.focus?.current?.()?.label ?? '') === activity ? '（当前 focus）' : ''
-        return `· ${groupId}${focusMark}：最后 #${known.lastSeq ?? 0}，未交付 ${unread} 条${last?.text ? `；最近：${String(last.text).slice(0, 80)}` : ''}`
+        return `· ${groupId}${focusMark}：最后 #${known.lastSeq ?? 0}，未读 ${unread} 条${last?.text ? `；最近：${String(last.text).slice(0, 80)}` : ''}`
       })
       return { text: `只读群（${ids.length}）：\n${lines.join('\n')}` }
     },
@@ -2042,15 +2081,15 @@ export async function apply(ctx) {
 
   ctx.tools.register({
     name: 'qq_mark_read',
-    summary: '手动推进 QQ 私聊/群账本的**已读水位**（只动本地水位；不发消息、不自动回复、不标记"已回"）。只能推进到"连续已交付"高水位：被 time/focus/静音拦下、从未交付的消息**不许被跨过**。',
-    when: ['你已经看过/处理了这些私聊或群消息，想消除积压提醒', 'qq_unread 里还有你已经不想再看的旧消息'],
-    avoid: ['以为它能跨过未交付消息（不能；那些行会一直是未交付）', '以为它会回复/标记已回'],
+    summary: '显式 ack：这批 QQ 私聊/群消息你看过了、决定不回，标记后不再提醒（只动本地"看过"水位；不发消息、不自动回复、不标记"已回"）。可以跨过被 time/focus/静音拦下的消息——内容仍在账本，随时能用 qq_history 回看。回复某个聊天时，该聊天此前的消息会自动算已看，不用再手动调这个。',
+    when: ['你看过一批消息，但决定不回复，想消除积压提醒', 'qq_unread 里还有你已经不想再处理的旧消息'],
+    avoid: ['以为它会回复/标记已回（不会）', '用它在没看过的情况下清红点（内容仍在账本，但提醒会消失）'],
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         peer: { type: 'string', description: '私聊 QQ 号或白名单群号；不填用最近一个有记录的活动。' },
         to: { type: 'string', description: 'peer 的别名（和 qq_send 的 to 一致）。' },
-        throughSeq: { type: 'number', description: '推进到这个 seq（不填=连续已交付高水位）；超过已交付部分会被夹住，不会跨过未交付消息。' },
+        throughSeq: { type: 'number', description: '只标记到这个 seq（不填=标记到目前最后一条）。' },
       },
     },
     async execute({ peer, to, throughSeq } = {}) {
@@ -2060,14 +2099,14 @@ export async function apply(ctx) {
       const activity = target.activity
       const before = ledger.lastKnown(activity)
       if (!before) return { text: `${target.label} 还没有账本记录。` }
-      const result = ledger.markRead(activity, { throughSeq: throughSeq == null ? null : Number(throughSeq), at: now() })
+      const seen = ledger.markSeen(activity, { throughSeq: throughSeq == null ? null : Number(throughSeq), at: now() })
+      const watermark = ledger.watermarks(activity)
       const afterUnread = ledger.unread(activity, { limit: 100 }).messages.length
-      const undelivered = Math.max(0, (result.lastSeq ?? 0) - (result.deliveredSeq ?? 0))
-      const clamped = result.clampedToDelivered === true
-      const tail = `最后 #${result.lastSeq}，已交付 #${result.deliveredSeq}，水位 #${result.attendedSeq}，剩余未读 ${afterUnread} 条${undelivered ? `；未交付 ${undelivered} 条（可能被 time/focus/静音拦下，不会被标掉，也不会从 unread 消失）` : ''}${clamped && !undelivered ? '；请求的 seq 超过已交付部分，已夹住' : ''}。只改了本地水位，没有发消息，也没有标记已回。`
-      const text = result.advanced > 0
-        ? `已把${target.label}的水位从 #${before.attendedSeq ?? 0} 推进到 #${result.attendedSeq}（+${result.advanced}）。${tail}`
-        : `${target.label}的水位没有推进（已经是 #${result.attendedSeq}）。${tail}`
+      if (seen.advanced > 0) ackFocusBacklog(activity, seen.seenSeq)
+      const tail = `最后 #${watermark.lastSeq}，已看 #${seen.seenSeq}，已交付 #${watermark.deliveredSeq}${watermark.undelivered ? `（其中 ${watermark.undelivered} 条被拦下、未交付，但账本里能回看）` : ''}，剩余未读 ${afterUnread} 条。只标记了"看过"，没有发消息，也没有标记已回。`
+      const text = seen.advanced > 0
+        ? `已把${target.label}的已看水位从 #${before.seenSeq ?? 0} 推进到 #${seen.seenSeq}（+${seen.advanced}）。${tail}`
+        : `${target.label}的已看水位没有推进（已经是 #${seen.seenSeq}）。${tail}`
       return { text }
     },
   })
@@ -2117,17 +2156,17 @@ export async function apply(ctx) {
           const s = status()
           if (!s.enabled) return [{ key: 'disabled', brief: '未启用。' }]
           if (!s.connection.connected) return [{ key: 'offline', brief: '未连接。' }]
-          const privateUnread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
+          const privateUnread = ledgerWatermarks().reduce((sum, row) => sum + Number(row.unread ?? 0), 0)
           const groups = groupWatermarks()
-          const groupUnread = groups.reduce((sum, row) => sum + Number(row.undelivered ?? 0), 0)
+          const groupUnread = groups.reduce((sum, row) => sum + Number(row.unread ?? 0), 0)
           const parts = []
           if (privateUnread > 0) parts.push(`私聊 ${privateUnread} 条`)
           if (groupUnread > 0) parts.push(`${groups.length} 个群 ${groupUnread} 条`)
           if (!parts.length) return []
           return [{
             key: 'unread',
-            brief: `消息未交付：${parts.join('，')}。`,
-            detail: `私聊未交付 ${privateUnread} 条；群未交付 ${groupUnread} 条（${groups.length} 个群）。用 qq_unread / qq_groups 查看。`,
+            brief: `消息未处理：${parts.join('，')}。`,
+            detail: `私聊未读 ${privateUnread} 条；群未读 ${groupUnread} 条（${groups.length} 个群）。用 qq_unread 查看；看过不回用 qq_mark_read 收尾。`,
           }]
         },
       })

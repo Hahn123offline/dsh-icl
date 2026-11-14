@@ -687,6 +687,12 @@ export function apply(ctx) {
     return Math.min(heartbeatMaxFrequency, Math.max(heartbeatMinFrequency, base))
   }
   const heartbeatDefaultFrequency = clampHeartbeatFrequency(heartbeatCfg.frequency ?? 0.2)
+  // 条件/自适应心跳（2026-11-15 用户拍板）：没有可处理的事就不叫醒；连续无事逐渐拉长间隔，
+  // 封顶后触发一次"长静默"tick（L2 自己的时间）。conditional:false 退回旧行为（到点必发状态播报）。
+  const heartbeatConditional = heartbeatCfg.conditional !== false
+  const heartbeatLongSilenceSec = Math.max(600, Number(heartbeatCfg.longSilenceSec ?? 3 * 3_600))
+  const heartbeatBackoffFactor = Math.max(1.05, Math.min(4, Number(heartbeatCfg.backoffFactor ?? 1.5)))
+  const heartbeatMaxBackoffMul = Math.max(1, Math.min(64, Number(heartbeatCfg.maxBackoffMul ?? 12)))
   const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
   const awakeCappedShortMax = Math.max(0, Number(awakeCfg.cappedShortMax ?? 3))
   // B：渐进式唤醒（compactWake）。lab-only，默认关；只压"唤醒提示的 orientation"，
@@ -739,7 +745,10 @@ export function apply(ctx) {
     heartbeatFrequency: heartbeatDefaultFrequency,
     heartbeatDueAt: null,
     heartbeatLastAt: null,
-    heartbeatStats: { sent: 0, suppressed: 0, skippedBusy: 0 },
+    heartbeatStats: { sent: 0, suppressed: 0, skippedBusy: 0, skippedEmpty: 0, longSilence: 0 },
+    heartbeatBackoffMul: 1,
+    heartbeatSkips: 0,
+    heartbeatLastKind: null,
     // 清醒节拍/心跳：最后一次 turn-end、下一次自检、最近一小时的节拍时间戳
     lastTurnEndAt: null,
     lastTurnStartAt: null,
@@ -799,7 +808,10 @@ export function apply(ctx) {
       state.heartbeatFrequency = clampHeartbeatFrequency(saved.heartbeatFrequency ?? heartbeatDefaultFrequency)
       state.heartbeatDueAt = Number(saved.heartbeatDueAt) > 0 ? Number(saved.heartbeatDueAt) : null
       state.heartbeatLastAt = Number(saved.heartbeatLastAt) > 0 ? Number(saved.heartbeatLastAt) : null
-      state.heartbeatStats = { sent: 0, suppressed: 0, skippedBusy: 0, ...(saved.heartbeatStats && typeof saved.heartbeatStats === 'object' ? saved.heartbeatStats : {}) }
+      state.heartbeatStats = { sent: 0, suppressed: 0, skippedBusy: 0, skippedEmpty: 0, longSilence: 0, ...(saved.heartbeatStats && typeof saved.heartbeatStats === 'object' ? saved.heartbeatStats : {}) }
+      state.heartbeatBackoffMul = Math.max(1, Math.min(heartbeatMaxBackoffMul, Number(saved.heartbeatBackoffMul) || 1))
+      state.heartbeatSkips = Math.max(0, Number(saved.heartbeatSkips) || 0)
+      state.heartbeatLastKind = saved.heartbeatLastKind == null ? null : String(saved.heartbeatLastKind)
       state.awakeTickSentAt = Array.isArray(saved.awakeTickSentAt) ? saved.awakeTickSentAt.map(Number).filter(Number.isFinite).slice(-120) : []
       state.awakeTickShortSentAt = Array.isArray(saved.awakeTickShortSentAt) ? saved.awakeTickShortSentAt.map(Number).filter(Number.isFinite).slice(-20) : []
       for (const key of ['lastTurnEndAt', 'lastTurnStartAt', 'lastAwakeTickAt', 'awakeTickDueAt', 'awakeTickCappedAt', 'heartbeatOverdueLoggedAt', 'awakeTickBackoffAt', 'awakeTickLastActivityAt', 'reactionPendingAt']) {
@@ -1083,6 +1095,11 @@ export function apply(ctx) {
   /** 外部信号/任务事件：重置 immediate 退避，并记录反应时延起点。 */
   function noteExternalActivity(at = nowTime(), from = 'signal') {
     state.awakeTickLastActivityAt = at
+    // 外部有事发生：心跳回到基线频率（自适应退避清零）。
+    if (Number(state.heartbeatBackoffMul ?? 1) !== 1 || Number(state.heartbeatSkips ?? 0) !== 0) {
+      state.heartbeatBackoffMul = 1
+      state.heartbeatSkips = 0
+    }
     if (state.awakeTickStreak || state.awakeTickBackoff) {
       state.awakeTickStreak = 0
       state.awakeTickBackoff = false
@@ -1162,9 +1179,19 @@ export function apply(ctx) {
     return false
   }
 
-  function heartbeatDelayMs() {
+  function heartbeatBaseDelayMs() {
     const base = heartbeatBaseMinSec * 1000 + Math.random() * (heartbeatBaseMaxSec - heartbeatBaseMinSec) * 1000
     return Math.max(60_000, Math.round(base / clampHeartbeatFrequency(state.heartbeatFrequency)))
+  }
+
+  /** 下一次心跳间隔：有 pending 用基线；无事按退避倍数拉长，封顶 longSilence。 */
+  function heartbeatDelayMs({ pending = null } = {}) {
+    const base = heartbeatBaseDelayMs()
+    if (!heartbeatConditional) return base
+    const count = pending == null ? attentionPending().total : Number(pending) || 0
+    if (count > 0) return base
+    const mul = Math.max(1, Math.min(heartbeatMaxBackoffMul, Number(state.heartbeatBackoffMul ?? 1)))
+    return Math.max(60_000, Math.min(heartbeatLongSilenceSec * 1000, Math.round(base * mul)))
   }
 
   function heartbeatEstimate() {
@@ -1181,7 +1208,10 @@ export function apply(ctx) {
   /** turn-end 后（或 span/goal 释放后）排下一次心跳；被抑制就不排。 */
   function armHeartbeat(delayMs = null) {
     if (heartbeatSuppressed() || heartbeatInTurn() || state.lastTurnEndAt == null) { clearHeartbeat(); return }
-    state.heartbeatDueAt = nowTime() + (delayMs != null ? Math.max(60_000, Number(delayMs)) : heartbeatDelayMs())
+    const delay = delayMs != null
+      ? Math.max(60_000, Number(delayMs))
+      : heartbeatDelayMs({ pending: attentionPending().total })
+    state.heartbeatDueAt = nowTime() + delay
     dirty = true
   }
 
@@ -1199,6 +1229,69 @@ export function apply(ctx) {
     return lines.join('\n')
   }
 
+  /** 这次醒来"有没有可处理的事"：focus 积压 + 心里惦记 + time 队列。 */
+  function attentionPending() {
+    let backlog = []
+    let backlogTotal = 0
+    try {
+      for (const row of focusApi?.backlog?.() ?? []) {
+        const count = Number(row.count) || 0
+        if (count <= 0) continue
+        backlog.push(row)
+        backlogTotal += count
+      }
+    } catch { /* focus 坏了不影响心跳 */ }
+    let notes = 0
+    try { notes = Math.max(0, Number(ctx.services.get('note')?.count?.()) || 0) } catch { notes = 0 }
+    const queue = state.queue.length
+    return { backlog, backlogTotal, notes, queue, total: backlogTotal + notes + queue }
+  }
+
+  function activityLabel(row) {
+    const text = String(row?.lastText ?? '')
+    const group = /\[QQ群·([^\]]+)\]/.exec(text)
+    if (group) return `${group[1]}群`
+    return String(row?.focus ?? '').replace(/^qq:group:/, '群 ').replace(/^qq:private:/, '私聊 ')
+  }
+
+  /** 决策简报：只给"此刻能决定什么"的事实，允许什么都不做。 */
+  function heartbeatBrief(at, { pending = null } = {}) {
+    const p = pending ?? attentionPending()
+    const lines = [`【心跳】${stampAt(at, timeZone)} —— 这次是你自己醒的，不是有人叫你。`]
+    let lease = null
+    try { lease = focusApi?.current?.() ?? null } catch { lease = null }
+    if (lease) {
+      const mins = Math.max(0, Math.round((nowTime() - Number(lease.since)) / 60_000))
+      lines.push(`你在：${lease.title ?? lease.label}（已 ${mins} 分钟）${lease.exitCondition ? `；做完的条件：${lease.exitCondition}` : ''}`)
+    } else {
+      lines.push('你在：自己的时间（没有专注）。')
+    }
+    const wait = []
+    for (const row of p.backlog.slice(0, 3)) {
+      const oldest = Number(row.oldestAt) > 0 ? Math.max(0, Math.round((nowTime() - Number(row.oldestAt)) / 60_000)) : null
+      wait.push(`· ${activityLabel(row)} +${row.count}${oldest != null ? `（最早 ${oldest} 分钟前）` : ''}${row.lastText ? `，最近：${clipBriefText(row.lastText, 60)}` : ''}`)
+    }
+    if (p.notes) wait.push(`· 心里惦记 ${p.notes} 条（见「心里惦记的事」）`)
+    if (p.queue) wait.push(`· 时间积压 ${p.queue} 条`)
+    lines.push(wait.length ? `等你：\n${wait.join('\n')}` : '等你：没有。')
+    lines.push('可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。')
+    lines.push('要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。')
+    lines.push('对外主动：关（只回复在等你的消息，不要无由头发私聊或群冒泡）。')
+    return lines.join('\n')
+  }
+
+  function heartbeatLongSilenceBrief(at) {
+    const idleMs = state.lastTurnEndAt == null ? 0 : Math.max(0, at - Number(state.lastTurnEndAt))
+    const lines = [`【心跳】${stampAt(at, timeZone)} —— 这次是你自己醒的，不是有人叫你。`]
+    lines.push(`你已经安静了 ${fmtDuration(idleMs)}，没有新回合，也没有在等你的消息。`)
+    let lease = null
+    try { lease = focusApi?.current?.() ?? null } catch { lease = null }
+    lines.push(lease ? `你在：${lease.title ?? lease.label}。` : '你在：自己的时间（没有专注）。')
+    lines.push('可以：翻记忆、看群、查资料、整理、发呆；也可以继续什么都不做。')
+    lines.push('（这是你自己的时间；对外主动关，不发消息也完全没问题。）')
+    return lines.join('\n')
+  }
+
   function maybeHeartbeat(at) {
     if (heartbeatSuppressed()) {
       if (state.heartbeatDueAt != null) { state.heartbeatDueAt = null; dirty = true; state.heartbeatStats.suppressed = Number(state.heartbeatStats.suppressed ?? 0) + 1 }
@@ -1213,8 +1306,45 @@ export function apply(ctx) {
       return false
     }
     if (at < Number(state.heartbeatDueAt)) return false
-    const text = heartbeatMessage(at)
-    const outcome = sendWake({ text, payload: text, producer: 'heartbeat', kind: 'wake', tags: ['heartbeat'] })
+
+    // 旧行为（conditional:false）：到点必发状态播报，保留给回滚与旧测试。
+    if (!heartbeatConditional) {
+      const text = heartbeatMessage(at)
+      const outcome = sendWake({ text, payload: text, producer: 'heartbeat', kind: 'wake', tags: ['heartbeat'] })
+      if (outcome && outcome.accepted === false) {
+        state.heartbeatDueAt = at + Math.max(60_000, heartbeatEstimate().minMs / 3)
+        dirty = true
+        return false
+      }
+      state.heartbeatDueAt = null
+      state.heartbeatLastAt = at
+      state.heartbeatStats.sent = Number(state.heartbeatStats.sent ?? 0) + 1
+      dirty = true
+      recordEvent('heartbeat-fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+      log('info', 'time.heartbeat.fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+      return true
+    }
+
+    // 条件/自适应：没有 pending 且还没到长静默上限 → 不叫醒，只把间隔拉长。
+    const pending = attentionPending()
+    const idleSec = state.lastTurnEndAt == null ? 0 : Math.max(0, Math.round((at - Number(state.lastTurnEndAt)) / 1000))
+    const longDue = idleSec >= heartbeatLongSilenceSec
+    if (pending.total === 0 && !longDue) {
+      state.heartbeatDueAt = null
+      state.heartbeatSkips = Number(state.heartbeatSkips ?? 0) + 1
+      state.heartbeatBackoffMul = Math.min(heartbeatMaxBackoffMul, Math.max(1, Number(state.heartbeatBackoffMul ?? 1)) * heartbeatBackoffFactor)
+      state.heartbeatStats.skippedEmpty = Number(state.heartbeatStats.skippedEmpty ?? 0) + 1
+      state.heartbeatLastKind = 'skip-empty'
+      dirty = true
+      recordEvent('heartbeat-skip-empty', { idleSec, mul: state.heartbeatBackoffMul, skips: state.heartbeatSkips })
+      log('info', 'time.heartbeat.skip-empty', { idleSec, mul: state.heartbeatBackoffMul, skips: state.heartbeatSkips })
+      armHeartbeat()
+      return false
+    }
+
+    const kind = pending.total > 0 ? 'attend' : 'long-silence'
+    const text = kind === 'attend' ? heartbeatBrief(at, { pending }) : heartbeatLongSilenceBrief(at)
+    const outcome = sendWake({ text, payload: text, producer: 'heartbeat', kind: 'wake', tags: ['heartbeat', kind] })
     if (outcome && outcome.accepted === false) {
       state.heartbeatDueAt = at + Math.max(60_000, heartbeatEstimate().minMs / 3)
       dirty = true
@@ -1222,10 +1352,19 @@ export function apply(ctx) {
     }
     state.heartbeatDueAt = null
     state.heartbeatLastAt = at
+    state.heartbeatLastKind = kind
     state.heartbeatStats.sent = Number(state.heartbeatStats.sent ?? 0) + 1
+    if (kind === 'attend') {
+      state.heartbeatBackoffMul = 1
+      state.heartbeatSkips = 0
+    } else {
+      state.heartbeatStats.longSilence = Number(state.heartbeatStats.longSilence ?? 0) + 1
+      // 长静默 tick 之后保持封顶节奏；下一次仍是"无事"就继续按 longSilence 间隔。
+      state.heartbeatBackoffMul = heartbeatMaxBackoffMul
+    }
     dirty = true
-    recordEvent('heartbeat-fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
-    log('info', 'time.heartbeat.fire', { frequency: state.heartbeatFrequency, idleSec: state.lastTurnEndAt ? Math.round((at - Number(state.lastTurnEndAt)) / 1000) : null })
+    recordEvent('heartbeat-fire', { kind, pending: pending.total, idleSec })
+    log('info', 'time.heartbeat.fire', { kind, pending: pending.total, idleSec })
     return true
   }
 
@@ -2490,6 +2629,11 @@ export function apply(ctx) {
       globalEnabled: true,
       frequency: clampHeartbeatFrequency(state.heartbeatFrequency),
       estimated: heartbeatEstimate(),
+      conditional: heartbeatConditional,
+      longSilenceSec: heartbeatLongSilenceSec,
+      backoffMul: Math.max(1, Number(state.heartbeatBackoffMul ?? 1)),
+      skips: Math.max(0, Number(state.heartbeatSkips ?? 0)),
+      lastKind: state.heartbeatLastKind ?? null,
       globalDueAt: state.heartbeatDueAt != null ? Number(state.heartbeatDueAt) : null,
       globalLastAt: state.heartbeatLastAt != null ? Number(state.heartbeatLastAt) : null,
       pausedBy: heartbeatSuppressed()

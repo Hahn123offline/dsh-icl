@@ -332,7 +332,7 @@ test('v3 稀疏日守卫：真人材料过少时不调模型、不硬整出块',
 
 test('v3 小材料合并：多片短材料只发一次形成调用', async () => {
   const now = Date.now()
-  const { host, memory, dream, chat } = await setup({ dreamConfig: { memorySchema: 'v3' } })
+  const { host, memory, dream, chat } = await setup({ dreamConfig: { memorySchema: 'v3', dayCutHour: 4 } })
   const rows = [
     { text: '今天下午主人让我再测一次 MC 的临时世界端口，结果 join 成功但 state 还是报 fetch failed，我照实说了一遍。', time: now - 120 * 60_000, role: 'user', source: 'human' },
     { text: '晚上他又来问压缩上下文工具是不是一直挂着，我说没找到 compact_context，先别压免得记忆丢。', time: now - 60 * 60_000, role: 'user', source: 'human' },
@@ -349,7 +349,7 @@ test('v3 跨天近重复：第二天重述同一件事并入旧块，不新增�
   const now = Date.now()
   const body = '主人让我测试 MC 服务器端口 63071，结果桥接还是报 fetch failed，我先退出来等他修。'
   const script = [['经历块', JSON.stringify([{ title: '测试 MC 端口 63071 失败', body, evidence: [1] }])]]
-  const { host, memory, dream } = await setup({ script, dreamConfig: { memorySchema: 'v3' } })
+  const { host, memory, dream } = await setup({ script, dreamConfig: { memorySchema: 'v3', dayCutHour: 4 } })
   memory.put({
     namespace: 'episode', kind: 'block', key: 'epi:2026-11-11:old', text: '测试 MC 端口 63071 失败',
     data: { body, day: '2026-11-11', evidence: [{ type: 'day', id: 1, line: 'x' }], provisional: false },

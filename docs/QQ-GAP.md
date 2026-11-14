@@ -220,7 +220,7 @@
 ### P1（P0 稳定后）
 
 - ✅ **账本工具（2026-11-06 已落地）**：`qq_unread`（三水位/未读/汇总）、`qq_history`（按 peer/seq 补看，`[补课]` 保留）、
-  `qq_replied`（单条/聚合"已回"）、`qq_mark_read`（只推**已读**水位，不发消息/不自动回/不标已回；**不能跨过未交付消息**）；
+  `qq_replied`（单条/聚合"已回"）、`qq_mark_read`（显式 ack：只推**已看**水位，不发消息/不自动回/不标已回；可以跨过被拦下未交付的消息，内容仍在账本）；
   账本分 `deliveredSeq`（连续交付）与 `attendedSeq`（已读），被 time/focus 拦下记 `blocked_reason` 并保持可见；
   跨模块回执 `noteDeliveredSeqs({activity|peer, seqs, via, at})` 只补 delivered（幂等/空洞不推进/失败不抛），
   `qq_status.ledger.deliveredVia` 统计各来源补推量；账本加 `replied_at`（旧库自动 ALTER）。水位口径见 docs/QQ.md §7.7。
