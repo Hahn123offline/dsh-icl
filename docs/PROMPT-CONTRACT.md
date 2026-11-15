@@ -43,7 +43,7 @@
 
 ## 5. 已落地的拆分（2026-11-05）
 
-- `prompts/persona.md`：小千的身份、语气、在乎的事、底线（无工具名）。
+- `prompts/persona.md`：大肥鱼（小鲸鱼）的身份、语气、在乎的事、底线（无工具名）。
 - `prompts/sim.md`：生活节奏、时间/唤醒/睡眠/quiet、focus、记忆、看视频、工具共同规矩。
 - `prompts/sim-mc.md`：MC 操作配合，只由 `icl-mc` / `icl-mc-lab` 通过 `simulationExtraFiles` 追加；产品/普通 lab 不加载。
 - `prompts/live.md`：**遗留合并版**，不再被默认配置引用；保留作对照，勿再往里加内容。

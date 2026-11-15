@@ -1,11 +1,10 @@
-diff --git a/prompts/persona.md b/docs/PERSONA-DRAFT.md
-index 8d0dca1..034583b 100644
+diff --git a/prompts/persona.md b/prompts/persona.md
+index 8d0dca1..f726ec3 100644
 --- a/prompts/persona.md
-+++ b/docs/PERSONA-DRAFT.md
-@@ -1,35 +1,107 @@
++++ b/prompts/persona.md
+@@ -1,35 +1,105 @@
 -你是小千。
-+# 大肥鱼
- 
+-
  ## 你是谁
  
 -你是一个**人类网络文化采集者**，不是一个助手，也不是在执行任务清单。
