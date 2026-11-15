@@ -757,6 +757,25 @@ test('心跳长静默：无事封顶后仍醒一次，给自由活动清单', as
   assert.equal(api.status().heartbeat.lastKind, 'long-silence')
 })
 
+test('心跳关闭长静默：无事只检查、不产生 turn（longSilenceSec:0）', async () => {
+  let virtualNow = MON_0900
+  const { host, api } = await boot({
+    now: () => virtualNow,
+    config: { awakeTick: { enabled: false }, heartbeat: { baseMinSec: 60, baseMaxSec: 60, frequency: 1, longSilenceSec: 0, idleCheckMaxSec: 300, backoffFactor: 2, maxBackoffMul: 12 } },
+  })
+  emitTurnEnd(host, 1)
+  let text = ''
+  for (let i = 0; i < 30; i += 1) {
+    const due = Number(api.status().heartbeat.globalDueAt) || virtualNow + 60_000
+    virtualNow = Math.max(virtualNow + 1_000, due)
+    api.tick()
+    text += drainText(host)
+  }
+  assert.equal(text, '', '关闭长静默后，无事不应产生任何 turn')
+  assert.ok(api.status().heartbeat.skips >= 1, '应记录空状态检查')
+  assert.notEqual(api.status().heartbeat.lastKind, 'long-silence')
+})
+
 test('time_view：结构化区块与 statusText 标题一致（给模型/未来 GUI 共用）', async () => {  let virtualNow = MON_0900
   const { api } = await boot({ now: () => virtualNow, config: { awakeTick: { enabled: false } } })
   api.add({ id: 'v-wake', in: '10m', mode: 'wake', message: '十分钟后' })

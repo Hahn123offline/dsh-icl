@@ -66,11 +66,13 @@
                 time:
                   awakeTick:
                     enabled: false
-                  # 2026-11-15 用户拍板：条件/自适应心跳。没有等的事就不叫醒；无事间隔逐渐拉长，
-                  # 3h 封顶后醒一次"长静默"（自己的时间，不发对外消息）。conditional:false 回滚旧行为。
+                  # 2026-11-15 用户拍板：条件/自适应心跳。没有等的事就不叫醒；无事间隔逐渐拉长。
+                  # longSilenceSec:0 = 关闭"长静默"turn（只保留有 pending 的唤醒）；
+                  # 空状态仍按 idleCheckMaxSec 定期检查（不产生 turn）。conditional:false 回滚旧行为。
                   heartbeat:
                     conditional: true
-                    longSilenceSec: 10800
+                    longSilenceSec: 0
+                    idleCheckMaxSec: 3600
                     backoffFactor: 1.5
                     maxBackoffMul: 12
                 # v3（2026-11-12 用户拍板）：经历块（episode）为召回主单位，typed 降级为块内注释。

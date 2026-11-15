@@ -687,10 +687,12 @@ export function apply(ctx) {
     return Math.min(heartbeatMaxFrequency, Math.max(heartbeatMinFrequency, base))
   }
   const heartbeatDefaultFrequency = clampHeartbeatFrequency(heartbeatCfg.frequency ?? 0.2)
-  // 条件/自适应心跳（2026-11-15 用户拍板）：没有可处理的事就不叫醒；连续无事逐渐拉长间隔，
-  // 封顶后触发一次"长静默"tick（L2 自己的时间）。conditional:false 退回旧行为（到点必发状态播报）。
+  // 条件/自适应心跳（2026-11-15 用户拍板）：没有可处理的事就不叫醒；连续无事逐渐拉长间隔。
+  // 2026-11-15 晚再拍板：longSilenceSec=0 关闭"长静默"turn，只保留有 pending 的唤醒；
+  // 空状态仍按 idleCheckMaxSec 定期检查（不产生 turn、不调模型）。
   const heartbeatConditional = heartbeatCfg.conditional !== false
-  const heartbeatLongSilenceSec = Math.max(600, Number(heartbeatCfg.longSilenceSec ?? 3 * 3_600))
+  const heartbeatLongSilenceSec = Math.max(0, Number(heartbeatCfg.longSilenceSec ?? 3 * 3_600))
+  const heartbeatIdleCheckMaxSec = Math.max(300, Number(heartbeatCfg.idleCheckMaxSec ?? 3_600))
   const heartbeatBackoffFactor = Math.max(1.05, Math.min(4, Number(heartbeatCfg.backoffFactor ?? 1.5)))
   const heartbeatMaxBackoffMul = Math.max(1, Math.min(64, Number(heartbeatCfg.maxBackoffMul ?? 12)))
   const awakeCappedShortWindowSec = Math.max(0, Number(awakeCfg.cappedShortWindowSec ?? 1800))
@@ -1184,14 +1186,16 @@ export function apply(ctx) {
     return Math.max(60_000, Math.round(base / clampHeartbeatFrequency(state.heartbeatFrequency)))
   }
 
-  /** 下一次心跳间隔：有 pending 用基线；无事按退避倍数拉长，封顶 longSilence。 */
+  /** 下一次心跳间隔：有 pending 用基线；无事按退避倍数拉长。
+   *  封顶 = longSilenceSec（开启时）或 idleCheckMaxSec（关闭长静默时，只做检查、不产生 turn）。 */
   function heartbeatDelayMs({ pending = null } = {}) {
     const base = heartbeatBaseDelayMs()
     if (!heartbeatConditional) return base
     const count = pending == null ? attentionPending().total : Number(pending) || 0
     if (count > 0) return base
     const mul = Math.max(1, Math.min(heartbeatMaxBackoffMul, Number(state.heartbeatBackoffMul ?? 1)))
-    return Math.max(60_000, Math.min(heartbeatLongSilenceSec * 1000, Math.round(base * mul)))
+    const maxMs = (heartbeatLongSilenceSec > 0 ? heartbeatLongSilenceSec : heartbeatIdleCheckMaxSec) * 1000
+    return Math.max(60_000, Math.min(maxMs, Math.round(base * mul)))
   }
 
   function heartbeatEstimate() {
@@ -1333,7 +1337,7 @@ export function apply(ctx) {
     // 条件/自适应：没有 pending 且还没到长静默上限 → 不叫醒，只把间隔拉长。
     const pending = attentionPending()
     const idleSec = state.lastTurnEndAt == null ? 0 : Math.max(0, Math.round((at - Number(state.lastTurnEndAt)) / 1000))
-    const longDue = idleSec >= heartbeatLongSilenceSec
+    const longDue = heartbeatLongSilenceSec > 0 && idleSec >= heartbeatLongSilenceSec
     if (pending.total === 0 && !longDue) {
       state.heartbeatDueAt = null
       state.heartbeatSkips = Number(state.heartbeatSkips ?? 0) + 1
@@ -2636,6 +2640,7 @@ export function apply(ctx) {
       estimated: heartbeatEstimate(),
       conditional: heartbeatConditional,
       longSilenceSec: heartbeatLongSilenceSec,
+      idleCheckMaxSec: heartbeatIdleCheckMaxSec,
       backoffMul: Math.max(1, Number(state.heartbeatBackoffMul ?? 1)),
       skips: Math.max(0, Number(state.heartbeatSkips ?? 0)),
       lastKind: state.heartbeatLastKind ?? null,

@@ -454,7 +454,7 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
 
 验证：
 
-- `npm test`：**936 tests / 935 pass / 0 fail / 1 skip**。
+- `npm test`：**937 tests / 936 pass / 0 fail / 1 skip**。
 - live 账本副本迁移验证：旧库 `attended_seq` 自动回填 `seen_seq`（私聊 81/81/81 → seen 81、未读 0；群 16+2 未读保持不变）。
 - 干净上下文 lab（不读聊天历史）：`.state/lab/lead/attention-research/verify-clean-context.mjs`
   → **16/16 checks**（静态 sim.md 策略存在；空状态跳过后退避；有积压发决策简报；简报含群名/条数/
@@ -476,6 +476,17 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
 - 冷路径不再调用 `markUnreadDigest` 二次补标（上一版会把**没展示**的下一窗口也标成 seen；本次事故里 #21–#24 就是这样被误标的，内容仍在账本）。
 - 新增测试：冷恢复被睡眠/队列挡住、醒来后恢复；QQ 未读会计入心跳 pending。
 - 注意：这次修复仍需**再次重启 DSH** 才生效。
+
+### 10.2 2026-11-15 晚：先做 A（关长静默），再做人格移植
+
+- 用户拍板：`heartbeat.longSilenceSec: 0` —— 关掉「长静默」turn。无事只按 `idleCheckMaxSec`（默认 1h）检查，
+  不产生 turn、不调模型；只有 pending（积压/未读/惦记）才叫醒。今天 3 次「安静了三个小时」这种空 turn 应当消失。
+- 观察一周（不再给"刷屏不用回"这类口头指令），用 `.state/lab/lead/attention-research/daily-report.mjs` 出日报，
+  看 attend 次数、动作、ack、backlog 年龄；一周后再判断有效性。
+- 人格移植（下一步）：旧卡 01–06 节约 6.5k 字（人格/情绪/关系/语言），07–09 节约 9.4k 字
+  （QQ 群聊/私聊/主动聊天）。按用户 2026-11-15 决定：**转回大肥鱼，但不强调"群友"**——
+  人格只负责「她是谁、怎么说话、在乎什么」；群聊/工具行为留在 sim/tools。旧卡 16 节工具附录、
+  旧 wake 配置、概率数值全部丢弃。
 
 生效方式：**需要重启 DSH Desktop**（插件代码从仓库软链加载；preset 不需要改）。
 回滚：把 `time.heartbeat.conditional` 设为 `false` 即回到旧心跳；QQ seen 是新增列，旧数据自动为 0。
