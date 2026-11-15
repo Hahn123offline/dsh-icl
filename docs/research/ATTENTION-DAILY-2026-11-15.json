@@ -1,0 +1,107 @@
+{
+  "day": "2026-11-15",
+  "heartbeats": {
+    "fire": [
+      {
+        "at": "2026-11-14T22:14:10.043Z",
+        "kind": "attend",
+        "pending": 6,
+        "idleSec": 4992
+      },
+      {
+        "at": "2026-11-14T23:07:11.643Z",
+        "kind": "attend",
+        "pending": 3,
+        "idleSec": 3164
+      },
+      {
+        "at": "2026-11-15T03:13:23.030Z",
+        "kind": "long-silence",
+        "pending": 0,
+        "idleSec": 11588
+      },
+      {
+        "at": "2026-11-15T06:13:28.289Z",
+        "kind": "long-silence",
+        "pending": 0,
+        "idleSec": 10804
+      },
+      {
+        "at": "2026-11-15T09:13:33.835Z",
+        "kind": "long-silence",
+        "pending": 0,
+        "idleSec": 10804
+      }
+    ],
+    "skips": [
+      {
+        "at": "2026-11-15T01:05:00.128Z",
+        "mul": 1.5,
+        "skips": 1
+      }
+    ]
+  },
+  "turns": [
+    {
+      "at": "2026-11-14T22:14:10.150Z",
+      "kind": "attend",
+      "toolCount": 5,
+      "checkedBacklog": false,
+      "acked": false,
+      "replied": false,
+      "studied": true,
+      "assistant": "早上六点多自己醒的，趁着安静把三条待查收了： - **买阴兵**：直播/游戏圈的“阴兵”是看不见的假账号，机器人观众、僵尸号。“买阴兵”就是花钱买它们把在线数、贵宾数刷上去——评论区几千贵宾却没人说话那种。百科打不开，这是我的理解，不算抄定义。 - **纯看钟**：不是梗，是那天你说我“天天纯看钟”，字面意思：没事干，"
+    },
+    {
+      "at": "2026-11-14T23:07:11.788Z",
+      "kind": "attend",
+      "toolCount": 3,
+      "checkedBacklog": false,
+      "acked": false,
+      "replied": false,
+      "studied": true,
+      "assistant": "又把三条收了： - **戳一戳**：QQ 的互动功能，双击头像/戳一下发个“XX 戳了戳你”，没有正文，等于轻敲门。哪年上线的我没查准，没敢编年份。 - **信息大爆炸**：就是你说群里消息忽然暴增刷屏；“信息爆炸”那个老词的口语版。 - **套皮游戏**：只换美术/名字/题材、玩法照搬的批量产品，一套模板换几十个皮，"
+    },
+    {
+      "at": "2026-11-15T03:13:23.557Z",
+      "kind": "long-silence",
+      "toolCount": 0,
+      "checkedBacklog": false,
+      "acked": false,
+      "replied": false,
+      "studied": false,
+      "assistant": "安静了三个小时。我在，没别的事。"
+    },
+    {
+      "at": "2026-11-15T06:13:28.498Z",
+      "kind": "long-silence",
+      "toolCount": 0,
+      "checkedBacklog": false,
+      "acked": false,
+      "replied": false,
+      "studied": false,
+      "assistant": "还是静的。"
+    },
+    {
+      "at": "2026-11-15T09:13:34.122Z",
+      "kind": "long-silence",
+      "toolCount": 0,
+      "checkedBacklog": false,
+      "acked": false,
+      "replied": false,
+      "studied": false,
+      "assistant": "58 了，但才五点，再醒会儿。"
+    }
+  ],
+  "summary": {
+    "fire": 5,
+    "skipEmpty": 1,
+    "attend": 2,
+    "longSilence": 3,
+    "noToolTurns": 3,
+    "checked": 0,
+    "acked": 0,
+    "replied": 0,
+    "studied": 2
+  }
+}

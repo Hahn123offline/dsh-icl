@@ -1,0 +1,86 @@
+{
+  "at": "2026-11-15T11:01:57.952Z",
+  "ok": true,
+  "checks": [
+    {
+      "name": "静态 sim.md：L1 处理（有人等）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "静态 sim.md：L2 自己的时间（不主动对外）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "静态 sim.md：no-op 合法（不用回状态）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "静态 sim.md：focus 用法（多步先进入）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "空状态：先排了心跳",
+      "ok": true,
+      "detail": "1794708060000"
+    },
+    {
+      "name": "空状态：到点不叫醒（无 turn）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "空状态：记了 skip 并拉长间隔",
+      "ok": true,
+      "detail": "{\"skips\":1,\"mul\":2}"
+    },
+    {
+      "name": "积压已进入 focus",
+      "ok": true,
+      "detail": "[{\"focus\":\"qq:group:1057812765\",\"count\":1,\"oldestAt\":1794708061000,\"lastAt\":1794708061000,\"lastText\":\"[QQ群·C4 412] 有人在刷屏测试\",\"items\":[{\"plugin\":\"qq\",\"text\":\"[QQ群·C4 412] 有人在刷屏测试\",\"at\":1794708061000,\"signalId\":\"s-2\",\"qq\":null,\"qqSeqs\":null}]}]"
+    },
+    {
+      "name": "有积压：发决策简报",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:03 —— 这次是你自己醒的，不是有人叫你。\n你在：看群消息（已 2 分钟）\n等你：\n· C4 412群 +1（最早 2 分钟前），最近：[QQ群·C4 412] 有人在刷屏测试\n可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。\n要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。\n对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。"
+    },
+    {
+      "name": "有积压：简报给群名与条数",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:03 —— 这次是你自己醒的，不是有人叫你。\n你在：看群消息（已 2 分钟）\n等你：\n· C4 412群 +1（最早 2 分钟前），最近：[QQ群·C4 412] 有人在刷屏测试\n可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。\n要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。\n对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。"
+    },
+    {
+      "name": "有积压：简报允许 no-op",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:03 —— 这次是你自己醒的，不是有人叫你。\n你在：看群消息（已 2 分钟）\n等你：\n· C4 412群 +1（最早 2 分钟前），最近：[QQ群·C4 412] 有人在刷屏测试\n可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。\n要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。\n对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。"
+    },
+    {
+      "name": "有积压：简报提示 focus 用法",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:03 —— 这次是你自己醒的，不是有人叫你。\n你在：看群消息（已 2 分钟）\n等你：\n· C4 412群 +1（最早 2 分钟前），最近：[QQ群·C4 412] 有人在刷屏测试\n可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。\n要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。\n对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。"
+    },
+    {
+      "name": "有积压：简报声明只接在等的事",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:03 —— 这次是你自己醒的，不是有人叫你。\n你在：看群消息（已 2 分钟）\n等你：\n· C4 412群 +1（最早 2 分钟前），最近：[QQ群·C4 412] 有人在刷屏测试\n可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。\n要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。\n对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。"
+    },
+    {
+      "name": "长静默：封顶后醒一次",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:18 —— 这次是你自己醒的，不是有人叫你。\n你已经安静了 15 分钟，没有新回合，也没有在等你的消息。\n你在：看群消息。\n可以：翻记忆、看群、查资料、整理、发呆；也可以继续什么都不做。\n（这是你自己的时间；不主动找人，不发消息也完全没问题。）"
+    },
+    {
+      "name": "长静默：给自由活动清单",
+      "ok": true,
+      "detail": "【心跳】2026/11/15周日 10:18 —— 这次是你自己醒的，不是有人叫你。\n你已经安静了 15 分钟，没有新回合，也没有在等你的消息。\n你在：看群消息。\n可以：翻记忆、看群、查资料、整理、发呆；也可以继续什么都不做。\n（这是你自己的时间；不主动找人，不发消息也完全没问题。）"
+    },
+    {
+      "name": "长静默：lastKind=long-silence",
+      "ok": true,
+      "detail": "{\"enabled\":false,\"state\":\"overdue\",\"mode\":\"normal\",\"thresholdSec\":120,\"overdueSec\":180,\"idleSec\":900,\"armDelaySec\":120,\"minIdleSec\":null,\"streak\":0,\"backoff\":false,\"backoffSec\":30,\"lastActivityAt\":null,\"lastTurnEndAt\":1794708181000,\"lastTurnStartAt\":null,\"lastModelCallAt\":1794708181000,\"nextTickAt\":null,\"lastAwakeTickAt\":null,\"ticksLastHour\":0,\"maxPerHour\":60,\"capped\":false,\"decisionCycleSec\":null,\"reactionLatencySec\":null,\"reactionPendingAt\":null,\"pendingBacklog\":0,\"turnEnds\":2,\"globalEnabled\":true,\"frequency\":1,\"estimated\":{\"minMs\":60000,\"maxMs\":60000,\"text\":\"每 1 分钟–1 分钟\"},\"conditional\":true"
+    }
+  ]
+}

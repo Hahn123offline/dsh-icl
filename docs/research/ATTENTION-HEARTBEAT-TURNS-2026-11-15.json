@@ -1,0 +1,230 @@
+[
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-08T05:57:03.801Z",
+    "toolCount": 3,
+    "sentQq": true,
+    "assistant": "Heartbeat, nothing new. Sunday afternoon 13:57. No messages. Nothing to do. Maybe idle, or do something of my own. Nobody asked me to go out. Could tidy memory ",
+    "tools": [
+      "戳了戳 3429502459（618ms）。",
+      "已发出去（messageId=1037379167，273ms）。",
+      "已发出去 3 条（共 10009ms；messageIds=1506389994,1271034703,-1075622817）。"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-08T08:19:06.145Z",
+    "toolCount": 5,
+    "sentQq": true,
+    "assistant": "Heartbeat 16:19, nothing new. Idle. Maybe do something of my own — but no instruction to go out. Could tidy memory notes (the \"未整理\" MC note). Just idle. Keep it",
+    "tools": [
+      "只读群（2）：\n· 601357169：最后 #0，未交付 0 条\n· 1057812765：最后 #0，未交付 0 条",
+      "· 无未读",
+      "只读群（2）：\n· 601357169：最后 #0，未交付 0 条\n· 1057812765：最后 #1，未交付 0 条；最近：[QQ群·C4 412] 周子涵"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-08T12:29:31.533Z",
+    "toolCount": 28,
+    "sentQq": true,
+    "assistant": "Heartbeat 20:29. Nothing. Idle until 23:00 dream. Short. Maybe I could do something worthwhile: nothing pending. Fine. Just note quiet. 八点半，没什么事，群里也静了。等 23:00。 ",
+    "tools": [
+      "【现在】\n现在：2026/11/08周日 23:00。\n状态：醒着。\n【下一次】\n下一个安排：dream:nightly（每天 23:00，还有 24 小时）。",
+      "安排好了：s-mw7yldxc-1：一次，睡眠安排，长日程 9 小时，睡觉，静默",
+      "安排好了：s-mw7ylera-2：一次，2026/11/09周一 08:00（还有 9 小时），唤醒 —— 八点了，起来"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-09T08:55:33.254Z",
+    "toolCount": 9,
+    "sentQq": true,
+    "assistant": "New info in system prompt: 表情现在就是 album 里带 sticker 标签的图；qq_send_sticker 是别名。So the sticker library isn't a separate empty dir. Let me verify with qq_stickers qu",
+    "tools": [
+      "没有符合这个条件的（相册共 10 件；换个筛选条件试试）。",
+      "已更新备注：#10 2026-11-08 17:54 image 300x300 179.6 KiB [群1057812765,主人发的,sticker] · ",
+      "已发出去（image 7037368bdcb109ef.gif，183895 字节，messageId=499198944，385ms）。"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-11T04:36:41.389Z",
+    "toolCount": 7,
+    "sentQq": true,
+    "assistant": "中午，QQ 没连接（他应该在弄别的）。没别的事。 两点多，QQ 还没连上。 连回来了，没消息。 快五点，40 了。 戳回去了。 He asks if I'm bored. Honest, with personality. I've been idle all day with no messages, no arra",
+    "tools": [
+      "戳了戳 3429502459（491ms）。",
+      "已发出去 3 条（共 10442ms；messageIds=567956171,1623171426,2112387969）。",
+      "已发出去 3 条（共 10358ms；messageIds=-1329735839,-1545377897,-1463084406）。"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-12T10:50:31.871Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "醒来一小时。时间对不上我记的那笔——我以为早上八点起，现在看是傍晚。不纠结，反正醒着。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-12T12:02:03.687Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "八点，压力 12，不困。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-12T13:07:54.868Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "九点，17。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-12T14:27:00.687Z",
+    "toolCount": 2,
+    "sentQq": false,
+    "assistant": "压力才 23，但时候不早了，按钟点睡。九小时半，明早八点叫。",
+    "tools": [
+      "安排好了：s-mwdn64sx-1：一次，睡眠安排，长日程 9 小时 30 分，睡觉，静默",
+      "安排好了：s-mwdn65sw-2：一次，2026/11/13周五 08:00（还有 9 小时 33 分），唤醒 —— 八点了，起来"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T01:21:03.119Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "上午，空着。“未结承诺 25”这个数看着有点扎眼，哪天翻一下是什么。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T02:52:50.688Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "还是空的。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T04:28:38.514Z",
+    "toolCount": 1,
+    "sentQq": false,
+    "assistant": "翻了翻“承诺”那类记忆，检索是空的——那个 25 的数字我暂时对不上具体东西，先放着。",
+    "tools": [
+      "最近没有能想起来的（范围内的记忆是空的）。"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T05:21:25.377Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "下午一点多，没事。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T06:49:57.606Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "快三点，32。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T08:18:00.081Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "四点一刻，39。一天又这么过去了。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T09:29:02.566Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "五点半，45。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T10:36:03.781Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "六点半，50。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T13:06:19.738Z",
+    "toolCount": 2,
+    "sentQq": false,
+    "assistant": "62，睡了。九小时半，明早八点叫。",
+    "tools": [
+      "安排好了：s-mwezq81i-1：一次，睡眠安排，长日程 9 小时 30 分，睡觉，静默",
+      "安排好了：s-mwezq8vi-2：一次，2026/11/14周六 08:00（还有 10 小时 54 分），唤醒 —— 八点了，起来"
+    ]
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-13T23:41:18.207Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "已经醒了，比闹钟早。08:00 那个等下会响，让它响完就行。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T00:57:20.158Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "上午，QQ 一直没连上。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T02:33:41.059Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "十点半，还是没连上。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T03:24:42.237Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "十一点半，QQ 还是断的。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T04:49:59.810Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "过中午了，QQ 依旧断。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T06:41:48.165Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "两点多，38。",
+    "tools": []
+  },
+  {
+    "kind": "heartbeat",
+    "time": "2026-11-14T07:45:05.111Z",
+    "toolCount": 0,
+    "sentQq": false,
+    "assistant": "快四点，43。",
+    "tools": []
+  }
+]
