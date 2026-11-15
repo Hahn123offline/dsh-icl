@@ -1285,7 +1285,7 @@ export function apply(ctx) {
     lines.push(wait.length ? `等你：\n${wait.join('\n')}` : '等你：没有。')
     lines.push('可以：看积压（focus_backlog / qq_unread）/ 继续手上的事 / 做点自己的事；也可以什么都不做——不回也不失礼。')
     lines.push('要做一件事就先 focus_enter；做完 focus_leave，离开时我会把期间积压摘要给你。')
-    lines.push('对外主动：关（只回复在等你的消息，不要无由头发私聊或群冒泡）。')
+    lines.push('对外主动：只接在等你的消息/话题；没有由头不要主动私聊或开新话题。')
     return lines.join('\n')
   }
 
@@ -1297,7 +1297,7 @@ export function apply(ctx) {
     try { lease = focusApi?.current?.() ?? null } catch { lease = null }
     lines.push(lease ? `你在：${lease.title ?? lease.label}。` : '你在：自己的时间（没有专注）。')
     lines.push('可以：翻记忆、看群、查资料、整理、发呆；也可以继续什么都不做。')
-    lines.push('（这是你自己的时间；对外主动关，不发消息也完全没问题。）')
+    lines.push('（这是你自己的时间；不主动找人，不发消息也完全没问题。）')
     return lines.join('\n')
   }
 

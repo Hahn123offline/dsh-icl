@@ -93,4 +93,4 @@
 - 有 pending（focus 积压 / note open / time 队列）才叫醒；没有就**不产生 turn**，只记 `heartbeat-skip-empty`；
 - 无事时下一次间隔 ×`backoffFactor`（默认 1.5），封顶 `maxBackoffMul`（默认 12）；外部活动（QQ/信号/日程）到来立刻回到基线；
 - `longSilenceSec: 0`（2026-11-15 晚用户拍板）= 关闭「长静默」turn：无事只按 `idleCheckMaxSec` 定期检查，不产生 turn、不调模型；`>0` 时才启用长静默 tick（给自由活动清单，仍禁止对外主动）；
-- 决策简报内容：你在做什么 / 谁在等你（按群 +N + 最近一条）/ 可以什么都不做 / focus 用法 / 对外主动关；`heartbeat.conditional:false` 回滚到旧行为。
+- 决策简报内容：你在做什么 / 谁在等你（按群 +N + 最近一条）/ 可以什么都不做 / focus 用法 / 只接在等的事；`heartbeat.conditional:false` 回滚到旧行为。
