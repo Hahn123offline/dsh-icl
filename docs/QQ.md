@@ -56,7 +56,7 @@
 
 1. **入站只读不变量**：只读连接器从建立到销毁 `framesSent === 0`（`connector.mjs` 里没有 `ws.send`；单测断言 `FakeWebSocket.sent.length === 0`、回环测试断言假服务器 `clientDataChunks() === 0`）。phase 1 的发送走**另一条** outbound 连接，单独计数，不污染入站连接。
 2. **群整类忽略**：`message_type === 'group'` 在入站准入闸门第一层就被拒绝并计数，**不解析、不记录文本**。
-3. **默认关闭**：`enabled:false` 时完全不建连接；私聊白名单为空时一条都不收。
+3. **默认关闭**：`enabled:false` 时完全不建连接；私聊按 `privatePolicy` 裁决（默认 allowlist，产品用 friends=QQ 好友）。
 
 phase 1 出站不变量（新增，见 §11.1）：
 
@@ -117,7 +117,7 @@ QQ 插件只做两件事：**把 OneBot 事件变成 signal**、**offer 给 sign
 | 项 | 值 | 出处 |
 |---|---|---|
 | 机器人 QQ | **2593621742** | SnowLuma 配置文件名 `onebot_2593621742.json`、日志前缀 `[2593621742]` |
-| owner（人类）QQ | **3429502459** | `dsh-qq/config.json` 的 `ownerQQ`；唯一私聊白名单 |
+| owner（人类）QQ | **3429502459** | `ownerQQ`；始终允许，且是 HTTP 失败时的兜底 |
 | 白名单群（本轮不接、永不发） | 601357169、1057812765 | `dsh-qq/config.json` `allow.groups` |
 | SnowLuma | v2.1.1 lite，`C:\Users\ai_admin\Downloads\SnowLuma-v2.1.1-win-x64-lite` | 目录 + 部署笔记 |
 | OneBot WS | `127.0.0.1:3001/`，`role=Universal`、`messageFormat=array`、`reportSelfMessage=false` | `config/onebot_2593621742.json` `networks.wsServers[0]` |
@@ -517,6 +517,7 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | 工具 | 参数 | 返回/语义 |
 |---|---|---|
 | `qq_chats` | 无 | 列出所有聊天（私聊/群/白名单目标）：最后一条、未读、已看/已交付、最近消息预览与时间；是账本目标列表，不是好友名单。 |
+| `qq_contacts` | 无 | 从 OneBot `get_friend_list` / `get_group_list` 列 QQ 侧真实联系人与群，并标出准入策略（好友是否=可私聊）。 |
 | `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：各私聊 `lastSeq / deliveredSeq / attendedSeq` + 未读/未交付约数；填 peer：三个水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]`；未交付行尾标 `[未交付·被拦：原因]`）。 |
 | `qq_history` | `peer?`, `afterSeq?`, `beforeSeq?`, `limit?` | 按 seq 补看历史（升序）；不填 peer 用最近一个私聊。补课消息正文自带 `[补课]`。 |
 | `qq_replied` | `peer?`, `messageId?` | 填 messageId：该条是否已回 + seq/时间；不填：最后 seq、已回到哪、未回条数。 |
@@ -597,8 +598,10 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `snowlumaHomeDir` | `''` | 只读发现 `config/onebot_<uin>.json` | 优先于显式 url；发现失败退回 url 并 warn |
 | `accountUin` | `null` | 发现时选账号 | 多账号仓库里避免连错 |
 | `selfId` | `null` | 过滤自发 | 事件里的 `self_id` 也会被记录 |
-| `allowPrivate` | `[]` | 私聊白名单 | **空 = 一条都不收**（默认安全） |
-| `allowAllPrivate` | `false` | 显式收所有私聊 | 仅测试/受控环境 |
+| `allowPrivate` | `[]` | 私聊兜底名单（owner 等） | **空 = 只有 friends/all 策略时才收私聊** |
+| `privatePolicy` | `allowlist` | `allowlist`=只看 allowPrivate；`friends`=allowPrivate + QQ 好友；`all`=全部 | 产品用 `friends`：控制账号点通过好友即白名单 |
+| `friendSyncMs` | `300000` | friends 策略下刷新好友列表间隔 | 好友通过后最多等这么久生效 |
+| `allowAllPrivate` | `false` | 显式收所有私聊（等价 privatePolicy=all） | 仅测试/受控环境 |
 | `maxPerMinute` | `30` | 每 peer 每分钟上限 | 超出丢弃并计数（不排队） |
 | `maxStaleMs` | `600000` | 消息时间超过多久算旧 | 0/负数 = 不判旧 |
 | `deliverBackfill` | `false` | 允许补课旧消息进模型 | 打开后旧消息会以"当时时间"进入 |

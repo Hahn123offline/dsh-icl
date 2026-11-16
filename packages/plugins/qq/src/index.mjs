@@ -59,6 +59,10 @@ const DEFAULTS = Object.freeze({
   selfId: null,
   allowPrivate: [],
   allowAllPrivate: false,
+  // 私聊准入策略：allowlist=只看 allowPrivate（旧行为）；friends=allowPrivate + OneBot 好友列表；all=全部。
+  privatePolicy: 'allowlist',
+  // 好友列表刷新间隔（好友=白名单时，控制账号点通过后最多等这么久生效）。
+  friendSyncMs: 300_000,
   // 群聊只读：默认整类忽略；显式 groupPolicy:'allowlist' + allowGroups 才接。
   allowGroups: [],
   // 群出站：默认关；显式 allowGroupSend 后才允许 qq_send 发 allowGroups 群。
@@ -204,6 +208,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.enabled = cfg.enabled === true
   cfg.inboundDebounce = normalizeDebounceConfig(cfg.inboundDebounce)
   cfg.allowAllPrivate = cfg.allowAllPrivate === true
+  cfg.privatePolicy = ['allowlist', 'friends', 'all'].includes(String(cfg.privatePolicy)) ? String(cfg.privatePolicy) : 'allowlist'
   cfg.deliverBackfill = cfg.deliverBackfill === true
   cfg.promptLine = cfg.promptLine === true
   cfg.allowSend = cfg.allowSend === true
@@ -237,7 +242,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.allowPoke = cfg.allowPoke === true
   cfg.allowRecall = cfg.allowRecall === true
   cfg.groupPolicy = cfg.groupPolicy === 'allowlist' ? 'allowlist' : 'ignore'
-  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'interruptGraceMs', 'maxSendsPerTurn', 'maxMediaPerTurn', 'maxMediaPerHour', 'maxSendImageBytes', 'maxSendVideoBytes', 'maxSendFileBytes', 'maxSendVoiceBytes', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
+  for (const key of ['maxPerMinute', 'maxStaleMs', 'maxTextChars', 'dedupeWindowMs', 'dedupeLimit', 'retryMax', 'retryTickMs', 'retryMaxAttempts', 'signalTtlMs', 'reconnectMinMs', 'reconnectMaxMs', 'heartbeatStaleMs', 'statusIntervalMs', 'sendTimeoutMs', 'sendMinIntervalMs', 'sendMaxPerMinute', 'sendMaxPerHour', 'sendSameTextWindowMs', 'interruptGraceMs', 'maxSendsPerTurn', 'maxMediaPerTurn', 'maxMediaPerHour', 'maxSendImageBytes', 'maxSendVideoBytes', 'maxSendFileBytes', 'maxSendVoiceBytes', 'maxSendChars', 'outboxMaxPending', 'outboxTtlMs', 'globalSendMaxPerMinute', 'burstMaxMessages', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapProbability', 'longGapMinMs', 'longGapMaxMs', 'maxMessageChars', 'backfillCount', 'maxBackfillAgeMs', 'backfillMaxPeers', 'replyIngestWaitMs', 'replyResolveTtlMs', 'forwardExpandMax', 'forwardExpandMaxChars', 'maxImages', 'maxImageBytes', 'maxVideoBytes', 'maxFileBytes', 'mediaRetentionDays', 'mediaSoftLimitBytes', 'maxStickerBytes', 'stickerListLimit', 'wakeTickMs', 'friendSyncMs', 'replyCheckDelayMs', 'proactiveMinMs', 'proactiveMaxMs', 'proactiveIdleMs', 'proactiveCooldownMs', 'nudgeSoftMs', 'nudgeCooldownMs', 'nudgeMaxPerHour', 'wakeMaxPerHour']) {
     const n = Number(cfg[key])
     cfg[key] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[key]
   }
@@ -319,6 +324,7 @@ export async function apply(ctx) {
     now,
     allowPrivate: cfg.allowPrivate,
     allowAllPrivate: cfg.allowAllPrivate,
+    privatePolicy: cfg.privatePolicy,
     allowGroups: cfg.allowGroups,
     groupPolicy: cfg.groupPolicy,
     selfId: cfg.selfId,
@@ -367,6 +373,9 @@ export async function apply(ctx) {
   const groupNames = new Map()
   let ledger = null
   let http = null
+  let friendSyncTimer = null
+  const friendCache = { at: null, ids: [], raw: [], error: null }
+  let syncFriends = null
   let backfill = null
   let replyResolver = null
   let wakePlanner = null
@@ -1593,6 +1602,30 @@ export async function apply(ctx) {
       ttlMs: cfg.replyResolveTtlMs,
       log: (entry) => ctx.log({ plugin: 'qq', ...entry }),
     })
+    /** 从 OneBot 拉好友列表；privatePolicy='friends' 时作为私聊准入来源。 */
+    syncFriends = async function syncFriends({ reason = 'manual' } = {}) {
+      if (!http?.ok) {
+        friendCache.error = 'no-http'
+        return { ok: false, error: '没有 OneBot HTTP 端点', ids: friendCache.ids }
+      }
+      try {
+        const data = await http.call('get_friend_list')
+        const list = Array.isArray(data) ? data : []
+        const self = String(cfg.selfId ?? connector?.seenSelfId ?? '').trim()
+        const ids = [...new Set(list.map((row) => String(row?.user_id ?? row?.uin ?? '').trim()).filter((id) => id && id !== self))]
+        gate.setFriends(ids)
+        friendCache.at = now()
+        friendCache.ids = ids
+        friendCache.error = null
+        ctx.log({ level: 'info', msg: 'qq.friends.sync', count: ids.length, reason })
+        return { ok: true, ids, raw: list }
+      } catch (error) {
+        friendCache.error = String(error?.message ?? error)
+        ctx.log({ level: 'warn', msg: 'qq.friends.sync-fail', reason, error: friendCache.error })
+        return { ok: false, error: friendCache.error, ids: friendCache.ids }
+      }
+    }
+
     if (cfg.wakeEnabled) {
       wakePlanner = createWakePlanner({
         now,
@@ -1641,6 +1674,11 @@ export async function apply(ctx) {
       heartbeatStaleMs: cfg.heartbeatStaleMs,
     })
     connector.start()
+    if (cfg.privatePolicy === 'friends' && http.ok) {
+      syncFriends({ reason: 'start' }).catch(() => {})
+      friendSyncTimer = setInterval(() => { syncFriends({ reason: 'timer' }).catch(() => {}) }, Math.max(60_000, Number(cfg.friendSyncMs) || 300_000))
+      if (typeof friendSyncTimer.unref === 'function') friendSyncTimer.unref()
+    }
     ctx.log({ msg: 'qq.inbound-start', url: sanitizeUrl(endpoint.url), uin: endpoint.uin ?? null, source: endpoint.source, groups: 'ignored', send: sendKeysNow() ? 'enabled(phase1)' : 'disabled' })
     retryTimer = setInterval(retryTick, Math.max(200, cfg.retryTickMs))
     if (typeof retryTimer.unref === 'function') retryTimer.unref()
@@ -1666,6 +1704,8 @@ export async function apply(ctx) {
       selfId: cfg.selfId ?? conn.seenSelfId ?? null,
       allowPrivate: [...cfg.allowPrivate],
       allowAllPrivate: cfg.allowAllPrivate,
+      privatePolicy: cfg.privatePolicy,
+      friends: { count: gate.friends?.().length ?? 0, at: friendCache.at, error: friendCache.error },
       allowGroups: [...cfg.allowGroups],
       allowGroupSend: cfg.allowGroupSend,
       allowGroupAdmin: cfg.allowGroupAdmin,
@@ -2000,6 +2040,53 @@ export async function apply(ctx) {
   })
 
   ctx.tools.register({
+    name: 'qq_contacts',
+    summary: '列出 QQ 账号侧的真实联系人与群（OneBot get_friend_list / get_group_list），并标出当前准入策略；用来核对"好友是否等于可私聊白名单"。',
+    when: ['怀疑某个私聊没进白名单', '想核对 QQ 好友/群 与 ICL 的准入策略是否一致'],
+    avoid: ['把它当账本聊天记录（用 qq_chats / qq_unread）', '以为能列出好友申请（SnowLuma 没有 get_friend_add_request）'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      if (!http?.ok) return { text: '没有 OneBot HTTP 端点，无法读取 QQ 侧联系人。' }
+      const synced = await syncFriends({ reason: 'tool' })
+      let groups = null
+      try { groups = await http.call('get_group_list') } catch { groups = null }
+      const friends = (Array.isArray(synced.raw) && synced.raw.length ? synced.raw : friendCache.raw) ?? []
+      const rows = []
+      rows.push(`好友（${friends.length}）${synced.ok ? '' : `（同步失败：${synced.error}）`}：`)
+      for (const row of friends) {
+        const id = String(row?.user_id ?? row?.uin ?? '')
+        const name = String(row?.remark ?? '').trim() || String(row?.nickname ?? '').trim() || id
+        const allowed = cfg.privatePolicy === 'all' || cfg.allowAllPrivate === true
+          || cfg.allowPrivate.map(String).includes(id)
+          || (cfg.privatePolicy === 'friends')
+          || String(id) === String(cfg.ownerQQ ?? '')
+        const known = ledger?.lastKnown(activityIdForPrivate(id)) ?? null
+        const unread = known ? Math.max(0, Number(known.lastSeq ?? 0) - Number(known.seenSeq ?? 0)) : 0
+        rows.push(`- ${id} ${name}${String(id) === String(cfg.ownerQQ ?? '') ? '（主人）' : ''}${allowed ? ' [允许私聊]' : ' [拒绝]'}${known ? `，账本 #${known.lastSeq}${unread ? `，未读 ${unread}` : ''}` : '，无往来记录'}`)
+      }
+      if (Array.isArray(groups)) {
+        rows.push(`群（${groups.length}）：`)
+        for (const row of groups) {
+          const id = String(row?.group_id ?? '')
+          const name = String(row?.group_name ?? '') || groupNames.get(id) || id
+          const allowed = cfg.groupPolicy === 'allowlist' && cfg.allowGroups.map(String).includes(id)
+          const known = ledger?.lastKnown(activityIdForGroup(id)) ?? null
+          const unread = known ? Math.max(0, Number(known.lastSeq ?? 0) - Number(known.seenSeq ?? 0)) : 0
+          rows.push(`- ${id} ${name}${allowed ? ' [允许接收]' : ' [忽略]'}${known ? `，账本 #${known.lastSeq}${unread ? `，未读 ${unread}` : ''}` : '，无往来记录'}`)
+        }
+      } else {
+        rows.push('群：读取失败（get_group_list 不可用）。')
+      }
+      const privateRule = cfg.privatePolicy === 'friends'
+        ? '好友自动允许（+ allowPrivate）'
+        : (cfg.privatePolicy === 'all' ? '全部私聊允许' : '只允许 allowPrivate 名单')
+      rows.push(`策略：私聊=${privateRule}；群=${cfg.groupPolicy === 'allowlist' ? `allowlist（${cfg.allowGroups.length} 个）` : '忽略'}；好友同步时间=${friendCache.at ? formatLedgerTime(friendCache.at) : '未同步'}。`)
+      rows.push('说明：好友列表来自 OneBot；好友申请没有 get_friend_add_request，只有控制账号点通过后才出现在好友列表。')
+      return { text: `QQ 侧联系人：\n${rows.join('\n')}` }
+    },
+  })
+
+  ctx.tools.register({
     name: 'qq_history',
     summary: '按私聊/群/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]）。',
     when: ['想回看某条 QQ 私聊或群消息之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
@@ -2302,6 +2389,7 @@ export async function apply(ctx) {
     }
     inboundDebouncer = null
     disposed = true
+    if (friendSyncTimer) { clearInterval(friendSyncTimer); friendSyncTimer = null }
     if (retryTimer) { clearInterval(retryTimer); retryTimer = null }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null }

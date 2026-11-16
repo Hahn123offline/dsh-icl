@@ -113,6 +113,9 @@ export function createRateLimiter({ now = () => Date.now(), maxPerMinute = 30 } 
  * @param {object} options
  * @param {number[]|string[]} options.allowPrivate  允许的私聊 QQ 号；空数组 = 一律拒绝（默认安全）
  * @param {boolean} options.allowAllPrivate         显式"全部私聊都收"（仍需 enabled 总开关）
+ * @param {'allowlist'|'friends'|'all'} options.privatePolicy 私聊准入策略：
+ *        allowlist=只看 allowPrivate；friends=allowPrivate + QQ 好友列表；all=全部（等价 allowAllPrivate）
+ * @param {number[]|string[]} options.friends       初始好友 ID（通常由插件从 OneBot get_friend_list 拉取）
  * @param {number[]|string[]} options.allowGroups   允许只读的群号；空数组 = 不收群
  * @param {'ignore'|'allowlist'} options.groupPolicy 群策略；默认 ignore，显式 allowlist 才接群
  * @param {string|null} options.selfId              机器人自己的 QQ 号，用于过滤自发
@@ -124,6 +127,8 @@ export function createInboundGate({
   now = () => Date.now(),
   allowPrivate = [],
   allowAllPrivate = false,
+  privatePolicy = 'allowlist',
+  friends = [],
   allowGroups = [],
   groupPolicy = 'ignore',
   selfId = null,
@@ -134,6 +139,7 @@ export function createInboundGate({
   dedupe = null,
 } = {}) {
   const allow = new Set((Array.isArray(allowPrivate) ? allowPrivate : []).map(String))
+  const friendIds = new Set((Array.isArray(friends) ? friends : []).map(String))
   const allowGroupsSet = new Set((Array.isArray(allowGroups) ? allowGroups : []).map(String))
   const limiter = createRateLimiter({ now, maxPerMinute })
   const store = dedupe ?? createDedupeStore({ now })
@@ -150,6 +156,16 @@ export function createInboundGate({
   }
 
   return {
+    /** 更新好友集合（来自 OneBot get_friend_list）；只影响 friends 策略。 */
+    setFriends(ids) {
+      friendIds.clear()
+      for (const id of (Array.isArray(ids) ? ids : [])) {
+        const key = String(id ?? '').trim()
+        if (key) friendIds.add(key)
+      }
+      return friendIds.size
+    },
+    friends: () => [...friendIds],
     /**
      * 判断一条原始 OneBot 事件。返回 {accept:true, signal, ...} 或 {accept:false, code}。
      * backfilled=true 时：用 maxBackfillAgeMs 单独判旧（补课消息本来就会晚到，不能用实时 maxStaleMs 丢），
@@ -230,8 +246,11 @@ export function createInboundGate({
       if (!senderId) return drop('invalid')
       if (effectiveSelfId != null && String(effectiveSelfId) === senderId) return drop('self')
 
-      // 白名单：空 = 一个都不收。默认安全，必须显式打开。
-      if (!(allowAllPrivate === true || allow.has(senderId))) return drop('not-allowlisted')
+      // 白名单/好友策略：allowlist 只看显式名单；friends 额外接受 QQ 好友；all 全收。
+      // 默认仍是 allowlist（安全）；friends 必须显式配置，且好友列表来自 OneBot。
+      const policyAll = allowAllPrivate === true || privatePolicy === 'all'
+      const allowedPrivate = policyAll || allow.has(senderId) || (privatePolicy === 'friends' && friendIds.has(senderId))
+      if (!allowedPrivate) return drop('not-allowlisted')
 
       const { segments, text, rich } = normalizeSegments(event.message, event.raw_message)
       if (!text.trim()) return drop('empty')

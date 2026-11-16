@@ -150,6 +150,16 @@ test('准入：群消息整类拒绝，临时会话拒绝，自发拒绝', () =>
   assert.equal(gate.admit(privateEvent({ from: 2593621742 })).code, 'self')
 })
 
+test('准入：friends 策略只放行 QQ 好友（加好友=白名单）', () => {
+  const gate = createInboundGate({ now: () => NOW, allowPrivate: ['10001'], privatePolicy: 'friends', selfId: '2593621742' })
+  gate.setFriends(['20002'])
+  assert.equal(gate.admit(privateEvent({ from: 20002, messageId: 6001 })).accept, true)
+  assert.equal(gate.admit(privateEvent({ from: 30003, messageId: 6002 })).code, 'not-allowlisted')
+  assert.equal(gate.admit(privateEvent({ from: 10001, messageId: 6003 })).accept, true, 'allowPrivate 兜底仍有效')
+  gate.setFriends([])
+  assert.equal(gate.admit(privateEvent({ from: 20002, messageId: 6004 })).code, 'not-allowlisted')
+})
+
 test('准入：白名单为空 = 一个都不收（默认安全）', () => {
   const gate = createInboundGate({ now: () => NOW })
   const out = gate.admit(privateEvent())

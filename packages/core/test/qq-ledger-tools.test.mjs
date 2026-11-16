@@ -70,9 +70,10 @@ test('账本：messages/unread/markReplied/replyState（SQLite + 重启）', () 
   } finally { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) } catch { /* Windows sqlite 句柄可能延迟释放；临时目录不阻塞测试 */ } }
 })
 
-async function setup() {
+async function setup({ friends = [], qqConfig = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-p1-'))
   const fake = await createFakeOneBot({ port: 0, token: TOKEN })
+  fake.setFriends(friends)
   const host = createHost({ log: () => {} })
   host.registerPlugin(manifest, qqModule, {
     config: {
@@ -83,6 +84,8 @@ async function setup() {
       sendSameTextWindowMs: 0, auditFile: path.join(dir, 'audit.jsonl'),
       ledgerFile: path.join(dir, 'ledger.db'), mediaInboxDir: path.join(dir, 'media'),
       stickerDir: path.join(dir, 'stickers'),
+      httpUrl: fake.httpUrl, httpToken: TOKEN,
+      ...qqConfig,
     },
   })
   await host.enable('qq')
@@ -318,5 +321,21 @@ test('qq_unread 展示只记 viewed（投递去重），不改变未读/seen', a
     assert.equal(env.qq.seenThrough('qq:private:10001'), 1)
     const after = await env.tool('qq_unread').execute({ peer: OWNER })
     assert.match(after.text, /没有未读消息/)
+  } finally { await env.cleanup() }
+})
+
+test('privatePolicy=friends：QQ 好友自动允许、非好友拒绝；qq_contacts 列 QQ 侧联系人', async () => {
+  const env = await setup({ friends: [{ user_id: '20002', nickname: '好友甲' }], qqConfig: { privatePolicy: 'friends' } })
+  try {
+    await waitFor(() => env.qq.status().friends?.count === 1)
+    env.fake.privateMessage({ from: 20002, name: '好友甲', text: '好友消息', messageId: 9701 })
+    await waitFor(() => env.qq.status().ledger.messages >= 1)
+    env.fake.privateMessage({ from: 30003, name: '陌生人', text: '陌生人消息', messageId: 9702 })
+    await waitFor(() => (env.qq.status().gate?.byCode?.['not-allowlisted'] ?? 0) >= 1)
+    const contacts = await env.tool('qq_contacts').execute()
+    assert.match(contacts.text, /好友（1）/)
+    assert.match(contacts.text, /20002 好友甲 \[允许私聊\]/)
+    assert.match(contacts.text, /策略：私聊=好友自动允许/)
+    assert.match(contacts.text, /只有控制账号点通过后才出现在好友列表/)
   } finally { await env.cleanup() }
 })

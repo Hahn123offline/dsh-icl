@@ -122,6 +122,10 @@
                   allowPrivate:
                     - '3429502459'
                   allowAllPrivate: false
+                  # 2026-11-16：私聊白名单改为"QQ 好友列表"（控制账号点通过好友 = 白名单），
+                  # allowPrivate 仍保留为主人兜底；HTTP 不可用时只收 allowPrivate。
+                  privatePolicy: friends
+                  friendSyncMs: 300000
                   # G1 群聊只读：两个旧的小群；普通群消息进 focus backlog，@ 直达。
                   groupPolicy: allowlist
                   allowGroups:

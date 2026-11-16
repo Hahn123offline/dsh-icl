@@ -84,6 +84,8 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
   let messageSeq = 7000
   const actions = []
   const history = []
+  const friendList = []
+  const groupList = []
   const messageStore = new Map() // message_id -> 消息对象（给 get_msg 用）
   const forwardStore = new Map() // forward id -> get_forward_msg 的 data
   const remember = (item) => {
@@ -127,6 +129,10 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
           const limit = Math.max(1, Math.min(100, Number(params.count) || 20))
           const matched = history.filter((item) => String(item.group_id ?? item.groupId ?? item.peer_id ?? '') === gid)
           data = { messages: matched.slice(-limit) }
+        } else if (action === 'get_friend_list') {
+          data = friendList.map((item) => ({ user_id: item.user_id, nickname: item.nickname ?? '', remark: item.remark ?? '' }))
+        } else if (action === 'get_group_list') {
+          data = groupList.map((item) => ({ group_id: item.group_id, group_name: item.group_name ?? '' }))
         } else if (action === 'get_msg') {
           const found = messageStore.get(String(params.message_id ?? '')) ?? history.find((item) => String(item.message_id) === String(params.message_id ?? ''))
           if (!found) {
@@ -368,6 +374,22 @@ export function createFakeOneBot({ port = 0, host = '127.0.0.1', token = '', act
         messageStore,
         dropConnections,
         httpUrl: `http://${host}:${actual}`,
+        setFriends(list = []) {
+          friendList.length = 0
+          for (const item of (Array.isArray(list) ? list : [])) {
+            const id = String(item?.user_id ?? item?.qq ?? item ?? '').trim()
+            if (id) friendList.push({ user_id: id, nickname: String(item?.nickname ?? ''), remark: String(item?.remark ?? '') })
+          }
+          return friendList.length
+        },
+        setGroups(list = []) {
+          groupList.length = 0
+          for (const item of (Array.isArray(list) ? list : [])) {
+            const id = String(item?.group_id ?? item ?? '').trim()
+            if (id) groupList.push({ group_id: id, group_name: String(item?.group_name ?? '') })
+          }
+          return groupList.length
+        },
         setActionMode(next) { mode = String(next) },
         actionMode: () => mode,
         sendJson,
