@@ -223,7 +223,7 @@ export async function registerSendTool({
   const maxMessageChars = Math.max(1, Math.floor(num(cfg.maxMessageChars, BURST.maxChars)))
   const gapMode = String(cfg.gapMode ?? 'auto')
   const interruptGraceMs = Math.max(0, Math.min(5000, num(cfg.interruptGraceMs, 2000)))
-  const targetCfg = { ...cfg, enabled: true, allowSend: true, sendApproval: SEND_APPROVAL_TOKEN }
+  const targetConfig = () => ({ ...cfg, enabled: true, allowSend: true, sendApproval: SEND_APPROVAL_TOKEN })
   // Phase 2 短队列：默认关；产品 preset 开。关闭时保持原有"超限直接拒绝"语义。
   const outboxEnabled = cfg.outboxEnabled === true
   const outboxMaxPending = Math.max(1, Math.floor(num(cfg.outboxMaxPending, 20)))
@@ -535,7 +535,7 @@ export async function registerSendTool({
     if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
     const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
     if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
-    const target = resolveSendTarget(targetCfg, targetInput)
+    const target = resolveSendTarget(targetConfig(), targetInput)
     if (!target.ok) return refuse(target.error, { peerId: targetInput })
     const kind = target.kind === 'group' ? 'group' : 'private'
     const targetId = String(target.peer ?? target.groupId ?? targetInput)
@@ -628,7 +628,7 @@ export async function registerSendTool({
     if (cfg.allowMediaSend !== true) return refuse('媒体发送未启用（allowMediaSend=false）')
     const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
     if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
-    const target = resolveSendTarget(targetCfg, targetInput)
+    const target = resolveSendTarget(targetConfig(), targetInput)
     if (!target.ok) return refuse(target.error, { peerId: targetInput })
     const kindTarget = target.kind === 'group' ? 'group' : 'private'
     const targetId = String(target.peer ?? target.groupId ?? targetInput)
@@ -770,7 +770,7 @@ export async function registerSendTool({
     if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
     const targetInput = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
     if (!targetInput) return refuse('没有可发送的目标（owner/白名单/allowGroups 为空）')
-    const target = resolveSendTarget(targetCfg, targetInput)
+    const target = resolveSendTarget(targetConfig(), targetInput)
     if (!target.ok) return refuse(target.error, { peerId: targetInput })
     const kind = target.kind === 'group' ? 'group' : 'private'
     const targetId = String(target.peer ?? target.groupId ?? targetInput)
@@ -919,7 +919,7 @@ export async function registerSendTool({
     if (cfg.allowPoke !== true) return refuse('戳一戳未启用（allowPoke=false）')
     const input = args.to == null || args.to === '' ? defaultTarget(cfg) : String(args.to).trim()
     if (!input) return refuse('戳一戳需要目标 QQ 号或群号')
-    const target = resolveSendTarget(targetCfg, input)
+    const target = resolveSendTarget(targetConfig(), input)
     if (!target.ok) return refuse(target.error, { peerId: input })
     const kind = target.kind === 'group' ? 'group' : 'private'
     const targetId = String(target.peer ?? target.groupId ?? input)
@@ -939,7 +939,7 @@ export async function registerSendTool({
     const messageId = String(args.messageId ?? '').trim()
     if (!messageId) return refuse('撤回需要 messageId')
     if (args.to != null && String(args.to).trim() !== '') {
-      const target = resolveSendTarget(targetCfg, String(args.to).trim())
+      const target = resolveSendTarget(targetConfig(), String(args.to).trim())
       if (!target.ok) return refuse(target.error, { peerId: String(args.to) })
     }
     const result = await outbound.recall(messageId)
@@ -953,7 +953,7 @@ export async function registerSendTool({
   async function groupAdmin(args = {}) {
     if (!keysNow()) return refuse('出站已关闭（kill switch 或三把钥匙未齐）')
     if (cfg.allowGroupAdmin !== true) return refuse('群管理未启用（allowGroupAdmin=false）')
-    const target = checkGroupAdminTarget(targetCfg, args.group)
+    const target = checkGroupAdminTarget(targetConfig(), args.group)
     if (!target.ok) return refuse(target.error, { peerId: String(args.group ?? '') })
     const action = String(args.action ?? '').trim()
     if (!['ban', 'kick', 'card', 'whole-ban'].includes(action)) return refuse(`不支持的群管理动作：${action || '（空）'}`)

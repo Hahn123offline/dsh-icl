@@ -241,6 +241,15 @@ test('出站：默认双钥匙关闭，任何目标都拒绝', () => {
   assert.equal(wrongApproval.ok, false)
 })
 
+test('出站目标：friends 策略可发好友，blockedSenders 一律拒绝', () => {
+  const base = { enabled: true, allowSend: true, sendApproval: 'lead-approved', privatePolicy: 'friends', allowPrivate: ['10001'], friendIds: ['20002'], blockedSenders: ['30003'] }
+  assert.equal(checkSendTarget(base, '20002').ok, true, '好友可发')
+  assert.equal(checkSendTarget(base, '10001').ok, true, 'allowPrivate 兜底可发')
+  assert.equal(checkSendTarget(base, '30003').ok, false, '屏蔽号不可发')
+  assert.match(checkSendTarget(base, '30003').error, /屏蔽/)
+  assert.equal(checkSendTarget(base, '40004').ok, false, '非好友不可发')
+})
+
 /* ── 2. 插件层（假 WebSocket） ────────────────────────── */
 
 test('插件默认不开：不建连接、状态可读', async () => {

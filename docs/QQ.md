@@ -3,7 +3,7 @@
 > 读者：接 QQ 的人、做 time 静音锁的人、跑 shadow 时间窗的人。
 > 结论先说：**QQ 不进核心，只做一个入站插件**——接 OneBot WS，把私聊规范化成 ICL signal，交给现有的
 > `signals → time gate → focus.admit → delivery → bridge.steer` 链路。入站默认只读：`enabled:false`、群消息整类忽略、
-> 不发任何动作。**phase 1（用户 2026-11-05 批准）新增唯一出站入口 `qq_send`**：只有三把钥匙全开时注册，只回 owner 私聊、
+> 不发任何动作。**phase 1（用户 2026-11-05 批准）新增唯一出站入口 `qq_send`**：只有三把钥匙全开时注册，按 `privatePolicy` 回 owner/好友/白名单私聊、
 > 纯文本（可多气泡）、每轮≤1 次发送调用、限速/去重/敏感拦截/回执三态/审计；群发送代码不存在。真实 SnowLuma 验证按 [§10](#10-shadow-runbook可执行清单)。
 >
 > 代码：`packages/plugins/qq/`（默认 `enabled:false`）；测试：`packages/core/test/qq*.test.mjs`（19 + 3 + 10 + 11 条）；
@@ -18,7 +18,7 @@
 | 连接器/消息模型/focus 张力设计 | ✅ | §3–§7 |
 | 只读入站实现（OneBot WS → signals） | ✅ | `packages/plugins/qq/src/` |
 | 单测（规范化/去重/gate/限流/不发送/静态安全） | ✅ 19 条 | `node --test packages/core/test/qq.test.mjs` |
-| **phase 1 出站（qq_send，只回 owner 私聊）** | ✅ 实现 + fake 11 条；真实窗口已验证（1 条私聊、0 群） | `src/send-tool.mjs`、`packages/core/test/qq-send.test.mjs`、§0.3 |
+| **phase 1 出站（qq_send，按 privatePolicy 回私聊）** | ✅ 实现 + fake 11 条；真实窗口已验证（1 条私聊、0 群） | `src/send-tool.mjs`、`packages/core/test/qq-send.test.mjs`、§0.3 |
 | QQ × MC 并发接缝（T1–T3，纯 fake） | ✅ 3 条 | `packages/core/test/qq-mc-concurrent.test.mjs` |
 | 与 time 静音锁接口对齐（三条建议全采纳，已合并 master） | ✅ time `05c4d19`；drill 严格断言 `signalId` | §6.3 / drill |
 | shadow preflight（谁可能抢连接/phase1 就绪，一条命令出结论） | ✅ 13 条判定单测 + 真机 CLEAR/BLOCK 证据 | `packages/plugins/qq/tools/preflight.mjs` |
@@ -60,7 +60,7 @@
 
 phase 1 出站不变量（新增，见 §11.1）：
 
-4. **唯一入口 + 三把钥匙**：只有 `enabled && allowSend && sendApproval==='lead-approved'` 时动态装配并注册 `qq_send`；`index.mjs` 不 import 发送实现；只回 owner/白名单私聊；**群发送动作不存在**；unknown 结果不自动重试；审计 JSONL 只存 hash/长度、不存正文。
+4. **唯一入口 + 三把钥匙**：只有 `enabled && allowSend && sendApproval==='lead-approved'` 时动态装配并注册 `qq_send`；`index.mjs` 不 import 发送实现；按 `privatePolicy`（owner/好友/白名单）回私聊；群发送默认关；；unknown 结果不自动重试；审计 JSONL 只存 hash/长度、不存正文。
 
 ## 1. 三份参考读到了什么（只读，不复制代码）
 
@@ -373,7 +373,7 @@ enabled === true && allowSend === true && sendApproval === 'lead-approved'
 ```
 
 - `index.mjs` **不 import 发送实现**：keys 打开时才 `await import('./send-tool.mjs')`；`send-tool` 才 import `outbound.mjs` 的 `createOutbound`。
-- **目标**：只接受私聊 QQ 号，且必须在 `allowPrivate` 里；phase 1 再要求等于 `ownerQQ`（默认配置 3429502459）。群发送代码不存在（静态安全测试守着 `send_group_msg` 不出现）。
+- **目标**：只接受私聊 QQ 号；按 `privatePolicy` + `allowPrivate` + `friendIds` + `blockedSenders` 裁决（不再只限 owner）。群发送要另开 `allowGroupSend` + `allowGroups`。
 - **内容**：纯文本、非空、≤`maxSendChars`（默认 2000）、敏感信息拦截（`api_key/token/password/sk-…/PRIVATE KEY` 等默认 pattern，可配置）。发送前 Markdown 会转纯文本（`markdownToPlain` 可关）。
 - **引用回复（P1）**：`qq_send {text, replyToMessageId}` → OneBot reply 段（`[{type:'reply',data:{id}},{type:'text',data:{text}}]`）。
   只允许**单条**文本带引用（多气泡 + 引用拒绝）；目标必须在**当前私聊账本**里（防引用别的会话/伪造 id）；成功后账本把"发送前收到的消息"标记为已回（见 §7.7）。
@@ -899,7 +899,7 @@ Select-String -Path $log.FullName -Pattern 'send_private_msg|send_group_msg' | S
 7. **影子会起一轮**：lab 实测私聊在空闲时会 `turn/start`（她看到了、会思考怎么回，但没有回复工具）。`promptLine` 默认关闭，下一轮建议打开一句"QQ 只读影子不能回复"，避免她误以为自己已经回了。
 8. **并发只验证到 T1–T3（fake）**：T4–T6（双限流独立、会话切换/重试、交错顺序）还没做；真实 mc-body + 真实 QQ 未同跑。
 9. **旧消费者风险**：见 §2.3 / §10 第 2 步；不处理就没有干净影子。
-10. **phase 1 出站的限制（刻意）**：只回 owner/白名单私聊、纯文本、单条、每轮≤1、无自动重试、无富媒体、无广播；
+10. **出站限制（刻意）**：只回私聊（按 privatePolicy）、纯文本/受控媒体、无自动重试、无广播；
     出站是**独立 WS 连接**（SnowLuma 会看到 2 条客户端连接：1 只读 + 1 出站）；`unknown` 结果可能确实已送达，
     所以工具文本明确要求"不要盲目重发"，人工窗口里也不要替它重试。
 11. **"回过没"水位是最小版**：只记 `send.recent`（内存 + 状态文件/审计），没有做"发送成功后把该 peer 此前收到消息标 replied"的账本；
@@ -1195,4 +1195,4 @@ node tools/lab.mjs down --run <runId>
 - 服务端核对：SnowLuma 日志 `send_private_msg` **恰 1 次**（"在。这么晚还没睡？"，user_id=3429502459）、`send_group_msg` **0 次**。
 - 审计：`send-audit.jsonl` 1 行，只有 `textHash/chars/outcome/messageId`，**不存正文**。
 - 结果报告：`.state/lab/qq-send-20261105-2310/report.md`（13/13 全过）；影子已自动停止，57108 无监听。
-- 产品默认仍关闭：只有 lab patch 打开三钥匙；phase 1 只允许 owner 私聊、每轮最多 1 次发送调用（一次调用内 P0-3 可拆 1–8 气泡）、失败不自动重试。
+- 产品默认仍关闭：只有 lab patch 打开三钥匙；出站按 privatePolicy 允许 owner/好友/白名单私聊、每轮发送调用受配置限制（一次调用内 P0-3 可拆 1–8 气泡）、失败不自动重试。

@@ -1280,9 +1280,7 @@ export async function apply(ctx) {
       if (fromId && fromId === selfId) return { accept: false, code: 'poke-self' }
       const allowed = groupId
         ? (cfg.groupPolicy === 'allowlist' && cfg.allowGroups.map(String).includes(groupId))
-        : ((cfg.ownerQQ != null && fromId === String(cfg.ownerQQ))
-          || cfg.allowAllPrivate === true
-          || cfg.allowPrivate.map(String).includes(fromId))
+        : isPrivateAllowed(fromId)
       if (!allowed) return { accept: false, code: groupId ? 'group-not-allowlisted' : 'not-allowlisted' }
       const at = now()
       const name = senderKindOf(fromId) === 'owner' ? '主人' : `QQ ${fromId}`
@@ -1330,6 +1328,20 @@ export async function apply(ctx) {
       && (hasMediaSegments || (cfg.richEnabled && (extractReplyId(raw.message) != null || extractForwardIds(raw.message).length > 0)))
     if (needsEnrich) return enrichInbound(raw).then((event) => ingestEvent(event, { backfilled }))
     return ingestEvent(raw, { backfilled })
+  }
+
+  /** 与 gate 的私聊准入保持同一口径：blocked > all > allowPrivate > friends > owner。 */
+  function isPrivateAllowed(peerId) {
+    const peer = String(peerId ?? '').trim()
+    if (!peer) return false
+    if (cfg.blockedSenders.map(String).includes(peer)) return false
+    if (cfg.privatePolicy === 'all' || cfg.allowAllPrivate === true) return true
+    if (cfg.allowPrivate.map(String).includes(peer)) return true
+    if (String(peer) === String(cfg.ownerQQ ?? '')) return true
+    if (cfg.privatePolicy === 'friends') {
+      try { return (gate.friends?.() ?? []).map(String).includes(peer) } catch { return false }
+    }
+    return false
   }
 
   function senderKindOf(peerId) {
@@ -1620,6 +1632,7 @@ export async function apply(ctx) {
         gate.setFriends(ids)
         friendCache.at = now()
         friendCache.ids = ids
+        cfg.friendIds = ids
         friendCache.error = null
         ctx.log({ level: 'info', msg: 'qq.friends.sync', count: ids.length, reason })
         return { ok: true, ids, raw: list }
@@ -1760,7 +1773,7 @@ export async function apply(ctx) {
     const groupText = s.groupPolicy === 'allowlist'
       ? `只读白名单群 ${s.allowGroups.length ? s.allowGroups.join('、') : '（空，实际不收）'}`
       : '整类忽略'
-    lines.push(`机器人账号：${s.selfId ?? '未知'}；可收私聊：${s.allowAllPrivate ? '全部（显式打开）' : (s.allowPrivate.length ? s.allowPrivate.join('、') : '无（白名单为空）')}；群消息：${groupText}`)
+    lines.push(`机器人账号：${s.selfId ?? '未知'}；可收私聊：${s.privatePolicy === 'friends' ? `QQ 好友（${s.friends?.count ?? 0} 个）+ 兜底 ${s.allowPrivate.join('、') || '无'}` : (s.privatePolicy === 'all' || s.allowAllPrivate ? '全部（显式打开）' : (s.allowPrivate.length ? s.allowPrivate.join('、') : '无（白名单为空）'))}；群消息：${groupText}`)
     if (s.enabled) {
       const gp = s.gap ?? {}
       const bk = gp.backfill ?? {}
@@ -2283,7 +2296,7 @@ export async function apply(ctx) {
       if (!target) return { text: '没有可等待的目标（私聊或白名单群）。', outcome: 'refused' }
       const groups = new Set((cfg.allowGroups ?? []).map(String))
       const kind = cfg.groupPolicy === 'allowlist' && groups.has(target) ? 'group' : 'private'
-      if (kind === 'private' && !cfg.allowPrivate.map(String).includes(target) && String(cfg.ownerQQ ?? '') !== target) {
+      if (kind === 'private' && !isPrivateAllowed(target)) {
         return { text: `目标 ${target} 不在私聊白名单里，不能等它的消息。`, outcome: 'refused' }
       }
       return waitForMessages({ target, kind, timeoutMs, quietMs })

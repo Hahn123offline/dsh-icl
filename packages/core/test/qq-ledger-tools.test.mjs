@@ -337,5 +337,8 @@ test('privatePolicy=friends：QQ 好友自动允许、非好友拒绝；qq_conta
     assert.match(contacts.text, /20002 好友甲 \[允许私聊\]/)
     assert.match(contacts.text, /策略：私聊=好友自动允许/)
     assert.match(contacts.text, /只有控制账号点通过后才出现在好友列表/)
+    const sent = await env.tool('qq_send').execute({ to: '20002', text: '好友私聊' })
+    assert.equal(sent.outcome, 'ok', JSON.stringify(sent))
+    assert.ok(env.fake.sendActions().some((row) => String(row.params?.user_id) === '20002'))
   } finally { await env.cleanup() }
 })

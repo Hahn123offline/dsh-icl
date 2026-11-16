@@ -28,17 +28,19 @@ export function sendEnabled(cfg = {}) {
   return cfg.enabled === true && cfg.allowSend === true && cfg.sendApproval === SEND_APPROVAL_TOKEN
 }
 
-/** 目标校验：只私聊、只白名单/owner；群永远拒绝。 */
+/** 目标校验：只私聊；按 privatePolicy（allowlist/friends/all）+ blockedSenders 裁决。群永远拒绝。 */
 export function checkSendTarget(cfg = {}, peerId) {
   if (!sendEnabled(cfg)) return { ok: false, error: '出站未启用（需要 enabled + allowSend + sendApproval=lead-approved）' }
   const peer = String(peerId ?? '').trim()
   if (!peer) return { ok: false, error: '没有私聊目标' }
   if (!/^\d+$/.test(peer)) return { ok: false, error: `目标必须是 QQ 号（私聊），不能是「${peer}」` }
+  const blocked = new Set((Array.isArray(cfg.blockedSenders) ? cfg.blockedSenders : []).map(String))
+  if (blocked.has(peer)) return { ok: false, error: `目标 ${peer} 已被屏蔽（blockedSenders）` }
   const allow = new Set((Array.isArray(cfg.allowPrivate) ? cfg.allowPrivate : []).map(String))
-  if (!allow.has(peer)) return { ok: false, error: `目标 ${peer} 不在私聊白名单里` }
-  if (cfg.ownerQQ != null && String(cfg.ownerQQ) !== peer) {
-    return { ok: false, error: `phase 1 只允许回 owner（${cfg.ownerQQ}）` }
-  }
+  const friends = new Set((Array.isArray(cfg.friendIds) ? cfg.friendIds : []).map(String))
+  const policy = String(cfg.privatePolicy ?? 'allowlist')
+  const allowed = policy === 'all' || cfg.allowAllPrivate === true || allow.has(peer) || (policy === 'friends' && friends.has(peer))
+  if (!allowed) return { ok: false, error: `目标 ${peer} 不在私聊白名单里（privatePolicy=${policy}）` }
   return { ok: true, peer }
 }
 
