@@ -37,15 +37,15 @@ test('产品 A1：首屏净化 4 段，且不 shadow icl:facts / icl:core（fact
   assert.ok(!preset.purifySections.includes('icl:core'))
 })
 
-test('产品 A1 工具面预算：70 工具 / 47,461 字符（含 qq），无 mcb_*', async () => {
+test('产品 A1 工具面预算：71 工具 / 47,776 字符（含 qq），无 mcb_*', async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'product-a1-'))
   const host = createHost({ log: () => {} })
   try {
     await bootstrapHost(host, normalizeConfig({ stateDir, providers: [], presetId: 'icl', plugins: preset.plugins, purifySections: preset.purifySections, pluginConfig: preset.pluginConfig }), { log: () => {} })
     const tools = host.services.tools.list()
     const chars = tools.reduce((sum, tool) => sum + JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }).length, 0)
-    assert.equal(tools.length, 70)
-    assert.equal(chars, 47461)
+    assert.equal(tools.length, 71)
+    assert.equal(chars, 47776)
     assert.ok(!tools.some((tool) => String(tool.name).startsWith('mcb_')), '产品面不得出现 mcb_*')
   } finally {
     try { fs.rmSync(stateDir, { recursive: true, force: true }) } catch { /* Windows 插件可能占用临时目录，忽略清理失败 */ }

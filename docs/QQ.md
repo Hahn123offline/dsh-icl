@@ -509,13 +509,14 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
    若要在正文里显式标“这条曾在专注时被拦”，需要 bridge/focus 在重放/摘要时补标记（跨模块项）。
 3. **状态提示**：`qq_status` 已经有最近一条/回执/gap；若要在提示词里给“有人找你”一行，属于 runtime-context 改动（同上）。
 
-### 7.7 P1 账本工具：qq_unread / qq_history / qq_replied / qq_mark_read
+### 7.7 P1 账本工具：qq_chats / qq_unread / qq_history / qq_replied / qq_mark_read
 
 四个工具都只操作**本地账本**（不网络；`qq_unread/history/replied` 只读，`qq_mark_read` 只推进本地水位），
 与 §7.3 的 SQLite 账本/补课共用同一份事实：
 
 | 工具 | 参数 | 返回/语义 |
 |---|---|---|
+| `qq_chats` | 无 | 列出所有聊天（私聊/群/白名单目标）：最后一条、未读、已看/已交付、最近消息预览与时间；是账本目标列表，不是好友名单。 |
 | `qq_unread` | `peer?`, `afterSeq?`, `limit?` | 不填 peer：各私聊 `lastSeq / deliveredSeq / attendedSeq` + 未读/未交付约数；填 peer：三个水位 + 水位之后的未读消息（正文保留 `[QQ私聊·主人]`、`[补课]`；未交付行尾标 `[未交付·被拦：原因]`）。 |
 | `qq_history` | `peer?`, `afterSeq?`, `beforeSeq?`, `limit?` | 按 seq 补看历史（升序）；不填 peer 用最近一个私聊。补课消息正文自带 `[补课]`。 |
 | `qq_replied` | `peer?`, `messageId?` | 填 messageId：该条是否已回 + seq/时间；不填：最后 seq、已回到哪、未回条数。 |

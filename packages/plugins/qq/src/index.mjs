@@ -363,6 +363,8 @@ export async function apply(ctx) {
   let disposed = false
   let mediaDir = ''
   // P0-1：账本 + 补课（http 只做 get_friend_msg_history，不参与发送）
+  /** 入站群名缓存（只用于列表展示；不持久化，重启后从新消息重建）。 */
+  const groupNames = new Map()
   let ledger = null
   let http = null
   let backfill = null
@@ -1340,6 +1342,7 @@ export async function apply(ctx) {
     const scope = signal.meta?.qq?.scope === 'group' ? 'group' : 'private'
     if (scope === 'group') {
       const groupName = String(signal.meta?.qq?.groupName ?? decision.groupId ?? '')
+      if (groupName && decision.groupId != null) groupNames.set(String(decision.groupId), groupName)
       const groupLabel = groupName ? `[QQ群·${groupName}]` : '[QQ群]'
       signal.text = `${groupLabel} ${signal.text}`
       signal.meta.qq.envelope = {
@@ -1943,6 +1946,54 @@ export async function apply(ctx) {
   })
 
   ctx.tools.register({
+    name: 'qq_chats',
+    summary: '列出所有 QQ 聊天（私聊/群）：每个会话的最后一条、已看水位、未读数、最近消息预览和时间。包含账本里有记录的会话，以及配置里的私聊/群白名单目标；不是好友名单。',
+    when: ['想知道自己现在有多少个聊天、各自还有多少没看', '准备挑一个会话进去看/回复之前'],
+    avoid: ['把它当好友/联系人列表（只列账本目标与白名单）', '以为未读=没投递（未读按 seen 水位算，未交付只是其中一种）'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    async execute() {
+      if (!ledger) return { text: '账本未启用，无法列出聊天。' }
+      const rows = new Map()
+      const ensure = (activity, label) => {
+        const key = String(activity)
+        if (!rows.has(key)) rows.set(key, { activity: key, label, lastAt: 0 })
+        return rows.get(key)
+      }
+      for (const row of (ledger.activities() ?? [])) {
+        const activity = String(row.activity)
+        const group = /^qq:group:(\d+)$/.exec(activity)
+        const peer = ledgerPeerOf(activity)
+        const label = group
+          ? `群 ${groupNames.get(group[1]) ?? group[1]}`
+          : `私聊 ${peer ?? activity}${String(peer) === String(cfg.ownerQQ ?? '') ? '（主人）' : ''}`
+        const item = ensure(activity, label)
+        item.lastAt = Number(row.lastAt) || 0
+      }
+      const privateTargets = [...new Set([...(cfg.allowPrivate ?? []).map(String), ...(cfg.ownerQQ == null ? [] : [String(cfg.ownerQQ)])])]
+      for (const peer of privateTargets) {
+        ensure(activityIdForPrivate(peer), `私聊 ${peer}${String(peer) === String(cfg.ownerQQ ?? '') ? '（主人）' : ''}`)
+      }
+      for (const groupId of (cfg.allowGroups ?? []).map(String)) {
+        ensure(activityIdForGroup(groupId), `群 ${groupNames.get(groupId) ?? groupId}`)
+      }
+      const list = [...rows.values()].sort((a, b) => Number(b.lastAt) - Number(a.lastAt))
+      if (!list.length) return { text: '还没有任何 QQ 聊天记录，也没有白名单目标。' }
+      const lines = list.map((row) => {
+        const known = ledger.lastKnown(row.activity) ?? {}
+        const last = Number(known.lastSeq) || 0
+        const seen = Number(known.seenSeq) || 0
+        const delivered = Number(known.deliveredSeq) || 0
+        const unread = Math.max(0, last - seen)
+        const lastMsg = last > 0 ? (ledger.messages(row.activity, { afterSeq: last - 1, limit: 1 }) ?? [])[0] : null
+        const stamp = lastMsg?.at ? ` ${formatLedgerTime(lastMsg.at)}` : ''
+        const preview = lastMsg?.text ? ` ${String(lastMsg.text).replace(/\s+/g, ' ').slice(0, 80)}` : ''
+        return `- ${row.label}：最后 #${last}，未读 ${unread}，已看 #${seen}，已交付 #${delivered}${stamp}${preview}`
+      })
+      return { text: `QQ 聊天（${list.length} 个）：\n${lines.join('\n')}\n（未读 = 最后 - 已看；这是账本/白名单目标，不是好友名单。）` }
+    },
+  })
+
+  ctx.tools.register({
     name: 'qq_history',
     summary: '按私聊/群/seq 补看 QQ 账本里的历史消息（只读；补课消息正文自带 [补课]）。',
     when: ['想回看某条 QQ 私聊或群消息之前说了什么', 'qq_unread 显示有旧消息但当前上下文里没有'],
@@ -2195,6 +2246,10 @@ export async function apply(ctx) {
           const groupUnread = groupWatermarks().reduce((sum, row) => sum + Number(row.unread ?? 0), 0)
           return privateUnread + groupUnread
         } catch { return 0 }
+      },
+      /** 某会话的 seen 水位；给 bridge 在投递前判"这条已经看过了"（防止工具看过又直投一遍）。 */
+      seenThrough: (activity) => {
+        try { return Number(ledger?.lastKnown(String(activity ?? ''))?.seenSeq) || 0 } catch { return 0 }
       },
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },

@@ -569,6 +569,37 @@ test('桥：delivery 通知（time sleep/wake 等）置 dirty，下一步重算 
   bridge.dispose()
 })
 
+test('桥：已 seen 的 QQ 消息不再直投（防止 qq_unread 看过又当新消息）', async () => {
+  const root = tempRoot('delivery-skip-seen')
+  const host = await hostWithMemory(root)
+  const ctx = fakeCtx()
+  host.shared.set('qq', { seenThrough: (activity) => String(activity) === 'qq:private:1' ? 1 : 0 })
+  const bridge = createDshBridge({ ctx, host, config: { stateDir: root, rawFile: path.join(root, 'raw.jsonl') } })
+  bridge.start()
+  const session = fakeSession('s1')
+  const agent = fakeAgent(session)
+  agent.steers = []
+  agent.steer = (message) => { agent.steers.push(message) }
+  bridge.bindSession(session)
+  bridge.bindAgent(agent)
+  host.services.delivery.push({
+    source: { plugin: 'qq', activity: 'qq:private:1', meta: { qq: { ledger: { activity: 'qq:private:1', seq: 1 } } } },
+    content: { text: '这条已经看过了' },
+  })
+  assert.deepEqual(await bridge.tick(), { sent: 0 })
+  assert.equal(agent.steers.length, 0, '已 seen 的消息不应再 steer')
+  assert.equal(host.services.delivery.pendingCount(), 0, '已 seen 的消息应被 ack 掉')
+  // 没 seen 的同一条则正常投递（控制组）
+  host.shared.set('qq', { seenThrough: () => 0 })
+  host.services.delivery.push({
+    source: { plugin: 'qq', activity: 'qq:private:1', meta: { qq: { ledger: { activity: 'qq:private:1', seq: 2 } } } },
+    content: { text: '这条是新消息' },
+  })
+  assert.deepEqual(await bridge.tick(), { sent: 1 })
+  assert.equal(agent.steers.length, 1)
+  bridge.dispose()
+})
+
 test('桥：factsEveryStep=true 时退回每步求值（旧行为）', async () => {
   const root = tempRoot('layout-every-step')
   const host = await hostWithMemory(root)

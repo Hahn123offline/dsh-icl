@@ -506,6 +506,43 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     const envelope = entries[0]?.source?.meta?.qq?.envelope ?? entries[0]?.meta?.qq?.envelope ?? null
     return { plugin, ...(envelope ? { envelope } : {}) }
   }
+
+  /** 收集 batch 里属于 QQ 账本的 (activity, seq)。 */
+  function qqBatchSeqs(batch) {
+    const entries = Array.isArray(batch?.entries) ? batch.entries : []
+    const byActivity = new Map()
+    const add = (activity, seq) => {
+      const key = String(activity ?? '')
+      const n = Number(seq)
+      if (!key || !Number.isFinite(n) || n <= 0) return
+      if (!byActivity.has(key)) byActivity.set(key, new Set())
+      byActivity.get(key).add(n)
+    }
+    for (const entry of entries) {
+      const meta = entry?.source?.meta ?? entry?.meta ?? null
+      const qq = meta?.qq ?? null
+      if (!qq) continue
+      const activity = String(qq.ledger?.activity ?? qq.envelope?.activity ?? entry?.source?.focus ?? '')
+      if (qq.ledger?.seq != null) add(activity, qq.ledger.seq)
+      for (const row of (Array.isArray(qq.batch?.seqs) ? qq.batch.seqs : [])) add(String(row?.activity ?? activity), row?.seq ?? row)
+      for (const row of (Array.isArray(meta?.replayQq) ? meta.replayQq : [])) add(String(row?.activity ?? activity), row?.seq)
+    }
+    return byActivity
+  }
+
+  /** 这条 batch 里的 QQ 消息是否都已经"看过"（seen）——看过再由投递层送一次就是重复投递。 */
+  function batchAlreadySeen(batch) {
+    let qq = null
+    try { qq = host.shared.get('qq') ?? null } catch { qq = null }
+    if (!qq || typeof qq.seenThrough !== 'function') return false
+    const map = qqBatchSeqs(batch)
+    if (!map.size) return false
+    for (const [activity, seqs] of map) {
+      const seen = Number(qq.seenThrough(activity)) || 0
+      for (const seq of seqs) if (Number(seq) > seen) return false
+    }
+    return true
+  }
   /** 通知来源 → raw.sourceKind；QQ 通知里有真人消息，其余是环境事件。 */
   function sourceKindOfNotice(meta) {
     return String(meta?.plugin ?? '') === 'qq' ? 'qq_envelope' : 'env'
@@ -902,7 +939,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     if (!sessionId) return 0
     if (state.ticking) return 0
     state.ticking = true
-    const batches = host.services.delivery.drain('session')
+    const drained = host.services.delivery.drain('session')
+    const batches = drained.filter((batch) => {
+      if (!batchAlreadySeen(batch)) return true
+      host.services.delivery.ack(batch.id)
+      diag({ event: 'delivery.skip-seen', batch: batch.id, plugin: noticeMetaOf(batch).plugin, cold: true })
+      return false
+    })
     if (!batches.length) { state.ticking = false; return 0 }
     const text = batches.map((batch) => String(batch.text ?? '').trim()).filter(Boolean).join('\n\n')
     if (!text) {
@@ -998,6 +1041,13 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     let sent = 0
     try {
       for (const batch of host.services.delivery.drain('session')) {
+        // 这条 QQ 消息已经通过 qq_unread / 回复自动 seen 看过了：不要再当"新消息"直投一遍。
+        if (batchAlreadySeen(batch)) {
+          host.services.delivery.ack(batch.id)
+          state.stats.skippedSeen = Number(state.stats.skippedSeen ?? 0) + 1
+          diag({ event: 'delivery.skip-seen', batch: batch.id, plugin: noticeMetaOf(batch).plugin })
+          continue
+        }
         const text = String(batch.text ?? '').trim()
         const hasImages = Array.isArray(batch.images) && batch.images.length > 0
         if (!text && !hasImages) { host.services.delivery.ack(batch.id); continue }

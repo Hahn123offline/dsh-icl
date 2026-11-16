@@ -284,3 +284,21 @@ test('账本迁移：旧库 attended_seq 回填 seen_seq（重启不把已读重
     ledger.close()
   } finally { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) } catch { /* sqlite 句柄延迟 */ } }
 })
+
+test('qq_chats：列出所有聊天（私聊/群/白名单目标）及未读', async () => {
+  const env = await setup()
+  try {
+    env.fake.privateMessage({ from: OWNER, text: '列聊天测试', messageId: 9501 })
+    await waitFor(() => env.qq.status().ledger.messages >= 1)
+    const chats = await env.tool('qq_chats').execute({})
+    assert.match(chats.text, /QQ 聊天（\d+ 个）/)
+    assert.match(chats.text, /私聊 10001（主人）/)
+    assert.match(chats.text, /最后 #1/)
+    assert.match(chats.text, /未读 1/)
+    assert.match(chats.text, /列聊天测试/)
+    await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
+    const after = await env.tool('qq_chats').execute({})
+    assert.match(after.text, /未读 0/)
+    assert.match(after.text, /已看 #1/)
+  } finally { await env.cleanup() }
+})
