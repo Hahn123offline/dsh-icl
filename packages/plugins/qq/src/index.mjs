@@ -61,6 +61,8 @@ const DEFAULTS = Object.freeze({
   allowAllPrivate: false,
   // 私聊准入策略：allowlist=只看 allowPrivate（旧行为）；friends=allowPrivate + OneBot 好友列表；all=全部。
   privatePolicy: 'allowlist',
+  // 永不接收的 QQ 号（好友/白名单也不放行；例如自己的电脑/手机/Pad 设备号）。
+  blockedSenders: [],
   // 好友列表刷新间隔（好友=白名单时，控制账号点通过后最多等这么久生效）。
   friendSyncMs: 300_000,
   // 群聊只读：默认整类忽略；显式 groupPolicy:'allowlist' + allowGroups 才接。
@@ -233,6 +235,7 @@ export function normalizeQqConfig(input = {}) {
   cfg.stickerDir = String(cfg.stickerDir ?? '')
   cfg.stickerLibraryFile = String(cfg.stickerLibraryFile ?? '')
   cfg.allowPrivate = pickList(cfg.allowPrivate)
+  cfg.blockedSenders = pickList(cfg.blockedSenders)
   cfg.allowGroups = pickList(cfg.allowGroups)
   cfg.allowGroupSend = cfg.allowGroupSend === true
   cfg.allowGroupAdmin = cfg.allowGroupAdmin === true
@@ -325,6 +328,7 @@ export async function apply(ctx) {
     allowPrivate: cfg.allowPrivate,
     allowAllPrivate: cfg.allowAllPrivate,
     privatePolicy: cfg.privatePolicy,
+    blockedSenders: cfg.blockedSenders,
     allowGroups: cfg.allowGroups,
     groupPolicy: cfg.groupPolicy,
     selfId: cfg.selfId,
@@ -1705,6 +1709,7 @@ export async function apply(ctx) {
       allowPrivate: [...cfg.allowPrivate],
       allowAllPrivate: cfg.allowAllPrivate,
       privatePolicy: cfg.privatePolicy,
+      blockedSenders: [...cfg.blockedSenders],
       friends: { count: gate.friends?.().length ?? 0, at: friendCache.at, error: friendCache.error },
       allowGroups: [...cfg.allowGroups],
       allowGroupSend: cfg.allowGroupSend,
@@ -2056,13 +2061,14 @@ export async function apply(ctx) {
       for (const row of friends) {
         const id = String(row?.user_id ?? row?.uin ?? '')
         const name = String(row?.remark ?? '').trim() || String(row?.nickname ?? '').trim() || id
-        const allowed = cfg.privatePolicy === 'all' || cfg.allowAllPrivate === true
+        const blocked = cfg.blockedSenders.map(String).includes(id)
+        const allowed = !blocked && (cfg.privatePolicy === 'all' || cfg.allowAllPrivate === true
           || cfg.allowPrivate.map(String).includes(id)
           || (cfg.privatePolicy === 'friends')
-          || String(id) === String(cfg.ownerQQ ?? '')
+          || String(id) === String(cfg.ownerQQ ?? ''))
         const known = ledger?.lastKnown(activityIdForPrivate(id)) ?? null
         const unread = known ? Math.max(0, Number(known.lastSeq ?? 0) - Number(known.seenSeq ?? 0)) : 0
-        rows.push(`- ${id} ${name}${String(id) === String(cfg.ownerQQ ?? '') ? '（主人）' : ''}${allowed ? ' [允许私聊]' : ' [拒绝]'}${known ? `，账本 #${known.lastSeq}${unread ? `，未读 ${unread}` : ''}` : '，无往来记录'}`)
+        rows.push(`- ${id} ${name}${String(id) === String(cfg.ownerQQ ?? '') ? '（主人）' : ''}${blocked ? ' [已屏蔽]' : (allowed ? ' [允许私聊]' : ' [拒绝]')}${known ? `，账本 #${known.lastSeq}${unread ? `，未读 ${unread}` : ''}` : '，无往来记录'}`)
       }
       if (Array.isArray(groups)) {
         rows.push(`群（${groups.length}）：`)

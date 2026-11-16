@@ -126,6 +126,11 @@
                   # allowPrivate 仍保留为主人兜底；HTTP 不可用时只收 allowPrivate。
                   privatePolicy: friends
                   friendSyncMs: 300000
+                  # 自己的“电脑/手机/Pad”设备号：即使互相加了好友也不接私聊。
+                  blockedSenders:
+                    - '2113929217'
+                    - '2113929218'
+                    - '2113929219'
                   # G1 群聊只读：两个旧的小群；普通群消息进 focus backlog，@ 直达。
                   groupPolicy: allowlist
                   allowGroups:

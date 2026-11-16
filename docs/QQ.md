@@ -601,6 +601,7 @@ QQ 视频/文件 ──安全抓取──► mediaInboxDir/<YYYY-MM-DD>/<msgId>-
 | `allowPrivate` | `[]` | 私聊兜底名单（owner 等） | **空 = 只有 friends/all 策略时才收私聊** |
 | `privatePolicy` | `allowlist` | `allowlist`=只看 allowPrivate；`friends`=allowPrivate + QQ 好友；`all`=全部 | 产品用 `friends`：控制账号点通过好友即白名单 |
 | `friendSyncMs` | `300000` | friends 策略下刷新好友列表间隔 | 好友通过后最多等这么久生效 |
+| `blockedSenders` | `[]` | 永不接收的 QQ 号（好友/白名单也拒绝） | 产品屏蔽自己的电脑/手机/Pad 设备号 |
 | `allowAllPrivate` | `false` | 显式收所有私聊（等价 privatePolicy=all） | 仅测试/受控环境 |
 | `maxPerMinute` | `30` | 每 peer 每分钟上限 | 超出丢弃并计数（不排队） |
 | `maxStaleMs` | `600000` | 消息时间超过多久算旧 | 0/负数 = 不判旧 |

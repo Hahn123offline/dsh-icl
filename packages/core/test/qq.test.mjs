@@ -167,6 +167,14 @@ test('准入：白名单为空 = 一个都不收（默认安全）', () => {
   assert.equal(out.code, 'not-allowlisted')
 })
 
+test('准入：blockedSenders 永不接收（好友/白名单也不行）', () => {
+  const gate = createInboundGate({ now: () => NOW, allowPrivate: ['30003'], privatePolicy: 'friends', blockedSenders: ['30003'], allowGroups: ['601357169'], groupPolicy: 'allowlist' })
+  gate.setFriends(['30003'])
+  assert.equal(gate.admit(privateEvent({ from: 30003, messageId: 6101 })).code, 'blocked-sender')
+  const group = { ...groupEvent(), group_id: 601357169, user_id: 30003, message_id: 6102, message: [{ type: 'text', data: { text: '群消息' } }], sender: { user_id: 30003, nickname: '设备' } }
+  assert.equal(gate.admit(group).code, 'blocked-sender')
+})
+
 test('准入：同一条消息第二次 = duplicate，id 稳定', () => {
   const gate = createInboundGate({ now: () => NOW, allowPrivate: ['10001'] })
   const first = gate.admit(privateEvent())

@@ -16,7 +16,7 @@ import { hasAtSelf } from './rich.mjs'
 
 export const DROP_CODES = Object.freeze([
   'invalid', 'not-message', 'meta', 'group', 'unsupported-message-type',
-  'self', 'not-allowlisted', 'empty', 'stale', 'stale-backfill', 'duplicate', 'rate',
+  'self', 'blocked-sender', 'not-allowlisted', 'empty', 'stale', 'stale-backfill', 'duplicate', 'rate',
 ])
 
 /** 有界去重表：id -> 首次见到的时间。可选落盘，重启后仍认旧消息。 */
@@ -116,6 +116,7 @@ export function createRateLimiter({ now = () => Date.now(), maxPerMinute = 30 } 
  * @param {'allowlist'|'friends'|'all'} options.privatePolicy 私聊准入策略：
  *        allowlist=只看 allowPrivate；friends=allowPrivate + QQ 好友列表；all=全部（等价 allowAllPrivate）
  * @param {number[]|string[]} options.friends       初始好友 ID（通常由插件从 OneBot get_friend_list 拉取）
+ * @param {number[]|string[]} options.blockedSenders 永不接收的 QQ 号（好友/白名单也不放行；如自己的设备号）
  * @param {number[]|string[]} options.allowGroups   允许只读的群号；空数组 = 不收群
  * @param {'ignore'|'allowlist'} options.groupPolicy 群策略；默认 ignore，显式 allowlist 才接群
  * @param {string|null} options.selfId              机器人自己的 QQ 号，用于过滤自发
@@ -129,6 +130,7 @@ export function createInboundGate({
   allowAllPrivate = false,
   privatePolicy = 'allowlist',
   friends = [],
+  blockedSenders = [],
   allowGroups = [],
   groupPolicy = 'ignore',
   selfId = null,
@@ -140,6 +142,7 @@ export function createInboundGate({
 } = {}) {
   const allow = new Set((Array.isArray(allowPrivate) ? allowPrivate : []).map(String))
   const friendIds = new Set((Array.isArray(friends) ? friends : []).map(String))
+  const blockedIds = new Set((Array.isArray(blockedSenders) ? blockedSenders : []).map(String))
   const allowGroupsSet = new Set((Array.isArray(allowGroups) ? allowGroups : []).map(String))
   const limiter = createRateLimiter({ now, maxPerMinute })
   const store = dedupe ?? createDedupeStore({ now })
@@ -193,6 +196,7 @@ export function createInboundGate({
         const senderId = senderIdOf(event)
         if (!senderId) return drop('invalid')
         if (effectiveSelfId != null && String(effectiveSelfId) === senderId) return drop('self')
+        if (blockedIds.has(senderId)) return drop('blocked-sender')
         const { segments, text, rich } = normalizeSegments(event.message, event.raw_message)
         if (!text.trim()) return drop('empty')
         const sentAt = sentAtOf(event)
@@ -245,6 +249,7 @@ export function createInboundGate({
       const senderId = senderIdOf(event)
       if (!senderId) return drop('invalid')
       if (effectiveSelfId != null && String(effectiveSelfId) === senderId) return drop('self')
+      if (blockedIds.has(senderId)) return drop('blocked-sender')
 
       // 白名单/好友策略：allowlist 只看显式名单；friends 额外接受 QQ 好友；all 全收。
       // 默认仍是 allowlist（安全）；friends 必须显式配置，且好友列表来自 OneBot。
