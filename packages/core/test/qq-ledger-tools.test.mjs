@@ -302,3 +302,21 @@ test('qq_chats：列出所有聊天（私聊/群/白名单目标）及未读', a
     assert.match(after.text, /已看 #1/)
   } finally { await env.cleanup() }
 })
+
+test('qq_unread 展示只记 viewed（投递去重），不改变未读/seen', async () => {
+  const env = await setup()
+  try {
+    env.fake.privateMessage({ from: OWNER, text: '看过的消息', messageId: 9601 })
+    await waitFor(() => env.qq.status().ledger.messages >= 1)
+    const before = await env.tool('qq_unread').execute({ peer: OWNER })
+    assert.match(before.text, /未读 1 条/)
+    assert.equal(env.qq.viewedThrough('qq:private:10001'), 1, '工具展示过记 viewed')
+    assert.equal(env.qq.seenThrough('qq:private:10001'), 0, '展示不等于 ack/seen')
+    const second = await env.tool('qq_unread').execute({ peer: OWNER })
+    assert.match(second.text, /未读 1 条/, '看过后未读仍在，等她决定回/ack')
+    await env.tool('qq_mark_read').execute({ peer: OWNER, throughSeq: 1 })
+    assert.equal(env.qq.seenThrough('qq:private:10001'), 1)
+    const after = await env.tool('qq_unread').execute({ peer: OWNER })
+    assert.match(after.text, /没有未读消息/)
+  } finally { await env.cleanup() }
+})

@@ -530,15 +530,17 @@ export function createDshBridge({ ctx, host, config = {}, log = () => {} }) {
     return byActivity
   }
 
-  /** 这条 batch 里的 QQ 消息是否都已经"看过"（seen）——看过再由投递层送一次就是重复投递。 */
+  /** 这条 batch 里的 QQ 消息是否都已经"看过了"（viewed/seen）——看过再由投递层送一次就是重复投递。 */
   function batchAlreadySeen(batch) {
     let qq = null
     try { qq = host.shared.get('qq') ?? null } catch { qq = null }
-    if (!qq || typeof qq.seenThrough !== 'function') return false
+    if (!qq) return false
+    const through = typeof qq.viewedThrough === 'function' ? qq.viewedThrough : qq.seenThrough
+    if (typeof through !== 'function') return false
     const map = qqBatchSeqs(batch)
     if (!map.size) return false
     for (const [activity, seqs] of map) {
-      const seen = Number(qq.seenThrough(activity)) || 0
+      const seen = Number(through(activity)) || 0
       for (const seq of seqs) if (Number(seq) > seen) return false
     }
     return true

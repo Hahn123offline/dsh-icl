@@ -454,7 +454,7 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
 
 验证：
 
-- `npm test`：**939 tests / 938 pass / 0 fail / 1 skip**。
+- `npm test`：**940 tests / 939 pass / 0 fail / 1 skip**。
 - live 账本副本迁移验证：旧库 `attended_seq` 自动回填 `seen_seq`（私聊 81/81/81 → seen 81、未读 0；群 16+2 未读保持不变）。
 - 干净上下文 lab（不读聊天历史）：`.state/lab/lead/attention-research/verify-clean-context.mjs`
   → **16/16 checks**（静态 sim.md 策略存在；空状态跳过后退避；有积压发决策简报；简报含群名/条数/
@@ -509,6 +509,7 @@ ack 后下一 tick 不再重报同一批；无自产对外消息；测试全绿�
   之后同一批 #82 又作为 user 消息投进同一轮，她只能回「已经回过了」。
 - 根因：消息到达时心跳回合在跑，进 delivery 队列/待投递；`qq_unread` 只展示、不标 delivered/seen；
   回复时 `onSent` 推了 seen（#82），但投递层不检查 seen，仍按"新消息"steer。
-- 修复：bridge 在 `tick`/冷恢复前检查 batch 的 QQ `(activity, seq)` 是否都 <= seen；是则 ack + 跳过，
-  记 `delivery.skip-seen`。新增 bridge 测试；同一轮 qq_unread 看过又回复的场景不再直投。
+- 修复：`qq_unread` 展示消息时只记 **viewed**（看≠处理，不改变未读/提醒）；bridge 在 `tick`/冷恢复前
+  检查 batch 的 QQ `(activity, seq)` 是否都 <= viewed；是则 ack + 跳过，记 `delivery.skip-seen`。
+  这样工具看过、随后才到的同一批不会再直投；是否 ack 仍由她决定。新增 bridge/ledger 测试。
 - 顺带补功能：`qq_chats`（列出所有聊天：私聊/群/白名单目标 + 未读/已看/最近一条）。

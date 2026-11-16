@@ -412,7 +412,7 @@ WS 断线（connector 记下 disconnectedAt/downtime）
 - **账本字段**（`src/ledger.mjs`）：`activity,seq,qq_id,signal_id,at,sent_at,received_at,sender,text(≤1000),mention,media,delivered_at,replied_at,blocked_reason,blocked_at`；`(activity,seq)` 主键、`(activity,qq_id)` 唯一；每活动 `next_seq/attended_seq/seen_seq/last_qq_id/last_at`。
 - **seq 是插件内部单调序号**（不是 QQ `message_seq`；私聊历史接口不一定给 `message_seq`）。signal id 仍由 `message_id` 决定：`qq:private:<qq>:<message_id>`。
 - **水位边界**：delivered = `signals.offer` 接受（进入 delivery 队列且未被 time/focus 拦下）的**连续**高水位；bridge 的 ack 在 `dsh-icl`，插件拿不到回调，所以 delivered 不等于"模型/用户看过"（seen 不可知）。
-  seen = 已看水位（未读 = lastSeq - seen），由 `qq_mark_read` 或“在某聊天回复”推进；可以跨过被拦下的未交付消息——内容仍在账本，仍可用 `qq_unread {afterSeq:0}` / `qq_history` 回看。未交付行记 `blocked_reason` 并在 `qq_unread` 里标注。
+  见 = 已看水位（未读 = lastSeq - seen），由 `qq_mark_read` 或“在某聊天回复”推进；另有 `viewed`（`qq_unread` 展示过，只用于投递去重，不改变未读）；可以跨过被拦下的未交付消息——内容仍在账本，仍可用 `qq_unread {afterSeq:0}` / `qq_history` 回看。未交付行记 `blocked_reason` 并在 `qq_unread` 里标注。
 - **补课标记**：signal 的 `tags` 加 `backfill`、`meta.qq.backfilled=true`、正文前缀 `[补课] `，模型能知道"这条不是刚发生的"。
 - **已读策略**：P0 **不调用** `mark_msg_as_read` / `mark_private_msg_as_read`（会把已读同步到用户自己的 QQ，属产品决定）；P1 的 `qq_mark_read` 再显式做。
 - **私聊历史语义待真机**：SnowLuma 文档只说 `get_friend_msg_history` "无锚点时从服务器获取最新双向记录"，不一定支持任意锚点；实现用本地水位 + id 双判兜底，真机若确认不支持 → 只保留 gap 可见性，不假装连续。

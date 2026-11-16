@@ -1939,6 +1939,12 @@ export async function apply(ctx) {
       const head = `${target.label}：最后 #${out.watermark.lastSeq}，已看 #${out.watermark.seenSeq}，已交付 #${out.watermark.deliveredSeq}`
       if (!out.messages.length) return { text: `${head}；没有未读消息。` }
       const undelivered = out.messages.filter((row) => row.deliveredAt == null).length
+      // 这些消息已经展示给模型：只记"看过"（viewed）用于投递去重，不改变未读/提醒；
+      // 是否回、是否 ack 仍由她决定。
+      try {
+        const shown = out.messages.map((row) => Number(row.seq)).filter((seq) => Number.isFinite(seq) && seq > 0)
+        if (shown.length) ledger.markViewed(target.activity, { throughSeq: Math.max(...shown) })
+      } catch { /* 去重水位失败不影响读取 */ }
       return {
         text: `${head}；未读 ${out.messages.length} 条${undelivered ? `（其中 ${undelivered} 条被 time/focus/静音拦下、未交付，但也能看）` : ''}：\n${out.messages.map(formatLedgerRow).join('\n')}\n（看过了不想回：qq_mark_read 标记；它不会发消息，也不代表已回。）`,
       }
@@ -2250,6 +2256,10 @@ export async function apply(ctx) {
       /** 某会话的 seen 水位；给 bridge 在投递前判"这条已经看过了"（防止工具看过又直投一遍）。 */
       seenThrough: (activity) => {
         try { return Number(ledger?.lastKnown(String(activity ?? ''))?.seenSeq) || 0 } catch { return 0 }
+      },
+      /** 工具展示过的水位（看≠处理；只给投递去重，不影响未读/提醒）。 */
+      viewedThrough: (activity) => {
+        try { return Number(ledger?.lastKnown(String(activity ?? ''))?.viewedSeq) || 0 } catch { return 0 }
       },
       sendStatus: () => sendHandle?.status() ?? null,
       killSend: (reason = 'manual') => sendHandle?.killSwitch(reason) ?? { allowSend: liveConfig.allowSend },
